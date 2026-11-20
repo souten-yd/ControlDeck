@@ -3,10 +3,10 @@
 2026-11-20 利用者「reranker はなるべく軽量・高速に。GPU に置かず CPU で」「ある程度精度が悪くても軽量と高速であれば
 問題ない」「他の reranker も含めて、タップしたら初期設定とモデルのダウンロードができるように」。
 
-選べるモデル（評価は docs/reranker-evaluation.md。速さは約 800 文字の断片、8 スレッド）:
+選べるモデル（評価は docs/reranker-evaluation.md。速さは標準の長さ（約 450〜560 トークン）の資料 32 件、8 スレッド）:
 - xsmall: hotchpotch/japanese-reranker-xsmall-v2（MIT）。日本語 JQaRA 0.748（今の GPU の 4B は 0.743）。
-  32 件 0.64 秒（512 トークン）、ファイル 0.15 GB・RAM 0.7 GB。公式の ONNX をそのまま使う（変換しない）
-- ruri: cl-nagoya/ruri-v3-reranker-310m（Apache-2.0）。日本語 0.877（最良）。32 件 5.7 秒（384 トークン）、
+  0.7〜1.2 秒、ファイル 0.15 GB・RAM 0.7 GB。公式の ONNX をそのまま使う（変換しない）
+- ruri: cl-nagoya/ruri-v3-reranker-310m（Apache-2.0）。日本語 0.877（最良）。8〜12 秒、
   int8 0.73 GB・RAM 2.1 GB。導入時に一時の build venv（PyTorch CPU）で ONNX へ書き出して int8 にする
   （MLP の出力側 Wo だけ fp32。全部 int8 だと 0.834 に落ちる）。PyTorch fp32 と順位が同じかを確かめてから使う
 
@@ -36,6 +36,9 @@ from app.jobs import service as jobs
 
 logger = logging.getLogger("control_deck.workflows.cpu_reranker")
 
+# 質問＋資料 1 件で読む上限。資料は切らずに読ませる（2026-11-20 利用者「区切りは一般的な長さで、短く切らないで」）。
+# 会話の資料の塊は 800 文字（日本語で約 430 トークン）で、一般的な 512 前後。英語の長い塊（約 560 トークン）も収まる
+MAX_TOKENS = 1024
 TOKENIZER = (6724873, "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
 # path: (bytes, sha256)。2026-11-20 取得・照合
 MODELS: dict[str, dict] = {
@@ -52,10 +55,10 @@ MODELS: dict[str, dict] = {
         "model_file": "onnx/model.onnx",
         "runtime_label": "ONNX Runtime 1.32.0（CPU・fp32）",
         "accuracy": "日本語 0.748（GPU の 4B は 0.743）",
-        "speed": "約 800 文字 32 件で 0.6 秒",
+        "speed": "標準の長さ 32 件で 0.7〜1.2 秒",
         "memory": "ファイル 0.15 GB・RAM 0.7 GB",
         # 速いので会話でも候補を絞らない
-        "max_tokens": 512, "fast_max_tokens": 512, "fast_pool": 4, "prefer": "fast",
+        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "fast",
     },
     "ruri-reranker": {
         "name": "ruri-v3-reranker-310m（CPU・高精度）",
@@ -74,10 +77,10 @@ MODELS: dict[str, dict] = {
         "model_file": "onnx-int8/model_int8.onnx",
         "runtime_label": "ONNX Runtime 1.32.0（CPU・int8）",
         "accuracy": "日本語 0.877（最良）",
-        "speed": "約 800 文字 32 件で 5.7 秒、会話では 16 件 1.7 秒",
+        "speed": "標準の長さ 32 件で 8〜12 秒（会話では候補を半分に絞る）",
         "memory": "ファイル 0.73 GB（元の重み 1.2 GB も保管）・RAM 2.1 GB",
-        # 実測（8 スレッド、約 800 文字）: 256 で 16 件 1.65 秒・32 件 3.3 秒、384 で 16 件 2.9 秒・32 件 5.7 秒
-        "max_tokens": 384, "fast_max_tokens": 256, "fast_pool": 2, "prefer": "accurate",
+        # 実測（8 スレッド、標準の長さ約 450 トークン）: 32 件 8.0 秒。会話（3 秒まで）では候補を top_k×2 に絞る
+        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 2, "prefer": "accurate",
     },
 }
 RUNTIME_PACKAGES = ("onnxruntime==1.32.0", "tokenizers==0.23.3", "numpy==2.5.5", "flatbuffers==25.12.19",

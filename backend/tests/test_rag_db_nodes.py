@@ -185,18 +185,18 @@ def test_cpu_reranker_is_preferred_and_its_scores_do_not_gate(monkeypatch):
 
     monkeypatch.setattr(cpu_reranker, "score", scores)
     many = [{"text": f"資料{i}", "context": f"資料{i}"} for i in range(16)]
-    # 会話: ruri しか無ければ候補 top_k×2・256 トークン
+    # 会話: ruri しか無ければ候補 top_k×2。資料は切らずに 1024 トークンまで読む（利用者「短く切らないで」）
     picked = run(rag._maybe_rerank("番組表を調べて\nさっきの番組表を教えて", many, 2, budget_s=3.0))
-    assert asked == {"model": "ruri-reranker", "count": 4, "max_tokens": 256, "query": "番組表を調べて\nさっきの番組表を教えて"}
+    assert asked == {"model": "ruri-reranker", "count": 4, "max_tokens": 1024, "query": "番組表を調べて\nさっきの番組表を教えて"}
     assert [m["text"] for m in picked] == ["資料3", "資料2"]
     assert all(m["rerank_engine"] == "ruri-reranker" for m in picked)
-    # Knowledge 等（上限なし）: 候補 top_k×4・384 トークン
+    # Knowledge 等（上限なし）: 候補 top_k×4
     run(rag._maybe_rerank("q", many, 2))
-    assert (asked["count"], asked["max_tokens"]) == (8, 384)
-    # xsmall があれば会話はそちら。速いので候補を絞らず 512 トークン
+    assert (asked["count"], asked["max_tokens"]) == (8, 1024)
+    # xsmall があれば会話はそちら。速いので候補を絞らない
     installed.add("xsmall-reranker")
     run(rag._maybe_rerank("q", many, 2, budget_s=3.0))
-    assert (asked["model"], asked["count"], asked["max_tokens"]) == ("xsmall-reranker", 8, 512)
+    assert (asked["model"], asked["count"], asked["max_tokens"]) == ("xsmall-reranker", 8, 1024)
 
     # rag.search の門: CPU の点では切らない。Qwen（llama）の点なら切る
     async def fake_embed(texts, base_url, model, api_key):

@@ -476,8 +476,8 @@ async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool 
 
     2026-11-20 利用者の判断: reranker は GPU に置かず CPU で。軽量・高速を優先（精度は多少落ちてもよい）。
     fast（会話の資料。3 秒まで）は速いモデル（xsmall）を、それ以外（Knowledge・Workflow）は精度の高いモデル（ruri）を
-    優先する（cpu_reranker.pick）。ruri を会話で使うときは候補を top_k×2 件・各 256 トークンに絞る
-    （約 800 文字 16 件 1.65 秒。32 件・384 だと 5.7 秒で間に合わない）。CPU が未導入なら従来の GPU の reranker。"""
+    優先する（cpu_reranker.pick）。資料は切らずに 1024 トークンまで読む。ruri を会話で使うときは候補を top_k×2 件に
+    絞る（標準の長さ 32 件で 8 秒かかるため）。CPU が未導入なら従来の GPU の reranker。"""
     from app.models_mgmt import llama
     from app.workflows import cpu_reranker
 

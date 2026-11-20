@@ -164,7 +164,7 @@ FEATURES: dict[str, dict] = {
         "executable": "python",
         "route_gated": False,
         "repo": "hotchpotch/japanese-reranker-xsmall-v2",
-        "summary": "検索結果を CPU で並べ替える。約 800 文字 32 件で 0.6 秒、ファイル 0.15 GB・RAM 0.7 GB。精度は今の GPU の reranker と同等",
+        "summary": "検索結果を CPU で並べ替える。標準の長さの資料 32 件で 0.7〜1.2 秒、ファイル 0.15 GB・RAM 0.7 GB。精度は今の GPU の reranker と同等",
     },
     "ruri-reranker": {
         "name": "ruri-v3-reranker-310m（CPU・高精度）",
@@ -172,7 +172,7 @@ FEATURES: dict[str, dict] = {
         "executable": "python",
         "route_gated": False,
         "repo": "cl-nagoya/ruri-v3-reranker-310m",
-        "summary": "日本語の並べ替えが最も正確（int8）。32 件で約 6 秒と遅いので、両方あるときは Knowledge・Workflow に使う。ファイル 0.73 GB・RAM 2.1 GB",
+        "summary": "日本語の並べ替えが最も正確（int8）。標準の長さ 32 件で 8〜12 秒と遅いので、両方あるときは Knowledge・Workflow に使う。ファイル 0.73 GB・RAM 2.5 GB",
     },
 }
 
