@@ -538,6 +538,11 @@ async def _save_archive(conv_id: str, file: UploadFile, name: str) -> dict:
     return {"kind": "archive", "id": archive_id, "name": name, "files": info["files"], "bytes": info["bytes"]}
 
 
+def _knowledge_chars(budget) -> int:
+    """ナレッジの文書に使える文字数。全文を入れられるよう Deep Research の徹底と同じ量（窓から決まる）。"""
+    return int(getattr(budget, "exhaustive_evidence_chars", 0) or getattr(budget, "rag_chars", 8000))
+
+
 def conversation_collection(conv_id: str) -> str:
     """会話別RAGコレクション名。添付文書・検索資料・レポートをここへ蓄積する。"""
     return f"chat-{conv_id}"
@@ -1790,8 +1795,21 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             return list(zip(registered, results))
 
         web_sources: list[dict] = []
+        # ナレッジ（資料・特許・規格）の横断検索。ローカルの管理モデルなら機密も、cloud なら公開・許諾済みだけ
+        knowledge_tool = None
+        if mode == "chat" and getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model):
+            from app.knowledge import context as kcontext
+            from app.knowledge import store as kstore
+            from app.models_mgmt import context_budget
+
+            if await asyncio.to_thread(kstore.has_shared_collections):
+                knowledge_tool = {
+                    "consumer": "local" if await asyncio.to_thread(kcontext.is_local_model, base_url, model) else "cloud",
+                    "bound": [conversation_collection(conv_id)],
+                    "max_chars": _knowledge_chars(context_budget.for_model(base_url, model))}
         while True:
             tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
+                [chat_tools.TOOL_SEARCH_KNOWLEDGE] if knowledge_tool is not None else []) + (
                 [chat_tools.TOOL_WEB_SEARCH] if web_tool else []) + (
                 [chat_tools.TOOL_HAND_OFF_OPENCODE] if code_target is not None and web_tool else [])
             with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
@@ -1814,6 +1832,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 messages = await _materials_without_tools(messages, material_tool, job)
                 material_tool = None
                 web_tool = False
+                knowledge_tool = None
                 continue
             if not calls or last:
                 break   # 最後の回にまだ呼ぼうとしても、それ以上は実行しない
@@ -1839,6 +1858,12 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         web_sources.extend(found)
                         buf["meta"]["sources"] = web_sources
                         job.log("sources", sources=web_sources)
+                elif call["name"] == chat_tools.SEARCH_KNOWLEDGE and knowledge_tool is not None:
+                    job.log("stats", phase="retrieve", detail=f"ナレッジを探しています: {query}", tok_per_sec=0,
+                            gen_tokens=0, prompt_tokens=None, context_max=None)
+                    result, record = await chat_tools.run_knowledge(
+                        call, consumer=knowledge_tool["consumer"], bound=knowledge_tool["bound"],
+                        max_chars=knowledge_tool["max_chars"])
                 elif call["name"] == chat_tools.HAND_OFF_OPENCODE:
                     # 作業フォルダが決まっていない（この会話で OpenCode を使っておらず、画面でも選んでいない）
                     result, record = (chat_tools.NO_PROJECT_NOTE,

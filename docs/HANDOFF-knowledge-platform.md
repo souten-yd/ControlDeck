@@ -98,11 +98,11 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 |---|---|---|
 | R2-0 | 本書と引き継ぎの決まり（AGENTS.md） | ☑ |
 | R2-1 | 特許・規格の RAG の方式を Web・コミュニティ・公式で調べて評価し採用（`research-patent-standards-rag.md`） | ☑ 文書単位・全文か骨格・確定した書誌グラフ・節分割・図表の説明 |
-| R2-2 | 文書単位の検索と「全文を入れる」回答（コンテキストの長さに合わせる。入らなければ節単位） | ☐ |
-| R2-3 | 書誌の関係グラフ（引用・引用規格・ファミリー・分類・版の置き換え）と検索での 1 hop 拡張 | ☐ |
-| R2-4 | 規格検索: 規格番号・版の索引、条項単位の分割、利用判定の適用、規格の画面 | ☐ |
-| R2-5 | PDF の取り込み: ページごとの文章（座標）・埋め込み画像・OCR・ページ画像、図・表・グラフを VLM で記述（未確認の推論） | ☐ |
-| R2-6 | AI アシスタントからナレッジ横断の検索（道具）。cloud なら機密を除く | ☐ |
+| R2-2 | 文書単位の検索と「全文を入れる」回答（コンテキストの長さに合わせる。入らなければ節単位） | ◐ backend 済み（`knowledge/documents.py`・`context.py`）、画面は R2-8 |
+| R2-3 | 書誌の関係グラフ（引用・引用規格・ファミリー・分類・版の置き換え）と検索での 1 hop 拡張 | ◐ 識別子と関係（`biblio.py`・`documents.related_documents`）済み。ファミリー・分類は未 |
+| R2-4 | 規格検索: 規格番号・版の索引、条項単位の分割、利用判定の適用、規格の画面 | ◐ backend 済み（`knowledge/standards.py`・`router.py`）、画面は未 |
+| R2-5 | PDF の取り込み: ページごとの文章（座標）・埋め込み画像・OCR・ページ画像、図・表・グラフを VLM で記述（未確認の推論） | ◐ `pdf_ingest.py`・`ingest.py` 済み（座標は未、ページ単位）。画面は未 |
+| R2-6 | AI アシスタントからナレッジ横断の検索（道具）。cloud なら機密を除く | ☑ `chat_tools.search_knowledge`（ローカル判定は local-only 契約と同じ） |
 | R2-7 | 発明の音声ヒアリング（長時間の音声 → 文字 → ローカル AI が本質・構成要件・請求項案・追加質問に分解） | ☐ |
 | R2-8 | Patent 画面の UX 見直し（詳細を隠す・ControlDeck と統一）と API の実動作確認 | ☐ |
 | R2-9 | テスト・評価 → マージ → Release → 本番へ反映 → 旧データの取り込み | ☐ |
@@ -123,6 +123,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: R2 の backend（文書単位の検索・全文か骨格・書誌の関係・規格・PDF の取り込み・アシスタントの道具・ヒアリングの記録と分析）。テスト `test_knowledge_documents.py` ほか 87 件通過。schema の覚え書きをファイルの inode で持つよう直した（ファイルが置き換わると表が作られない不具合）。
 
 - 2026-11-21 Claude: 方式を調査して採用（research-patent-standards-rag.md）。
 - 2026-11-21 Claude: 本書を作成。R2 を開始。PR #473 に Patent 画面・PatentBuddy 撤去・保存先の設定まで入っている（全体テスト 1859 passed、E2E patents 通過）。

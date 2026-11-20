@@ -74,6 +74,11 @@ class ChartBody(BaseModel):
     per_element: int = Field(default=3, ge=1, le=8)
 
 
+class HearingBody(BaseModel):
+    text: str = Field(default="", max_length=200_000)
+    replace: bool = False
+
+
 class AssistBody(BaseModel):
     task: str
     extra: str = Field(default="", max_length=20_000)
@@ -147,6 +152,12 @@ def delete_event(case_id: int, event_id: int, user: User = Depends(EDIT)):
 @router.post("/cases/{case_id}/claims")
 def save_claims(case_id: int, body: ClaimsBody, user: User = Depends(EDIT)):
     return _call(pstore.save_claims, case_id, body.text, body.note)
+
+
+@router.post("/cases/{case_id}/hearing")
+def append_hearing(case_id: int, body: HearingBody, user: User = Depends(EDIT)):
+    """ヒアリングの記録（音声の文字起こし・手入力）に足す。replace=true なら置き換える（手で直したとき）。"""
+    return _call(pstore.append_hearing, case_id, body.text, replace=body.replace)
 
 
 @router.post("/cases/{case_id}/refs")

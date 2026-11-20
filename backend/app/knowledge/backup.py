@@ -353,5 +353,4 @@ def move_db(shard: str, target: str) -> dict:
             old = Path(str(src) + suffix)
             if old.exists():
                 old.rename(old.with_name(old.name + f".moved-{stamp}"))
-    store._schema_ready.discard(str(src))
     return {"shard": shard, "from": current, "to": target, "path": str(dst)}

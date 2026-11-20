@@ -40,6 +40,47 @@ TOOL_SEARCH_MATERIALS = {
     },
 }
 
+SEARCH_KNOWLEDGE = "search_knowledge"
+TOOL_SEARCH_KNOWLEDGE = {
+    "type": "function",
+    "function": {
+        "name": SEARCH_KNOWLEDGE,
+        "description": (
+            "ControlDeck のナレッジ（登録した資料・特許の公報・規格）を横断して探し、関係する文書を [D番号] 付きで返す。"
+            "入るときは文書の全文、入らないときは骨格（要約・請求項・適用範囲・引用規格）と該当箇所。"
+            "特許・規格・技術資料・社内資料の中身や番号（例: JIS C 61000-4-2、特開2026-116114）を確かめるときに使う。"
+            "この会話の資料だけで足りるとき・一般知識・雑談では使わない。答えでは使った文書に [D番号] を付ける。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "探す内容。規格番号・公報番号はそのまま。代名詞を使わず具体的に。例: 静電気放電 イミュニティ 試験レベル"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+async def run_knowledge(call: dict, *, consumer: str, bound: list[str], max_chars: int) -> tuple[str, dict]:
+    """ナレッジの横断検索を 1 回。cloud のモデルへは機密・AI 利用の許されない規格を渡さない。"""
+    from app.knowledge import context
+
+    query = str(arguments_of(call).get("query") or "").strip()[:500]
+    if not query:
+        return "query が空です。探す内容を具体的な語で指定してください。", {"name": SEARCH_KNOWLEDGE, "error": "empty"}
+    try:
+        built, ranked = await context.search_and_build(query, consumer=consumer, budget_chars=max_chars, bound=bound)
+    except Exception as exc:  # noqa: BLE001 - 検索の失敗は文にしてモデルへ返す
+        logger.warning("ナレッジの検索に失敗しました: %s", exc)
+        return "ナレッジの検索に失敗しました。ナレッジなしで答えるか、その旨を伝えてください。", {
+            "name": SEARCH_KNOWLEDGE, "query": query, "error": type(exc).__name__}
+    if built.mode == "empty":
+        return "ナレッジに関係する文書は見つかりませんでした。", {"name": SEARCH_KNOWLEDGE, "query": query, "count": 0}
+    return built.text, {"name": SEARCH_KNOWLEDGE, "query": query, "count": len(built.sources), "mode": built.mode,
+                        "sources": built.sources}
+
+
 WEB_SEARCH = "web_search"
 TOOL_WEB_SEARCH = {
     "type": "function",

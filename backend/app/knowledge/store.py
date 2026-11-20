@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS annotations(
   review_status TEXT NOT NULL DEFAULT 'unreviewed', content TEXT NOT NULL,
   source_revision TEXT NOT NULL DEFAULT '', created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_annotations_doc ON annotations(doc_id);
+CREATE TABLE IF NOT EXISTS identifiers(
+  id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, scheme TEXT NOT NULL, value TEXT NOT NULL,
+  edition TEXT NOT NULL DEFAULT '', own INTEGER NOT NULL, raw TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_identifiers_value ON identifiers(scheme, value, own);
+CREATE INDEX IF NOT EXISTS ix_identifiers_doc ON identifiers(doc_id);
 CREATE TABLE IF NOT EXISTS legacy_imports(
   source TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', updated REAL NOT NULL);
 """
@@ -112,18 +117,36 @@ def connect(shard: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=10000")
-    key = str(path)
+    # ファイルが置き換わった（復元・移動・削除して作り直し）ときに表を作り直せるよう、inode も鍵に含める
+    key = f"{path}:{os.stat(path).st_ino}"
     if key not in _schema_ready:
         with _schema_lock:
             if key not in _schema_ready:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.executescript(SCHEMA)
+                _add_missing_columns(conn)
                 conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
                              "tok, tokenize='unicode61 remove_diacritics 0')")
                 conn.commit()
                 _schema_ready.add(key)
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+# 後から足した列（既に作られたファイルにも足す。起動時ではなく、そのファイルを初めて開いたとき 1 回）
+_LATE_COLUMNS = {
+    "documents": [("ai_use", "TEXT NOT NULL DEFAULT 'allowed'")],
+    "blobs": [("location", "TEXT NOT NULL DEFAULT 'local'"), ("role", "TEXT NOT NULL DEFAULT 'original'")],
+}
+AI_USE = ("prohibited", "local_only", "allowed")
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, columns in _LATE_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def _now() -> float:
@@ -218,6 +241,20 @@ def delete_collection(name: str) -> bool:
     return True
 
 
+def has_shared_collections() -> bool:
+    """会話以外のコレクションがあるか（会話の道具を渡すかの判定。件数は数えない）。"""
+    for shard in SHARDS:
+        if not shard_path(shard).exists():
+            continue
+        conn = connect(shard)
+        try:
+            if conn.execute("SELECT 1 FROM collections WHERE kind<>'conversation' LIMIT 1").fetchone():
+                return True
+        finally:
+            conn.close()
+    return False
+
+
 def list_collections() -> list[dict]:
     out = []
     for shard in SHARDS:
@@ -259,7 +296,7 @@ def _delete_document_side_rows(conn: sqlite3.Connection, doc_ids: list[int]) -> 
     for start in range(0, len(doc_ids), 500):
         part = doc_ids[start:start + 500]
         marks = ",".join("?" * len(part))
-        for table in ("bodies", "document_assets", "annotations"):
+        for table in ("bodies", "document_assets", "annotations", "identifiers"):
             conn.execute(f"DELETE FROM {table} WHERE doc_id IN ({marks})", part)
 
 
@@ -274,14 +311,21 @@ class NewChunk:
 def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: str = "",
                  url: str = "", ext_id: str | None = None, sha256: str = "", body: str | None = None,
                  sensitivity: str | None = None, basis: str = "source_fact", meta: dict | None = None,
-                 model: str = "", replace_collection: bool = False) -> dict:
+                 model: str = "", replace_collection: bool = False, ai_use: str = "allowed",
+                 identifiers: list | None = None) -> dict:
     """1 文書を 1 トランザクションで登録する。件数の上限で切り詰めない。
 
     同じ ext_id の文書があれば置き換える（冪等な再投入）。sha256 も同じなら何も書かない。
     """
     if basis not in BASIS:
         raise KnowledgeError(f"不正な basis: {basis}")
+    if ai_use not in AI_USE:
+        raise KnowledgeError(f"不正な ai_use: {ai_use}")
     ref = require_collection(name)
+    from app.knowledge import biblio
+
+    own = identifiers if identifiers is not None else biblio.own_identifiers(title, ext_id or "", source)
+    refs = biblio.references(body if body is not None else "\n".join(c.text for c in chunks), own)
     level = sensitivity or ref.sensitivity
     if level not in SENSITIVITY:
         raise KnowledgeError(f"不正な機密区分: {level}")
@@ -308,9 +352,12 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
                 conn.execute("DELETE FROM documents WHERE id=?", (old["id"],))
         doc_id = conn.execute(
             "INSERT INTO documents(collection_id, ext_id, title, source, url, sha256, sensitivity, basis, meta, "
-            "chunk_count, created, updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "chunk_count, created, updated, ai_use) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (ref.id, ext_id, title, source, url, sha256, level, basis,
-             json.dumps(meta or {}, ensure_ascii=False), len(chunks), now, now)).lastrowid
+             json.dumps(meta or {}, ensure_ascii=False), len(chunks), now, now, ai_use)).lastrowid
+        conn.executemany("INSERT INTO identifiers(doc_id, scheme, value, edition, own, raw) VALUES(?,?,?,?,?,?)",
+                         [(doc_id, i.scheme, i.value, i.edition, 1, i.raw[:120]) for i in own]
+                         + [(doc_id, i.scheme, i.value, i.edition, 0, i.raw[:120]) for i in refs])
         if body is not None:
             conn.execute("INSERT INTO bodies(doc_id, text) VALUES(?,?)", (doc_id, body))
         wrote_vectors = False
@@ -391,12 +438,13 @@ def copy_collection(source: str, target: str) -> bool:
         for doc in conn.execute("SELECT * FROM documents WHERE collection_id=? ORDER BY id", (src.id,)).fetchall():
             new_id = conn.execute(
                 "INSERT INTO documents(collection_id, ext_id, title, source, url, sha256, sensitivity, basis, meta, "
-                "chunk_count, created, updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "chunk_count, created, updated, ai_use) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (dst.id, doc["ext_id"], doc["title"], doc["source"], doc["url"], doc["sha256"], doc["sensitivity"],
-                 doc["basis"], doc["meta"], doc["chunk_count"], doc["created"], _now())).lastrowid
+                 doc["basis"], doc["meta"], doc["chunk_count"], doc["created"], _now(), doc["ai_use"])).lastrowid
             doc_map[int(doc["id"])] = int(new_id)
             for table, cols in (("bodies", "text"), ("document_assets", "sha256, role, ord, meta"),
-                                ("annotations", "kind, basis, review_status, content, source_revision, created")):
+                                ("annotations", "kind, basis, review_status, content, source_revision, created"),
+                                ("identifiers", "scheme, value, edition, own, raw")):
                 conn.execute(f"INSERT INTO {table}(doc_id, {cols}) SELECT ?, {cols} FROM {table} WHERE doc_id=?",
                              (new_id, doc["id"]))
         wrote_vectors = False
@@ -663,7 +711,7 @@ def _hydrate(scored: list[tuple[float, str, int]], exclude_confidential: bool) -
                 marks = ",".join("?" * len(part))
                 for row in conn.execute(
                         "SELECT c.id, c.text, c.parent, c.locator, d.id AS doc_id, d.title, d.source, d.url, "
-                        "d.sensitivity, d.basis, col.name AS collection FROM chunks c "
+                        "d.sensitivity, d.basis, d.ai_use, col.name AS collection FROM chunks c "
                         "JOIN documents d ON d.id=c.doc_id JOIN collections col ON col.id=c.collection_id "
                         f"WHERE c.id IN ({marks})", part):
                     rows[(shard, int(row["id"]))] = row
@@ -683,7 +731,7 @@ def _hydrate(scored: list[tuple[float, str, int]], exclude_confidential: bool) -
         out.append({"score": round(score, 5), "text": row["text"], "parent": row["parent"],
                     "chunk_ref": f"{shard}:{cid}", "doc_ref": f"{shard}:{row['doc_id']}",
                     "collection": row["collection"], "title": row["title"], "source": row["source"],
-                    "url": row["url"], "sensitivity": row["sensitivity"], "basis": row["basis"],
+                    "url": row["url"], "sensitivity": row["sensitivity"], "basis": row["basis"], "ai_use": row["ai_use"],
                     "locator": locator})
     return out
 

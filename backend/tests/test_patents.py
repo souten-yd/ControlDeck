@@ -117,12 +117,16 @@ def test_assist_runs_local_only_and_is_saved_as_unreviewed_inference(monkeypatch
         assert await http_request.is_disconnected() is False
         return "## 新規性\n- 文献 [1] は構成 B を開示していない（推論）", None
 
-    async def no_search(query, limit=20, mode="hybrid"):
-        return [{"doc_ref": "patents:1", "chunk_ref": "patents:1", "title": "公報A", "collection": "c", "text": "本文"}]
+    from app.knowledge import context as kcontext
+
+    async def built(question, *, consumer, budget_chars, bound=(), names=None, max_docs=8):
+        sent["consumer"] = consumer
+        return kcontext.Built("[D1] 公報A\n本文", "full",
+                              [{"label": "D1", "ref": "patents:1", "title": "公報A", "collection": "c"}]), []
 
     monkeypatch.setattr(service, "resolve_local_target", local_target)
     monkeypatch.setattr(ai, "_complete_with_host_admission", fake_complete)
-    monkeypatch.setattr(service, "search", no_search)
+    monkeypatch.setattr(kcontext, "search_and_build", built)
 
     class Job:
         id, status = "job-1", "running"
@@ -135,7 +139,8 @@ def test_assist_runs_local_only_and_is_saved_as_unreviewed_inference(monkeypatch
     asyncio.run(service.run_assist(Job(), case["id"], "novelty", assist_id))
     saved = pstore.get_case(case["id"])["assists"][0]
     assert sent["local_only"] is True
-    assert "損失が大きい" in sent["messages"][1]["content"] and "[1] 公報A" in sent["messages"][1]["content"]
+    assert "損失が大きい" in sent["messages"][1]["content"] and "[D1] 公報A" in sent["messages"][1]["content"]
+    assert sent["consumer"] == "local"
     assert saved["status"] == "succeeded" and saved["basis"] == "model_inference" and saved["review_status"] == "unreviewed"
     assert saved["evidence"][0]["doc_ref"] == "patents:1"
 

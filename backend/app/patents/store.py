@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS patent_assists(
 CREATE INDEX IF NOT EXISTS ix_patent_assists_case ON patent_assists(case_id);
 """
 
-DATA_FIELDS = ("field", "problem", "solution", "effect", "embodiment", "claims_draft", "notes")
+DATA_FIELDS = ("field", "problem", "solution", "effect", "embodiment", "claims_draft", "notes", "hearing")
 MAX_TEXT = 200_000
 
 
@@ -54,7 +55,8 @@ _ready: set[str] = set()
 
 def connect() -> sqlite3.Connection:
     conn = kstore.connect(SHARD)
-    key = str(kstore.shard_path(SHARD))
+    path = kstore.shard_path(SHARD)
+    key = f"{path}:{os.stat(path).st_ino}"   # 置き換わったファイルでは表を作り直す
     if key not in _ready:
         conn.executescript(SCHEMA)
         conn.commit()
@@ -163,6 +165,29 @@ def update_case(case_id: int, *, title: str | None = None, stage: str | None = N
             raise PatentError("発明の名称を入れてください")
         conn.execute("UPDATE patent_cases SET title=?, stage=?, data=?, updated=? WHERE id=?",
                      (new_title, new_stage, json.dumps(merged, ensure_ascii=False), _now(), row["id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_case(case_id)
+
+
+def append_hearing(case_id: int, text: str, *, replace: bool = False) -> dict:
+    """ヒアリングの記録に足す（音声の文字起こし・手入力）。区切りに日時を入れる。"""
+    import datetime as dt
+
+    text = (text or "").strip()
+    conn = connect()
+    try:
+        row = _case(conn, case_id)
+        data = json.loads(row["data"] or "{}")
+        if replace:
+            data["hearing"] = text[:MAX_TEXT]
+        elif text:
+            stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            joined = (str(data.get("hearing", "")).rstrip() + f"\n\n〔{stamp}〕\n{text}").strip()
+            data["hearing"] = joined[-MAX_TEXT:]
+        conn.execute("UPDATE patent_cases SET data=?, updated=? WHERE id=?",
+                     (json.dumps(data, ensure_ascii=False), _now(), row["id"]))
         conn.commit()
     finally:
         conn.close()
