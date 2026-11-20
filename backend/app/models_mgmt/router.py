@@ -1355,9 +1355,12 @@ def retrieval_select(body: RetrievalSelectionBody, request: Request,
 
 
 @router.post("/retrieval/cpu/{model_id}/install-jobs", status_code=201)
-def retrieval_cpu_install(model_id: str, request: Request,
+async def retrieval_cpu_install(model_id: str, request: Request,
                           user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
-    """CPU の reranker をタップ 1 つで導入する（取得・ruri は int8 へ変換・実行環境・試しの並べ替え）。"""
+    """reranker をタップ 1 つで導入する（取得・ruri は変換・実行環境・試しの並べ替え）。
+
+    async で受ける: ジョブは走っているイベントループへ載せる。同期関数だとスレッドで動きループが無く、ジョブの記録だけが
+    残って「処理中…」が消えず、画面には 500 が一瞬出ていた（2026-11-20 本番 v0.87）。"""
     from app.workflows import cpu_reranker
 
     if model_id not in cpu_reranker.MODELS:
@@ -1379,6 +1382,24 @@ def retrieval_cpu_uninstall(model_id: str, request: Request,
     state = cpu_reranker.uninstall(model_id)
     audit.record(db, "model.retrieval_uninstall", user=user, resource_type="model", resource_id=model_id, request=request)
     return state
+
+
+@router.post("/llama/role-presets/{preset_id}/uninstall")
+async def llama_role_preset_uninstall(preset_id: str, request: Request,
+                                      user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """GPU の埋め込み・reranker（llama.cpp のプリセット）を外す: 止めて登録を消し、GGUF も消す（ほかで使っていなければ）。"""
+    from app.models_mgmt import llama, role_presets
+
+    preset = role_presets.ROLE_PRESETS.get(preset_id)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="未知のプリセットです")
+    try:
+        result = await asyncio.to_thread(llama.delete_instance, str(preset["alias"]), delete_file=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="導入されていません") from exc
+    audit.record(db, "model.preset_uninstall", user=user, resource_type="model", resource_id=preset_id,
+                 request=request, metadata=result)
+    return result
 
 
 @router.get("/llama/options")

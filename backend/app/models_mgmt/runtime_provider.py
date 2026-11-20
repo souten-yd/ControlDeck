@@ -586,7 +586,7 @@ class StrataRuntimeProvider(OpenAICompatibleRuntimeProvider):
 
     kind = "strata"
     # 2026-11-20 実機（Qwen3.8 Flash Next、ゲートウェイ経由）で、挨拶・計算では呼ばず、番組表は資料と Web で、
-    # 天気は Web で探して答えるのを確かめた。Maya（DS-XS）は挨拶でも資料を探したので、まだ渡さない
+    # 天気は Web で探して答えるのを確かめた。Maya も別に確かめた
     tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
@@ -620,6 +620,10 @@ class MayaRuntimeProvider(OpenAICompatibleRuntimeProvider):
     """
 
     kind = "maya-s"
+    # 2026-11-20 実機（DS-XS、ゲートウェイ経由・ストリーム）: 道具の呼び出しは DeepSeek の DSML で書かれ、Maya が
+    # OpenAI の tool_calls に直して返す（形式の違いは無い）。挨拶 8 回とも呼ばず、天気 8 回とも Web を探した。
+    # 最初の確認で挨拶に資料を探した 1 回は、起動直後の最初の要求だけで再現しなかった
+    tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)

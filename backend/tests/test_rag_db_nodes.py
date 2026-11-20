@@ -259,7 +259,7 @@ def test_cpu_rerankers_are_installed_and_chosen_in_models(admin_client, monkeypa
 
     monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
     data = admin_client.get("/api/v1/models/retrieval").json()
-    assert [m["id"] for m in data["cpu_rerankers"]] == ["xsmall-reranker", "ruri-reranker"]
+    assert [m["id"] for m in data["cpu_rerankers"]] == ["xsmall-reranker", "ruri-reranker", "ruri-reranker-gpu"]
     assert not any(m["installed"] for m in data["cpu_rerankers"]) and data["selection"] == {"chat": "auto", "knowledge": "auto"}
     assert not (tmp_path / "archives").exists() and not (tmp_path / "runtimes").exists()   # 見るだけでは作らない
     assert data["in_use"] == {"chat": "gpu", "knowledge": "gpu"}                            # CPU が無ければ GPU
@@ -322,3 +322,84 @@ def test_rerank_follows_the_selection(monkeypatch):
     asked = []
     monkeypatch.setattr(llama, "find_role_instance", lambda role: asked.append(role) or None)
     assert [m["text"] for m in run(rag._rerank("q", matches, 2))] == ["0", "1"] and asked == ["reranker"]
+
+
+
+def test_gpu_ruri_is_preferred_and_falls_back_to_cpu(monkeypatch, tmp_path):
+    """GPU の ruri（fp16、MIGraphX）が入っていれば、自動では会話にも Knowledge にも使う（精度も速さも最良）。
+    使えないとき（VRAM が埋まっている等）は、入っている CPU のものへ回す。
+    根拠: 2026-11-20 実測。GPU の ruri は日本語 0.877・標準の長さ 32 件 0.37 秒・VRAM 1.3 GB。CPU の ruri は 8〜12 秒。
+    CPU 版と GPU 版は同じ保管庫を使うが、外す印・実行環境はそれぞれ別（片方を外してももう一方は残る）。"""
+    from app.workflows import cpu_reranker, rag
+
+    installed = {"ruri-reranker-gpu", "xsmall-reranker", "ruri-reranker"}
+    monkeypatch.setattr(cpu_reranker, "ready", lambda model_id=None: bool(installed) if model_id is None else model_id in installed)
+    monkeypatch.setattr(cpu_reranker, "selection", lambda: {"chat": "auto", "knowledge": "auto"})
+    assert cpu_reranker.pick(True) == "ruri-reranker-gpu" and cpu_reranker.pick(False) == "ruri-reranker-gpu"
+    assert cpu_reranker.pick(True, cpu_only=True) == "xsmall-reranker"
+    assert cpu_reranker.pick(False, cpu_only=True) == "ruri-reranker"
+    used = []
+
+    async def score(query, documents, model_id, max_tokens, **_):
+        used.append(model_id)
+        if model_id == "ruri-reranker-gpu":
+            raise cpu_reranker.CpuRerankerError("hipErrorOutOfMemory")
+        return [float(i) for i in range(len(documents))]
+
+    monkeypatch.setattr(cpu_reranker, "score", score)
+    matches = [{"text": str(i), "context": str(i)} for i in range(8)]
+    picked = run(rag._rerank("q", matches, 2, fast=True))
+    assert used == ["ruri-reranker-gpu", "xsmall-reranker"] and picked[0]["rerank_engine"] == "xsmall-reranker"
+
+    # 外す印と実行環境はモデル・装置ごと
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    assert cpu_reranker.runtime_root("gpu") != cpu_reranker.runtime_root("cpu")
+    assert cpu_reranker._disabled_marker("ruri-reranker") != cpu_reranker._disabled_marker("ruri-reranker-gpu")
+    assert cpu_reranker.model_path("ruri-reranker-gpu").name == "model_fp16.onnx"
+    assert cpu_reranker._packages("gpu")[0].startswith("onnxruntime-migraphx")
+
+
+def test_install_endpoint_actually_runs_the_job(admin_client, monkeypatch, tmp_path):
+    """導入の API はジョブを実際に走らせる。根拠: 2026-11-20 本番 v0.87。同期関数で受けていたためイベントループが無く 500
+    （画面に一瞬「エラー」）、ジョブの記録だけが残り「処理中…」が消えなかった。進み具合は LLM の画面ではなく
+    Embed / Reranker のカードに出す（ジョブの種類を model. で始めない）。"""
+    import time
+
+    from app.jobs import service as jobs
+    from app.workflows import cpu_reranker
+    from tests.conftest import CSRF_HEADERS
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    ran = []
+
+    async def install(job, model_id):
+        ran.append(model_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(cpu_reranker, "install", install)
+    monkeypatch.setattr(cpu_reranker, "_install_jobs", {})
+    r = admin_client.post("/api/v1/models/retrieval/cpu/xsmall-reranker/install-jobs", headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    job = jobs.get(r.json()["job_id"])
+    for _ in range(100):
+        if job.status not in ("queued", "running"):
+            break
+        time.sleep(0.02)
+    assert job.status == "succeeded" and ran == ["xsmall-reranker"] and job.kind == "retrieval.install"
+
+
+def test_gpu_preset_uninstall_removes_registration_and_file(admin_client, monkeypatch):
+    """GPU の埋め込み・reranker（llama.cpp のプリセット）のアンインストール: 登録を消し、GGUF も消す。"""
+    from app.models_mgmt import llama
+    from tests.conftest import CSRF_HEADERS
+
+    called = []
+
+    def delete_instance(alias, *, delete_file=False):
+        called.append((alias, delete_file))
+        return {"gguf_deleted": True, "reason": ""}
+
+    monkeypatch.setattr(llama, "delete_instance", delete_instance)
+    r = admin_client.post("/api/v1/models/llama/role-presets/qwen3-reranker-4b/uninstall", headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["gguf_deleted"] and called == [("rerank-qwen3-4b", True)]
+    assert admin_client.post("/api/v1/models/llama/role-presets/nope/uninstall", headers=CSRF_HEADERS).status_code == 404

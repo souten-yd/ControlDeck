@@ -42,6 +42,10 @@ export const selectSpeechEngine = (kind: SpeechKind, engine: string) =>
 /** 読み上げの既定の声・速さ（AI アシスタントの TTS 返答・会話モードが使う） */
 export const saveSpeechDefaults = (values: { tts_voice?: string; tts_speed?: number }) =>
   api<SpeechEngines>("/speech/engines", { method: "PUT", json: values });
+/** エンジンを外す（Supertonic 3 は実行環境だけ。保管庫は残す） */
+export const uninstallSpeechEngine = (id: string) =>
+  api<SpeechEngines>(`/speech/engines/${encodeURIComponent(id)}/uninstall`, { method: "POST", json: {} });
+
 export const installSpeechEngine = (id: string) =>
   api<{ job_id: string; reused: boolean }>(`/speech/engines/${encodeURIComponent(id)}/install-jobs`, { method: "POST", json: {} });
 

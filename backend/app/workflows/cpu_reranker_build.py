@@ -1,9 +1,12 @@
-"""ruri-v3-reranker-310m を ONNX（int8）へ変換する（一時の build venv の python -I で動く）。
+"""ruri-v3-reranker-310m を ONNX へ変換する（一時の build venv の python -I で動く）。
 
-引数: <重みのフォルダ> <出力フォルダ>
+引数: <重みのフォルダ> <出力フォルダ> [int8|fp16]
+int8（CPU 用、既定）:
 1. PyTorch で読み、ONNX（fp32、opset 17）へ書き出す
 2. ONNX Runtime の動的量子化で int8 にする（per-channel。MLP の出力側だけは fp32 のまま）
-3. 固定の 8 組で、PyTorch fp32 と int8 の点数の順が同じかを確かめる（違えば失敗にする）
+fp16（GPU 用）: 重みを fp16 で読み、そのまま ONNX へ書き出す（0.63 GB、fp32 の半分）。fp32 の ONNX を後から fp16 へ
+直す方式（onnxconverter-common）は Cast の型が合わず読み込めなかった（2026-11-20）。
+どちらも、固定の 8 組で PyTorch fp32 と点数の順が同じかを CPU で確かめる（違えば失敗にする）
 最後に 1 行の JSON（点数の最大差・順位の一致）を出す。
 
 2026-11-20 調査: PyTorch の quantize_dynamic でも int8 にはなるが、torch（約 700 MB）を実行環境に要る。
@@ -26,6 +29,7 @@ PAIRS = [
 
 def main() -> int:
     source, out = Path(sys.argv[1]), Path(sys.argv[2])
+    mode = sys.argv[3] if len(sys.argv) > 3 else "int8"
     out.mkdir(parents=True, exist_ok=True)
     import numpy as np
     import onnxruntime as ort
@@ -50,6 +54,16 @@ def main() -> int:
         return ids, mask
 
     ids, mask = encode(PAIRS[:2])
+    if mode == "fp16":
+        half = AutoModelForSequenceClassification.from_pretrained(
+            str(source), attn_implementation="eager", torch_dtype=torch.float16).eval()
+        target = out / "model_fp16.onnx"
+        torch.onnx.export(half, (torch.tensor(ids), torch.tensor(mask)), str(target),
+                          input_names=["input_ids", "attention_mask"], output_names=["logits"],
+                          dynamic_axes={"input_ids": {0: "batch", 1: "tokens"}, "attention_mask": {0: "batch", 1: "tokens"},
+                                        "logits": {0: "batch"}},
+                          opset_version=17, dynamo=False)
+        return _check(model, encode, target, np, ort, torch)
     fp32 = out / "model_fp32.onnx"
     torch.onnx.export(model, (torch.tensor(ids), torch.tensor(mask)), str(fp32),
                       input_names=["input_ids", "attention_mask"], output_names=["logits"],
@@ -68,12 +82,15 @@ def main() -> int:
     quantize_dynamic(str(fp32), str(out / "model_int8.onnx"), weight_type=QuantType.QInt8, per_channel=True,
                      nodes_to_quantize=targets)
     fp32.unlink()
+    return _check(model, encode, out / "model_int8.onnx", np, ort, torch)
 
+
+def _check(model, encode, target, np, ort, torch) -> int:
     ids, mask = encode(PAIRS)
     with torch.inference_mode():
         reference = model(input_ids=torch.tensor(ids), attention_mask=torch.tensor(mask)).logits[:, 0].numpy()
-    session = ort.InferenceSession(str(out / "model_int8.onnx"), providers=["CPUExecutionProvider"])
-    quantized = session.run(None, {"input_ids": ids, "attention_mask": mask})[0][:, 0]
+    session = ort.InferenceSession(str(target), providers=["CPUExecutionProvider"])
+    quantized = session.run(None, {"input_ids": ids, "attention_mask": mask})[0][:, 0].astype(np.float32)
     # 同じ質問の中で、点数の順が PyTorch と同じか
     same_order = True
     for query in {q for q, _ in PAIRS}:
