@@ -16,6 +16,7 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
+import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
@@ -535,14 +536,23 @@ interface ControlDeckUpdateStatus {
   remote_sha: string;
   update_available: boolean;
   can_update: boolean;
+  release_tag?: string;
+  /** いまの版の Release 名（Release のコミットでなければ空） */
+  current_release_tag?: string;
   error: string;
   job?: { phase?: string; step?: string; error?: string; old_sha?: string; new_sha?: string };
 }
 
+/** Release の名前を短く（ControlDeck_v0.96 → v0.96）。名前が無ければコミットの短い形 */
+const versionName = (tag: string | undefined, sha: string | undefined) =>
+  tag ? tag.replace(/^ControlDeck_/, "") : sha ? `コミット ${sha.slice(0, 7)}` : "不明";
+const PHASE_LABELS: Record<string, string> = { scheduled: "開始待ち", running: "更新中", succeeded: "完了", failed: "失敗" };
+const STEP_LABELS: Record<string, string> = { fetch: "取得", build: "準備・ビルド", restart: "再起動・確認" };
+
 interface AutoUpdateSettings { enabled: boolean; idle_minutes: number; check_interval_minutes: number; busy: string[] }
 
 /** 正式 Release は、使われていない時間に自動で適用する（L1、docs/POLICY-autonomous-development.md）。
- * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届く。 */
+ * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届き、履歴（UpdateHistoryList）と次に開いた画面の知らせにも出る。 */
 function ControlDeckUpdateSection() {
   const show = useToasts((state) => state.show);
   const qc = useQueryClient();
@@ -595,7 +605,7 @@ function ControlDeckUpdateSection() {
         <div className="mt-3 space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/40">
           <label className="flex min-h-11 items-center justify-between gap-3">
             <span className="text-xs">使われていない時間に自動で適用する
-              <span className="block text-[11px] text-zinc-500">LLM の推論・OpenCode のセッション・Job・Add-on の生成が無い状態が続いたら適用し、結果を通知します</span>
+              <span className="block text-[11px] text-zinc-500">LLM の推論・OpenCode のセッション・Job・Add-on の生成が無い状態が続いたら適用します。結果は下の履歴と、次に開いた画面の知らせに出ます</span>
             </span>
             <input type="checkbox" checked={auto.data.enabled} onChange={(e) => void saveAuto({ enabled: e.target.checked })}
               aria-label="自動で適用する" className="h-5 w-5 shrink-0" />
@@ -608,17 +618,29 @@ function ControlDeckUpdateSection() {
               </select>
             </label>
           )}
-          {auto.data.enabled && data?.update_available && (
-            <p className="text-[11px] text-zinc-500">
-              {auto.data.busy.length ? `待っています: ${auto.data.busy.join("、")}` : "使われていない状態が続けば適用します"}
+          {auto.data.enabled && (
+            <p className="text-[11px] text-zinc-500" data-auto-update-wait>
+              {!data?.update_available
+                ? `新しい Release は ${auto.data.check_interval_minutes} 分ごとに確認します。見つけたら、使われていない状態が ${auto.data.idle_minutes} 分続いた時点で適用します`
+                : auto.data.busy.length ? `${versionName(data.release_tag, data.remote_sha)} の適用を待っています: ${auto.data.busy.join("、")}`
+                : `${versionName(data.release_tag, data.remote_sha)} は、使われていない状態が ${auto.data.idle_minutes} 分続けば適用します`}
             </p>
           )}
         </div>
       )}
       <div className="mt-3 space-y-1 text-xs text-zinc-500">
-        <p>現在: <span className="font-mono">{data?.current_sha?.slice(0, 12) || "確認中"}</span></p>
-        <p>正式Release: <span className="font-mono">{data?.remote_sha?.slice(0, 12) || "-"}</span></p>
-        {data?.job?.phase && <p>更新状態: {data.job.phase}{data.job.step ? ` / ${data.job.step}` : ""}</p>}
+        {/* 2026-11-20 利用者「数値の羅列で、何から何へ更新するのか分からない」: Release の名前で出す。
+            コミットは名前が取れないときと、確かめたい人のために小さく添える */}
+        <p data-update-current>いまの版: <span className="font-semibold text-zinc-800 dark:text-zinc-100">
+          {data ? versionName(data.current_release_tag, data.current_sha) : "確認中"}</span>
+          {data?.current_release_tag && <span className="ml-1.5 font-mono text-[10px] text-zinc-400">{data.current_sha.slice(0, 7)}</span>}
+        </p>
+        <p data-update-latest>最新の正式 Release: <span className="font-semibold text-zinc-800 dark:text-zinc-100">
+          {data?.remote_sha ? versionName(data.release_tag, data.remote_sha) : "-"}</span>
+          {data?.update_available && <span className="ml-1.5 rounded bg-accent-50 px-1.5 py-0.5 text-[10px] font-medium text-accent-700 dark:bg-accent-600/15 dark:text-accent-300">
+            {versionName(data.current_release_tag, data.current_sha)} → {versionName(data.release_tag, data.remote_sha)}</span>}
+        </p>
+        {data?.job?.phase && <p>更新状態: {PHASE_LABELS[data.job.phase] ?? data.job.phase}{data.job.step ? `（${STEP_LABELS[data.job.step] ?? data.job.step}）` : ""}</p>}
         {data?.job?.error && <p className="text-red-600">{data.job.error}</p>}
         {data?.error && <p className="text-amber-600">{data.error}</p>}
       </div>
@@ -641,9 +663,10 @@ function ControlDeckUpdateSection() {
           {data?.remote_sha && data.current_sha ? "最新です" : `確認できません${data?.error ? `: ${data.error}` : ""}`}
         </p>
       )}
+      <UpdateHistoryList />
       {confirming && <ConfirmDialog
         title="ControlDeck本体を更新しますか？"
-        message={`公式Release（${data?.remote_sha?.slice(0, 12) || "不明"}）へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
+        message={`${data ? versionName(data.current_release_tag, data.current_sha) : "いまの版"} から ${data ? versionName(data.release_tag, data.remote_sha) : "最新の正式 Release"} へ更新し、Webサービスを再起動します。接続中の操作は中断される可能性があります。`}
         confirmLabel="更新して再起動"
         busy={starting}
         onConfirm={() => void apply()}

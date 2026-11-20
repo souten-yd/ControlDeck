@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 177 ファイル、1589 テスト（目的の未記入 93 ファイル）
-- E2E: 87 spec、181 テスト
+- backend: 177 ファイル、1592 テスト（目的の未記入 93 ファイル）
+- E2E: 88 spec、182 テスト
 
 ## backend（backend/tests）
 
@@ -680,6 +680,9 @@
 - `test_release_uses_peeled_tag_commit`
 - `test_release_rejects_untrusted_tag_or_prerelease`
 - `test_failed_health_rolls_back_and_keeps_private_backup`
+- `test_finished_updates_are_kept_in_history` — 終わった更新を、自動か手動か・Release 名つきで新しい順に残す（設定画面と、自動更新の後の知らせが読む）。
+- `test_release_names_map_commits_to_the_newest_tag` — 更新の画面はコミットではなく Release の名前で出す（2026-11-20 利用者「数値の羅列で何から何へか分からない」）。
+- `test_status_names_the_current_and_latest_release`
 
 ### backend/tests/test_credential_security.py
 
@@ -2991,6 +2994,12 @@
 目的: **未記入**
 
 - required TOTP policy confines navigation until enrollment
+
+### frontend/e2e/update-history.spec.ts
+
+目的: 目的: 本体の自動更新が動いたことに気づけること。何から何へ更新するのかを Release の名前で出すこと。 - 設定 → 更新とバックアップに履歴（時刻・自動/手動・版・成否）と、待っている理由が出る - 自動で更新した後、次に画面を開いたら一度だけ知らせ、もう一度開いても出さない 320px でも横にはみ出さない。 根拠: 2026-11-20 利用者「自動更新が動いていない気がする。気づいてないだけ？」。実際は自動 38 回動いていたが、 通知先が無く画面にも出ないので気づけなかった。API は模擬する。
+
+- update history and one-time auto update notice (${width}px)
 
 ### frontend/e2e/vram-margin.spec.ts
 

@@ -46,6 +46,54 @@ def _write_state(state: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+HISTORY_LIMIT = 30
+
+
+def _history_path() -> Path:
+    return data_dir().resolve() / "updates" / "history.json"
+
+
+def history() -> list[dict]:
+    """終わった更新の記録（新しい順）。自動か手動か・Release 名・前後のコミット・成否。
+
+    2026-11-20 利用者「自動更新が動いていない気がする」。実際は 11/17 以降で自動 38 回・手動 19 回
+    動いていたが、通知先が無く、画面にも前回の更新が出ないので気づけなかった。"""
+    try:
+        value = json.loads(_history_path().read_text(encoding="utf-8"))
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    except FileNotFoundError:
+        # 履歴を残し始める前の版から上がった直後: 直前の 1 回（状態ファイル）だけは見せる
+        state = _saved_state()
+        return [_history_entry(state)] if state.get("phase") in ("succeeded", "failed") else []
+    except (OSError, ValueError):
+        return []
+
+
+def _history_entry(state: dict[str, Any]) -> dict:
+    entry = {key: state.get(key) for key in (
+        "phase", "automatic", "release_tag", "old_sha", "new_sha", "target_sha", "error", "started_at", "finished_at")}
+    entry["automatic"] = bool(entry["automatic"])
+    entry["finished_at"] = entry["finished_at"] or int(time.time())
+    return entry
+
+
+def _record_history(state: dict[str, Any]) -> None:
+    """終わった更新（succeeded / failed）を履歴へ足す。履歴を書けなくても更新は止めない。"""
+    if state.get("phase") not in ("succeeded", "failed"):
+        return
+    entry = _history_entry(state)
+    try:
+        previous = history() if _history_path().exists() else []
+        items = [entry, *previous][:HISTORY_LIMIT]
+        path = _history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _saved_state() -> dict:
     try:
         value = json.loads(_state_path().read_text(encoding="utf-8"))
@@ -110,6 +158,37 @@ def _remote_release() -> tuple[str, str]:
     return tag, sha
 
 
+def _release_names() -> dict[str, str]:
+    """コミット → 正式 Release の名前（ControlDeck_vX.Y）。取れなければ空。
+
+    2026-11-20 利用者「更新の画面が数値の羅列で、何から何へ更新するのか分からない。Release の名前で出して」。
+    同じコミットに複数の名前があれば、版の大きい方を使う。"""
+    try:
+        lines = _git("ls-remote", "--tags", "origin", "refs/tags/ControlDeck_v*", timeout=30).splitlines()
+    except SelfUpdateError:
+        return {}
+    names: dict[str, str] = {}
+    peeled: dict[str, str] = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 2 or not _SHA_RE.fullmatch(parts[0]):
+            continue
+        ref = parts[1].removeprefix("refs/tags/")
+        tag = ref.removesuffix("^{}")
+        if not re.fullmatch(r"ControlDeck_v[0-9]+\.[0-9]+(?:\.[0-9]+)?", tag):
+            continue
+        (peeled if ref.endswith("^{}") else names)[tag] = parts[0]
+    commits = {**names, **peeled}    # 注釈つきタグは ^{} の側がコミット
+
+    def key(tag: str) -> tuple[int, ...]:
+        return tuple(int(n) for n in tag.removeprefix("ControlDeck_v").split("."))
+
+    result: dict[str, str] = {}
+    for tag in sorted(commits, key=key):
+        result[commits[tag]] = tag
+    return result
+
+
 def _remote_main() -> str:
     # Compatibility for existing callers; the update source is now a release.
     return _remote_release()[1]
@@ -119,7 +198,8 @@ def status(*, refresh: bool = True) -> dict:
     state = _saved_state()
     result = {
         "current_sha": "", "remote_sha": "", "update_available": False,
-        "can_update": False, "channel": "release", "release_tag": "", "error": "", "job": state,
+        "can_update": False, "channel": "release", "release_tag": "", "current_release_tag": "",
+        "error": "", "job": state,
     }
     try:
         head = _preflight()
@@ -130,6 +210,8 @@ def status(*, refresh: bool = True) -> dict:
             result["release_tag"] = tag
             result["remote_sha"] = remote
             result["update_available"] = remote != head
+            # いまの版の名前（Release のコミットでなければ空。画面はコミットの短い形で出す）
+            result["current_release_tag"] = tag if remote == head else _release_names().get(head, "")
     except SelfUpdateError as exc:
         result["error"] = str(exc)
     return result
@@ -164,7 +246,11 @@ def start(expected_sha: str, *, automatic: bool = False, release_tag: str = "") 
     try:
         _cmd(command, timeout=15, cwd=REPO_ROOT / "backend")
     except SelfUpdateError:
-        _write_state({"phase": "failed", "error": "systemd更新ジョブを開始できません"})
+        failed = {"phase": "failed", "error": "systemd更新ジョブを開始できません", "target_sha": expected_sha,
+                  "automatic": bool(automatic), "release_tag": release_tag or current.get("release_tag", ""),
+                  "finished_at": int(time.time())}
+        _write_state(failed)
+        _record_history(failed)
         raise
     return {"scheduled": True, "unit": unit, "target_sha": expected_sha}
 
@@ -225,8 +311,12 @@ def apply(expected_sha: str) -> None:
         # 自動更新の印と Release 名は、途中の状態の書き込みでも保つ（再起動後に結果を一度だけ知らせるため）。
         carried = {key: value for key, value in _saved_state().items() if key in ("automatic", "release_tag")}
 
+        started_at = int(time.time())
+
         def save(value: dict[str, Any]) -> None:
-            _write_state(dict(value, **carried))
+            state = dict(value, **carried)
+            _write_state(state)
+            _record_history({"started_at": started_at, **state})
 
         try:
             old = _preflight()
@@ -242,7 +332,7 @@ def apply(expected_sha: str) -> None:
                 raise SelfUpdateError("更新中にReleaseのコミットが変わりました。再確認してください")
             _git("merge-base", "--is-ancestor", old, fetched)
             if old == fetched:
-                save({"phase": "succeeded", "old_sha": old, "new_sha": old})
+                save({"phase": "succeeded", "old_sha": old, "new_sha": old, "finished_at": int(time.time())})
                 return
             backup = _state_path().parent / ("backup-" + str(int(time.time())))
             backup.mkdir(parents=True, mode=0o700, exist_ok=False)

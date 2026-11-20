@@ -106,6 +106,13 @@ def control_deck_update_status(user: User = Depends(require_permission("settings
     return self_update.status()
 
 
+@router.get("/control-deck-update/history")
+def control_deck_update_history(user: User = Depends(require_permission("settings.manage"))):
+    """終わった本体の更新（新しい順）。設定画面の履歴と、自動で更新した後の一度だけの知らせに使う。"""
+    from app.maintenance import self_update
+    return {"items": self_update.history()}
+
+
 @router.post("/control-deck-update", status_code=202)
 def control_deck_update_start(
     body: dict, request: Request,
