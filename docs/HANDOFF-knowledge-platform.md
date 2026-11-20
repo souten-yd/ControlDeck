@@ -60,6 +60,7 @@ backend/app/patents/
   domain.py            段階・期限の目安・構成要件分解・AI 支援の指示文（RDH patents.py から移植）
   store.py             案件など（patents.sqlite3 に同居）
   service.py           横断検索・クレームチャート・ローカル専用 AI 支援（Jobs）
+  judge.py             AI クレームチャートの判定（R3-3。patent_charts 表。引用が原文に無い ○/△ は ?）
   router.py            /api/v1/patents
 backend/app/workflows/rag.py, rag_graph.py, chat_tools.py, chat_persist.py   既存の RAG と AI アシスタント
 frontend/src/pages/Patents.tsx, api/patents.ts, navigation.tsx（ナビ: AI → Patent）
@@ -116,7 +117,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | R3-0 | 両リポジトリの計画の棚卸しと整合性の決まり（計画 §10.1・10.2） | ☑ |
 | R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
 | R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☑ backend（`knowledge/sources.py`・`patents/watch.py`）と画面（案件の「ウォッチ」、公報タブの「公開データを取得」「取得先の設定」）。EPO・USPTO の鍵は利用者が登録 |
-| R3-3 | AI クレームチャートの判定 | ☐ |
+| R3-3 | AI クレームチャートの判定（`patents/judge.py`・`ClaimJudge.tsx`。○△×?、引用の実在確認で ? に落とす、人の行ごとの修正と確認済み、請求項・原文の版で stale） | ☑ 実装（本番での評価は `~/ControlDeck-評価/`） |
 | R3-4 | 知識エッセンス（抽出・レビュー） | ☐ |
 | R3-5 | 知識マップ・横断比較・Idea Canvas | ☐ |
 | R3-6 | 集計・一括取り込み/書き出し・保存先の画面・PDF の精度 | ◐ 集計（特許の分析）を前倒し: 書誌の読み取り（1 ページ目の OCR）・`/api/v1/patents/analytics`・類似マップ・案件に近い公報・書誌の手直し。画面は R3-UI |
@@ -138,6 +139,14 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: R3-3 AI クレームチャートの判定。請求項 N × 1 件の文献を構成要件ごとに ○△×? で判定（ローカル専用・Jobs・`patent_charts`）。
+  ○/△ は原文からの引用が必須で、NFKC・空白と句読点を落とした原文に引用が無ければ「?」に落とす（「…」の省略は前後の塊がそれぞれあれば可、6 文字未満は根拠にしない）。
+  人が行ごとに判定を直す（human_verdict、直すと未確認へ戻る）・確認済み/不採用。請求項の版・原文の版（analysis.revision）が変わると stale。
+  文献が予算に入らなければ骨格＋請求項に当たった箇所を渡し、引用の照合は常に全文で行う。AI に渡せない文献（規格など）は 422。
+  ついでに Patent の入力欄の幅の不具合（`input` の w-full が w-28 に勝ち、「クレームチャートを作る」が縦に潰れていた）を `inputBase` で直した。
+  テスト `tests/test_patent_judge.py`（5）、全体 1894 passed、E2E patents 9（判定の表示は応答を差し替え、PC 幅・320px）。
+  決まりを追加（#501）: 評価は本番で行い、結果を `~/ControlDeck-評価/` に日本語で残す（AGENTS.md「評価は本番で」）。
 
 - 2026-11-21 Claude: v0.104 を本番へ適用し、`./deck.sh knowledge-rebuild --apply` を実行（利用者の了承済み、事前の写しは `data/backups/knowledge-before-rebuild-20261121/`）。AI の回答 65 件を推論に、公報を原本から作り直し（書誌・ページ・図のページ 12）。ただし埋め込みが「1 件 512 トークンまで」で断られ（日本語 1200 文字の断片）、図表の読み取りは CLI がサーバーの外で GPU の順番待ちを通れず動かなかった。埋め込みに送る文字を 600 で切る・図表の読み取りは画面の「作り直し」（サーバーの中）だけにする修正を入れた。**本番では、作り直しの画面から図表の読み取りを 1 回実行する必要がある。**
 

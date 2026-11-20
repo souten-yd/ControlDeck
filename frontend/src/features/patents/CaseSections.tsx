@@ -8,7 +8,8 @@ import { IconSearch, IconTrash } from "../../components/icons";
 import { useAssistantAsr, useVoiceMeter } from "../workflows/useAssistantAsr";
 import { RELATION_LABEL } from "../../api/knowledge";
 import { DocumentSheet } from "../knowledge/DocumentSheet";
-import { DeadlineChip, Field, STATUS_LABEL, input } from "./shared";
+import { DeadlineChip, Field, STATUS_LABEL, input, inputBase } from "./shared";
+import { ClaimJudge, type JudgeCandidate } from "./ClaimJudge";
 
 const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 
@@ -108,7 +109,7 @@ export function DeadlinesTab({ c, meta, editable, onSaved, onError }: TabProps) 
   );
 }
 
-export function ClaimsTab({ c, editable, onSaved, onError }: Omit<TabProps, "meta">) {
+export function ClaimsTab({ c, meta, editable, onSaved, onError }: TabProps) {
   const show = useToasts((s) => s.show);
   const latest = c.claims[0]?.text ?? String(c.data.claims_draft ?? "");
   const [text, setText] = useState(latest);
@@ -147,7 +148,7 @@ export function ClaimsTab({ c, editable, onSaved, onError }: Omit<TabProps, "met
             ))}
           </div>
           <div className="mt-3 flex items-center gap-2">
-            <select className={`${input} w-28`} value={claimNo} onChange={(e) => setClaimNo(Number(e.target.value))}>
+            <select className={`${inputBase} w-28 shrink-0`} value={claimNo} onChange={(e) => setClaimNo(Number(e.target.value))}>
               {c.claim_elements.map((cl) => <option key={cl.no} value={cl.no}>請求項 {cl.no}</option>)}
             </select>
             <button className={`${secondaryButtonClass} flex-1`} disabled={runChart.isPending} onClick={() => runChart.mutate()}>
@@ -155,6 +156,10 @@ export function ClaimsTab({ c, editable, onSaved, onError }: Omit<TabProps, "met
             </button>
           </div>
         </section>
+      )}
+      {c.claim_elements.length > 0 && (
+        <ClaimJudge c={c} claimNo={claimNo} editable={editable} localAi={meta.local_ai_available} onError={onError}
+          candidates={judgeCandidates(c, chart)} />
       )}
       {chart && (
         <section className="space-y-2">
@@ -178,6 +183,14 @@ export function ClaimsTab({ c, editable, onSaved, onError }: Omit<TabProps, "met
       )}
     </div>
   );
+}
+
+/** 判定の候補: 登録した先行文献（ナレッジにあるもの）→ クレームチャートの候補の順。重複なし。 */
+function judgeCandidates(c: CaseDetail, chart: ClaimChart | null): JudgeCandidate[] {
+  const out = new Map<string, string>();
+  for (const r of c.refs) if (r.doc_ref) out.set(r.doc_ref, `[${r.category}] ${r.ref || r.doc_ref}`);
+  for (const row of chart?.rows ?? []) for (const ev of row.evidence) if (!out.has(ev.doc_ref)) out.set(ev.doc_ref, ev.title || ev.doc_ref);
+  return [...out].map(([doc_ref, title]) => ({ doc_ref, title }));
 }
 
 export function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {

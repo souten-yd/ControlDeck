@@ -88,6 +88,16 @@ class ReviewBody(BaseModel):
     review_status: str
 
 
+class JudgeBody(BaseModel):
+    claim_no: int = Field(default=1, ge=1, le=200)
+    doc_ref: str = Field(min_length=3, max_length=80)
+
+
+class JudgeRowBody(BaseModel):
+    verdict: str = Field(default="", max_length=2)
+    note: str = Field(default="", max_length=1000)
+
+
 class LiteratureBody(BaseModel):
     title: str = Field(default="", max_length=300)
     text: str = Field(default="", max_length=2_000_000)
@@ -184,6 +194,66 @@ async def claim_chart(case_id: int, body: ChartBody, user: User = VIEW):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except pstore.PatentError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/cases/{case_id}/charts")
+def list_charts(case_id: int, user: User = VIEW):
+    """AI クレームチャートの判定（新しい順。請求項・文献の版が変わったものに stale）。"""
+    from app.patents import judge
+
+    _call(pstore.get_case, case_id)
+    return {"charts": judge.list_charts(case_id)}
+
+
+@router.post("/cases/{case_id}/charts", status_code=201)
+async def start_chart(case_id: int, body: JudgeBody, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    """請求項 N と 1 件の文献を構成要件ごとに AI で判定する（ローカル専用・Jobs）。"""
+    from app.jobs import service as jobs
+    from app.knowledge import store as kstore
+    from app.patents import judge
+
+    try:
+        await service.resolve_local_target()
+    except service.LocalAIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        chart_id = await asyncio.to_thread(judge.start, case_id, body.claim_no, body.doc_ref)
+    except kstore.KnowledgeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except pstore.NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except pstore.PatentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    async def run(job: jobs.Job) -> dict:
+        return await judge.run(job, case_id, chart_id)
+
+    job = jobs.create("patents.claim_judge", f"クレームチャートの判定: 請求項{body.claim_no}", run, owner_user_id=user.id)
+    judge._update(chart_id, status="queued", job_id=job.id)
+    audit.record(db, "patents.claim_judge", user=user, resource_type="patent_case", resource_id=str(case_id),
+                 request=request, metadata={"claim_no": body.claim_no, "doc_ref": body.doc_ref, "job_id": job.id})
+    return {"chart_id": chart_id, "job_id": job.id}
+
+
+@router.patch("/cases/{case_id}/charts/{chart_id}/rows/{label}")
+def set_chart_row(case_id: int, chart_id: int, label: str, body: JudgeRowBody, user: User = Depends(EDIT)):
+    from app.patents import judge
+
+    return _call(judge.set_row, case_id, chart_id, label, body.verdict, body.note)
+
+
+@router.post("/cases/{case_id}/charts/{chart_id}/review")
+def review_chart(case_id: int, chart_id: int, body: ReviewBody, user: User = Depends(EDIT)):
+    from app.patents import judge
+
+    return _call(judge.review, case_id, chart_id, body.review_status)
+
+
+@router.delete("/cases/{case_id}/charts/{chart_id}", status_code=204)
+def delete_chart(case_id: int, chart_id: int, user: User = Depends(EDIT)):
+    from app.patents import judge
+
+    _call(judge.delete, case_id, chart_id)
 
 
 @router.post("/cases/{case_id}/assists", status_code=201)

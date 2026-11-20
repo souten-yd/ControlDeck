@@ -101,7 +101,7 @@ export default function PatentCasePage() {
               </header>
               {section === "summary" && <SummaryTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "hearing" && <HearingTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} onOpenAssist={() => setSection("assist")} />}
-              {section === "claims" && <ClaimsTab c={c} editable={editable} onSaved={set} onError={fail} />}
+              {section === "claims" && <ClaimsTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "refs" && <RefsTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "watch" && <WatchSection c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
               {section === "deadlines" && <DeadlinesTab c={c} meta={meta} editable={editable} onSaved={set} onError={fail} />}
