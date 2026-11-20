@@ -11,7 +11,11 @@ import bisect
 import json
 import logging
 import re
+import shutil
+import tempfile
 from pathlib import Path
+
+from app.config import data_dir
 
 from app.knowledge import pdf_ingest, store
 
@@ -139,6 +143,12 @@ async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivit
                                          locator={"page": page, "kind": "figure", "basis": "model_inference"}))
     else:
         chunks = [store.NewChunk(text=title or Path(path).name, locator={"kind": "metadata"})]
+    meta = dict(meta or {})
+    if store_fulltext and not clauses and ref.kind in ("patent", "generic") and body:
+        meta["biblio"] = await _patent_biblio(Path(path), body)
+        name = meta["biblio"].get("title") or ""
+        if name and name not in title:
+            title = f"{title} {name}".strip()
     model, embedded = "", False
     if ai_use in ("local_only", "allowed") and store_fulltext:
         _progress(job, "埋め込みを作っています", 3, 5)
@@ -150,7 +160,7 @@ async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivit
     result = await asyncio.to_thread(
         store.add_document, collection, chunks, source=Path(path).name, title=title or Path(path).stem,
         ext_id=ext_id or f"pdf:{extracted.sha256}", sha256=extracted.sha256, body=body or None,
-        sensitivity=sensitivity, meta={**(meta or {}), "pdf": info}, model=model, ai_use=ai_use,
+        sensitivity=sensitivity, meta={**meta, "pdf": info}, model=model, ai_use=ai_use,
         identifiers=identifiers)
     if result.get("unchanged"):
         _progress(job, "同じ PDF が登録済みです", 5, 5)
@@ -159,6 +169,31 @@ async def ingest_pdf(collection: str, path: Path, *, title: str = "", sensitivit
         await asyncio.to_thread(_save_assets, ref.shard, result["doc_id"], data, extracted, figures, described)
     _progress(job, "完了", 5, 5)
     return {**result, "pdf": info}
+
+
+async def _patent_biblio(path: Path, body: str) -> dict:
+    """公報の書誌。1 ページ目の書誌が画像で文字が無い公報は、1 ページ目だけ OCR して読む（本文は文字のまま）。"""
+    from app.knowledge import biblio
+
+    fields = biblio.patent_fields(body)
+    fields["source"] = "rule_extract"
+    if biblio.has_front_page(body) or not shutil.which("tesseract"):
+        return fields
+    png = await pdf_ingest.render_page(path, 1, dpi=200)
+    if png is None:
+        return fields
+    tmp_root = data_dir() / "tmp" / "pdf"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
+        image = Path(tmp) / "front.png"
+        image.write_bytes(png)
+        code, out, _ = await pdf_ingest._run("tesseract", str(image), "-", "-l", "jpn+eng", timeout=180)
+    if code != 0:
+        return fields
+    ocr = biblio.patent_fields(out.decode("utf-8", "replace") + "\n" + body)
+    merged = {k: (fields[k] or ocr.get(k)) for k in fields if k != "source"}
+    merged["source"] = "ocr_extract" if merged != {k: fields[k] for k in merged} else "rule_extract"
+    return merged
 
 
 def _save_assets(shard: str, doc_id: int, data: bytes, extracted, figures, described) -> None:

@@ -218,6 +218,71 @@ def delete_assist(case_id: int, assist_id: int, user: User = Depends(EDIT)):
     return _call(pstore.delete_assist, case_id, assist_id)
 
 
+class BiblioBody(BaseModel):
+    fields: dict
+
+
+@router.get("/analytics")
+def analytics_overview(collection: str | None = None, user: User = VIEW):
+    """特許の分析（年別・出願人・IPC・出願人×IPC・出願人×年・請求項の数・国と種別）。書誌の読めた件数も返す。"""
+    from app.patents import analytics
+
+    return analytics.overview(collection)
+
+
+@router.get("/analytics/map")
+def analytics_map(collection: str | None = None, user: User = VIEW):
+    """類似マップ（公報の内容のベクトルを 2 次元に）。"""
+    from app.patents import analytics
+
+    return analytics.similarity_map(collection)
+
+
+@router.post("/analytics/refresh-biblio", status_code=201)
+async def refresh_biblio(request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    """書誌の無い公報を読み直す（Jobs。1 ページ目の OCR を含む）。"""
+    from app.jobs import service as jobs
+    from app.patents import analytics
+
+    job = jobs.create("patents.biblio", "公報の書誌を読み直す", lambda j: analytics.refresh_biblio(j), owner_user_id=user.id)
+    audit.record(db, "patents.refresh_biblio", user=user, resource_type="knowledge", resource_id="patents", request=request,
+                 metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.patch("/documents/{ref}/biblio")
+def patch_biblio(ref: str, body: BiblioBody, user: User = Depends(EDIT)):
+    """書誌を手で直す（OCR の読み違いなど）。"""
+    from app.knowledge import store as kstore
+    from app.patents import analytics
+
+    try:
+        return analytics.set_biblio(ref, body.fields)
+    except kstore.KnowledgeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/cases/{case_id}/similar")
+async def similar(case_id: int, user: User = VIEW):
+    """案件の請求項（無ければ課題・解決手段）に近い公報。分析画面と先行文献の候補に使う。"""
+    from app.knowledge import documents as kdocs
+
+    case = await asyncio.to_thread(_call, pstore.get_case, case_id)
+    claims = case["claims"][0]["text"] if case["claims"] else case["data"].get("claims_draft", "")
+    text = claims or " ".join(str(case["data"].get(k, "")) for k in ("problem", "solution")) or case["title"]
+    query = " ".join(domain.keywords(text)[:12]) or case["title"]
+    hits = await service.search(query, limit=10)
+    out = []
+    for h in hits:
+        doc = await asyncio.to_thread(kdocs.get_document, h["doc_ref"])
+        b = doc["meta"].get("biblio") or {}
+        out.append({"ref": h["doc_ref"], "title": h["title"], "score": h["score"], "snippet": h["snippet"],
+                    "applicants": b.get("applicants") or [], "ipc": b.get("ipc") or [],
+                    "date": b.get("publication_date") or b.get("filing_date") or "",
+                    "registered": any(r["doc_ref"] == h["doc_ref"] for r in case["refs"])})
+    return {"query": query, "results": out}
+
+
 @router.get("/literature")
 def literature(user: User = VIEW):
     from app.workflows import rag
