@@ -92,11 +92,19 @@ test("CPU rerankers are installed and chosen in Models > Embed / Reranker", asyn
     await page.goto("/models?tab=embed");
     const panel = page.locator("[data-retrieval-models]");
     await expect(panel).toBeVisible();
-    for (const id of ["xsmall-reranker", "ruri-reranker", "ruri-reranker-gpu"]) {
+    // ruri は 1 枚のカード（CPU / GPU をトグルで切り替え、既定は GPU）。xsmall は CPU のみ（2026-11-20 利用者の依頼）
+    for (const id of ["ruri-reranker-gpu", "xsmall-reranker", "bge-m3", "qwen3-reranker-4b"]) {
       const card = page.locator(`#retrieval-${id}`);
       await expect(card).toBeVisible();
       await expect(card.getByRole("button", { name: "導入" })).toBeVisible();
+      await expect(page.locator(`[data-device-toggle="${id}"]`)).toBeVisible();
     }
+    await expect(page.locator("#retrieval-ruri-reranker")).toHaveCount(0);
+    await expect(page.locator('[data-device-toggle="xsmall-reranker"] button[aria-pressed="false"]')).toBeDisabled();   // CPU のみ
+    await page.locator('[data-device-toggle="ruri-reranker-gpu"] button', { hasText: "CPU" }).click();
+    await expect(page.locator("#retrieval-ruri-reranker")).toBeVisible();          // CPU（int8）のカードに替わる
+    await page.locator('[data-device-toggle="ruri-reranker"] button', { hasText: "GPU" }).click();
+    await expect(page.locator("#retrieval-ruri-reranker-gpu")).toBeVisible();
     const chat = panel.locator("select").first();
     await expect(chat).toHaveValue("auto");
     await expect(chat.locator('option[value="xsmall-reranker"]')).toHaveAttribute("disabled", "");   // 未導入

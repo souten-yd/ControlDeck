@@ -21,19 +21,22 @@ interface RetrievalState {
   selection: { chat: string; knowledge: string };
   choices: string[];
   in_use: { chat: string; knowledge: string };
+  ruri_device: "cpu" | "gpu";
 }
 
 interface RolePreset {
   id: string; label: string; description: string; role: string; alias: string;
   file_exists: boolean; installed: boolean; loaded: boolean; idle_exclude: boolean; runtime_status: string;
+  device: "cpu" | "gpu";
 }
 
 interface JobInfo { id: string; status: string; progress: { status?: string; completed?: number | null; total?: number | null }; error: string }
 
 const SHORT: Record<string, string> = {
   "xsmall-reranker": "xsmall（CPU・int8・軽い）",
-  "ruri-reranker": "ruri（CPU・高精度）",
-  "ruri-reranker-gpu": "ruri（GPU・おすすめ）",
+  ruri: "ruri（おすすめ。CPU / GPU はカードで切り替え）",
+  "ruri-reranker": "ruri（CPU・int8）",
+  "ruri-reranker-gpu": "ruri（GPU・fp16）",
   gpu: "Qwen3-Reranker-4B（GPU・llama.cpp）",
   none: "並べ替えない（検索の順）",
 };
@@ -44,8 +47,11 @@ const USES: { key: "chat" | "knowledge"; label: string; hint: string }[] = [
 ];
 
 /** 1 枚のカードに出す内容（CPU / GPU の ONNX のものと、llama.cpp のプリセットで共通） */
+interface DeviceToggle { value: "cpu" | "gpu"; onChange?: (device: "cpu" | "gpu") => void; note: string }
+
 interface Card {
   key: string; name: string; device: "CPU" | "GPU"; recommended: boolean; description: string; needsLlama: boolean;
+  toggle: DeviceToggle;
   installed: boolean; installing: boolean; running: boolean; resident: boolean; jobId?: string;
   onInstall: () => void; onLoad: () => void; onUnload: () => void; onUninstall: () => void; onResident: (value: boolean) => void;
 }
@@ -83,9 +89,12 @@ export function RetrievalModelsPanel({ llamaInstalled }: { llamaInstalled: boole
 
   if (!data) return null;
 
-  const onnxCard = (model: CpuReranker): Card => ({
-    key: model.id, name: model.name, device: model.device === "gpu" ? "GPU" : "CPU",
-    recommended: model.id === "ruri-reranker-gpu", needsLlama: false,
+  const setRuriDevice = (device: "cpu" | "gpu") =>
+    void run("ruri", () => api("/models/retrieval/ruri-device", { method: "PUT", json: { device } }),
+      device === "gpu" ? "ruri を GPU（fp16）で動かします" : "ruri を CPU（int8）で動かします");
+  const onnxCard = (model: CpuReranker, toggle: DeviceToggle, name = model.name): Card => ({
+    key: model.id, name, device: model.device === "gpu" ? "GPU" : "CPU", toggle,
+    recommended: model.id.startsWith("ruri"), needsLlama: false,
     description: `${model.accuracy}。${model.speed}。${model.memory}`,
     installed: model.installed, installing: model.installing, running: model.running, resident: model.resident,
     jobId: jobs[model.id] ?? model.job_id ?? undefined,
@@ -102,7 +111,17 @@ export function RetrievalModelsPanel({ llamaInstalled }: { llamaInstalled: boole
     onResident: (value) => void run(model.id, () => api(`/models/retrieval/cpu/${model.id}/resident`, { method: "PUT", json: { value } })),
   });
   const presetCard = (preset: RolePreset): Card => ({
-    key: preset.id, name: preset.label, device: "GPU", recommended: preset.role === "embedding", needsLlama: true,
+    key: preset.id, name: preset.label, device: preset.device === "cpu" ? "CPU" : "GPU",
+    recommended: preset.role === "embedding", needsLlama: true,
+    toggle: {
+      value: preset.device,
+      onChange: preset.installed ? (device) => void run(preset.id,
+        () => api(`/models/retrieval/preset/${preset.id}/device`, { method: "PUT", json: { device } }),
+        `${preset.label} を${device === "gpu" ? " GPU" : " CPU"} で動かします（次に使うときから）`) : undefined,
+      note: preset.role === "embedding"
+        ? "CPU: VRAM を使わない。検索の質問は速い（0.02 秒）が、資料の保存は GPU の約 20 倍遅い"
+        : "CPU: VRAM を使わないが、並べ替えがかなり遅い",
+    },
     description: preset.description,
     installed: preset.installed, installing: false, running: preset.runtime_status === "RUNNING" || preset.loaded,
     resident: preset.idle_exclude,
@@ -117,13 +136,20 @@ export function RetrievalModelsPanel({ llamaInstalled }: { llamaInstalled: boole
     onResident: (value) => void run(preset.id, () => api(`/models/llama/instances/${encodeURIComponent(preset.alias)}`, { method: "PUT", json: { idle_exclude: value } })),
   });
   const embeddings = (presets?.presets ?? []).filter((p) => p.role === "embedding").map(presetCard);
-  const order = ["ruri-reranker-gpu", "xsmall-reranker", "ruri-reranker"];
+  // ruri は CPU（int8）と GPU（fp16）を 1 枚のカードにまとめ、トグルで切り替える
+  const ruri = data.cpu_rerankers.find((m) => m.id === (data.ruri_device === "gpu" ? "ruri-reranker-gpu" : "ruri-reranker"));
+  const xsmall = data.cpu_rerankers.find((m) => m.id === "xsmall-reranker");
   const rerankers = [
-    ...[...data.cpu_rerankers].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)).map(onnxCard),
+    ...(ruri ? [onnxCard(ruri, {
+      value: data.ruri_device, onChange: setRuriDevice,
+      note: data.ruri_device === "gpu" ? "GPU: 速い（0.4 秒）。VRAM 約 1.3 GB" : "CPU: VRAM を使わないが遅い（8〜12 秒）",
+    }, "ruri-v3-reranker-310m")] : []),
+    ...(xsmall ? [onnxCard(xsmall, { value: "cpu", note: "CPU のみ（GPU が使えないときの控え）" })] : []),
     ...(presets?.presets ?? []).filter((p) => p.role === "reranker").map(presetCard),
   ];
   const available = (choice: string) => choice === "auto" || choice === "none"
-    || (choice === "gpu" ? data.gpu_reranker_installed : data.cpu_rerankers.some((m) => m.id === choice && m.installed));
+    || (choice === "gpu" ? data.gpu_reranker_installed
+      : data.cpu_rerankers.some((m) => (choice === "ruri" ? m.id.startsWith("ruri") : m.id === choice) && m.installed));
   const label = (choice: string) => choice === "auto" ? "自動（おすすめ）" : SHORT[choice] ?? choice;
   const jobDone = (key: string) => () => {
     setJobs((prev) => { const next = { ...prev }; delete next[key]; return next; });
@@ -219,6 +245,20 @@ function HelperCard({ card, role, editable, busy, llamaInstalled, onJobDone }: {
           </p>
           <p className="mt-1 text-xs text-zinc-400">{card.description}</p>
         </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div role="group" aria-label="動かす所" className="inline-flex rounded-xl bg-zinc-100 p-0.5 dark:bg-zinc-800" data-device-toggle={card.key}>
+          {(["cpu", "gpu"] as const).map((device) => (
+            <button key={device} type="button" aria-pressed={card.toggle.value === device}
+              disabled={!editable || !card.toggle.onChange || busy || card.toggle.value === device}
+              onClick={() => card.toggle.onChange?.(device)}
+              className={`rounded-lg px-3 py-1 text-xs font-medium ${card.toggle.value === device
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-white" : "text-zinc-500 disabled:opacity-40"}`}>
+              {device.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <span className="min-w-0 flex-1 text-[11px] text-zinc-400">{card.toggle.note}</span>
       </div>
       {editable && (
         <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5">

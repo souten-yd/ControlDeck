@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1576 テスト（目的の未記入 93 ファイル）
+- backend: 176 ファイル、1578 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
@@ -1815,6 +1815,8 @@
 - `test_gpu_preset_uninstall_removes_registration_and_file` — GPU の埋め込み・reranker（llama.cpp のプリセット）のアンインストール: 登録を消し、GGUF も消す。
 - `test_gpu_helpers_are_released_before_an_llm_loads` — LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った埋め込み / reranker）を止める。CPU だけのものは止めない。
 - `test_gpu_reranker_starts_before_embedding_and_checks_vram` — 資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに
+- `test_ruri_and_llama_helpers_switch_between_cpu_and_gpu` — モデルのカードのトグルで CPU / GPU を切り替える（2026-11-20 利用者の依頼）。ruri は CPU（int8）と GPU（fp16）を
+- `test_cpu_llama_helpers_never_touch_the_gpu` — n_gpu_layers 0（CPU）の llama.cpp には --device none を付ける。付けないと大きな計算を自動で GPU へ回す
 
 ### backend/tests/test_ratelimit.py
 

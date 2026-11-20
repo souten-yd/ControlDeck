@@ -1374,6 +1374,10 @@ def _unit_content(alias: str | None = None, *, margin_mib: int | None = None) ->
         "--host", "127.0.0.1",
         "--port", str(inst.get("port", 8080)),
         "--n-gpu-layers", str(inst.get("n_gpu_layers", 999)),
+        # 層を GPU に載せない指定（CPU で動かす）でも、llama.cpp は大きな行列の計算を自動で GPU へ回す（op offload）。
+        # 2026-11-20 実測: bge-m3 は -ngl 0 だけだと資料 32 件 1.2 秒（GPU を使っていた）、GPU を使わせないと 20.9 秒。
+        # CPU を選んだものは GPU に一切触らせない（VRAM を使わず、LLM の邪魔をしない）
+        *(["--device", "none"] if int(inst.get("n_gpu_layers", 999)) == 0 else []),
         "--ctx-size", str(inst.get("ctx_size", 4096)),
         "--parallel", str(inst.get("n_parallel", 1)),
         "--alias", inst.get("alias", "llama"),

@@ -93,6 +93,8 @@ def preset_status() -> list[dict]:
             "installed": instance is not None,
             "loaded": bool(instance and instance.get("loaded")),
             "idle_exclude": bool(instance and instance.get("idle_exclude")),
+            # 0 なら CPU で動かす（Models の「Embed / Reranker」のトグル）
+            "device": "cpu" if instance and int(instance.get("n_gpu_layers", 999)) == 0 else "gpu",
             "runtime_status": (instance or {}).get("runtime_status", "UNKNOWN"),
         })
     return result

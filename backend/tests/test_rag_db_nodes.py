@@ -279,8 +279,9 @@ def test_cpu_rerankers_are_installed_and_chosen_in_models(admin_client, monkeypa
     (cpu_reranker.runtime_root() / "venv-ready").write_text(",".join(cpu_reranker.RUNTIME_PACKAGES))
     data = admin_client.get("/api/v1/models/retrieval").json()
     assert data["in_use"] == {"chat": "xsmall-reranker", "knowledge": "ruri-reranker"}      # 自動
-    r = admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "ruri-reranker", "knowledge": "none"},
+    r = admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "ruri", "knowledge": "none"},
                          headers=CSRF_HEADERS)
+    # ruri はトグルで選んだ側（既定 GPU）。GPU 版が無ければ CPU 版
     assert r.status_code == 200 and r.json()["in_use"] == {"chat": "ruri-reranker", "knowledge": "none"}
     assert admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "bogus"},
                             headers=CSRF_HEADERS).status_code == 422
@@ -464,3 +465,47 @@ def test_gpu_reranker_starts_before_embedding_and_checks_vram(monkeypatch, tmp_p
     assert cpu_reranker.resident("ruri-reranker-gpu") and cpu_reranker.status("ruri-reranker-gpu")["resident"]
     name = cpu_reranker.MODELS["xsmall-reranker"]["model_file"]
     assert name.startswith("onnx/model_qint8_") and cpu_reranker.MODELS["xsmall-reranker"]["files"][name][0] == 37367189
+
+
+
+def test_ruri_and_llama_helpers_switch_between_cpu_and_gpu(admin_client, monkeypatch, tmp_path):
+    """モデルのカードのトグルで CPU / GPU を切り替える（2026-11-20 利用者の依頼）。ruri は CPU（int8）と GPU（fp16）を
+    1 つのモデルとして扱い、選んだ側を使う（使わなくなった側の worker は止める）。llama.cpp の埋め込み・reranker は
+    n_gpu_layers 0 / 自動を切り替え、動いていれば止めて次に使うときに載り直す。CPU は GPU に一切触らない（--device none）。"""
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker
+    from tests.conftest import CSRF_HEADERS
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    installed = {"ruri-reranker", "ruri-reranker-gpu", "xsmall-reranker"}
+    monkeypatch.setattr(cpu_reranker, "ready", lambda model_id=None: bool(installed) if model_id is None else model_id in installed)
+    assert cpu_reranker.ruri_device() == "gpu" and cpu_reranker.pick(True) == "ruri-reranker-gpu"
+    r = admin_client.put("/api/v1/models/retrieval/ruri-device", json={"device": "cpu"}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["ruri_device"] == "cpu"
+    assert cpu_reranker.pick(True) == "ruri-reranker" and cpu_reranker.pick(False) == "ruri-reranker"
+    assert admin_client.put("/api/v1/models/retrieval/ruri-device", json={"device": "tpu"}, headers=CSRF_HEADERS).status_code == 422
+    # 以前の保存値（ruri-reranker-gpu）は "ruri" として読む
+    cpu_reranker._save({**cpu_reranker._saved(), "chat": "ruri-reranker-gpu"})
+    assert cpu_reranker.selection()["chat"] == "ruri"
+
+    saved, stopped = {}, []
+    monkeypatch.setattr(llama, "get_instance", lambda alias: {"alias": alias, "loaded": True})
+    monkeypatch.setattr(llama, "save_instance", lambda alias, patch: saved.update({alias: patch}) or patch)
+    monkeypatch.setattr(llama, "stop_instance", lambda alias, **kw: (stopped.append(alias), (True, ""))[1])
+    r = admin_client.put("/api/v1/models/retrieval/preset/bge-m3/device", json={"device": "cpu"}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and saved == {"embed-bge-m3": {"n_gpu_layers": 0}} and stopped == ["embed-bge-m3"]
+    assert admin_client.put("/api/v1/models/retrieval/preset/nope/device", json={"device": "cpu"},
+                            headers=CSRF_HEADERS).status_code == 404
+
+
+def test_cpu_llama_helpers_never_touch_the_gpu(monkeypatch, tmp_path):
+    """n_gpu_layers 0（CPU）の llama.cpp には --device none を付ける。付けないと大きな計算を自動で GPU へ回す
+    （2026-11-20 実測: bge-m3 は -ngl 0 だけだと 32 件 1.2 秒で GPU を使っていた。GPU を使わせないと 20.9 秒）。"""
+    from app.models_mgmt import llama
+
+    monkeypatch.setattr(llama, "_help_text_sync", lambda: "--fit-target")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    for layers, expect in ((0, True), (999, False)):
+        monkeypatch.setattr(llama, "get_instance", lambda alias, layers=layers: {
+            **llama.DEFAULT_INSTANCE, "alias": "e", "role": "embedding", "model_path": "/m.gguf", "n_gpu_layers": layers})
+        assert ('"--device" "none"' in llama._unit_content("e", margin_mib=0)) is expect

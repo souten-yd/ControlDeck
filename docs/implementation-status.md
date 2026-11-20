@@ -8,6 +8,7 @@
   - GPU の ruri は起動前に VRAM の空き（1.6 GB）を確かめ、足りなければ試さず CPU の控えを使う。使われなければ GPU は 3 分、CPU は 10 分で止める。
   - 控えの xsmall を公式の int8（AVX-512 VNNI / AVX2）に（0.15 → 0.04 GB、速さ同じ、精度ほぼ同じ）。
 - Embed / Reranker の表示: 「使う reranker」・「埋め込み」・「reranker」に分け、CPU / GPU（ONNX）と GPU（llama.cpp）を同じカード（役割・CPU/GPU・おすすめの印、導入・ロード / アンロード・アンインストール・常駐）にそろえた。常駐は CPU / GPU の reranker にも付けた（`/models/retrieval/cpu/{id}/load|unload|resident`）。
+- CPU / GPU の切り替え（利用者「GPU で起動するか CPU で起動するかを、モデルのボタンでトグルできるように」）: 各カードに CPU / GPU のトグル。ruri は CPU（int8）と GPU（fp16）を 1 枚のカードにまとめ、選んだ側を使う（使わなくなった側は止める。選択肢の「ruri」はトグルで選んだ側、v0.87〜0.88 の保存値は読み替える）。llama.cpp の埋め込み・reranker は n_gpu_layers 0 / 自動を切り替える。CPU のときは `--device none` を付けて GPU に一切触らせない（-ngl 0 だけだと大きな計算を自動で GPU へ回し、VRAM も使っていた。bge-m3 の資料 32 件: GPU を使わせないと 20.9 秒）。xsmall は CPU のみ。
 - 音声入力: 波形の右の「文字に…」を消した（利用者「いらない」）。
 - Maya: 止まっているときに AI チャットで送ると「Mayaが起動していないか」で失敗していた（他の runtime は自動起動する）。DeepSeek（maya-deepseek-xs）だけを登録した環境で、起動する名前に未登録の既定名 maya-s を使い、起動を試みていなかった。要求されたモデル（登録名）を起動するようにし、`running_alias` も登録済みの最初のものを返すようにした。
 - 検証: `tests/test_rag_db_nodes.py`（補助を LLM の前に止める・reranker を先に・VRAM の確認・常駐・xsmall の int8）、`tests/test_maya_s_addon.py`（止まっている Maya を起動する）、backend 全体 1788 passed、E2E `speech-engines`・`assistant-queue-voice`・`assistant-voice-modes`。
