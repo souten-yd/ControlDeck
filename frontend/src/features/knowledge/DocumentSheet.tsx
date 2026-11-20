@@ -1,8 +1,10 @@
 /** 文書を 1 つ開く。本文・図（タップで拡大）・関係する文書。内部の情報（参照番号・分野・機密区分）は「詳細」に隠す。 */
 import { lazy, Suspense, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { knowledgeApi, AI_USE_LABEL, RELATION_LABEL, type DocumentAsset } from "../../api/knowledge";
-import { BottomSheet, Skeleton } from "../../components/ui";
+import { BottomSheet, IconButton, Skeleton, secondaryButtonClass } from "../../components/ui";
+import { IconTrash } from "../../components/icons";
+import { useAuth, useToasts } from "../../stores";
 
 const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 const PREVIEW_CHARS = 4000;
@@ -12,10 +14,22 @@ export function DocumentSheet({ docRef, onClose }: { docRef: string; onClose: ()
   const [full, setFull] = useState(false);
   const [details, setDetails] = useState(false);
   const [zoom, setZoom] = useState<DocumentAsset | null>(null);
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const can = useAuth((s) => s.can);
   const { data: doc, isLoading } = useQuery({ queryKey: ["knowledge-doc", ref], queryFn: () => knowledgeApi.document(ref) });
+  const refresh = () => qc.invalidateQueries({ queryKey: ["knowledge-doc", ref] });
+  const analyze = useMutation({
+    mutationFn: (kind: string) => knowledgeApi.analyze(ref, kind),
+    onSuccess: () => { show("ローカルの AI が読んでいます。終わったらここに出ます"); setTimeout(refresh, 15_000); },
+    onError: (e) => show(e instanceof Error ? e.message : String(e), "error"),
+  });
+  const review = useMutation({ mutationFn: ({ id, status }: { id: number; status: string }) => knowledgeApi.reviewAnnotation(ref, id, status), onSuccess: refresh });
+  const removeNote = useMutation({ mutationFn: (id: number) => knowledgeApi.removeAnnotation(ref, id), onSuccess: refresh });
   const images = (doc?.assets ?? []).filter((a) => a.mime?.startsWith("image/"));
   const original = doc?.assets.find((a) => a.role === "original");
   const figureNotes = (doc?.annotations ?? []).filter((a) => a.kind.startsWith("figure_description"));
+  const analyses = (doc?.annotations ?? []).filter((a) => !a.kind.startsWith("figure_description"));
   const open = (next: string) => { setRef(next); setFull(false); setDetails(false); };
   return (
     <BottomSheet title={doc?.title ?? "文書"} onClose={onClose} wide stable>
@@ -53,6 +67,33 @@ export function DocumentSheet({ docRef, onClose }: { docRef: string; onClose: ()
               </div>
             </section>
           )}
+          <section>
+            <h3 className="mb-2 text-xs font-semibold text-zinc-500">AI の分析 <span className="font-normal">（この PC のモデルだけ。推論・未確認）</span></h3>
+            {analyses.map((a) => (
+              <details key={a.id} className="mb-2 rounded-xl bg-zinc-50 p-3 text-sm dark:bg-zinc-800/50">
+                <summary className="flex cursor-pointer items-center gap-2 text-xs">
+                  <span className="flex-1 font-semibold">{doc.analysis_kinds?.[a.kind] ?? a.kind}</span>
+                  {a.stale && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">原文が変わった</span>}
+                  <span className="text-zinc-500">{a.review_status === "checked" ? "確認済み" : a.review_status === "rejected" ? "不採用" : "未確認"}</span>
+                </summary>
+                <div className="prose prose-sm mt-2 max-w-none dark:prose-invert"><Suspense fallback={null}><MarkdownMessage text={a.content} /></Suspense></div>
+                {can("workflows.edit") && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <button className={secondaryButtonClass} onClick={() => review.mutate({ id: a.id, status: "checked" })}>確認済みにする</button>
+                    <button className={secondaryButtonClass} onClick={() => review.mutate({ id: a.id, status: "rejected" })}>不採用</button>
+                    <IconButton label="分析を削除" onClick={() => removeNote.mutate(a.id)}><IconTrash /></IconButton>
+                  </div>
+                )}
+              </details>
+            ))}
+            {can("workflows.edit") && doc.ai_use !== "prohibited" && (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(doc.analysis_kinds ?? {}).map(([k, label]) => (
+                  <button key={k} className={secondaryButtonClass} disabled={analyze.isPending} onClick={() => analyze.mutate(k)}>{label}を作る</button>
+                ))}
+              </div>
+            )}
+          </section>
           <section>
             <h3 className="mb-2 text-xs font-semibold text-zinc-500">本文</h3>
             {doc.text ? (

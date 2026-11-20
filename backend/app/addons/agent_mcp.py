@@ -71,6 +71,38 @@ def _research_tool() -> dict[str, Any] | None:
     }
 
 
+KNOWLEDGE_TOOL = "control_deck.knowledge_search"
+KNOWLEDGE_MAX_CHARS = 30_000
+
+
+def _knowledge_tool() -> dict[str, Any]:
+    return {
+        "name": KNOWLEDGE_TOOL,
+        "description": (
+            "ControlDeck のナレッジ（登録した資料・特許の公報・規格）を横断して探し、関係する文書を [D番号] 付きで返す。"
+            "入るときは全文、入らないときは骨格（要約・請求項・適用範囲・引用規格）と該当箇所。公報番号・規格番号でも引ける。"
+            "公開済み・AI に使ってよい文書だけを返す（機密の資料は返らない）。"
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False, "required": ["query"],
+            "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 500,
+                                     "description": "探す内容。番号はそのまま。例: JIS C 61000-4-2 試験レベル"}},
+        },
+    }
+
+
+async def _run_knowledge(arguments: dict[str, Any]) -> dict:
+    """MCP の相手のモデルは分からないので cloud とみなす（統合の決まり 3: 機密・AI 利用不可を返さない）。"""
+    from app.knowledge import context
+
+    query = arguments.get("query")
+    if set(arguments) != {"query"} or not isinstance(query, str) or not query.strip() or len(query) > 500:
+        raise HTTPException(status_code=422, detail="query（1〜500 文字）だけを渡してください")
+    built, _ = await context.search_and_build(query.strip(), consumer="cloud", budget_chars=KNOWLEDGE_MAX_CHARS)
+    return {"mode": built.mode, "text": built.text or "関係する公開の文書は見つかりませんでした。",
+            "sources": [{"label": s["label"], "title": s["title"]} for s in built.sources]}
+
+
 DIAGNOSTICS_TOOL = "control_deck.diagnostics"
 
 
@@ -474,6 +506,8 @@ async def list_tools(
         tools.append(research)
     if "settings.manage" in permissions:
         tools.append(_diagnostics_tool())
+    if "workflows.run" in permissions:
+        tools.append(_knowledge_tool())
     return {"tools": tools}
 
 
@@ -516,6 +550,10 @@ async def call_tool(
         return {"report_markdown": diagnostics_report.to_markdown(data)}
     if body.name == RESEARCH_TOOL:
         return await _run_research(body.arguments, user, claims, db, request)
+    if body.name == KNOWLEDGE_TOOL:
+        if "workflows.run" not in permissions:
+            raise HTTPException(status_code=404, detail="knowledge toolが見つかりません")
+        return await _run_knowledge(body.arguments)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")
         available = _project_output_tool(project_id, permissions)

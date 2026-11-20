@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 184 ファイル、1655 テスト（目的の未記入 93 ファイル）
+- backend: 185 ファイル、1659 テスト（目的の未記入 93 ファイル）
 - E2E: 92 spec、189 テスト
 
 ## backend（backend/tests）
@@ -1138,6 +1138,15 @@
 - `test_pdf_pages_figures_and_original_are_kept`
 - `test_assistant_tool_respects_the_consumer`
 - `test_knowledge_api_find_document_and_asset`
+
+### backend/tests/test_knowledge_r3.py
+
+目的: 統合後の再設計 R3-1: 文献ごとの AI 分析・審査基準と分類辞書の引用・MCP のナレッジ検索。 目的: - 文献の AI 分析はローカル専用のモデルだけで動き、未確認の推論として原文の版付きで残ること。原文が変わったら 分析を消さずに「stale（原文が変わった）」として持ち越し、古い承認を復活させないこと（統合の決まり 2）。 - 利用条件で AI に使えない文書（購入した規格など）は分析しないこと。 - 種類 law のコレクションを Patent の AI 支援が [基準n] で引き、種類 classification を分類候補として渡すこと （ResearchDataHub v0.2 にあった機能。v0.102 の移植で抜けていた）。 - MCP のナレッジ検索は相手を cloud とみなし、機密の資料を返さないこと（統合の決まり 3）。 根拠: 2026-11-21 利用者「各リポジトリの計画を ControlDeck 側に反映し、統合したときに整合性を持つように再検討して進める」。 docs/PLAN-knowledge-platform.md §10。
+
+- `test_document_analysis_is_local_unreviewed_and_marked_stale_when_source_changes`
+- `test_documents_that_may_not_reach_ai_are_not_analyzed`
+- `test_assist_quotes_law_and_offers_classification_candidates`
+- `test_mcp_knowledge_search_treats_the_client_as_cloud`
 
 ### backend/tests/test_knowledge_storage.py
 

@@ -129,3 +129,94 @@ def head_identifiers(body: str, chars: int = 400) -> list[Identifier]:
 def invention_title(body: str) -> str:
     m = _TITLE.search(_norm(body or "")[:20000])
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+
+
+# ---- 公報の書誌（出願人・発明者・IPC・日付・請求項の数） ----
+# meta["biblio"] の形（収集元・手入力でも同じ形にする。分析の画面が使う）:
+#   {"applicants": [..], "inventors": [..], "ipc": ["H02M 7/48", ..], "filing_date": "2025-01-31",
+#    "publication_date": "2026-07-09", "priority_date": "", "country": "JP", "kind": "A",
+#    "claims_count": 10, "source": "rule_extract" | "ocr_extract" | "manual" | "epo" ...}
+
+_IPC = re.compile(r"\b([A-H])\s?(\d{2})\s?([A-Z])\s*(\d{1,4})\s*/\s*(\d{2,6})\b")
+_DATE = re.compile(r"((?:19|20)\d{2})\s*[.．/年-]\s*(\d{1,2})\s*[.．/月-]\s*(\d{1,2})")
+_ORG = re.compile(r"(株式会社|有限会社|合同会社|大学|研究所|機構|法人|Corporation|Corp\.?|Inc\.?|Ltd\.?|LLC|GmbH|AG|S\.A\.|Co\.)", re.I)
+_ADDRESS = re.compile(r"(都|道|府|県).{0,6}(市|区|町|村|郡)|丁目|番地|\d+番|Street|Road|Ave")
+_INID = re.compile(r"\((\d{2})\)")
+
+
+def _segment(text: str, code: str) -> str:
+    m = re.search(r"\(" + code + r"\)", text)
+    if not m:
+        return ""
+    rest = text[m.end():]
+    nxt = _INID.search(rest[2:])
+    return rest[: (nxt.start() + 2) if nxt else 400][:400]
+
+
+_ORG_NAME = re.compile(r"([^\s　()（）:：]{1,30}(?:株式会社|有限会社|合同会社|大学|研究所)[^\s　()（）内]{0,12})(?!内)")
+_NOISE = re.compile(r"株式会社内|ターム|代理人|弁理士|テーマコード|審査請求|優先")
+
+
+def _names(segment: str) -> list[str]:
+    out = []
+    for line in segment.splitlines():
+        if _NOISE.search(line):
+            continue
+        line = re.sub(r"^\s*(出願人|発明者|特許権者|代理人|氏名|名称)\s*", "", line).strip(" 　:：")
+        line = re.sub(r"\s{2,}.*$", "", line)          # 2 段組みの右側は捨てる
+        if not line or re.fullmatch(r"[\d\s()（）-]+", line) or len(line) < 2:
+            continue
+        if _ADDRESS.search(line) and not _ORG.search(line):
+            continue
+        out.append(line[:60])
+    return out[:6]
+
+
+def _iso(m: re.Match | None) -> str:
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
+
+
+def patent_fields(text: str, head_chars: int = 6000) -> dict:
+    """公報の 1 ページ目（INID コード）と請求項から書誌を規則で読む。読めない項目は空のまま（推測で埋めない）。"""
+    text = _norm(text or "")
+    head = text[:head_chars]
+    ipc = []
+    for m in _IPC.finditer(_segment(head, "51") or head):
+        code = f"{m.group(1)}{m.group(2)}{m.group(3)} {int(m.group(4))}/{m.group(5)}"
+        if code not in ipc:
+            ipc.append(code)
+    count = None
+    m = re.search(r"請求項の数\s*[:：]?\s*(\d{1,3})", head)
+    if m:
+        count = int(m.group(1))
+    else:
+        numbers = [int(n) for n in re.findall(r"【請求項\s*(\d{1,3})】", text)]
+        count = max(numbers) if numbers else None
+    own = head_identifiers(text)
+    country, kind = "", ""
+    if own and own[0].scheme == "patent":
+        parts = own[0].value.split("-")
+        country = parts[0].upper()
+        kind = {"a": "A", "b": "B", "t": "A", "r": "A", "y": "U", "u": "U"}.get(parts[1], "") if len(parts) > 1 else ""
+    applicants = [n for n in (_names(_segment(head, "71")) or _names(_segment(head, "73"))) if _ORG.search(n) or len(n) <= 12]
+    if not applicants:
+        # 2 段組みで (71) の名前が別の行・列に回ったとき: 1 ページ目の会社名（「…株式会社内」は発明者の住所なので除く）
+        for m in _ORG_NAME.finditer(head[:3000]):
+            name = m.group(1)
+            if name not in applicants and not head[m.end():m.end() + 1] == "内":
+                applicants.append(name)
+    return {
+        "title": invention_title(text),
+        "applicants": applicants[:6],
+        "inventors": _names(_segment(head, "72")),
+        "ipc": ipc[:20],
+        "filing_date": _iso(_DATE.search(_segment(head, "22"))),
+        "publication_date": _iso(_DATE.search(_segment(head, "43")) or _DATE.search(_segment(head, "45"))),
+        "priority_date": _iso(_DATE.search(_segment(head, "32"))),
+        "country": country, "kind": kind, "claims_count": count,
+    }
+
+
+def has_front_page(text: str) -> bool:
+    head = _norm(text or "")[:6000]
+    return bool(re.search(r"\((51|71|22)\)", head))

@@ -53,7 +53,7 @@ def get_document(ref: str) -> dict:
             "SELECT a.sha256, a.role, a.ord, a.meta, b.mime, b.bytes FROM document_assets a "
             "LEFT JOIN blobs b ON b.sha256=a.sha256 WHERE a.doc_id=? ORDER BY a.role, a.ord", (doc_id,))]
         notes = [dict(r) for r in conn.execute(
-            "SELECT id, kind, basis, review_status, content, created FROM annotations WHERE doc_id=? ORDER BY id",
+            "SELECT id, kind, basis, review_status, content, source_revision, created FROM annotations WHERE doc_id=? ORDER BY id",
             (doc_id,))]
     finally:
         conn.close()

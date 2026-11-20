@@ -14,7 +14,8 @@ export interface DocumentDetail {
   identifiers: { scheme: string; value: string; edition: string; raw: string }[];
   references: { scheme: string; value: string; edition: string; raw: string }[];
   assets: DocumentAsset[];
-  annotations: { id: number; kind: string; basis: string; review_status: string; content: string }[];
+  annotations: { id: number; kind: string; basis: string; review_status: string; content: string; stale?: boolean }[];
+  analysis_kinds?: Record<string, string>;
   related: { ref: string; relation: string; via: string; title: string; collection: string }[];
 }
 export interface LicenseDecision {
@@ -40,6 +41,12 @@ export const knowledgeApi = {
   document: (ref: string) => api<DocumentDetail>(`/knowledge/documents/${encodeURIComponent(ref)}`),
   addPdf: (collection: string, path: string, title: string) =>
     api<{ job_id: string }>(`/knowledge/collections/${encodeURIComponent(collection)}/pdf-jobs`, { method: "POST", json: { path, title } }),
+  analyze: (ref: string, kind: string) =>
+    api<{ job_id: string }>(`/knowledge/documents/${encodeURIComponent(ref)}/analyses`, { method: "POST", json: { kind } }),
+  reviewAnnotation: (ref: string, id: number, review_status: string) =>
+    api(`/knowledge/documents/${encodeURIComponent(ref)}/annotations/${id}/review`, { method: "POST", json: { review_status } }),
+  removeAnnotation: (ref: string, id: number) =>
+    api(`/knowledge/documents/${encodeURIComponent(ref)}/annotations/${id}`, { method: "DELETE" }),
   standards: () => api<{ standards: StandardRow[]; instruments: Record<string, string> }>("/knowledge/standards"),
   decide: (body: Partial<StandardInput>) => api<LicenseDecision>("/knowledge/standards/decide", { method: "POST", json: body }),
   addStandard: (body: StandardInput) => api<{ job_id: string }>("/knowledge/standards", { method: "POST", json: body }),

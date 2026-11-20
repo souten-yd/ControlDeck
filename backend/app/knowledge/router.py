@@ -74,6 +74,10 @@ def get_document(ref: str, user: User = VIEW):
     doc["text"] = text[:MAX_VIEW_CHARS]
     doc["text_truncated"] = len(text) > MAX_VIEW_CHARS
     doc["related"] = _wrap(documents.related_documents, ref, 12)
+    from app.knowledge import analysis
+
+    doc["annotations"] = _wrap(analysis.annotations_with_state, ref)
+    doc["analysis_kinds"] = {k: v["label"] for k, v in analysis.KINDS.items()}
     for asset in doc["assets"]:
         asset["url"] = f"/api/v1/knowledge/assets/{asset['sha256']}"
     return doc
@@ -91,6 +95,55 @@ def get_asset(sha256: str, user: User = VIEW):
         raise HTTPException(status_code=415, detail="表示できない形式です")
     return FileResponse(path, media_type=mime, headers={"Cache-Control": "private, max-age=86400",
                                                         "X-Content-Type-Options": "nosniff"})
+
+
+class AnalysisBody(BaseModel):
+    kind: str = Field(pattern="^(summary|claim_review)$")
+
+
+class ReviewBody(BaseModel):
+    review_status: str = Field(pattern="^(unreviewed|checked|rejected)$")
+
+
+@router.post("/documents/{ref}/analyses", status_code=201)
+async def analyze(ref: str, body: AnalysisBody, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    """文献をローカル専用の AI で要約・請求項の確認をする（Jobs）。結果は未確認の推論として注釈に残る。"""
+    from app.jobs import service as jobs
+    from app.knowledge import analysis
+    from app.patents import service as patents_service
+
+    doc = await asyncio.to_thread(_wrap, documents.get_document, ref)
+    if doc["ai_use"] == "prohibited":
+        raise HTTPException(status_code=422, detail="この文書は利用条件により AI に入力できません")
+    try:
+        await patents_service.resolve_local_target()
+    except patents_service.LocalAIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    async def run(job: jobs.Job) -> dict:
+        return await analysis.run(job, ref, body.kind)
+
+    job = jobs.create("knowledge.analysis", f"文献の{analysis.KINDS[body.kind]['label']}: {doc['title']}"[:120], run,
+                      owner_user_id=user.id)
+    audit.record(db, "knowledge.analyze", user=user, resource_type="knowledge", resource_id=ref, request=request,
+                 metadata={"kind": body.kind, "job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.post("/documents/{ref}/annotations/{note_id}/review")
+def review_annotation(ref: str, note_id: int, body: ReviewBody, user: User = Depends(EDIT)):
+    from app.knowledge import analysis
+
+    _wrap(analysis.review, ref, note_id, body.review_status)
+    return {"ok": True}
+
+
+@router.delete("/documents/{ref}/annotations/{note_id}")
+def remove_annotation(ref: str, note_id: int, user: User = Depends(EDIT)):
+    from app.knowledge import analysis
+
+    _wrap(analysis.remove, ref, note_id)
+    return {"ok": True}
 
 
 class PdfJobBody(BaseModel):
