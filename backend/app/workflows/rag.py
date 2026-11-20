@@ -300,6 +300,17 @@ def strip_instruction(text: str) -> str:
     return _INSTRUCTION_HEAD.sub("", text, count=1)
 
 
+def collection_size_chars(collection: str) -> int:
+    """会話の資料の大きさ（断片の文字数の合計）。モデルへ「資料がどれぐらいあるか」を伝えるのに使う。"""
+    if not collection_exists(collection):
+        return 0
+    conn = _db(collection)
+    try:
+        return int(conn.execute("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM chunks").fetchone()[0])
+    finally:
+        conn.close()
+
+
 def collection_materials(collection: str, max_chars: int) -> str | None:
     """会話の資料をすべて、文書の順・断片の順で 1 つの文にする（探さない）。max_chars を超えるなら None。
 
