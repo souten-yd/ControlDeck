@@ -182,6 +182,26 @@ def _save_assets(shard: str, doc_id: int, data: bytes, extracted, figures, descr
         conn.close()
 
 
+_CLASS_LINE = re.compile(r"^\s*([A-HＡ-Ｈ][0-9０-９]{2}[A-ZＡ-Ｚ](?:\s*[0-9０-９]{1,4}\s*/\s*[0-9０-９]{1,6})?|[0-9A-ZＡ-Ｚ][0-9A-Za-z./@-]{1,20})\s*[\t ]\s*(\S.*)$")
+
+
+async def ingest_classification(collection: str, text: str, *, source: str = "") -> dict:
+    """分類コード表（1 行 1 コード「コード<TAB>説明」）を取り込む。行ごとに断片にし、コードで探せるようにする。
+    辞書は利用者が各サイトの利用条件に従って手で入手したもの（自動取得しない）。"""
+    chunks = []
+    for line in text.splitlines():
+        m = _CLASS_LINE.match(line)
+        if not m:
+            continue
+        code = re.sub(r"\s+", " ", m.group(1)).strip()
+        chunks.append(store.NewChunk(text=f"{code}\t{m.group(2).strip()}", locator={"code": code}))
+    if not chunks:
+        raise store.KnowledgeError("分類コード表の行がありません（1 行 1 コード「コード<TAB>説明」）")
+    model, _ = await _embed(chunks, collection)
+    return await asyncio.to_thread(store.add_document, collection, chunks, source=source or "分類コード表",
+                                   title=source or "分類コード表", body=text, model=model, identifiers=[])
+
+
 async def ingest_text(collection: str, text: str, *, title: str = "", source: str = "", clauses: bool = False,
                       sensitivity: str | None = None, ai_use: str = "allowed", store_fulltext: bool = True,
                       meta: dict | None = None, ext_id: str | None = None, identifiers: list | None = None) -> dict:

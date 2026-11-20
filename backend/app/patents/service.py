@@ -107,6 +107,26 @@ def build_messages(case: dict, task: str, evidence_text: str, extra: str = "") -
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+async def _law_and_classes(task: str, query_text: str) -> str:
+    """審査基準・法令（種類 law）から最大 4 件を [基準n] で、分類辞書（種類 classification）から候補を足す（RDH v0.2 と同じ）。"""
+    from app.knowledge import documents
+
+    query = " ".join(domain.keywords(domain.PROMPTS[task]["label"] + " " + query_text)[:10]) or query_text[:80]
+    out = ""
+    laws = await asyncio.to_thread(kstore.collections_of_kind, "law")
+    if laws and task in domain.LAW_TASKS:
+        hits = await asyncio.to_thread(kstore.search, laws, query, mode="fulltext", limit=4)
+        if hits:
+            out += "\n\n# 審査基準・法令（ナレッジ。引用は [基準n]）\n" + "\n\n".join(
+                f"[基準{i}] {h['title']}\n{(h['parent'] or h['text'])[:900]}" for i, h in enumerate(hits, 1))
+    classes = await asyncio.to_thread(kstore.collections_of_kind, "classification")
+    if classes and task in ("search_plan", "novelty", "idea", "hearing"):
+        hits = await asyncio.to_thread(kstore.search, classes, query, mode="fulltext", limit=15)
+        if hits:
+            out += "\n\n# 分類候補（分類辞書）\n" + "\n".join(f"- {h['text'][:160]}" for h in hits)
+    return out
+
+
 async def resolve_local_target():
     from app.models_mgmt.ai_gateway import AITargetUnavailable, require_local_target, resolve_ai_target
 
@@ -155,6 +175,7 @@ async def run_assist(job, case_id: int, task: str, assist_id: int, extra: str = 
             evidence_text = built.text
             refs = [{"doc_ref": s["ref"], "chunk_ref": s["ref"], "title": s["title"], "collection": s["collection"],
                      "label": s["label"], "mode": built.mode} for s in built.sources]
+        evidence_text += await _law_and_classes(task, query_text if task not in ("interview", "filing_check", "hearing") else case["title"])
         messages = build_messages(case, task, evidence_text, extra)
         job.set_progress("ローカルのモデルが回答を作成中", 2, 3)
         request = RuntimeChatRequest(base_url=target.base_url, model=target.model, messages=messages,

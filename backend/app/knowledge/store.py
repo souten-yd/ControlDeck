@@ -211,6 +211,27 @@ def create_collection(name: str, *, shard: str = "general", kind: str = "general
     return require_collection(name)
 
 
+COLLECTION_KINDS = ("general", "conversation", "patent", "generic", "standard", "law", "classification")
+
+
+def set_collection_kind(name: str, kind: str) -> CollectionRef:
+    """コレクションの種類（審査基準・法令は law、分類辞書は classification）。AI 支援の引用に使う。"""
+    if kind not in COLLECTION_KINDS:
+        raise KnowledgeError(f"不正な種類: {kind}")
+    ref = require_collection(name)
+    conn = connect(ref.shard)
+    try:
+        conn.execute("UPDATE collections SET kind=?, updated=? WHERE id=?", (kind, _now(), ref.id))
+        conn.commit()
+    finally:
+        conn.close()
+    return require_collection(name)
+
+
+def collections_of_kind(kind: str) -> list[str]:
+    return [c["collection"] for c in list_collections() if c["kind"] == kind]
+
+
 def set_collection_config(name: str, config: dict) -> CollectionRef:
     ref = require_collection(name)
     conn = connect(ref.shard)
@@ -335,6 +356,7 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
     conn = connect(ref.shard)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        carried: list = []
         if replace_collection:
             ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE collection_id=?", (ref.id,))]
             _delete_chunk_rows(conn, ids)
@@ -348,6 +370,9 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
                 conn.rollback()
                 return {"doc_id": int(old["id"]), "unchanged": True, "added_chunks": 0}
             if old is not None:
+                # AI の分析・人のレビューは新しい版へ持ち越す（版が違うので stale と表示される。古い承認は復活させない）
+                carried = conn.execute("SELECT kind, basis, review_status, content, source_revision, created "
+                                       "FROM annotations WHERE doc_id=?", (old["id"],)).fetchall()
                 ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE doc_id=?", (old["id"],))]
                 _delete_chunk_rows(conn, ids)
                 _delete_document_side_rows(conn, [int(old["id"])])
@@ -362,6 +387,9 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
                          + [(doc_id, i.scheme, i.value, i.edition, 0, i.raw[:120]) for i in refs])
         if body is not None:
             conn.execute("INSERT INTO bodies(doc_id, text) VALUES(?,?)", (doc_id, body))
+        for note in carried:
+            conn.execute("INSERT INTO annotations(doc_id, kind, basis, review_status, content, source_revision, created) "
+                         "VALUES(?,?,?,?,?,?,?)", (doc_id, *tuple(note)))
         wrote_vectors = False
         for idx, chunk in enumerate(chunks):
             cid = conn.execute(

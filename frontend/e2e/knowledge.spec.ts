@@ -33,3 +33,18 @@ for (const width of [1280, 320]) {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 }
+
+test("Knowledge: 審査基準のコレクションを作る（詳細設定は既定で隠す）", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 320, height: 640 });
+  await establishSession(page, context);
+  await page.goto("/knowledge");
+  await page.getByRole("button", { name: "資料の管理" }).click();
+  await page.getByRole("button", { name: "コレクション作成" }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet.getByPlaceholder("my-docs").fill("guidelines-e2e");
+  await sheet.getByRole("combobox").first().selectOption("law");
+  await expect(sheet.getByText("チャンク戦略")).toBeHidden();     // 分割の方式は「詳細設定」の中
+  await sheet.getByRole("button", { name: "作成", exact: true }).click();
+  await expect(page.getByText("guidelines-e2e")).toBeVisible();
+});

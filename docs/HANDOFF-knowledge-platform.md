@@ -114,7 +114,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | # | 作業 | 状態 |
 |---|---|---|
 | R3-0 | 両リポジトリの計画の棚卸しと整合性の決まり（計画 §10.1・10.2） | ☑ |
-| R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☐ |
+| R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
 | R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☐ |
 | R3-3 | AI クレームチャートの判定 | ☐ |
 | R3-4 | 知識エッセンス（抽出・レビュー） | ☐ |
@@ -137,6 +137,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: R3-1。文献ごとの AI 分析（要約・請求項の確認、ローカル専用、原文が変わったら stale として持ち越す）、審査基準・分類辞書のコレクションと AI 支援への引用、MCP のナレッジ検索（cloud 扱い）、資料の作成画面で詳細設定を隠した。全体 1869 passed（落ちた 1 件は既知の不安定なテスト）、E2E knowledge・patents 通過。
 
 - 2026-11-21 Claude: R3 を開始。RDH・PB の計画を棚卸しし、統合の決まり（3 層・根拠の版・外部へ出る 4 経路・ローカル専用・検索の入口は 1 つ）を計画 §10 に書いた。RDH main にあって未移植だったもの（ウォッチ・期限の通知・分類辞書・審査基準・文献ごとの分析）を見つけた。
 

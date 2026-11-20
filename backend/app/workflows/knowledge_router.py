@@ -16,6 +16,20 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 class CollectionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     config: dict = {}
+    # 一般の資料 / 審査基準・法令（AI 支援が [基準n] で引く）/ 分類辞書（IPC・FI など。1 行 1 コード）
+    kind: str = Field(default="general", pattern="^(general|law|classification)$")
+
+
+async def _ingest(name: str, text: str, source: str, api_key: str, reset: bool) -> dict:
+    """コレクションの種類に合わせて取り込む（分類辞書は行ごと）。"""
+    import asyncio
+
+    from app.knowledge import ingest, store as kstore
+
+    ref = await asyncio.to_thread(kstore.find_collection, name)
+    if ref is not None and ref.kind == "classification":
+        return await ingest.ingest_classification(name, text, source=source)
+    return await rag.add_document(name, text, source or "document", api_key=api_key, reset=reset)
 
 
 class ConfigPatch(BaseModel):
@@ -71,6 +85,10 @@ def create_collection(
 ):
     try:
         out = rag.create_collection(body.name, body.config)
+        if body.kind != "general":
+            from app.knowledge import store as kstore
+
+            kstore.set_collection_kind(body.name, body.kind)
     except rag.RagError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "knowledge.create", user=user, resource_type="knowledge", resource_id=body.name, request=request)
@@ -144,7 +162,7 @@ async def add_document(
     if not text.strip():
         raise HTTPException(status_code=422, detail="取り込むテキストがありません")
     try:
-        out = await rag.add_document(name, text, source or "document", api_key=body.api_key, reset=body.reset)
+        out = await _ingest(name, text, source, body.api_key, body.reset)
     except rag.RagError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "knowledge.add_doc", user=user, resource_type="knowledge", resource_id=name, request=request, metadata={"source": source})
@@ -187,7 +205,7 @@ async def ingest_job(
         if not text.strip():
             raise rag.RagError("取り込むテキストがありません")
         job.set_progress("チャンク分割・埋め込み中", 1, 3)
-        out = await rag.add_document(name, text, source or "document", api_key=body.api_key, reset=body.reset)
+        out = await _ingest(name, text, source, body.api_key, body.reset)
         job.set_progress("完了", 3, 3)
         return out
 

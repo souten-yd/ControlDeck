@@ -203,10 +203,11 @@ function CreateSheet({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const show = useToasts((s) => s.show);
   const { data: defaults } = useQuery({ queryKey: ["knowledge-defaults"], queryFn: () => api<Defaults>("/knowledge/defaults") });
   const [name, setName] = useState("");
+  const [kind, setKind] = useState<"general" | "law" | "classification">("general");
   const [cfg, setCfg] = useState<RagConfig | null>(null);
   const eff = cfg ?? defaults?.config ?? null;
   const create = useMutation({
-    mutationFn: () => api("/knowledge/collections", { method: "POST", json: { name: name.trim(), config: eff } }),
+    mutationFn: () => api("/knowledge/collections", { method: "POST", json: { name: name.trim(), config: eff, kind } }),
     onSuccess: () => {
       show("作成しました");
       onDone();
@@ -221,7 +222,17 @@ function CreateSheet({ onClose, onDone }: { onClose: () => void; onDone: () => v
         <L label="名前（英数・ハイフン・アンダースコア）">
           <input value={name} onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""))} placeholder="my-docs" className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         </L>
-        <ConfigForm cfg={eff} defaults={defaults} onChange={(p) => setCfg({ ...eff, ...p })} />
+        <L label="種類">
+          <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)} className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+            <option value="general">資料（技術資料・論文・メモなど）</option>
+            <option value="law">審査基準・法令（Patent の AI 支援が根拠として引用）</option>
+            <option value="classification">分類辞書（IPC・FI など。1 行 1 コード「コード タブ 説明」）</option>
+          </select>
+        </L>
+        <details className="rounded-xl border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+          <summary className="cursor-pointer text-sm text-zinc-600 dark:text-zinc-300">詳細設定（分割・検索の方式・埋め込みモデル）</summary>
+          <div className="mt-3"><ConfigForm cfg={eff} defaults={defaults} onChange={(p) => setCfg({ ...eff, ...p })} /></div>
+        </details>
         <button onClick={() => create.mutate()} disabled={!name.trim() || create.isPending} className="w-full rounded-xl bg-accent-600 py-2.5 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
           {create.isPending ? "作成中..." : "作成"}
         </button>
