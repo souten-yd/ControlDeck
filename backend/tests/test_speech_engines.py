@@ -185,3 +185,29 @@ def test_input_filter_presets_and_custom_values(admin_client, speech_data):
     loaded = settings.load()
     assert loaded["asr"] == "parakeet-en" and loaded["input_filter"]["enabled"] is False
     assert loaded["input_filter"]["vad_threshold"] == 0.5
+
+
+def test_speech_engines_can_be_uninstalled(admin_client, monkeypatch, tmp_path):
+    """TTS / ASR のアンインストール（2026-11-20 利用者の依頼）。ASR はそのエンジンのモデルだけを消し、sherpa-onnx の venv
+    （Haas・Parakeet・言語判定・入力フィルターで共用）は残す。Supertonic 3 は実行環境だけを消し、保管庫は残す。"""
+    from app.speech import supertonic
+    from app.workflows import asr
+    from tests.conftest import CSRF_HEADERS
+
+    monkeypatch.setattr(asr, "data_dir", lambda: tmp_path)
+    model = asr.haas_root() / "model"
+    model.mkdir(parents=True)
+    (model / "x.onnx").write_bytes(b"x")
+    venv = asr.haas_root() / "venv"
+    venv.mkdir()
+    r = admin_client.post("/api/v1/speech/engines/haas/uninstall", headers=CSRF_HEADERS)
+    assert r.status_code == 200 and not model.exists() and venv.exists()
+    lid = asr.lid_root()
+    (lid / "m.onnx").write_bytes(b"x")
+    admin_client.post("/api/v1/speech/engines/auto-ja-en/uninstall", headers=CSRF_HEADERS)
+    assert not (lid / "m.onnx").exists() and venv.exists()   # 状態を見るとフォルダ自体は作り直される
+    called = []
+    monkeypatch.setattr(supertonic, "uninstall", lambda: called.append(True) or {})
+    assert admin_client.post("/api/v1/speech/engines/supertonic-3/uninstall", headers=CSRF_HEADERS).status_code == 200
+    assert called == [True]
+    assert admin_client.post("/api/v1/speech/engines/nope/uninstall", headers=CSRF_HEADERS).status_code == 404

@@ -5,7 +5,7 @@ import { useAuth, useToasts } from "../../stores";
 import { ConfirmDialog } from "../../components/ui";
 
 interface CpuReranker {
-  id: string; name: string; installed: boolean; installing: boolean; model: string; model_bytes: number; device: string;
+  id: string; name: string; installed: boolean; installing: boolean; job_id: string | null; model: string; model_bytes: number; device: string;
   runtime: string; accuracy: string; speed: string; memory: string; license: string; error: string; running: boolean;
 }
 
@@ -57,7 +57,7 @@ export function RetrievalModelsPanel() {
   const uninstall = async (model: CpuReranker) => {
     try {
       await api(`/models/retrieval/cpu/${model.id}/uninstall`, { method: "POST", json: {} });
-      show(`${model.name} を外しました`);
+      show(`${model.name} をアンインストールしました`);
       void qc.invalidateQueries({ queryKey: ["retrieval-models"] });
     } catch (e) { show(e instanceof Error ? e.message : "外せませんでした", "error"); }
   };
@@ -99,13 +99,13 @@ export function RetrievalModelsPanel() {
         </div>
       </div>
       {data.cpu_rerankers.map((model) => (
-        <CpuRerankerCard key={model.id} model={model} jobId={jobs[model.id]} editable={editable}
+        <CpuRerankerCard key={model.id} model={model} jobId={jobs[model.id] ?? model.job_id ?? undefined} editable={editable}
           onInstall={() => void install(model)} onRemove={() => setRemoving(model)}
           onJobDone={() => { setJobs((prev) => { const next = { ...prev }; delete next[model.id]; return next; }); void qc.invalidateQueries({ queryKey: ["retrieval-models"] }); }} />
       ))}
       {removing && (
-        <ConfirmDialog title={`${removing.name} を外しますか？`}
-          message="使わなくなります。取得したモデルは残すので、入れ直すときに取り直しません。" confirmLabel="外す"
+        <ConfirmDialog title={`${removing.name} をアンインストールしますか？`}
+          message="使わなくなります。変換済みのモデルは残すので、入れ直すときに取り直しません。" confirmLabel="アンインストール"
           onConfirm={() => { void uninstall(removing); setRemoving(null); }} onClose={() => setRemoving(null)} />
       )}
     </div>
@@ -138,7 +138,7 @@ function CpuRerankerCard({ model, jobId, editable, onInstall, onRemove, onJobDon
           <p className="mt-0.5 text-xs text-zinc-400">{model.accuracy}。{model.speed}。{model.memory}</p>
         </div>
         {editable && (model.installed ? (
-          <button onClick={onRemove} className="shrink-0 rounded-xl px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">外す</button>
+          <button onClick={onRemove} className="shrink-0 rounded-xl px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">アンインストール</button>
         ) : (
           <button onClick={onInstall} disabled={Boolean(busy)}
             className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">

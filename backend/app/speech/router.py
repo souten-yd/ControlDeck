@@ -1,6 +1,8 @@
 """TTS / ASR のエンジン一覧・選択・導入・合成の API。Models の「TTS / ASR」タブが使う。"""
 from __future__ import annotations
 
+import asyncio
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -143,6 +145,23 @@ async def install_engine(engine_id: str, request: Request,
     audit.record(db, "speech.install", user=user, resource_type="runtime", resource_id=engine_id,
                  request=request, metadata={"job_id": job.id})
     return {"job_id": job.id, "reused": False}
+
+
+@router.post("/engines/{engine_id}/uninstall")
+async def uninstall_engine(engine_id: str, request: Request,
+                           user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """音声エンジンを外す。Supertonic 3 は実行環境だけを消し、保管庫（ソース・重み）は残す。"""
+    if engine_id == supertonic.ENGINE_ID:
+        await asyncio.to_thread(supertonic.uninstall)
+    elif engine_id in ("haas", "whisper", "parakeet-en", "auto-ja-en"):
+        current = jobs.get(_asr_jobs[engine_id]) if engine_id in _asr_jobs else None
+        if current and current.status in ("queued", "running"):
+            raise HTTPException(status_code=409, detail="導入中は外せません")
+        await asyncio.to_thread(asr.uninstall_engine, engine_id)
+    else:
+        raise HTTPException(status_code=404, detail="未知の音声エンジンです")
+    audit.record(db, "speech.uninstall", user=user, resource_type="runtime", resource_id=engine_id, request=request)
+    return engines()
 
 
 class SpeechRequest(BaseModel):

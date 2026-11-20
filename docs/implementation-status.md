@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-20 Models: 導入でエラーが一瞬出て「処理中…」が消えない・アンインストール
+
+- 利用者（画面写真）「reranker と埋め込みなのに LLM の画面に出る」「導入を押すと一瞬エラーが出るが、導入されているような感じ。ずっと導入表示が出る」「TTS / ASR と埋め込み・reranker にアンインストールを」。
+- 原因: v0.87 の導入の API（`/models/retrieval/cpu/{id}/install-jobs`）を同期関数で受けていたため、スレッドで動きイベントループが無く `jobs.create` が 500（no running event loop）。その直前にジョブの記録だけができ、走らないジョブが「処理中…」のまま残った。ジョブの種類が `model.` で始まるため、Models の上（LLM の画面）にも出ていた。
+- 変更: 導入の API を async に。CPU / GPU の reranker のジョブは `retrieval.install`（カードに進み具合、画面を開き直しても `job_id` で続きを出す）。llama.cpp のプリセットの導入（`model.preset`）は「Embed / Reranker」の画面だけに出す。アンインストール: TTS / ASR（ASR はそのエンジンのモデルだけ、sherpa-onnx の venv は共用なので残す。Supertonic 3 は実行環境だけ）、GPU の埋め込み・reranker（登録と GGUF を消す）、CPU / GPU の reranker（変換済みのモデルは残す）。本番に残った走らないジョブは次の再起動で「中断」になる。
+- 検証: `tests/test_rag_db_nodes.py`（導入の API がジョブを実際に走らせる・プリセットのアンインストール）、`tests/test_speech_engines.py`（TTS / ASR のアンインストール）、E2E `speech-engines`。
+
 ## 2026-11-20 ruri を GPU で動かす選択肢（fp16・MIGraphX）・Maya にも道具を渡す
 
 - 利用者「ruri を GPU で動かす選択肢を足して」「GPU で int8 などに量子化して容量を下げられないか。精度と速度は維持」「Maya でうまく道具が使えないのはなぜか。呼び方が違うのか調べて」。

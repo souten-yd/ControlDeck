@@ -357,3 +357,49 @@ def test_gpu_ruri_is_preferred_and_falls_back_to_cpu(monkeypatch, tmp_path):
     assert cpu_reranker._disabled_marker("ruri-reranker") != cpu_reranker._disabled_marker("ruri-reranker-gpu")
     assert cpu_reranker.model_path("ruri-reranker-gpu").name == "model_fp16.onnx"
     assert cpu_reranker._packages("gpu")[0].startswith("onnxruntime-migraphx")
+
+
+def test_install_endpoint_actually_runs_the_job(admin_client, monkeypatch, tmp_path):
+    """導入の API はジョブを実際に走らせる。根拠: 2026-11-20 本番 v0.87。同期関数で受けていたためイベントループが無く 500
+    （画面に一瞬「エラー」）、ジョブの記録だけが残り「処理中…」が消えなかった。進み具合は LLM の画面ではなく
+    Embed / Reranker のカードに出す（ジョブの種類を model. で始めない）。"""
+    import time
+
+    from app.jobs import service as jobs
+    from app.workflows import cpu_reranker
+    from tests.conftest import CSRF_HEADERS
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    ran = []
+
+    async def install(job, model_id):
+        ran.append(model_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(cpu_reranker, "install", install)
+    monkeypatch.setattr(cpu_reranker, "_install_jobs", {})
+    r = admin_client.post("/api/v1/models/retrieval/cpu/xsmall-reranker/install-jobs", headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    job = jobs.get(r.json()["job_id"])
+    for _ in range(100):
+        if job.status not in ("queued", "running"):
+            break
+        time.sleep(0.02)
+    assert job.status == "succeeded" and ran == ["xsmall-reranker"] and job.kind == "retrieval.install"
+
+
+def test_gpu_preset_uninstall_removes_registration_and_file(admin_client, monkeypatch):
+    """GPU の埋め込み・reranker（llama.cpp のプリセット）のアンインストール: 登録を消し、GGUF も消す。"""
+    from app.models_mgmt import llama
+    from tests.conftest import CSRF_HEADERS
+
+    called = []
+
+    def delete_instance(alias, *, delete_file=False):
+        called.append((alias, delete_file))
+        return {"gguf_deleted": True, "reason": ""}
+
+    monkeypatch.setattr(llama, "delete_instance", delete_instance)
+    r = admin_client.post("/api/v1/models/llama/role-presets/qwen3-reranker-4b/uninstall", headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["gguf_deleted"] and called == [("rerank-qwen3-4b", True)]
+    assert admin_client.post("/api/v1/models/llama/role-presets/nope/uninstall", headers=CSRF_HEADERS).status_code == 404

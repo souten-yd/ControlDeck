@@ -292,12 +292,14 @@ function JobProgress({ job }: { job: JobInfo }) {
 }
 
 /** ページ上部: 実行中のモデル系ジョブ（シートやブラウザを閉じても追える） */
-function ActiveModelJobs() {
+function ActiveModelJobs({ tab }: { tab: string }) {
   const { data } = useQuery({
     queryKey: ["model-jobs"],
     queryFn: () => api<JobInfo[]>("/jobs?kind=model."),
   });
-  const running = (data ?? []).filter((j) => j.status === "queued" || j.status === "running");
+  // 埋め込み・reranker の導入（model.preset）は「Embed / Reranker」に、それ以外は LLM の画面に出す
+  const running = (data ?? []).filter((j) => (j.status === "queued" || j.status === "running")
+    && (tab === "embed") === (j.kind === "model.preset"));
   if (running.length === 0) return null;
   return (
     <div className="mb-3 space-y-2">
@@ -554,7 +556,7 @@ export default function ModelsPage() {
       </p>
       )}
 
-      <ActiveModelJobs />
+      <ActiveModelJobs tab={tab} />
       {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
       {tab === "embed" && <EmbedRerankPanel />}
       {tab === "speech" && <SpeechEnginesPanel />}
@@ -2046,6 +2048,15 @@ function EmbedRerankPanel() {
     } catch (e) { show(e instanceof Error ? e.message : "失敗しました", "error"); }
     finally { setActing(null); }
   };
+  const [removing, setRemoving] = useState<RolePreset | null>(null);
+  const uninstall = async (preset: RolePreset) => {
+    try {
+      const res = await api<{ gguf_deleted: boolean; reason: string }>(`/models/llama/role-presets/${preset.id}/uninstall`, { method: "POST", json: {} });
+      show(res.gguf_deleted ? `${preset.label} を外し、モデルファイルも消しました` : `${preset.label} を外しました${res.reason ? `（ファイルは残しました: ${res.reason}）` : ""}`);
+      qc.invalidateQueries({ queryKey: ["role-presets"] });
+      qc.invalidateQueries({ queryKey: ["retrieval-models"] });
+    } catch (e) { show(e instanceof Error ? e.message : "外せませんでした", "error"); }
+  };
   const toggleResident = async (preset: RolePreset, value: boolean) => {
     try {
       await api(`/models/llama/instances/${encodeURIComponent(preset.alias)}`, { method: "PUT", json: { idle_exclude: value } });
@@ -2083,10 +2094,14 @@ function EmbedRerankPanel() {
               </div>
               {can("workflows.edit") && (
                 preset.installed ? (
-                  <button disabled={acting === preset.id} onClick={() => act(preset, running ? "unload" : "load")}
-                    className="shrink-0 rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 disabled:cursor-wait disabled:opacity-60 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
-                    {acting === preset.id ? "..." : running ? "アンロード" : "ロード"}
-                  </button>
+                  <div className="flex shrink-0 gap-1">
+                    <button disabled={acting === preset.id} onClick={() => act(preset, running ? "unload" : "load")}
+                      className="rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 disabled:cursor-wait disabled:opacity-60 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
+                      {acting === preset.id ? "..." : running ? "アンロード" : "ロード"}
+                    </button>
+                    <button onClick={() => setRemoving(preset)}
+                      className="rounded-xl px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">アンインストール</button>
+                  </div>
                 ) : (
                   <button onClick={() => install(preset)} disabled={!llamaSt?.installed}
                     className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
@@ -2106,6 +2121,11 @@ function EmbedRerankPanel() {
           </div>
         );
       })}
+      {removing && (
+        <ConfirmDialog title={`${removing.label} をアンインストールしますか？`}
+          message="止めて登録を消し、モデルファイル（GGUF）も消します。もう一度使うときは導入し直します。" confirmLabel="アンインストール"
+          onConfirm={() => { void uninstall(removing); setRemoving(null); }} onClose={() => setRemoving(null)} />
+      )}
     </div>
   );
 }

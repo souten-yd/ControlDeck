@@ -4,11 +4,11 @@
  * 各 TTS / ASR の利用するエンジンを選択できるように」。 */
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getSpeechEngines, installSpeechEngine, saveSpeechSettings, selectSpeechEngine, synthesizeSpeech,
+import { getSpeechEngines, installSpeechEngine, uninstallSpeechEngine, saveSpeechSettings, selectSpeechEngine, synthesizeSpeech,
   type InputFilter, type SpeechEngine, type SpeechEngines, type SpeechKind, type SpeechSettings } from "../../api/speech";
 import { Toggle } from "./formControls";
 import { useAuth, useToasts } from "../../stores";
-import { Skeleton } from "../../components/ui";
+import { ConfirmDialog, Skeleton } from "../../components/ui";
 
 const KIND_LABEL: Record<SpeechKind, string> = { asr: "ASR（音声認識）", tts: "TTS（音声合成）" };
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
@@ -24,6 +24,7 @@ export function SpeechEnginesPanel() {
     refetchInterval: (query) => (query.state.data?.engines.some((e) => e.installing) ? 2000 : 15000),
   });
   const [busy, setBusy] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<SpeechEngine | null>(null);
   const manage = can("settings.manage");
 
   if (!data) return <div className="space-y-3"><Skeleton className="h-24" /><Skeleton className="h-24" /></div>;
@@ -52,8 +53,23 @@ export function SpeechEnginesPanel() {
     finally { setBusy(null); }
   };
 
+  const uninstall = async (engine: SpeechEngine) => {
+    try {
+      qc.setQueryData(["speech-engines"], await uninstallSpeechEngine(engine.id));
+      show(`${engine.name} をアンインストールしました`);
+      void qc.invalidateQueries({ queryKey: ["features"] });
+    } catch (e) { show(e instanceof Error ? e.message : "アンインストールできませんでした", "error"); }
+  };
+
   return (
     <div className="space-y-4">
+      {removing && (
+        <ConfirmDialog title={`${removing.name} をアンインストールしますか？`}
+          message={removing.archive ? "実行環境を消します。保管庫（ソース・重み）は残るので、入れ直すときは取り直しません。"
+            : "このエンジンのモデルを消します。もう一度使うときは導入し直します。"}
+          confirmLabel="アンインストール"
+          onConfirm={() => { void uninstall(removing); setRemoving(null); }} onClose={() => setRemoving(null)} />
+      )}
       <p className="px-0.5 text-xs leading-relaxed text-zinc-500">
         AI チャットの音声入力（ASR）と読み上げ（TTS）に使うエンジンです。どちらも CPU で動き、GPU は使いません。
       </p>
@@ -87,7 +103,7 @@ export function SpeechEnginesPanel() {
             <div className="space-y-2">
               {engines.map((engine) => (
                 <EngineRow key={engine.id} engine={engine} chosen={engine.id === chosen} canInstall={manage}
-                  starting={busy === engine.id} onInstall={() => void install(engine)} />
+                  starting={busy === engine.id} onInstall={() => void install(engine)} onRemove={() => setRemoving(engine)} />
               ))}
             </div>
             {/* 選んだエンジンに対応する設定だけを出す（2026-11-19 利用者の依頼） */}
@@ -101,8 +117,8 @@ export function SpeechEnginesPanel() {
   );
 }
 
-function EngineRow({ engine, chosen, canInstall, starting, onInstall }: {
-  engine: SpeechEngine; chosen: boolean; canInstall: boolean; starting: boolean; onInstall: () => void;
+function EngineRow({ engine, chosen, canInstall, starting, onInstall, onRemove }: {
+  engine: SpeechEngine; chosen: boolean; canInstall: boolean; starting: boolean; onInstall: () => void; onRemove: () => void;
 }) {
   const archive = engine.archive;
   return (
@@ -121,6 +137,12 @@ function EngineRow({ engine, chosen, canInstall, starting, onInstall }: {
           <button type="button" onClick={onInstall} disabled={engine.installing || starting}
             className="min-h-10 shrink-0 rounded-xl bg-accent-600 px-3.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
             {engine.installing || starting ? "導入中…" : "導入"}
+          </button>
+        )}
+        {engine.ready && canInstall && (
+          <button type="button" onClick={onRemove}
+            className="min-h-10 shrink-0 rounded-xl px-3 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">
+            アンインストール
           </button>
         )}
       </div>

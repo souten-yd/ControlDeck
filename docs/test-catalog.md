@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1570 テスト（目的の未記入 93 ファイル）
+- backend: 176 ファイル、1573 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
@@ -1810,6 +1810,8 @@
 - `test_large_conversation_materials_are_searched_only_when_the_message_points_at_them` — 大きい会話の資料は、発言が資料・前に調べたもの・詳しい内容を指すときだけ探す。挨拶・お礼・雑談では探さない。
 - `test_rerank_follows_the_selection` — 選んだものを並べ替えに使う: none は並べ替えず検索の順、gpu は CPU が入っていても GPU（llama.cpp）を使う。
 - `test_gpu_ruri_is_preferred_and_falls_back_to_cpu` — GPU の ruri（fp16、MIGraphX）が入っていれば、自動では会話にも Knowledge にも使う（精度も速さも最良）。
+- `test_install_endpoint_actually_runs_the_job` — 導入の API はジョブを実際に走らせる。根拠: 2026-11-20 本番 v0.87。同期関数で受けていたためイベントループが無く 500
+- `test_gpu_preset_uninstall_removes_registration_and_file` — GPU の埋め込み・reranker（llama.cpp のプリセット）のアンインストール: 登録を消し、GGUF も消す。
 
 ### backend/tests/test_ratelimit.py
 
@@ -2104,6 +2106,7 @@
 - `test_engine_list_has_both_asr_and_tts`
 - `test_synthesis_rejects_out_of_range_before_starting_a_process`
 - `test_input_filter_presets_and_custom_values` — 入力フィルター: 初めは推奨。プリセットを選ぶとその値に揃い、細かい値を変えるとカスタムになる。範囲外は受け取らない。
+- `test_speech_engines_can_be_uninstalled` — TTS / ASR のアンインストール（2026-11-20 利用者の依頼）。ASR はそのエンジンのモデルだけを消し、sherpa-onnx の venv
 
 ### backend/tests/test_strata_gateway.py
 

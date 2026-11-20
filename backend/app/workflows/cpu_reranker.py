@@ -290,6 +290,7 @@ def status(model_id: str) -> dict:
         "ready": ready(model_id),
         "installed": ready(model_id),
         "installing": bool(active and active.status in ("queued", "running")),
+        "job_id": active.id if active and active.status in ("queued", "running") else None,
         "model": f"{spec['repo']}@{spec['revision'][:8]}",
         "model_bytes": path.stat().st_size if path.is_file() else 0,
         "runtime": spec["runtime_label"],
@@ -472,7 +473,8 @@ def start_install_job(model_id: str, owner_user_id: int | None) -> jobs.Job:
     current = jobs.get(_install_jobs[model_id]) if model_id in _install_jobs else None
     if current and current.status in ("queued", "running"):
         return current
-    job = jobs.create("model.preset", f"導入: {_spec(model_id)['name']}",
+    # 進み具合は Models の「Embed / Reranker」のカードに出す（"model." で始めると LLM の画面の上にも出てしまう）
+    job = jobs.create("retrieval.install", f"導入: {_spec(model_id)['name']}",
                       lambda job: install(job, model_id), owner_user_id=owner_user_id, priority=-5)
     _install_jobs[model_id] = job.id
     return job

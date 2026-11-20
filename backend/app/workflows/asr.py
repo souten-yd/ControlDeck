@@ -206,6 +206,22 @@ def is_ready() -> bool:
     return haas_ready() or whisper_ready() or parakeet_ready() or auto_ready()
 
 
+def uninstall_engine(engine: str) -> None:
+    """ASR のエンジンを外す（そのエンジンのモデルだけを消す）。
+
+    sherpa-onnx の venv は Haas・Parakeet・言語判定・入力フィルターで共用なので残す。日英自動を外すと言語判定のモデル
+    だけを消し、Haas と Parakeet はそれぞれのエンジンとして残る（2026-11-20 利用者「TTS と ASR にもアンインストールを」）。"""
+    targets = {"haas": haas_root() / "model", "parakeet-en": parakeet_root(), "auto-ja-en": lid_root(),
+               "whisper": runtime_root()}
+    if engine not in targets:
+        raise ValueError(f"未知の ASR エンジンです: {engine}")
+    target = targets[engine].resolve()
+    if not target.is_relative_to((data_dir() / "runtimes").resolve()):
+        raise RuntimeError("ASR データ領域外は消せません")
+    if target.exists():
+        shutil.rmtree(target)
+
+
 def engine_ready(engine: str) -> bool:
     return {"haas": haas_ready, "whisper": whisper_ready, "parakeet-en": parakeet_ready, "auto-ja-en": auto_ready}[engine]()
 
