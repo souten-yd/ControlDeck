@@ -59,6 +59,8 @@ def test_launch_args_are_fixed_and_loopback_only(managed):
     assert "  host: 127.0.0.1\n  port: 8100\n" in text and f"    model: /models/{managed.name}\n" in text
     assert "    kv-cache-dtype: fp8\n" in text and "    max-num-seqs: 2\n" in text and "    tp: 1\n" in text
     assert "    num-speculative-tokens: 7\n" in text
+    # 会話の KV を VRAM から追い出すときホストの RAM へ残す（既定は無しで、外れた会話を最初から読み直していた。2026-11-20）
+    assert f"    prefix-cache-mib: {radiance.PREFIX_CACHE_MIB}\n" in text
     radiance.save_instance("auto-depth", model_path=str(managed), port=8101)
     assert "num-speculative-tokens" not in radiance.config_yaml("auto-depth", radiance._read()["auto-depth"])
 

@@ -686,6 +686,27 @@ async def warm(model_id: str) -> None:
     await _workers.setdefault(model_id, _Worker(model_id)).warm()
 
 
+async def warm_gpu_reranker() -> str | None:
+    """GPU の reranker（ruri）を使う設定なら、先に起動しておく。起動したモデル ID（既に動いていればそれ）を返す。
+
+    埋め込み（bge-m3）を GPU に載せる前に呼ぶ（2026-11-20 利用者と合意: LLM の後は reranker が先、埋め込みが後）。
+    ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに合わせて残りを CPU で動かせる。先に bge-m3 が場所を取ると、
+    後から ruri が載れず CPU の控えに回る。埋め込みだけを使う場面（添付の保存など）でも先に場所を取る。
+    VRAM が足りなければ載せない（呼び出し側は気にしない）。"""
+    for fast in (True, False):
+        model_id = choose(fast)
+        if model_id in MODELS and MODELS[model_id]["device"] == "gpu":
+            if running(model_id):
+                return model_id
+            try:
+                await warm(model_id)
+                return model_id
+            except CpuRerankerError as exc:
+                logger.info("GPU の reranker を先に起動できませんでした（並べ替えは CPU の控えで行います）: %s", exc)
+                return None
+    return None
+
+
 async def stop_device(device: str) -> list[str]:
     """その装置（gpu / cpu）で動いている worker を止める。大きな LLM を起動する前に GPU の分を止める（常駐でも止める）。"""
     stopped = []

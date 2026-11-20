@@ -479,3 +479,38 @@ def test_cpu_llama_helpers_never_touch_the_gpu(monkeypatch, tmp_path):
         monkeypatch.setattr(llama, "get_instance", lambda alias, layers=layers: {
             **llama.DEFAULT_INSTANCE, "alias": "e", "role": "embedding", "model_path": "/m.gguf", "n_gpu_layers": layers})
         assert ('"--device" "none"' in llama._unit_content("e", margin_mib=0)) is expect
+
+
+def test_embedding_start_brings_up_the_gpu_reranker_first(monkeypatch):
+    """GPU の埋め込みを載せる前に、GPU の reranker（ruri）を先に載せる。LLM を載せる前は両方を止める。
+    根拠: 2026-11-20 利用者と合意。ruri は全部を GPU に載せないと動かず、bge-m3 は空きに合わせて残りを CPU で動かせる。
+    埋め込みだけを使う場面（添付の保存・調査結果の保存）でも先に場所を取る。補助は使うときだけ載せる（LLM の後に必ず載せはしない）。"""
+    from app.models_mgmt import large_model_lifecycle, llama
+    from app.workflows import cpu_reranker
+
+    calls = []
+
+    async def warm():
+        calls.append("reranker")
+        return "ruri-reranker-gpu"
+
+    async def release():
+        calls.append("release")
+        return []
+
+    async def unhealthy(alias):
+        return {"ok": False}
+
+    async def nothing(alias):
+        return None
+
+    monkeypatch.setattr(cpu_reranker, "warm_gpu_reranker", warm)
+    monkeypatch.setattr(large_model_lifecycle, "release_gpu_helpers", release)
+    monkeypatch.setattr(llama, "health", unhealthy)
+    monkeypatch.setattr(llama, "mark_used_by_base_url", lambda url: None)
+    monkeypatch.setattr(llama, "_reclaim_gpu_before_load", nothing)
+    monkeypatch.setattr(llama, "start_instance", lambda alias: (calls.append(f"start:{alias}"), (False, "test"))[1])
+    for alias, role, layers in (("embed", "embedding", 999), ("embed-cpu", "embedding", 0), ("chat", "llm", 999)):
+        monkeypatch.setattr(llama, "get_instance", lambda a, role=role, layers=layers: {"alias": a, "role": role, "port": 1, "n_gpu_layers": layers})
+        assert run(llama.ensure_ready(alias)) is False
+    assert calls == ["reranker", "start:embed", "start:embed-cpu", "release", "start:chat"]

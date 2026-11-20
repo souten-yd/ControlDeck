@@ -463,13 +463,7 @@ async def search(
 async def _warm_gpu_reranker(fast: bool) -> None:
     from app.workflows import cpu_reranker
 
-    model_id = cpu_reranker.choose(fast)
-    if model_id in cpu_reranker.MODELS and cpu_reranker.MODELS[model_id]["device"] == "gpu" \
-            and not cpu_reranker.running(model_id):
-        try:
-            await cpu_reranker.warm(model_id)
-        except cpu_reranker.CpuRerankerError as exc:
-            logger.info("GPU の reranker を先に起動できませんでした（並べ替えは CPU の控えで行います）: %s", exc)
+    await cpu_reranker.warm_gpu_reranker()
 
 
 # 再ランクの記録（自己診断）。2026-11-20 本番: GPU を他のモデルが使い切っていると reranker が CPU で動き、

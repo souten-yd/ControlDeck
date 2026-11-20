@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-20 LLM の高速化の設定を見直す（llama.cpp・Radiance・Maya）・補助の起動順
+
+- 利用者「LLM を載せた後、reranker と埋め込みは必ず起動する必要はない。起動するなら reranker が先、埋め込みが後。LLM を載せるときだけ一度下ろす」「llama・Radiance・Maya も高速化の設定があれば入れて」。
+- 補助の起動順: 補助は使うときだけ載せる（LLM の後に必ず載せはしない）。GPU の埋め込みを載せる前に、GPU の reranker（ruri）を先に載せる（`cpu_reranker.warm_gpu_reranker`、`llama.ensure_ready` の埋め込み）。埋め込みだけを使う場面（添付の保存・調査結果の保存・Knowledge への追加）でも先に場所を取る。LLM を載せる前は両方を止める（前の項）。
+- llama.cpp: 埋め込みにも flash-attn を入れた（bge-m3 の資料 64 件の保存 3.80 → 1.34 秒、ベクトルはコサイン 0.99999 以上で同じなので保存済みの資料はそのまま使える）。reranker は前から on。チャットの LLM は今は llama.cpp に登録が無いので測っていない（新しく登録するときは flash-attn を試す）。
+- Radiance: 投機的デコード（dflash2・深さ 7＋prompt lookup）と VRAM の prefix cache は既定で有効。ホスト RAM の段（`prefix-cache-mib`）は無く、VRAM から外れた会話は最初から読み直していた → 8,192 MiB を設定（Radiance が動く間は Strata・Maya は止まり RAM は空いている）。`--check` で受け付けを確認。KV が 289,648 トークンで max-model-len 327,680 に届かない警告は速さではないので変えない。
+- Maya（DS-XS）: 投機的デコード（dspark＋prompt lookup）は有効。遅さの原因は設定ではなく RAM の量: VRAM に入らない専門家 92.3 GB に対し RAM の空きは約 90 GB で、約 82 GB を先読みし残り約 10 GB はディスクから（1 つ 3.56 ms、RAM の 7 倍）。`--ssd-cache` などはあるが、起動 80 秒×組合せの実測が要るので今回は変えない。
+
 ## 2026-11-20 Strata の --ple-io を mmap に（質問の読み込みが長い質問で約 1.9 倍）
 
 - 利用者「Strata は RAM に読んでから VRAM に読む流れで遅い気がする。flash-attn は入っているか」「mmap にしてどう変わるか比べて」。

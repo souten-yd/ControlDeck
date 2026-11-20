@@ -231,9 +231,13 @@ def test_engine_settings_reach_launch_as_validated_set_flags(monkeypatch):
                                "STRATA_X; rm -rf /": "1", "STRATA_OK": "a b"}}
     # The default applies, overrides add to it, and anything shaped like an injection is dropped.
     assert strata_gateway.engine_settings(cfg) == {
-        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0", "draft-conf": "0.35"}
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_HC_Q8": "0", "draft-conf": "0.35", "ple-io": "mmap"}
     assert strata_gateway.engine_settings({"engine_settings": {"STRATA_ROUTE_TAIL_SKIP": "off"}}) == {
-        "STRATA_ROUTE_TAIL_SKIP": "off"}
+        "STRATA_ROUTE_TAIL_SKIP": "off", "ple-io": "mmap"}
+    # n-gram 表は mmap で読む（direct はこの NVMe で遅く、長い質問の読み込みが 1.9 倍違った。2026-11-20 実測）。
+    # 登録で direct を指定すればそれを使い、DeepSeek の家族（別のエンジン）には付けない
+    assert strata_gateway.engine_settings({"engine_settings": {"ple-io": "direct"}})["ple-io"] == "direct"
+    assert "ple-io" not in strata_gateway.engine_settings({"family": "deepseek41"})
 
 
 def test_free_form_chat_leaves_sampling_to_the_model():

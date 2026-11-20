@@ -55,9 +55,18 @@ _SETTING_KEY = re.compile(r"^(STRATA_[A-Z0-9_]{1,64}|[a-z][a-z0-9_.-]{0,63})$")
 _SETTING_VALUE = re.compile(r"^[A-Za-z0-9_.:+-]{1,64}$")
 
 
+# n-gram 表（PLE）の読み方。既定の direct はこの NVMe で 4 KiB の読み出しが 52〜58 MB/s と遅く、エンジンが警告を出す。
+# mmap にすると、毎回初めて読む質問が約 3,000 トークンで 1.4 倍、2〜2.7 万トークンで 1.9 倍速い（起動時間は同じ。
+# 2026-11-20 実測）。DeepSeek の家族は別のエンジンで、この引数を受け付けるか確かめていないので付けない
+PLE_IO_DEFAULT = "mmap"
+
+
 def engine_settings(cfg: dict) -> dict[str, str]:
     """起動時に --set で渡す設定。形の合わないものは渡さない（引数の注入を防ぐ）。"""
-    merged = {**DEFAULT_ENGINE_SETTINGS, **{str(k): str(v) for k, v in (cfg.get("engine_settings") or {}).items()}}
+    defaults = dict(DEFAULT_ENGINE_SETTINGS)
+    if cfg.get("family") != "deepseek41":
+        defaults["ple-io"] = PLE_IO_DEFAULT
+    merged = {**defaults, **{str(k): str(v) for k, v in (cfg.get("engine_settings") or {}).items()}}
     if cfg.get("kv_resident") is not None:
         merged["kv-resident"] = str(int(cfg["kv_resident"]))
     if cfg.get("ram_keep_gib") is not None:
