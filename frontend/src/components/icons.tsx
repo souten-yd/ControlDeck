@@ -333,11 +333,8 @@ const ADDON_ICONS: Record<string, (p: SVGProps<SVGSVGElement>) => JSX.Element> =
 };
 
 /** ControlDeck の信頼カタログに載る自前 Add-on だけ、ControlDeck 側で形を決める。
-    PatentBuddy は manifest で "book-open" を名乗るが、本の形では特許の道具だと
-    読めないため、特許書類の形にする。第三者 Add-on の宣言は上書きしない。 */
-const FIRST_PARTY_ICONS: Record<string, string> = {
-  "patent-buddy": "patent",
-};
+    第三者 Add-on の宣言は上書きしない。（PatentBuddy は 2026-11-21 に本体の Patent 画面へ統合して外した） */
+const FIRST_PARTY_ICONS: Record<string, string> = {};
 
 export function addonIcon(name?: string | null, addonId?: string | null) {
   const chosen = (addonId && FIRST_PARTY_ICONS[addonId]) || name;

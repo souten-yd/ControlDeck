@@ -61,7 +61,7 @@ ResearchDataHub と PatentBuddy の main は同じ `qnaplibrary` パッケージ
 | PDF 原本・抽出版・図の保存（pdf_store, pdf_images） | `app/knowledge/` の blobs・document_assets | 保存形式は K-PR1、取り込み処理は K-PR4 |
 | PDF 抽出（pdf_extract: Poppler + Tesseract） | 文書解析サービス | K-PR4 で Docling・PaddleOCR-VL・VLM と合わせて作り直す |
 | 機密防壁（privacy: local_only の確認） | ControlDeck の local-only AI 契約（PR #349）に一本化 | K-PR2 |
-| 特許案件・請求項・期限・クレームチャート（patents, Draft #10） | `app/patents/` | K-PR3 |
+| 特許案件・請求項・期限・クレームチャート・AI 支援（patents, Draft #10） | `app/patents/`・Patent 画面 | **移植済み**（K-PR3。AI 支援はローカル専用のモデルだけ、結果は未確認の推論として保存） |
 | 公的データ取得（connectors: GDELT・RSS・EPO・JPO・USPTO・e-Stat・EDINET・SEC、Draft #24・#40） | `app/knowledge/sources/` | K-PR5。外部へ送る検索語の承認は残す |
 | 監視・通知（watch, notify） | ControlDeck の Jobs・通知 | K-PR5 |
 | 根拠付き GraphRAG・知識エッセンス・Idea（Draft #23・#29〜#39） | `app/knowledge/graph` と Knowledge 画面 | K-PR7。Draft を読み直して必要な部分だけ |
@@ -99,7 +99,7 @@ ResearchDataHub と PatentBuddy の main は同じ `qnaplibrary` パッケージ
 ## 6. リポジトリを閉じる手順（利用者の確認を得てから）
 
 1. K-PR3（特許の業務）まで本番で動き、データの照合が済んでいること。
-2. `cdapp-feature-patent-buddy` を無効化し、`qnaplibrary.service` を停止・無効化する（データは消さない）。
+2. PatentBuddy は ControlDeck の更新で自動的に外れる（`features/registry.py` の `RETIRED_FEATURES`。サービス・Add-on の登録・実行ファイルを消し、`data/feature-data/patent-buddy` は残す。済んだら `data/features/patent-buddy/.retired`）。`qnaplibrary.service` は ResearchDataHub の取り込み（§5）の後に停止・無効化する（データは消さない）。
 3. PatentBuddy の Draft PR（#10・#23・#24・#29〜#40）と ResearchDataHub の未マージのブランチ（`docs/standards-license-policy`）に、ControlDeck の該当 PR へのリンクを書いて閉じる。
 4. 両リポジトリの README の先頭に「ControlDeck へ統合した」と書いて push し、GitHub で Archive する（読み取り専用。後で戻せる）。Release は残す。
 5. QNAP の QnapLibrary QPKG を使っている場合は、そのデータを回収してから停止する（§3 の未確認事項）。
@@ -121,8 +121,10 @@ ResearchDataHub と PatentBuddy の main は同じ `qnaplibrary` パッケージ
 
 | PR | 状態 |
 |---|---|
-| K-PR1 | 実装・集中テスト済み。全体テスト・PR は §9 |
-| K-PR2〜7 | 未着手 |
+| K-PR1 | 統合ストア・旧 RAG/ResearchDataHub の取り込み・規格の判定（PR #473） |
+| K-PR3 | **前倒しで実装**（2026-11-21、同じ PR #473）。Patent 画面（/patents）、`backend/app/patents/`、PatentBuddy Add-on の撤去 |
+| K-PR6 の一部 | 保存先・保存対象・バックアップの設定（`app/knowledge/storage.py`・`backup.py`、`./deck.sh knowledge-storage`）。設定画面と定時バックアップは未着手 |
+| K-PR2・4・5・7 | 未着手 |
 
 ## 9. 未決事項（利用者に確認）
 

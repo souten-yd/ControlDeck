@@ -141,23 +141,17 @@ def test_small_conversation_materials_are_given_whole_without_search(monkeypatch
     回答の指示文（「以下の検索結果を根拠に…」）は除く。大きければ None（探す方へ回す）。
     根拠: 2026-11-20 利用者「毎回会話ごとに調査するのか。資料を全部入れるのもありか。速度は速めに」。
     実測で 45 会話中 41 が 4.9 万文字以内。挨拶でも天気の検索資料を探して並べ替え、20 秒以上待たせていた。"""
-    import sqlite3
-
+    from app.knowledge import store
     from app.workflows import rag
 
-    monkeypatch.setattr(rag, "_rag_dir", lambda: tmp_path)
-    db = sqlite3.connect(tmp_path / "chat-x.db")
-    db.executescript("""
-        CREATE TABLE documents (id INTEGER PRIMARY KEY, source TEXT, added_at REAL, chunk_count INTEGER, meta TEXT);
-        CREATE TABLE chunks (id INTEGER PRIMARY KEY, doc_id INTEGER, text TEXT, parent TEXT, embedding BLOB, dim INTEGER, idx INTEGER);
-    """)
-    db.execute("INSERT INTO documents VALUES (1, 'web:天気', 0, 2, '{}'), (2, 'upload:memo.txt', 0, 1, '{}')")
-    db.executemany("INSERT INTO chunks (doc_id, text, parent, idx) VALUES (?, ?, NULL, ?)", [
-        (2, "メモの本文", 0),
-        (1, "以下の検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。\n\n[R1] 横浜は晴れ", 0),
-        (1, "[R2] 最高気温 20 度", 1),
-    ])
-    db.commit()
+    if store.find_collection("chat-x") is not None:
+        store.delete_collection("chat-x")
+    store.create_collection("chat-x", kind="conversation")
+    store.add_document("chat-x", [
+        store.NewChunk("以下の検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。\n\n[R1] 横浜は晴れ"),
+        store.NewChunk("[R2] 最高気温 20 度"),
+    ], source="web:天気")
+    store.add_document("chat-x", [store.NewChunk("メモの本文")], source="upload:memo.txt")
     monkeypatch.setattr(rag, "collection_exists", lambda name: True)
     text = rag.collection_materials("chat-x", 10_000)
     assert text.index("横浜は晴れ") < text.index("最高気温") < text.index("メモの本文")   # 文書の順・断片の順

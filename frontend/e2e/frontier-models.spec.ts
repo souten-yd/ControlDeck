@@ -83,7 +83,7 @@ test("キーを保存して有効にし、モデルを選び、確認のうえ�
   for (const name of [/^OpenCode/, /^AI アシスタント/, /^Workflow/, /^ゲートウェイを直接使う外部クライアント/]) {
     await expect(group.getByRole("checkbox", { name })).not.toBeChecked();
   }
-  await expect(group.getByText(/PatentBuddy など）は、この設定に関係なく外部へ送信されません/)).toBeVisible();
+  await expect(group.getByText(/Patent の AI 支援、Add-on の local-only 要求など）は、この設定に関係なく外部へ送信されません/)).toBeVisible();
   await opencode.click();
   const confirm = page.getByRole("alertdialog", { name: "OpenCode から外部へ送信できるようにしますか？" });
   await expect(confirm).toContainText("そのプロバイダへ送信されます");

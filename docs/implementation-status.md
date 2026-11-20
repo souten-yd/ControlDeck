@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-21 Patent 画面（特許調査・検討）と PatentBuddy Add-on の撤去、ナレッジの保存先の設定
+
+- 利用者「ControlDeck に統合する件を進めて。PatentBuddy のアドオンは不要になるので、アドオンと機能追加画面の PatentBuddy 導入項目などを一式削除し、特許調査検討用ツールである Patent 機能をつけて」。計画は `docs/PLAN-knowledge-platform.md`（K-PR3 を前倒し）。
+- Patent 画面（ナビの AI → Patent、`/patents`）: 案件（11 段階）、概要（技術分野・課題・解決手段・効果・実施例）、出来事から期限の目安（審査請求 3 年・公開 18 か月・拒絶理由の応答 60/90 日・特許料など）、請求項の版と構成要件の分解、クレームチャート（構成要件ごとにナレッジ全体を検索）、先行文献（ナレッジの検索から X/Y/A/P/E で登録、番号の直接入力）、AI 支援 12 種（発明ヒアリング・検索式・新規性・進歩性・請求項ドラフト・拒絶理由への応答など）、公報・論文の取り込み（特許の分野。既定は機密、公開済みだけ公開にできる）。
+- AI 支援は ControlDeck が管理するローカルの GGUF だけで動かす（`ai_gateway.require_local_target`）。使えなければ 503 で止め、クラウドへ回さない。結果は「モデルの推論・未確認」で保存し、確認済み・不採用を付けられる。Jobs で動き、GPU は既存の順番待ちに従う。
+- 保存は `data_dir/knowledge/patents.sqlite3`（特許の分野）。中身は ResearchDataHub の `qnaplibrary/patents.py` から移植（期限・構成要件・指示文）。
+- PatentBuddy: 機能追加のカタログ（`trusted-catalog.json`）から外し、導入済みなら起動時に片付ける（`RETIRED_FEATURES`。サービス・Add-on の登録・実行ファイルを消し、`data/feature-data/patent-buddy` は残す）。設定の検索語・アイコンの割り当て・フロンティアモデルの説明文から名前を外した。
+- ナレッジの保存先・保存対象・バックアップ（`./deck.sh knowledge-storage`）: 保存先を名前で登録（NAS はマウント先）、DB（分野ごと）・GraphRAG・原本・図・抽出結果の置き場所を別々に、SQLite はネットワーク上の FS に置かせない、目印で外れた NAS に書かない、バックアップの世代・照合・空の場所への復元・blobs の移し替え・DB の移動。設定画面と定時バックアップは未着手。
+- main に入っていた reranker の選択・時間の上限・小さい会話の資料を全部入れる処理（#475〜）を、統合ストアの窓口へ移した。
+- 検証: `tests/test_patents.py`（7）、`tests/test_knowledge_storage.py`（4）、`tests/test_knowledge_store.py`・`tests/test_rag_db_nodes.py` ほか。E2E `patents`（PC 幅・320px、作成→期限→請求項→AI 支援の案内、横はみ出し無し）、`frontier-models`、`feature-auto-update`。`release-bundle-settings`・`feature-boot-restore` は導入済みの環境が要るので未実施。
+
 ## 2026-11-19 統合ナレッジストア（PatentBuddy・ResearchDataHub の統合 K-PR1）
 
 - 利用者「すべて ControlDeck に統合する。PatentBuddy・ResearchDataHub のデータを回収し、使わなくなったリポジトリを閉じる」「DB は分けるが ControlDeck からは意識しない」「横断検索したい。守りたいのはアイデアの流出」。計画の正本は `docs/PLAN-knowledge-platform.md`。

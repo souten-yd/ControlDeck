@@ -22,6 +22,7 @@ import WorkflowRunnerPage from "./pages/WorkflowRunner";
 import RemotePage from "./pages/Remote";
 import GitHubPage from "./pages/GitHub";
 import KnowledgePage from "./pages/Knowledge";
+const PatentsPage = lazy(() => import("./pages/Patents"));
 import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
 import AddonHostPage from "./pages/AddonHost";
@@ -134,6 +135,7 @@ function buildRouter() {
       { path: "remote", element: <RemotePage /> },
       { path: "github", element: <GitHubPage /> },
       { path: "knowledge", element: <KnowledgePage /> },
+      { path: "patents", element: <LazyPage><PatentsPage /></LazyPage> },
       { path: "models", element: <ModelsPage /> },
       { path: "assistant", element: <AssistantPage /> },
       { path: "system", element: <SystemPage /> },

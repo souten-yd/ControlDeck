@@ -677,6 +677,39 @@ def enable(feature_id: str) -> dict:
     return status(feature_id)
 
 
+# 本体へ統合して不要になった機能。導入済みなら起動時に片付ける（サービス・Add-on の登録・実行ファイル）。
+# 利用者のデータ（data_dir/feature-data/<id>）は消さない。2026-11-21 利用者「PatentBuddy のアドオンは不要。
+# アドオンと機能追加画面の導入項目を一式削除し、Patent 機能を付ける」。
+RETIRED_FEATURES: dict[str, dict] = {
+    "patent-buddy": {"addon_id": "patent-buddy", "kind": "release-bundle", "replaced_by": "Patent 画面（/patents）"},
+}
+RETIRED_MARK = ".retired"
+
+
+def retire_removed_features() -> list[str]:
+    """RETIRED_FEATURES のうち導入の跡が残っているものを外す。済んだら印を置き、次からは何もしない。"""
+    from app.features import release_bundle
+
+    done: list[str] = []
+    for feature_id, spec in RETIRED_FEATURES.items():
+        root = _features_root() / feature_id
+        if not root.exists() or (root / RETIRED_MARK).exists():
+            continue
+        try:
+            release_bundle.uninstall(feature_id, spec)
+            state = _read_state()
+            if state.pop(feature_id, None) is not None:
+                _write_state(state)
+            (root / RETIRED_MARK).write_text(json.dumps({"retired_at": time.time(),
+                                                         "replaced_by": spec["replaced_by"]}, ensure_ascii=False))
+            logger.info("統合済みの機能を片付けました: %s（%s へ）", feature_id, spec["replaced_by"])
+            done.append(feature_id)
+        except Exception:
+            # 片付けに失敗しても Host の起動は止めない。次回の起動でやり直す
+            logger.exception("統合済みの機能の片付けに失敗しました: %s", feature_id)
+    return done
+
+
 def restore_enabled_services() -> None:
     """One startup pass over installed, opted-in services; run in a worker thread.
 
@@ -686,6 +719,14 @@ def restore_enabled_services() -> None:
     """
     from app.addons import registry as addon_registry
     from app.features import release_bundle
+
+    retire_removed_features()
+    try:
+        from app.patents import store as patent_store
+
+        patent_store.interrupt_unfinished()
+    except Exception:
+        logger.exception("特許の AI 支援の中断の記録に失敗しました")
 
     for feature_id, spec in list(FEATURES.items()):
         if spec["kind"] != "release-bundle":
