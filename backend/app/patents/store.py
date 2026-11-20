@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 
@@ -55,12 +54,9 @@ _ready: set[str] = set()
 
 def connect() -> sqlite3.Connection:
     conn = kstore.connect(SHARD)
-    path = kstore.shard_path(SHARD)
-    key = f"{path}:{os.stat(path).st_ino}"   # 置き換わったファイルでは表を作り直す
-    if key not in _ready:
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='patent_assists'").fetchone() is None:
         conn.executescript(SCHEMA)
         conn.commit()
-        _ready.add(key)
     return conn
 
 
@@ -200,6 +196,13 @@ def delete_case(case_id: int) -> None:
         _case(conn, case_id)
         for table in ("patent_events", "patent_claims", "patent_refs", "patent_assists"):
             conn.execute(f"DELETE FROM {table} WHERE case_id=?", (int(case_id),))
+        # ウォッチ・候補・期限の通知の記録も消す。案件の番号は使い回されるので、残すと次の案件に出る（2026-11-21 E2E で発見）
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ("patent_watches", "patent_watch_hits"):
+            if table in names:
+                conn.execute(f"DELETE FROM {table} WHERE case_id=?", (int(case_id),))
+        if "patent_notices" in names:
+            conn.execute("DELETE FROM patent_notices WHERE key LIKE ?", (f"{int(case_id)}:%",))
         conn.execute("DELETE FROM patent_cases WHERE id=?", (int(case_id),))
         conn.commit()
     finally:

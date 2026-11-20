@@ -43,6 +43,40 @@ export interface ClaimChart {
   rows: { element: ClaimElement; query: string; evidence: { doc_ref: string; title: string; collection: string; snippet: string }[] }[];
 }
 
+export interface CountRow { key: string; count: number }
+export interface PatentAnalytics {
+  documents: number;
+  coverage: { year: number; applicant: number; ipc: number; claims: number };
+  by_year: CountRow[];
+  applicants: CountRow[];
+  ipc_subclasses: CountRow[];
+  countries: CountRow[];
+  kinds: CountRow[];
+  applicant_ipc: { applicant: string; ipc: string; count: number }[];
+  applicant_year: { applicant: string; year: string; count: number }[];
+  claims_histogram: CountRow[];
+  note: string;
+}
+export interface MapPoint { ref: string; title: string; x: number; y: number; applicant: string; ipc: string; year: string }
+export interface PatentMap { points: MapPoint[]; model: string; explained: number[] }
+/** 公報の書誌（knowledge/biblio.py の形）。source は読み取り方（manual / ocr_extract / rule_extract など）。 */
+export interface Biblio {
+  title?: string; applicants?: string[]; inventors?: string[]; ipc?: string[];
+  filing_date?: string; publication_date?: string; priority_date?: string;
+  country?: string; kind?: string; claims_count?: number | null; source?: string;
+}
+export interface SimilarHit {
+  ref: string; title: string; score: number; snippet: string; applicants: string[]; ipc: string[]; date: string; registered: boolean;
+}
+
+export interface PatentSource { id: string; label: string; kind: string; hint: string; signup: string; ready: boolean; keys: string[] }
+export interface Watch {
+  id: number; source: string; source_label: string; query: string; interval_hours: number; enabled: boolean;
+  approved_public: boolean; last_run: number | null; last_status: string;
+}
+export interface WatchHit { id: number; watch_id: number; doc_ref: string; title: string; score: number; status: string; created: number }
+export interface WatchBody { source: string; query: string; interval_hours: number; approved_public: boolean; enabled: boolean }
+
 export const patentsApi = {
   meta: () => api<PatentMeta>("/patents/meta"),
   list: () => api<CaseSummary[]>("/patents/cases"),
@@ -70,4 +104,23 @@ export const patentsApi = {
   removeAssist: (id: number, assistId: number) => api<CaseDetail>(`/patents/cases/${id}/assists/${assistId}`, { method: "DELETE" }),
   addLiterature: (body: { title: string; text: string; url: string; public: boolean }) =>
     api<{ job_id: string }>("/patents/literature", { method: "POST", json: body }),
+  analytics: () => api<PatentAnalytics>("/patents/analytics"),
+  analyticsMap: () => api<PatentMap>("/patents/analytics/map"),
+  refreshBiblio: () => api<{ job_id: string }>("/patents/analytics/refresh-biblio", { method: "POST" }),
+  patchBiblio: (ref: string, fields: Partial<Biblio>) =>
+    api<Biblio>(`/patents/documents/${encodeURIComponent(ref)}/biblio`, { method: "PATCH", json: { fields } }),
+  similar: (id: number) => api<{ query: string; results: SimilarHit[] }>(`/patents/cases/${id}/similar`),
+  sources: () => api<{ sources: PatentSource[] }>("/patents/sources"),
+  setSourceKeys: (values: Record<string, string>) =>
+    api<{ sources: PatentSource[] }>("/patents/sources/keys", { method: "PUT", json: { values } }),
+  fetchSource: (source: string, body: { query: string; limit: number; approved_public: boolean }) =>
+    api<{ job_id: string }>(`/patents/sources/${encodeURIComponent(source)}/fetch`, { method: "POST", json: body }),
+  watches: (id: number) => api<{ watches: Watch[]; hits: WatchHit[] }>(`/patents/cases/${id}/watches`),
+  createWatch: (id: number, body: WatchBody) => api<Watch>(`/patents/cases/${id}/watches`, { method: "POST", json: body }),
+  updateWatch: (id: number, watchId: number, body: WatchBody) =>
+    api<Watch>(`/patents/cases/${id}/watches/${watchId}`, { method: "PUT", json: body }),
+  removeWatch: (id: number, watchId: number) => api(`/patents/cases/${id}/watches/${watchId}`, { method: "DELETE" }),
+  runWatch: (id: number, watchId: number) => api<{ job_id: string }>(`/patents/cases/${id}/watches/${watchId}/run`, { method: "POST" }),
+  decideHit: (id: number, hitId: number, body: { status: string; category?: string }) =>
+    api<{ id: number; status: string }>(`/patents/cases/${id}/watch-hits/${hitId}`, { method: "POST", json: body }),
 };

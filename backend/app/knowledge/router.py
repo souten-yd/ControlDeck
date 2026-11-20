@@ -262,3 +262,31 @@ def remove_standard(ref: str, request: Request, user: User = Depends(EDIT), db=D
     _wrap(standards.remove, ref)
     audit.record(db, "knowledge.remove_standard", user=user, resource_type="standard", resource_id=ref, request=request)
     return {"ok": True}
+
+
+# ---- 作り直し（AI の回答の区別・埋め込み・PDF の取り込み直し） ----
+
+@router.get("/rebuild")
+def rebuild_plan(user: User = Depends(require_permission("settings.manage"))):
+    """何を作り直すかの計画（書き込まない）。"""
+    from app.knowledge import rebuild
+
+    todo = rebuild.plan()
+    return {k: len(v) for k, v in todo.items()}
+
+
+class RebuildBody(BaseModel):
+    describe_figures: bool = True
+
+
+@router.post("/rebuild", status_code=201)
+async def rebuild_apply(body: RebuildBody, request: Request, user: User = Depends(require_permission("settings.manage")),
+                        db=Depends(get_db)):
+    from app.jobs import service as jobs
+    from app.knowledge import rebuild
+
+    job = jobs.create("knowledge.rebuild", "ナレッジの作り直し",
+                      lambda j: rebuild.apply(describe_figures=body.describe_figures, job=j), owner_user_id=user.id)
+    audit.record(db, "knowledge.rebuild", user=user, resource_type="knowledge", resource_id="all", request=request,
+                 metadata={"job_id": job.id, "describe_figures": body.describe_figures})
+    return {"job_id": job.id}

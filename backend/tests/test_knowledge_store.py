@@ -245,8 +245,10 @@ def test_cloud_cross_search_hides_confidential_except_bound_conversation():
     store.add_document("chat-mine", [store.NewChunk("インバータの会話")])
     store.add_document("idea-notes", [store.NewChunk("インバータの未公開アイデア")])
     store.add_document("public-gazette", [store.NewChunk("インバータの公開公報")])
-    local = store.search_all("インバータ", consumer="local", mode="fulltext")
+    local = store.search_all("インバータ", consumer="local", bound=["chat-mine"], mode="fulltext")
     assert {h["collection"] for h in local} == {"chat-mine", "idea-notes", "public-gazette"}
+    # 会話の資料はその会話の中（bound）でだけ使う（2026-11-21、別の会話の AI の回答を混ぜない）
+    assert "chat-mine" not in {h["collection"] for h in store.search_all("インバータ", consumer="local", mode="fulltext")}
     cloud = store.search_all("インバータ", consumer="cloud", bound=["chat-mine"], mode="fulltext")
     assert {h["collection"] for h in cloud} == {"chat-mine", "public-gazette"}
     with pytest.raises(store.KnowledgeError):

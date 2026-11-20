@@ -311,7 +311,7 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
     from app.workflows import chat_tools, rag
 
     _setup_job("tt-cvw", "tt-amw")
-    requests, saved = [], []
+    requests, saved, bases = [], [], []
 
     class Provider:
         tools_verified = True
@@ -331,8 +331,9 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
         assert query == "横浜 天気 明日"
         return [{"title": "横浜の天気", "url": "https://example.invalid/w", "snippet": "明日は晴れ"}]
 
-    async def register(conv, text, source):
+    async def register(conv, text, source, basis="source_fact"):
         saved.append(source)
+        bases.append(basis)
 
     async def fake_ctx(base_url, model):
         return 32768
@@ -363,6 +364,7 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
     events = [e for e in job.events if e.get("message") == "sources"]
     assert events and events[-1]["sources"][0]["url"] == "https://example.invalid/w"
     assert saved and saved[0].startswith("web回答")
+    assert bases[0] == "model_inference"     # AI の回答は推論として保存（2026-11-21）
     # 「自動」以外（対話を選んだ）では Web の道具を渡さない
     requests.clear()
     _setup_job("tt-cvx", "tt-amx")

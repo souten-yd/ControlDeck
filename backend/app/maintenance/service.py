@@ -180,5 +180,12 @@ async def maintenance_loop() -> None:
             await asyncio.to_thread(run_maintenance)
         except Exception:
             logger.exception("maintenance loop error")
+        try:
+            # 特許ウォッチ（期限の来たものを Jobs へ）と期限の通知（1 日 1 回）。常駐を増やさずここから起こす
+            from app.patents import watch
+
+            await watch.tick()
+        except Exception:
+            logger.exception("patent watch tick error")
         beat("maintenance")
         await asyncio.sleep(INTERVAL)

@@ -10,6 +10,7 @@ import { PageHeader } from "../components/PageHeader";
 import { knowledgeApi } from "../api/knowledge";
 import { KnowledgeSearch } from "../features/knowledge/KnowledgeSearch";
 import { StandardsPanel } from "../features/knowledge/StandardsPanel";
+import { RebuildSheet } from "../features/knowledge/RebuildSheet";
 
 interface Collection {
   collection: string;
@@ -50,6 +51,7 @@ export default function KnowledgePage() {
   const [openName, setOpenName] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [tab, setTab] = useState<"find" | "collections" | "standards">("find");
+  const [rebuilding, setRebuilding] = useState(false);
 
   const { data: cols, isLoading } = useQuery({
     queryKey: ["knowledge"],
@@ -71,6 +73,11 @@ export default function KnowledgePage() {
         )} />
       <SegmentedTabs className="mb-4" value={tab} onChange={setTab}
         tabs={[["find", "探す"], ["collections", "資料の管理", "資料管理"], ["standards", "規格の管理", "規格管理"]] as const} />
+      {tab === "collections" && can("settings.manage") && (
+        <div className="-mt-1 mb-3 flex justify-end">
+          <button className="min-h-11 rounded-xl px-3 text-sm text-accent-700 hover:bg-accent-600/10 dark:text-accent-300" onClick={() => setRebuilding(true)}>作り直し</button>
+        </div>
+      )}
 
       {tab === "find" ? <KnowledgeSearch /> : tab === "standards" ? <StandardsPanel /> : isLoading ? (
         <Skeleton className="h-24" />
@@ -99,6 +106,7 @@ export default function KnowledgePage() {
         </ul>
       )}
 
+      {rebuilding && <RebuildSheet onClose={() => setRebuilding(false)} />}
       {creating && <CreateSheet onClose={() => setCreating(false)} onDone={() => qc.invalidateQueries({ queryKey: ["knowledge"] })} />}
       {openName && <CollectionSheet name={openName} onClose={() => setOpenName(null)} />}
       {deleting && (

@@ -281,6 +281,130 @@ async def similar(case_id: int, user: User = VIEW):
                     "date": b.get("publication_date") or b.get("filing_date") or "",
                     "registered": any(r["doc_ref"] == h["doc_ref"] for r in case["refs"])})
     return {"query": query, "results": out}
+# ---- 公開データの取得・ウォッチ（R3-2） ----
+
+class SourceKeys(BaseModel):
+    values: dict[str, str]
+
+
+class FetchBody(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=25, ge=1, le=100)
+    approved_public: bool = False
+
+
+class WatchBody(BaseModel):
+    source: str
+    query: str = Field(min_length=1, max_length=500)
+    interval_hours: int = Field(default=168, ge=6, le=720)
+    approved_public: bool = False
+    enabled: bool = True
+
+
+class HitBody(BaseModel):
+    status: str = Field(pattern="^(new|relevant|excluded|registered)$")
+    category: str | None = Field(default=None, pattern="^[XYAPE]$")
+
+
+def _need_public(flag: bool) -> None:
+    if not flag:
+        raise HTTPException(status_code=422, detail="外部へ送る検索語です。未公開の発明の内容を含まないことを確認してください")
+
+
+@router.get("/sources")
+def list_sources(user: User = VIEW):
+    from app.knowledge import sources
+
+    return {"sources": sources.listing()}
+
+
+@router.put("/sources/keys")
+def set_source_keys(body: SourceKeys, request: Request, user: User = Depends(require_permission("settings.manage")),
+                    db=Depends(get_db)):
+    from app.knowledge import sources
+
+    try:
+        sources.set_keys(body.values)
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "patents.source_keys", user=user, resource_type="settings", resource_id="knowledge-sources",
+                 request=request, metadata={"names": sorted(body.values)})   # 値は残さない
+    return {"sources": sources.listing()}
+
+
+@router.post("/sources/{source}/fetch", status_code=201)
+async def fetch_source(source: str, body: FetchBody, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    """公開データを 1 回取得して取り込む（Jobs）。検索語は外部へ送られるので、公開してよい語だけ。"""
+    from app.jobs import service as jobs
+    from app.knowledge import sources
+
+    _need_public(body.approved_public)
+    if source not in sources.SOURCES:
+        raise HTTPException(status_code=404, detail="知らない取得先です")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("取得しています", 0, 2)
+        records = await asyncio.to_thread(sources.fetch, source, body.query, body.limit)
+        job.set_progress("取り込んでいます", 1, 2)
+        return await sources.ingest(records)
+
+    job = jobs.create("patents.fetch", f"公開データの取得: {sources.SOURCES[source]['label']}", run, owner_user_id=user.id)
+    audit.record(db, "patents.source_fetch", user=user, resource_type="source", resource_id=source, request=request,
+                 metadata={"job_id": job.id, "query": body.query, "approved_public": True})
+    return {"job_id": job.id}
+
+
+@router.get("/cases/{case_id}/watches")
+def list_watches(case_id: int, user: User = VIEW):
+    from app.patents import watch
+
+    return {"watches": _call(watch.list_watches, case_id), "hits": _call(watch.hits, case_id)}
+
+
+@router.post("/cases/{case_id}/watches", status_code=201)
+def create_watch(case_id: int, body: WatchBody, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    from app.patents import watch
+
+    _need_public(body.approved_public)
+    out = _call(watch.save_watch, case_id, source=body.source, query=body.query, interval_hours=body.interval_hours,
+                approved_public=True, enabled=body.enabled)
+    audit.record(db, "patents.watch_create", user=user, resource_type="patent_case", resource_id=str(case_id),
+                 request=request, metadata={"source": body.source, "query": body.query})
+    return out
+
+
+@router.put("/cases/{case_id}/watches/{watch_id}")
+def update_watch(case_id: int, watch_id: int, body: WatchBody, user: User = Depends(EDIT)):
+    from app.patents import watch
+
+    return _call(watch.save_watch, case_id, source=body.source, query=body.query, interval_hours=body.interval_hours,
+                 approved_public=body.approved_public, enabled=body.enabled, watch_id=watch_id)
+
+
+@router.delete("/cases/{case_id}/watches/{watch_id}")
+def delete_watch(case_id: int, watch_id: int, user: User = Depends(EDIT)):
+    from app.patents import watch
+
+    _call(watch.delete_watch, case_id, watch_id)
+    return {"ok": True}
+
+
+@router.post("/cases/{case_id}/watches/{watch_id}/run", status_code=201)
+def run_watch(case_id: int, watch_id: int, user: User = Depends(EDIT)):
+    from app.jobs import service as jobs
+    from app.patents import watch
+
+    if not any(w["id"] == watch_id for w in _call(watch.list_watches, case_id)):
+        raise HTTPException(status_code=404, detail="ウォッチがありません")
+    job = jobs.create("patents.watch", "特許ウォッチ（いま実行）", lambda j: watch.run_watch(j, watch_id), owner_user_id=user.id)
+    return {"job_id": job.id}
+
+
+@router.post("/cases/{case_id}/watch-hits/{hit_id}")
+def decide_hit(case_id: int, hit_id: int, body: HitBody, user: User = Depends(EDIT)):
+    from app.patents import watch
+
+    return _call(watch.decide_hit, case_id, hit_id, body.status, body.category)
 
 
 @router.get("/literature")

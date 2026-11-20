@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 185 ファイル、1659 テスト（目的の未記入 93 ファイル）
-- E2E: 92 spec、189 テスト
+- backend: 188 ファイル、1674 テスト（目的の未記入 93 ファイル）
+- E2E: 92 spec、193 テスト
 
 ## backend（backend/tests）
 
@@ -1148,6 +1148,15 @@
 - `test_assist_quotes_law_and_offers_classification_candidates`
 - `test_mcp_knowledge_search_treats_the_client_as_cloud`
 
+### backend/tests/test_knowledge_rebuild.py
+
+目的: ナレッジの作り直しと、会話の資料・AI の回答の扱い。 目的: - AI の回答（「web回答: …」）は推論（model_inference）として保存し、旧データも作り直しで直すこと。 - 別の会話の資料（雑談・AI の回答）を、横断検索・アシスタントのナレッジ検索に混ぜないこと（その会話の中では使う）。 - 埋め込みの無い断片・別のモデルの断片を、いまのモデルで作り直すこと。 - 原本 PDF のある古い公報を新しい取り込み（ページ・書誌・図）で作り直し、案件の先行文献の参照を付け替えること。 - 計画の表示は何も書かないこと。 根拠: 2026-11-21 利用者「RAG もデータの再構築が必要ではないか。今のデータは使い物になるか」。本番で調べると AI の回答 57 件が 原文と同じ扱いで、ResearchDataHub から移した公報は埋め込み・書誌が無かった。
+
+- `test_other_conversations_are_not_mixed_into_cross_search`
+- `test_chat_answers_are_saved_as_inference`
+- `test_plan_writes_nothing_and_apply_fixes_answers_and_embeddings`
+- `test_old_patent_pdf_is_reingested_and_case_refs_follow`
+
 ### backend/tests/test_knowledge_storage.py
 
 目的: ナレッジの保存先・保存対象・バックアップ（app.knowledge.storage / backup）。 目的: - 保存対象（DB・図・原本・抽出結果）ごとに保存先を分けられ、許可ルートの外・ネットワーク上の FS の SQLite を拒むこと。 - NAS が外れて目印が無いとき、そこへ黙って書かず「この PC」に置き、後で移せること。 - バックアップの世代を照合でき、稼働中のデータを上書きせずに空のディレクトリへ戻せること。 根拠: 2026-11-19 利用者「ローカル保存・サーバーへのバックアップ・図表などを分けて設定できるように。 保存場所と保存対象を分けて設定できれば柔軟にできる」。SQLite をネットワーク越しに開くとロックが効かず壊れる。
@@ -1740,6 +1749,27 @@
 - `test_origin_csrf_limit_delete`
 - `test_totp_enrollment_cannot_be_bypassed`
 - `test_another_user_cannot_list_or_delete_key`
+
+### backend/tests/test_patent_analytics.py
+
+目的: 特許の分析（書誌の読み取り・集計・類似マップ・案件に近い公報）。 目的: - 公報の 1 ページ目（INID コード）から出願人・IPC・日付・請求項の数を読み、読めないものは空のまま（推測で埋めない）。 2 段組みで (71) の名前が別の列に回っても出願人を拾い、「…株式会社内」（発明者の住所）は出願人にしない。 - 集計は書誌の読めた公報だけを数え、読めた件数（coverage）と偏りの注意を返す。 - 類似マップは埋め込みのある公報だけを 2 次元に置く。書誌は手で直せる（source=manual）。 根拠: 2026-11-21 利用者「特許の傾向・書誌・請求項・類似特許などをグラフ化して表示する機能はどうなっているか」。 ResearchDataHub v0.3 の集計と PatentBuddy の 10 種のグラフの試作は本体に入っていなかった（計画 §10）。
+
+- `test_front_page_fields_are_read_and_unknowns_stay_empty`
+- `test_overview_counts_only_what_was_read_and_says_so`
+- `test_similarity_map_places_documents_with_vectors`
+- `test_api_analytics_manual_biblio_and_similar`
+
+### backend/tests/test_patent_watch.py
+
+目的: 公開データの取得・特許ウォッチ・期限の通知（統合後の再設計 R3-2）。 目的: - 外へ送る検索語は利用者が「公開してよい」と確認したものだけ。確認の無い取得・ウォッチは動かさず、検索語を変えたら確認をやり直す。 - 取得は https の公開アドレスだけ。内部アドレス・リダイレクトを拒む（SSRF）。鍵は暗号化して保存し、応答に出さない。 - EPO OPS の書誌を統合ストアの書誌の形（meta["biblio"]）にそろえる。 - ウォッチは新しく入った文献だけをヒットにし、2 回目は同じ文献を出さない。ヒットから X/Y/A で先行文献に登録できる。 - 期限の通知はしきい値ごとに 1 回だけで、本文に案件名を書かない（通知は外部のサーバーを通る）。 根拠: ResearchDataHub v0.2 にあった機能（watch.py・notify.py・connectors.py）で、v0.102 の統合で抜けていた。 2026-11-21 利用者「各リポジトリの計画を ControlDeck 側に反映して進める」。docs/PLAN-knowledge-platform.md §10。
+
+- `test_epo_records_use_the_shared_biblio_shape`
+- `test_internal_addresses_plain_http_and_redirects_are_refused`
+- `test_keys_are_encrypted_and_never_returned`
+- `test_watch_needs_public_approval_and_only_new_documents_become_hits`
+- `test_deadline_notices_once_per_threshold_without_case_names`
+- `test_api_refuses_unapproved_queries`
+- `test_deleting_a_case_removes_its_watches_hits_and_notices` — 案件の番号は使い回される。消した案件のウォッチ・候補・通知の記録が次の案件に出てはいけない（2026-11-21 E2E で発見）。
 
 ### backend/tests/test_patents.py
 
@@ -2882,9 +2912,10 @@
 
 ### frontend/e2e/knowledge.spec.ts
 
-目的: Knowledge: 探す・資料・規格のタブ。規格は入手経路から保存・AI 利用の判定を見せ、購入品は番号と題名だけで登録する。 根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」。 */
+目的: Knowledge: 探す・資料・規格のタブ。規格は入手経路から保存・AI 利用の判定を見せ、購入品は番号と題名だけで登録する。 「資料の管理」の「作り直し」は、実行する前に何を何件作り直すかを見せる。 根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」、同日 R3-2（ナレッジの作り直し）。 */
 
 - Knowledge: 規格を登録して番号で探す（${width}px）
+- Knowledge: 審査基準のコレクションを作る（詳細設定は既定で隠す）
 
 ### frontend/e2e/llama-runtime-settings.spec.ts
 
@@ -2973,9 +3004,12 @@
 
 ### frontend/e2e/patents.spec.ts
 
-目的: Patent（特許調査・検討）画面。案件の作成 → 概要 → 期限 → 請求項 → AI 支援を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」。 検証用インスタンスにはローカルのモデルが無いので、AI 支援は「外部へ送らない」案内が出ることを確かめる。 */
+目的: Patent（特許調査・検討）画面。案件の作成 → 案件のページ（/patents/:id）→ 概要 → ヒアリング → 期限 → 請求項 → AI 支援 → 分析、 一覧の「分析」（グラフ）と「公報」を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」、同日「新しい特許の開発フローがフローティング ウィンドウになっている。コントロールデックと統合してほしい」（案件はシートではなくページで開く・戻るで一覧へ）と 「特許の分析をグラフで（推移・書誌・請求項・類似・バブル）」。 検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、 グラフの見た目は分析の API の応答を差し替えて撮る。 ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるので、確認のチェックを入れるまで保存・取得できないこと、 鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。 */
 
-- Patent: 案件を作って期限と請求項を扱う（${width}px）
+- Patent: 案件のページで期限と請求項を扱う（${width}px）
+- Patent: 分析のグラフ（応答を差し替え・${width}px）
+- Patent: ウォッチは確認のチェックが要る（${width}px）
+- Patent: 公報が無いときの分析と公報の画面（1280px）
 
 ### frontend/e2e/persistent-login.spec.ts
 
