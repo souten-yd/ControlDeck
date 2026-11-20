@@ -92,7 +92,7 @@ test("CPU rerankers are installed and chosen in Models > Embed / Reranker", asyn
     await page.goto("/models?tab=embed");
     const panel = page.locator("[data-retrieval-models]");
     await expect(panel).toBeVisible();
-    for (const id of ["xsmall-reranker", "ruri-reranker"]) {
+    for (const id of ["xsmall-reranker", "ruri-reranker", "ruri-reranker-gpu"]) {
       const card = page.locator(`#retrieval-${id}`);
       await expect(card).toBeVisible();
       await expect(card.getByRole("button", { name: "導入" })).toBeVisible();

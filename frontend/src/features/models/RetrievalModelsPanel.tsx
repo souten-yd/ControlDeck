@@ -5,7 +5,7 @@ import { useAuth, useToasts } from "../../stores";
 import { ConfirmDialog } from "../../components/ui";
 
 interface CpuReranker {
-  id: string; name: string; installed: boolean; installing: boolean; model: string; model_bytes: number;
+  id: string; name: string; installed: boolean; installing: boolean; model: string; model_bytes: number; device: string;
   runtime: string; accuracy: string; speed: string; memory: string; license: string; error: string; running: boolean;
 }
 
@@ -22,13 +22,14 @@ interface JobInfo { id: string; status: string; progress: { status?: string; com
 const SHORT: Record<string, string> = {
   "xsmall-reranker": "xsmall（CPU・速い）",
   "ruri-reranker": "ruri（CPU・高精度）",
-  gpu: "GPU の reranker（Qwen3-Reranker-4B など）",
+  "ruri-reranker-gpu": "ruri（GPU・高精度・速い）",
+  gpu: "llama.cpp の reranker（Qwen3-Reranker-4B など）",
   none: "並べ替えない（検索の順）",
 };
 
 const USES: { key: "chat" | "knowledge"; label: string; hint: string }[] = [
-  { key: "chat", label: "会話の資料", hint: "AI アシスタントの会話で資料を探すとき。速さ優先（おすすめ: xsmall）" },
-  { key: "knowledge", label: "Knowledge・Workflow", hint: "Knowledge の検索と Workflow の RAG。精度優先（おすすめ: ruri）" },
+  { key: "chat", label: "会話の資料", hint: "AI アシスタントの会話で資料を探すとき。速さ優先（おすすめ: ruri の GPU、無ければ xsmall）" },
+  { key: "knowledge", label: "Knowledge・Workflow", hint: "Knowledge の検索と Workflow の RAG。精度優先（おすすめ: ruri の GPU、無ければ CPU の ruri）" },
 ];
 
 /** CPU の reranker（タップ 1 つで導入）と、使う reranker の選択。
@@ -76,7 +77,7 @@ export function RetrievalModelsPanel() {
     <div className="space-y-3" data-retrieval-models>
       <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
         <p className="text-sm font-semibold">使う reranker</p>
-        <p className="mt-0.5 text-xs text-zinc-400">検索の候補を、質問との関係の深さで並べ直すモデルです。自動は、入っている CPU のものを優先します（無ければ GPU）。埋め込みは bge-m3（GPU）を使います。</p>
+        <p className="mt-0.5 text-xs text-zinc-400">検索の候補を、質問との関係の深さで並べ直すモデルです。自動は、ruri の GPU → CPU のもの → llama.cpp の reranker の順に、入っているものを使います。埋め込みは bge-m3（GPU）を使います。</p>
         <div className="mt-3 space-y-3">
           {USES.map((use) => (
             <label key={use.key} className="block">
@@ -132,7 +133,7 @@ function CpuRerankerCard({ model, jobId, editable, onInstall, onRemove, onJobDon
           title={model.running ? "稼働中" : model.installed ? "導入済み" : "未導入"} />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">{model.name}
-            <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/50 dark:text-violet-300">再ランク・CPU</span>
+            <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/50 dark:text-violet-300">{model.device === "gpu" ? "再ランク・GPU" : "再ランク・CPU"}</span>
           </p>
           <p className="mt-0.5 text-xs text-zinc-400">{model.accuracy}。{model.speed}。{model.memory}</p>
         </div>

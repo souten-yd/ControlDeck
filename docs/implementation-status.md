@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-20 ruri を GPU で動かす選択肢（fp16・MIGraphX）・Maya にも道具を渡す
+
+- 利用者「ruri を GPU で動かす選択肢を足して」「GPU で int8 などに量子化して容量を下げられないか。精度と速度は維持」「Maya でうまく道具が使えないのはなぜか。呼び方が違うのか調べて」。
+- GPU の ruri: ONNX Runtime の MIGraphX 版（PyPI の onnxruntime-migraphx 1.27.1、ROCm の MIGraphX を使う）で fp16 計算。ファイルは fp16（0.63 GB、fp32 の半分）で精度・速さは fp32 と同じ（日本語 0.877 / 0.964、英語 0.582 / 0.935、標準の長さ 32 件 0.37 秒）。int8 は GPU で 8.5 倍遅く VRAM もほぼ減らないので不採用。4 件ずつ並べて VRAM 1.27 GB。形は 4 × 1024 に固定（形を 2 つにするとコンパイル結果の取り違えで点数が壊れた）。コンパイル結果は保存し、2 回目以降の起動は約 3 秒。
+- Models の「Embed / Reranker」に「ruri（GPU）」を追加。自動では GPU の ruri を最優先（会話・Knowledge とも）、無ければ従来どおり（会話は xsmall、Knowledge は CPU の ruri）。GPU の ruri が失敗したら（VRAM 不足など）入っている CPU のものへ回す。実行環境は CPU 用と別（`runtimes/reranker-gpu`）、外す印もモデルごと。変換が済んだら元の重み（1.26 GB）を消す。
+- 容量（GPU の ruri）: モデル 0.62 GB＋実行環境とコンパイル結果 0.77 GB＝約 1.4 GB。隔離した data で導入 180 秒。
+- Maya: 道具の呼び出しは DeepSeek の DSML で書かれ、Maya が OpenAI の tool_calls に直して返す（形式の違いは無く、ControlDeck は正しく受け取れている）。ストリームで挨拶 8 回とも呼ばず、天気 8 回とも Web を探した。最初の確認で挨拶に資料を探した 1 回は、起動直後の最初の要求だけで再現しなかった → `tools_verified` にした。天気で 1 回探して諦めることがあったので、Web 検索の道具の説明に「見つからなければ語を変えて探し直す」を足した。
+- 検証: `tests/test_rag_db_nodes.py`（GPU の ruri を優先・失敗したら CPU へ・印と実行環境は別）、`tests/test_chat_tools.py`（Maya に渡す）、隔離した data で GPU の ruri を実際に導入して並べ替え。評価は `docs/reranker-evaluation.md`。
+
 ## 2026-11-20 Models の「Embed / Reranker」で CPU の reranker を導入・選択する
 
 - 利用者「reranker と埋め込みモデルは適切に選定されているか。Models タブで導入できるか、どのモデルを使うか選べるか」。v0.85 では CPU の reranker が設定の「機能追加 → 検索（RAG）」にあり、Models の「Embed / Reranker」（GPU の bge-m3・Qwen3-Reranker-4B）と場所が分かれ、使うモデルを選ぶ画面も無かった。本番では未導入なのに空のフォルダが残っていた（状態を見るだけで `archives/`・`runtimes/` のフォルダを作っていた）。

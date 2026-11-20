@@ -505,7 +505,18 @@ async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool 
             scores = await cpu_reranker.score(question, [m["text"] for m in pool], model_id=model_id,
                                               max_tokens=max_tokens)
         except (cpu_reranker.CpuRerankerError, ValueError):
-            return matches[:top_k]
+            # GPU の ruri が使えない（VRAM が埋まっている等）ときは、入っている CPU のものへ回す
+            fallback = cpu_reranker.pick(fast, cpu_only=True) if cpu_reranker.MODELS[model_id]["device"] == "gpu" else None
+            if fallback is None:
+                return matches[:top_k]
+            model_id = fallback
+            pool_factor, max_tokens = cpu_reranker.limits(model_id, fast)
+            pool = matches[:top_k * pool_factor]
+            try:
+                scores = await cpu_reranker.score(question, [m["text"] for m in pool], model_id=model_id,
+                                                  max_tokens=max_tokens)
+            except (cpu_reranker.CpuRerankerError, ValueError):
+                return matches[:top_k]
         order = sorted(range(len(pool)), key=lambda i: -scores[i])[:top_k]
         return [{**pool[i], "rerank_score": round(scores[i], 5), "rerank_engine": model_id} for i in order]
     if llama.find_role_instance("reranker") is None:

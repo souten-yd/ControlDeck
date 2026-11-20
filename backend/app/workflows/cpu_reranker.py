@@ -58,7 +58,7 @@ MODELS: dict[str, dict] = {
         "speed": "標準の長さ 32 件で 0.7〜1.2 秒",
         "memory": "ファイル 0.15 GB・RAM 0.7 GB",
         # 速いので会話でも候補を絞らない
-        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "fast",
+        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "fast", "device": "cpu",
     },
     "ruri-reranker": {
         "name": "ruri-v3-reranker-310m（CPU・高精度）",
@@ -78,17 +78,45 @@ MODELS: dict[str, dict] = {
         "runtime_label": "ONNX Runtime 1.32.0（CPU・int8）",
         "accuracy": "日本語 0.877（最良）",
         "speed": "標準の長さ 32 件で 8〜12 秒（会話では候補を半分に絞る）",
-        "memory": "ファイル 0.73 GB（元の重み 1.2 GB も保管）・RAM 2.1 GB",
+        "memory": "ファイル 0.73 GB・RAM 2.5 GB",
         # 実測（8 スレッド、標準の長さ約 450 トークン）: 32 件 8.0 秒。会話（3 秒まで）では候補を top_k×2 に絞る
-        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 2, "prefer": "accurate",
+        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 2, "prefer": "accurate", "device": "cpu",
+    },
+    # 2026-11-20 利用者「ruri を GPU で動かす選択肢を」「GPU で量子化して容量を下げられないか。精度と速さは維持」。
+    # 実測（R9700、ONNX Runtime MIGraphX、fp16 計算、資料は 1024 トークンまで）:
+    #   fp32 のファイル（1.26 GB）: 日本語 0.877 / 0.964・英語 0.582 / 0.935、標準の長さ 32 件 0.37 秒、VRAM 1.52 GB
+    #   fp16 のファイル（0.63 GB）: 精度・速さとも同じ。採用（ファイルが半分）
+    #   int8（CPU 用、0.73 GB）: 32 件 3.15 秒（8.5 倍遅い。int8 の計算が GPU で速くならない）。VRAM 1.35 GB。不採用
+    #   一度に並べる件数: 8 件 VRAM 1.52 GB、4 件 1.27 GB（速さ同じ）、2 件 1.15 GB（0.40 秒）→ 4 件
+    "ruri-reranker-gpu": {
+        "name": "ruri-v3-reranker-310m（GPU・高精度・速い）",
+        "repo": "cl-nagoya/ruri-v3-reranker-310m",
+        "revision": "bb46934ee9ed09f850b9fcff17501b3ef7ddb2b3",
+        "license": "Apache-2.0（名古屋大学 cl-nagoya）",
+        "build": "convert-fp16",
+        "files": None,   # ruri-reranker と同じ（下で埋める）
+        "model_file": "onnx-fp16/model_fp16.onnx",
+        "runtime_label": "ONNX Runtime MIGraphX 1.27.1（AMD GPU・fp16）",
+        "accuracy": "日本語 0.877（最良）",
+        "speed": "標準の長さ 32 件で約 0.4 秒",
+        "memory": "ファイル 0.63 GB・VRAM 約 1.3 GB（使っていなければ 10 分で返す）",
+        "max_tokens": MAX_TOKENS, "fast_max_tokens": MAX_TOKENS, "fast_pool": 4, "prefer": "accurate", "device": "gpu",
+        "batch": 4,
     },
 }
-RUNTIME_PACKAGES = ("onnxruntime==1.32.0", "tokenizers==0.23.3", "numpy==2.5.5", "flatbuffers==25.12.19",
-                    "packaging==26.3", "protobuf==7.36.2")
+MODELS["ruri-reranker-gpu"]["files"] = MODELS["ruri-reranker"]["files"]
+# 自動のときの優先順。GPU の ruri は精度も速さも最良なので、入っていればどちらにも使う
+_AUTO_ORDER = {"fast": ("ruri-reranker-gpu", "xsmall-reranker", "ruri-reranker"),
+               "accurate": ("ruri-reranker-gpu", "ruri-reranker", "xsmall-reranker")}
+_COMMON_PACKAGES = ("tokenizers==0.23.3", "numpy==2.5.5", "flatbuffers==25.12.19", "packaging==26.3", "protobuf==7.36.2")
+RUNTIME_PACKAGES = ("onnxruntime==1.32.0", *_COMMON_PACKAGES)
+# GPU: AMD の MIGraphX 版（PyPI）。ROCm の MIGraphX（/opt/rocm）を使う。実行環境 約 0.2 GB
+GPU_RUNTIME_PACKAGES = ("onnxruntime-migraphx==1.27.1", *_COMMON_PACKAGES)
 # 変換だけに使う（終わったら消す）。torch は CPU 版を PyTorch の配布元から取る
 BUILD_TORCH = "torch==2.15.0"
 BUILD_PACKAGES = ("transformers==5.23.0", "onnx==1.23.2", "onnxruntime==1.32.0", "tokenizers==0.23.3",
                   "numpy==2.5.5", "safetensors==0.8.0")
+_BUILD_DIRS = {"convert-int8": ("onnx-int8", "model_int8.onnx", "int8"), "convert-fp16": ("onnx-fp16", "model_fp16.onnx", "fp16")}
 THREADS = 8                # 16 スレッドは 8 より遅かった（物理 8 コア）
 MAX_DOCUMENTS = 100
 IDLE_STOP_S = 600          # 使われなければ 10 分で止める
@@ -130,7 +158,8 @@ def model_path(model_id: str) -> Path:
     if spec["build"] == "download":
         return source_dir(model_id) / spec["model_file"]
     root = archive_root(model_id)
-    return _inside(root / "onnx-int8" / spec["revision"] / "model_int8.onnx", root)
+    folder, name, _ = _BUILD_DIRS[spec["build"]]
+    return _inside(root / folder / spec["revision"] / name, root)
 
 
 def tokenizer_path(model_id: str) -> Path:
@@ -140,15 +169,24 @@ def tokenizer_path(model_id: str) -> Path:
 
 
 def _disabled_marker(model_id: str) -> Path:
-    return archive_root(model_id) / "uninstalled"
+    # ruri の CPU 版と GPU 版は同じ保管庫を使うので、印はモデルごとに分ける
+    return archive_root(model_id) / ("uninstalled" if model_id == "ruri-reranker" else f"uninstalled-{model_id}")
 
 
-def runtime_root() -> Path:
-    return (data_dir() / "runtimes" / "reranker-cpu" / "v1").resolve()   # 作るのは導入のときだけ
+def _device(model_id: str | None) -> str:
+    return _spec(model_id)["device"] if model_id else "cpu"
 
 
-def python_path() -> Path:
-    return runtime_root() / "venv" / "bin" / "python"
+def runtime_root(device: str = "cpu") -> Path:
+    return (data_dir() / "runtimes" / f"reranker-{device}" / "v1").resolve()   # 作るのは導入のときだけ
+
+
+def python_path(device: str = "cpu") -> Path:
+    return runtime_root(device) / "venv" / "bin" / "python"
+
+
+def _packages(device: str) -> tuple[str, ...]:
+    return GPU_RUNTIME_PACKAGES if device == "gpu" else RUNTIME_PACKAGES
 
 
 def _size_ok(path: Path, size: int) -> bool:
@@ -162,36 +200,39 @@ def model_ready(model_id: str) -> bool:
     """取得（と変換）が済んでいるか。アンインストールした印があれば使わない（ファイルは保管庫に残る）。"""
     if _disabled_marker(model_id).exists():
         return False
-    if _spec(model_id)["build"] == "convert-int8":
+    if _spec(model_id)["build"] in _BUILD_DIRS:
         return model_path(model_id).is_file() and tokenizer_path(model_id).is_file()
     return all(_size_ok(source_dir(model_id) / name, size) for name, (size, _) in _spec(model_id)["files"].items())
 
 
-def venv_ready() -> bool:
+def venv_ready(device: str = "cpu") -> bool:
     try:
-        marker = (runtime_root() / "venv-ready").read_text(encoding="utf-8").strip()
+        marker = (runtime_root(device) / "venv-ready").read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return python_path().is_file() and marker == ",".join(RUNTIME_PACKAGES)
+    return python_path(device).is_file() and marker == ",".join(_packages(device))
 
 
 def ready(model_id: str | None = None) -> bool:
     """model_id を省くと、どれか 1 つでも使えるか。"""
     if model_id is None:
         return any(ready(m) for m in MODELS)
-    return venv_ready() and model_ready(model_id)
+    return venv_ready(_device(model_id)) and model_ready(model_id)
 
 
-def pick(fast: bool) -> str | None:
-    """自動のときに使う CPU のモデル。会話（fast）は速いもの、それ以外は精度の高いものを優先し、無ければもう一方。"""
-    want = "fast" if fast else "accurate"
-    installed = [m for m in MODELS if ready(m)]
-    return next((m for m in installed if MODELS[m]["prefer"] == want), installed[0] if installed else None)
+def pick(fast: bool, *, cpu_only: bool = False) -> str | None:
+    """自動のときに使うモデル。GPU の ruri があれば最優先。無ければ会話（fast）は速い xsmall、それ以外は CPU の ruri。
+    cpu_only: GPU の ruri が失敗したときの控え（CPU のものだけから選ぶ）。"""
+    for model_id in _AUTO_ORDER["fast" if fast else "accurate"]:
+        if (not cpu_only or _device(model_id) == "cpu") and ready(model_id):
+            return model_id
+    return None
 
 
 # 使う reranker の選択（Models の「Embed / Reranker」）。会話の資料と、Knowledge・Workflow で別に選ぶ。
-# auto: CPU が入っていればそれ（会話は速い xsmall、それ以外は精度の ruri）、無ければ GPU。
+# auto: 入っているもの（GPU の ruri → 会話は xsmall・それ以外は CPU の ruri）、無ければ llama.cpp の reranker。
 # gpu: role=reranker の llama.cpp（Qwen3-Reranker-4B など）。none: 並べ替えない（検索の順のまま）
+# （"gpu" は従来の llama.cpp の reranker を指す。GPU の ruri は "ruri-reranker-gpu"）
 CHOICES = ("auto", *MODELS, "gpu", "none")
 _SELECTION_DEFAULT = {"chat": "auto", "knowledge": "auto"}
 
@@ -252,6 +293,7 @@ def status(model_id: str) -> dict:
         "model": f"{spec['repo']}@{spec['revision'][:8]}",
         "model_bytes": path.stat().st_size if path.is_file() else 0,
         "runtime": spec["runtime_label"],
+        "device": spec["device"],
         "accuracy": spec["accuracy"],
         "speed": spec["speed"],
         "memory": spec["memory"],
@@ -327,10 +369,11 @@ async def _download(job: jobs.Job, model_id: str) -> None:
             done += size
 
 
-async def _build_int8(job: jobs.Job, model_id: str) -> dict:
-    """一時の build venv で ONNX（int8）へ変換して確かめ、build venv を消す。"""
+async def _build(job: jobs.Job, model_id: str) -> dict:
+    """一時の build venv で ONNX（CPU 用は int8、GPU 用は fp16）へ変換して確かめ、build venv を消す。"""
     spec = _spec(model_id)
-    build = (data_dir() / "runtimes" / "reranker-cpu" / "build").resolve()
+    _, _, mode = _BUILD_DIRS[spec["build"]]
+    build = (data_dir() / "runtimes" / "reranker-build").resolve()   # 一時（終わったら消す）
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
     out = model_path(model_id).parent
@@ -338,16 +381,16 @@ async def _build_int8(job: jobs.Job, model_id: str) -> dict:
     staging = _inside(out.with_name(out.name + ".part"), archive_root(model_id))
     shutil.rmtree(staging, ignore_errors=True)
     try:
-        job.set_progress("int8 へ変換する道具を準備中（一時）", 0, 3)
+        job.set_progress(f"{mode} へ変換する道具を準備中（一時）", 0, 3)
         await _run(job, sys.executable, "-m", "venv", str(build / "venv"), cwd=build, timeout=180)
         pip = (str(build / "venv" / "bin" / "python"), "-m", "pip", "install", "--no-input",
                "--disable-pip-version-check", "--quiet")
         await _run(job, *pip, "--index-url", "https://download.pytorch.org/whl/cpu", BUILD_TORCH, cwd=build, timeout=1800)
         await _run(job, *pip, *BUILD_PACKAGES, cwd=build, timeout=1800)
-        job.set_progress("ONNX（int8）へ変換し、元の点数と比べています", 1, 3)
+        job.set_progress(f"ONNX（{mode}）へ変換し、元の点数と比べています", 1, 3)
         script = Path(__file__).with_name("cpu_reranker_build.py")
         output = await _run(job, str(build / "venv" / "bin" / "python"), "-I", str(script),
-                            str(source_dir(model_id)), str(staging), cwd=build, timeout=1800)
+                            str(source_dir(model_id)), str(staging), mode, cwd=build, timeout=1800)
         check = json.loads(output.strip().splitlines()[-1])
         shutil.copy2(source_dir(model_id) / "tokenizer.json", staging / "tokenizer.json")
         shutil.rmtree(out, ignore_errors=True)
@@ -355,15 +398,20 @@ async def _build_int8(job: jobs.Job, model_id: str) -> dict:
         manifest = {
             "name": spec["name"], "source": {"repo": spec["repo"], "revision": spec["revision"]},
             "license": spec["license"], "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "check": check,
-            "how": "PyTorch → ONNX（opset 17）→ onnxruntime.quantization.quantize_dynamic（QInt8、per-channel、MLP の Wo は fp32）",
+            "how": ("PyTorch → ONNX（opset 17）→ onnxruntime.quantization.quantize_dynamic（QInt8、per-channel、MLP の Wo は fp32）"
+                    if mode == "int8" else "PyTorch（fp16 で読む）→ ONNX（opset 17）"),
             "files": [{"path": p.name, "bytes": p.stat().st_size, "sha256": _sha256(p)} for p in sorted(out.iterdir())],
         }
         (out / "MANIFEST.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        job.log(f"int8 と元の点数の差の最大 {check['max_score_diff']}（順位は同じ）")
+        job.log(f"{mode} と元の点数の差の最大 {check['max_score_diff']}（順位は同じ）")
         return check
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(build, ignore_errors=True)   # torch など約 1 GB。変換が済めば要らない
+        # 元の重み（1.26 GB）も変換が済めば要らない（容量を減らす。もう一方の版を作るときに取り直す）
+        weights = source_dir(model_id) / "model.safetensors"
+        if out.is_dir() and weights.is_file():
+            weights.unlink()
 
 
 async def install(job: jobs.Job, model_id: str) -> dict:
@@ -373,19 +421,28 @@ async def install(job: jobs.Job, model_id: str) -> dict:
     _disabled_marker(model_id).unlink(missing_ok=True)
     if not model_ready(model_id):
         await _download(job, model_id)
-        if spec["build"] == "convert-int8":
-            await _build_int8(job, model_id)
-    runtime = runtime_root()
+        if spec["build"] in _BUILD_DIRS:
+            await _build(job, model_id)
+    device = _device(model_id)
+    runtime = runtime_root(device)
     runtime.mkdir(parents=True, exist_ok=True)
     marker = runtime / "venv-ready"
-    if not venv_ready():
+    if not venv_ready(device):
         job.set_progress("reranker の実行環境を準備中", 2, 3)
         marker.unlink(missing_ok=True)
         await _run(job, sys.executable, "-m", "venv", "--clear", str(runtime / "venv"), cwd=runtime, timeout=180)
-        await _run(job, str(python_path()), "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                   "--no-deps", "--quiet", *RUNTIME_PACKAGES, cwd=runtime, timeout=900)
-        marker.write_text(",".join(RUNTIME_PACKAGES) + "\n", encoding="utf-8")
-    job.set_progress("試しに並べ替えて確かめています", 2, 3)
+        await _run(job, str(python_path(device)), "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+                   "--no-deps", "--quiet", *_packages(device), cwd=runtime, timeout=900)
+        if device == "gpu":
+            # ROCm の MIGraphX（/opt/rocm）が無いと GPU で動かない。入れた直後に確かめ、分かる言葉で止める
+            providers = await _run(job, str(python_path(device)), "-I", "-c",
+                                   "import onnxruntime as o; print(','.join(o.get_available_providers()))",
+                                   cwd=runtime, timeout=120)
+            if "MIGraphXExecutionProvider" not in providers:
+                raise CpuRerankerError("AMD GPU（ROCm の MIGraphX）が見つからないため、GPU の reranker を使えません")
+        marker.write_text(",".join(_packages(device)) + "\n", encoding="utf-8")
+    # GPU は最初の 1 回にコンパイル（30 秒前後、RAM を一時 6 GB ほど使う）が入る。ここで済ませて保存しておく
+    job.set_progress("試しに並べ替えて確かめています" + ("（GPU 用のコンパイルを含む）" if device == "gpu" else ""), 2, 3)
     scores = await score("横浜の明日の天気は？", ["番組表の一覧です。", "横浜市の天気予報 - 明日は晴れ。"],
                          model_id=model_id)
     if not scores[1] > scores[0]:
@@ -403,8 +460,9 @@ def uninstall(model_id: str) -> dict:
         worker.kill()
     if archive_root(model_id).is_dir():
         _disabled_marker(model_id).write_text("1\n", encoding="utf-8")
-    if not any(ready(m) for m in MODELS if m != model_id):
-        root = (data_dir() / "runtimes" / "reranker-cpu").resolve()
+    device = _device(model_id)
+    if not any(ready(m) for m in MODELS if m != model_id and _device(m) == device):
+        root = (data_dir() / "runtimes" / f"reranker-{device}").resolve()
         if root.exists():
             shutil.rmtree(root)
     return status(model_id)
@@ -434,15 +492,22 @@ class _Worker:
 
     async def _start(self) -> asyncio.subprocess.Process:
         worker = Path(__file__).with_name("cpu_reranker_worker.py")
+        device = _device(self.model_id)
+        args = [str(python_path(device)), "-I", str(worker), str(model_path(self.model_id)),
+                str(tokenizer_path(self.model_id)), str(THREADS)]
+        if device == "gpu":
+            cache = runtime_root(device) / "compiled" / self.model_id
+            cache.mkdir(parents=True, exist_ok=True)
+            args += ["gpu", str(_spec(self.model_id)["batch"]), str(cache)]
         process = await asyncio.create_subprocess_exec(
-            str(python_path()), "-I", str(worker), str(model_path(self.model_id)), str(tokenizer_path(self.model_id)),
-            str(THREADS),
-            cwd=str(runtime_root()), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            *args, cwd=str(runtime_root(device)), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, limit=16 * 1024 * 1024)
         try:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=120)
-            if not json.loads(line or b"{}").get("ready"):
-                raise CpuRerankerError("reranker の worker が起動しませんでした")
+            # GPU は読み込み時にコンパイルする（保存済みなら数秒、初回は 30 秒前後）
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=300 if device == "gpu" else 120)
+            reply = json.loads(line or b"{}")
+            if not reply.get("ready"):
+                raise CpuRerankerError(str(reply.get("error") or "reranker の worker が起動しませんでした"))
         except BaseException:
             process.kill()
             await process.wait()

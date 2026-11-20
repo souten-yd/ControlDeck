@@ -265,14 +265,15 @@ def test_chat_job_falls_back_when_the_model_cannot_use_tools(client, monkeypatch
 
 
 def test_unverified_runtimes_keep_the_keyword_rule(client, monkeypatch):
-    """道具を確かめていない runtime（Maya・Ollama・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
+    """道具を確かめていない runtime（Ollama・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
     黙って道具を無視する runtime に渡すと、大きい資料を一度も探さなくなるため。"""
     import app.workflows.chat_persist as cp
     from app.models_mgmt import runtime_provider as rp
     from app.models_mgmt.runtime_provider import RuntimeChunk
 
     assert rp.LlamaCppRuntimeProvider.tools_verified and rp.RadianceRuntimeProvider.tools_verified
-    assert rp.StrataRuntimeProvider.tools_verified and not rp.MayaRuntimeProvider.tools_verified
+    assert rp.StrataRuntimeProvider.tools_verified and rp.MayaRuntimeProvider.tools_verified
+    assert not rp.OllamaRuntimeProvider.tools_verified
     assert not rp.OpenAICompatibleRuntimeProvider.tools_verified
     _setup_job("tt-cvv", "tt-amv")
     searched, requests = [], []

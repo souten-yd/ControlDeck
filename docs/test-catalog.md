@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1569 テスト（目的の未記入 93 ファイル）
+- backend: 176 ファイル、1570 テスト（目的の未記入 93 ファイル）
 - E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
@@ -570,7 +570,7 @@
 - `test_models_without_tools_fall_back_to_the_keyword_rule` — 道具を受け付けないモデルでは、道具の案内を外し、従来どおり発言が資料を指すときだけ探して抜粋を入れる。
 - `test_chat_job_lets_the_model_search_materials_then_answers` — 大きい資料の会話: 道具を渡し、モデルが呼んだら探して結果を渡し、続きを生成する。前もっては探さない。
 - `test_chat_job_falls_back_when_the_model_cannot_use_tools` — tools を受け付けないモデル: 覚えて、言い方の判定で探して道具なしで生成し直す。次の発言からは最初から道具を渡さない。
-- `test_unverified_runtimes_keep_the_keyword_rule` — 道具を確かめていない runtime（Maya・Ollama・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
+- `test_unverified_runtimes_keep_the_keyword_rule` — 道具を確かめていない runtime（Ollama・外部など）には道具を渡さず、従来どおり言い方の判定で探す。
 - `test_auto_mode_lets_the_model_search_the_web_and_cites_sources` — 機能の選択が「自動」なら Web 検索も道具で渡す。呼ばれたら検索して出典を登録し、[R番号] 付きの結果を渡す。
 - `test_route_skips_the_llm_decision_for_tool_capable_models` — 道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
 - `test_final_round_turns_tool_exchanges_into_plain_notes` — 上限まで呼んだ後の最後の回: 道具のやり取りを普通の資料にまとめる。残したままだと Radiance が 3 回中 2 回、
@@ -1809,6 +1809,7 @@
 - `test_cpu_rerankers_are_installed_and_chosen_in_models` — Models の「Embed / Reranker」で CPU の reranker（速い xsmall・高精度 ruri）を導入・選択する。
 - `test_large_conversation_materials_are_searched_only_when_the_message_points_at_them` — 大きい会話の資料は、発言が資料・前に調べたもの・詳しい内容を指すときだけ探す。挨拶・お礼・雑談では探さない。
 - `test_rerank_follows_the_selection` — 選んだものを並べ替えに使う: none は並べ替えず検索の順、gpu は CPU が入っていても GPU（llama.cpp）を使う。
+- `test_gpu_ruri_is_preferred_and_falls_back_to_cpu` — GPU の ruri（fp16、MIGraphX）が入っていれば、自動では会話にも Knowledge にも使う（精度も速さも最良）。
 
 ### backend/tests/test_ratelimit.py
 
