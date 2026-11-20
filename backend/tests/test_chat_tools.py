@@ -421,3 +421,120 @@ def test_final_round_turns_tool_exchanges_into_plain_notes():
     assert chat_tools.strip_tool_markup("答え<tool_call> <function=web_search> </function> </tool_call>") == "答え"
     assert chat_tools.strip_tool_markup("<tool_call> <function=web_search>") == ""
     assert chat_tools.strip_tool_markup("普通の答え") == "普通の答え"
+
+
+def _auto_job(cp, conv, msg, history, extra=None):
+    from app.jobs import service as jobs
+
+    async def scenario():
+        job = jobs.create("chat.completion", "t", lambda j: cp._run_chat_job(
+            j, msg, conv, history, {"base_url": "http://127.0.0.1:9/v1", "model": "m", "mode": "chat", "mode_choice": "auto",
+                                    "thinking": "off", "max_output_tokens": 128, **(extra or {})}))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if job.status not in ("queued", "running"):
+                break
+        return job
+
+    return asyncio.run(scenario())
+
+
+def _auto_provider(monkeypatch, cp, replies, requests):
+    from app.models_mgmt.runtime_provider import RuntimeChunk
+    from app.workflows import rag
+
+    class Provider:
+        tools_verified = True
+
+        async def stream_chat(self, request, request_id=None):
+            requests.append(request)
+            reply = replies[min(len(requests), len(replies)) - 1]
+            if isinstance(reply, dict):
+                yield RuntimeChunk("tool_call", tool_calls=[reply])
+            else:
+                yield RuntimeChunk("content", content=reply)
+
+        async def cancel(self, request_id):
+            return False
+
+    async def fake_ctx(base_url, model):
+        return 32768
+
+    monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Provider())
+    monkeypatch.setattr(cp, "_context_max", fake_ctx)
+    monkeypatch.setattr(rag, "collection_exists", lambda name: False)
+
+
+def test_auto_mode_lets_the_model_hand_work_to_opencode(monkeypatch):
+    """「自動」では、作業の依頼かどうかを会話の LLM が判断し、OpenCode に任せる道具を呼んだら同じ回答の枠のまま
+    OpenCode の回へ移る（語では決めない）。作業フォルダはこの会話で前に使ったもの。
+    根拠: 2026-11-20 利用者「自動でも適切に OpenCode へ遷移する作りに。すぐ移る形で」。以前は語（作って・直して）や
+    会話の流れで決めていて、「M5・M6 チップはローカル LLM としてどうですか」で OpenCode が開いた。"""
+    import app.workflows.chat_persist as cp
+    from app.workflows import chat_tools
+
+    _setup_job("tt-cvo", "tt-amo")
+    requests, handed = [], []
+    _auto_provider(monkeypatch, cp, [{"id": "o1", "name": chat_tools.HAND_OFF_OPENCODE,
+                                      "arguments": '{"task": "ログイン画面にパスワード表示の切り替えを足す"}'}], requests)
+    monkeypatch.setattr(cp, "_opencode_hand_off_target", lambda conv, params: ("app", ""))
+    original = cp._run_chat_job
+
+    async def run(job, assistant_id, conv_id, history, params):
+        if params["mode"] == "code":
+            handed.append((history, params))
+            return {"assistant_message_id": assistant_id}
+        return await original(job, assistant_id, conv_id, history, params)
+
+    monkeypatch.setattr(cp, "_run_chat_job", run)
+    history = [{"role": "system", "content": "s"}, {"role": "user", "content": "ログイン画面でパスワードを見られるようにして"}]
+    job = _auto_job(cp, "tt-cvo", "tt-amo", history)
+    assert job.status == "succeeded", job.error
+    assert chat_tools.HAND_OFF_OPENCODE in [t["function"]["name"] for t in requests[0].tools]
+    assert len(handed) == 1 and len(requests) == 1                     # チャットの答えは作らずに移る
+    sent_history, params = handed[0]
+    assert sent_history == history                                     # 依頼はそのまま OpenCode へ
+    assert params["code_project"] == "app" and params["code_agent"] == "build"
+    assert params["handoff_task"] == "ログイン画面にパスワード表示の切り替えを足す"
+    assert any(e.get("message") == "handoff" for e in job.events)
+
+
+def test_hand_off_without_a_project_asks_the_user_to_choose_one(monkeypatch):
+    """作業フォルダが決まっていなければ移らない（新しいプロジェクトを勝手に作らない）。選んで送り直すよう伝えさせる。"""
+    import app.workflows.chat_persist as cp
+    from app.workflows import chat_tools
+
+    _setup_job("tt-cvp", "tt-amp")
+    requests = []
+    _auto_provider(monkeypatch, cp, [{"id": "o1", "name": chat_tools.HAND_OFF_OPENCODE, "arguments": '{"task": "アプリを作る"}'},
+                                     "作業フォルダを選んでください。"], requests)
+    monkeypatch.setattr(cp, "_opencode_hand_off_target", lambda conv, params: ("", ""))
+    job = _auto_job(cp, "tt-cvp", "tt-amp", [{"role": "user", "content": "家計簿アプリを作って"}])
+    assert job.status == "succeeded", job.error
+    tool_msg = [m for m in requests[1].messages if m.get("role") == "tool"][0]["content"]
+    assert tool_msg == chat_tools.NO_PROJECT_NOTE
+    assert not any(e.get("message") == "handoff" for e in job.events)
+
+
+def test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice(monkeypatch):
+    """OpenCode が無効・画像つき（OpenCode は画像を見られない）・声の会話では渡さない。"""
+    import app.workflows.chat_persist as cp
+    from app.features import registry
+    from app.workflows import chat_tools
+
+    requests = []
+    _auto_provider(monkeypatch, cp, ["答え"], requests)
+    monkeypatch.setattr(registry, "is_enabled", lambda feature: False)
+    _setup_job("tt-cvq", "tt-amq")
+    assert _auto_job(cp, "tt-cvq", "tt-amq", [{"role": "user", "content": "x"}]).status == "succeeded"
+    assert chat_tools.HAND_OFF_OPENCODE not in [t["function"]["name"] for t in requests[0].tools]
+    monkeypatch.setattr(registry, "is_enabled", lambda feature: True)
+    for i, extra in enumerate([{"voice_style": "friendly"}, {"attachments": ["0123456789abcdef.png"]}]):
+        requests.clear()
+        _setup_job(f"tt-cvr{i}", f"tt-amr{i}")
+        assert _auto_job(cp, f"tt-cvr{i}", f"tt-amr{i}", [{"role": "user", "content": "x"}], extra).status == "succeeded"
+        assert chat_tools.HAND_OFF_OPENCODE not in [t["function"]["name"] for t in (requests[0].tools or [])]
+    requests.clear()
+    _setup_job("tt-cvs", "tt-ams")
+    assert _auto_job(cp, "tt-cvs", "tt-ams", [{"role": "user", "content": "x"}]).status == "succeeded"
+    assert chat_tools.HAND_OFF_OPENCODE in [t["function"]["name"] for t in requests[0].tools]   # 有効なら渡す

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1579 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、173 テスト
+- backend: 176 ファイル、1582 テスト（目的の未記入 93 ファイル）
+- E2E: 86 spec、174 テスト
 
 ## backend（backend/tests）
 
@@ -575,6 +575,9 @@
 - `test_auto_mode_lets_the_model_search_the_web_and_cites_sources` — 機能の選択が「自動」なら Web 検索も道具で渡す。呼ばれたら検索して出典を登録し、[R番号] 付きの結果を渡す。
 - `test_route_skips_the_llm_decision_for_tool_capable_models` — 道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
 - `test_final_round_turns_tool_exchanges_into_plain_notes` — 上限まで呼んだ後の最後の回: 道具のやり取りを普通の資料にまとめる。残したままだと Radiance が 3 回中 2 回、
+- `test_auto_mode_lets_the_model_hand_work_to_opencode` — 「自動」では、作業の依頼かどうかを会話の LLM が判断し、OpenCode に任せる道具を呼んだら同じ回答の枠のまま
+- `test_hand_off_without_a_project_asks_the_user_to_choose_one` — 作業フォルダが決まっていなければ移らない（新しいプロジェクトを勝手に作らない）。選んで送り直すよう伝えさせる。
+- `test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice` — OpenCode が無効・画像つき（OpenCode は画像を見られない）・声の会話では渡さない。
 
 ### backend/tests/test_chatflow.py
 
@@ -2629,6 +2632,7 @@
 - plan with auto plans in OpenCode, and leaving plan stops going to OpenCode
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - with OpenCode chosen, a question stays in OpenCode
+- in auto, when the model hands the work to OpenCode the answer becomes an OpenCode answer
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 
