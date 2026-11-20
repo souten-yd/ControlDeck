@@ -127,6 +127,66 @@ ResearchDataHub と PatentBuddy の main は同じ `qnaplibrary` パッケージ
 | R2（2026-11-21） | 文書単位の RAG（全文か骨格）・書誌の関係・規格の画面・PDF の取り込み（ページ・OCR・図・VLM）・アシスタントの道具・音声ヒアリング。詳細は `HANDOFF-knowledge-platform.md` §6 |
 | K-PR5・7 | 未着手（公的データの取得、知識エッセンス） |
 
+## 10. 統合後の再設計（R3、2026-11-21）
+
+利用者「各リポジトリの計画を確認し、ControlDeck 側の計画に反映して開発を進める。バラバラに開発していたので、統合したときに整合性を持つように再検討してブラッシュアップしてから進める」。
+
+### 10.1 各リポジトリの計画の棚卸し
+
+ResearchDataHub（main、`docs/roadmap.md`・`proposals.md`・`feasibility.md`・`watch-notify-classification.md`・`patent-feature-plan.md`）と
+PatentBuddy（main と Draft #10・#23・#24・#29〜#40、`docs/knowledge-graph-plan.md`・`knowledge-k*.md`・`source-collector-k7a.md`・`controldeck-ux-contract.md`）を読んだ。
+
+| 元の計画・機能 | 元の状態 | ControlDeck での扱い |
+|---|---|---|
+| 特許案件・期限・請求項・構成要件・AI 支援 12 種 | RDH main 実装 | ✅ v0.102 で移植 |
+| 2-gram 全文＋ベクトル、RRF、規格番号の正規化、PDF/OCR | RDH main 実装 | ✅ v0.102 で移植・強化 |
+| **特許ウォッチ**（定期収集・新着だけを案件の請求項で順位付け・X/Y 候補・除外） | RDH v0.2 実装 | R3-2 で移植。収集は Jobs、外部へ送る検索語は利用者の承認 |
+| **期限通知**（60/30/7 日前、しきい値ごとに 1 回） | RDH v0.2 実装 | R3-2。ControlDeck の通知（Web Push）。**本文に案件名を書かない** |
+| **分類辞書**（IPC/FI/Fターム/CPC/ICS）と AI 支援への分類候補 | RDH v0.2 実装 | R3-1。種類 classification のコレクション。辞書は利用者が手で入手したものを取り込む |
+| **審査基準・法令の引用**（AI 支援が [基準n] で引く） | RDH v0.2 実装 | R3-1。種類 law のコレクション |
+| **文献ごとの AI 分析**（要約・請求項の確認、原文の版付き、未確認） | RDH/PB main 実装 | R3-1。注釈（annotations）として。原文が変わったら古い（stale）と表示 |
+| 収集コネクタ（GDELT・RSS・EPO OPS・JPO・USPTO ODP・e-Stat・EDINET・SEC・OpenAlex） | RDH v0.2〜0.4・PB #40 | R3-2（特許系・RSS を先に、市場系は後） |
+| 調査ジョブ | RDH v0.4 | ControlDeck の Deep Research が担う（移植しない） |
+| Qdrant・外部 reranker | RDH v0.3 | 移植しない（RAM 行列で 100k 15 ms、reranker は ControlDeck 既存） |
+| 出願人・分類・年の集計ダッシュボード | RDH v0.3 | R3-6 |
+| 一括取り込み（NDJSON/CSV）・書き出し | RDH main | R3-6 |
+| MCP（他の AI から検索・登録） | RDH main | R3-1（読み取りの道具だけ。MCP の相手は cloud とみなす） |
+| AI クレームチャートの判定（構成要件ごと ○/△/×/?、引用の実在確認、人の承認） | PB Draft #10 | R3-3 |
+| 根拠付き関係データ（GraphRAG） | PB Draft #23 | 番号の関係は v0.102。意味の関係は R3-4 の知識層で |
+| 知識エッセンス K1〜K2（課題・原因・原理・機構・実装・効果・条件・限界の根拠付き抽出、人のレビュー、版失効） | PB Draft #29〜#33 | R3-4 |
+| K3〜K5（知識マップ・横断比較・Idea Canvas・Atlas） | PB Draft #34〜#39 | R3-5 |
+| 分野限定の公式取得・IPC 辞書の取得・USPTO 一括・容量表示・図の切り出し | PB Draft #40 | R3-2（取得）・R3-6（容量）。図の切り出しは R2 の続き |
+| 認証・パスキー・ペアリング・自動更新・QPKG・公開資料 API・Add-on 契約 | RDH/PB | 移植しない（ControlDeck の仕組みで代わる） |
+| QNAP を正本にする計画 | RDH | 取りやめ（PC の SSD が正本、NAS はバックアップ先。§2） |
+
+### 10.2 統合で揃えること（整合性の決まり）
+
+1. **情報の 3 層**（PB の設計を採用）: 原文（documents・chunks・assets）／知識（課題・原理などの命題、根拠の引用付き）／アイデア（利用者の仮説）。
+   層をまたいで混ぜない。AI の出力は `basis=model_inference`・`review_status=unreviewed` で、人が承認しても「原文の事実」にはしない。
+2. **根拠の版**: AI の注釈・知識・アイデアは、原文の版（文書の sha256 か本文のハッシュ）を持つ。原文が変わったら stale と表示し、古い承認を復活させない。
+3. **機密**: 既定は confidential。外部へ出る経路は次の 4 つだけで、それぞれ条件を持つ。
+   - クラウドの LLM: 公開・AI 利用可の文書だけ（v0.102 の `consumer`）
+   - 外部 API への検索語（ウォッチ・コネクタ）: 利用者が「公開してよい語」と確認したものだけ。案件の自由記述を自動で送らない
+   - 通知（Web Push は Apple・Google を通る）: 件数と「期限が近い案件があります」だけ。案件名・本文を書かない
+   - MCP: 相手は cloud とみなす（機密を返さない）
+4. **AI はローカル専用**: 案件・ヒアリング・知識抽出・アイデアは Host 管理の GGUF だけ。重い処理は Jobs と GPU の順番待ちに乗せる。
+5. **1 つの検索の入口**: 画面・Patent・アシスタント・MCP・ウォッチの順位付けは、すべて `knowledge/documents.search_documents` を通す（別の検索を作らない）。
+6. **UI**: ControlDeck の部品と ☰ のナビ。主操作 1 つ、内部の値は「詳細」へ。Patent の中は「資料 → 知識 → アイデア」の流れで、案件と行き来できる。
+7. **常駐の処理を増やさない**: ウォッチの起動は既存の保守の周期で「期限の来たものがあるか」だけを見る。重い処理は Jobs。
+
+### 10.3 段階（R3）
+
+| 段階 | 内容 | 受け入れ |
+|---|---|---|
+| R3-1 | 文献ごとの AI 分析（要約・請求項の確認・stale）、分類辞書と審査基準のコレクション種別と AI 支援への引用、MCP の読み取りの道具 | 機密が MCP・cloud に出ないテスト、stale の表示、引用の [基準n] |
+| R3-2 | 収集元（EPO OPS・JPO・USPTO ODP・OpenAlex・RSS・GDELT）、検索語の承認、特許ウォッチ（新着・順位付け・X/Y・除外）、期限の通知（案件名なし） | 外部へ送る語は承認済みだけ、新着だけを順位付け、通知の本文に機密が無い |
+| R3-3 | AI クレームチャートの判定（○/△/×/?、引用文字列の実在確認、人の承認） | 引用が原文に無ければ「?」に落とす |
+| R3-4 | 知識エッセンス（抽出・根拠照合・レビュー・正規化候補・stale） | 引用の偽造・版の変更・推論の事実化を防ぐテスト |
+| R3-5 | 知識マップ（範囲を限った部分グラフ）・横断比較・Idea Canvas・アイデアから案件へ | 320px で単一ペイン、打ち切りを明示 |
+| R3-6 | 集計ダッシュボード・一括取り込み/書き出し・保存先の設定画面と定時バックアップ・PDF の精度（了承後） | — |
+
+ResearchDataHub と PatentBuddy を閉じるのは R3-2（収集とウォッチ）を移した後（それまで RDH にしか無い機能が残るため）。
+
 ## 9. 未決事項（利用者に確認）
 
 - QNAP 上の QnapLibrary QPKG に実データがあるか。
