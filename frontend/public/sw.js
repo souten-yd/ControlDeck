@@ -1,7 +1,7 @@
 /* Ubuntu Control Deck Service Worker
  * 方針: アプリシェル（HTML/JS/CSS/アイコン）のみをキャッシュしオフライン起動を可能にする。
  * API レスポンス・ログ・ファイル内容など機密になりうるデータは一切キャッシュしない。 */
-const CACHE = "control-deck-shell-v22";
+const CACHE = "control-deck-shell-v23";
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -74,13 +74,23 @@ self.addEventListener("push", (event) => {
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data ? event.data.text() : "" }; }
   const title = typeof data.title === "string" && data.title ? data.title : "ControlDeck";
   const url = typeof data.url === "string" && data.url.startsWith("/") && !data.url.startsWith("//") ? data.url : "/";
-  event.waitUntil(self.registration.showNotification(title, {
+  const shown = self.registration.showNotification(title, {
     body: typeof data.body === "string" ? data.body : "",
     tag: typeof data.tag === "string" ? data.tag : undefined,
     icon: "/icon-192.png",
     badge: "/icon-192.png",
     data: { url },
-  }));
+  });
+  // 受け取ったことをサーバーへ返す（201 でも端末に届いたとは限らないので、画面で確かめられるように）。
+  // 返事が失敗しても通知は出す。
+  const receipt = (ok, error) => typeof data.rid === "string"
+    ? fetch("/api/v1/push/receipts", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "ControlDeck" },
+      body: JSON.stringify({ rid: data.rid, shown: ok, error: String(error || "").slice(0, 200) }),
+    }).catch(() => undefined)
+    : Promise.resolve();
+  event.waitUntil(shown.then(() => receipt(true), (error) => receipt(false, error && error.message)));
 });
 
 self.addEventListener("notificationclick", (event) => {

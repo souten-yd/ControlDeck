@@ -7,7 +7,9 @@
 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。
 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。
 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。
-- VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。
+- VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。Urgency は high（すぐ届ける）。
+- 端末の Service Worker が受け取ったと返すと記録し、画面で「届いたか」を確かめられる
+  （2026-11-21 利用者「通知が届いていない気がする」。Apple は 201 を返していて、サーバーからは区別できなかった）。
 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
 """
 from __future__ import annotations
@@ -156,6 +158,7 @@ def test_send_removes_gone_devices_and_records_success(admin_client):
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["content-encoding"] == "aes128gcm"
+        assert request.headers["urgency"] == "high"          # Apple: すぐ届けたいなら high
         assert request.headers["authorization"].startswith("vapid t=")
         assert int(request.headers["ttl"]) > 0
         if str(request.url).endswith("gone"):
@@ -167,7 +170,14 @@ def test_send_removes_gone_devices_and_records_success(admin_client):
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         result = webpush.send_to(title="実行が終わりました", body="exit 0", url="/project-lab?run=3", client=client)
     assert result == {"sent": 1, "removed": 1, "failed": 0}
+    rid = delivered[0].pop("rid")
     assert delivered == [{"title": "実行が終わりました", "body": "exit 0", "url": "/project-lab?run=3"}]
+    # 端末の Service Worker が受け取ったと返すと、その端末に時刻が残る。番号は 1 回だけ使える
+    assert admin_client.post("/api/v1/push/receipts", json={"rid": rid, "shown": True}, headers=CSRF_HEADERS).json() == {"recorded": True}
+    assert admin_client.post("/api/v1/push/receipts", json={"rid": rid, "shown": True}, headers=CSRF_HEADERS).json() == {"recorded": False}
+    assert admin_client.post("/api/v1/push/receipts", json={"rid": "unknown-rid", "shown": True}, headers=CSRF_HEADERS).json() == {"recorded": False}
+    listed = admin_client.get("/api/v1/push/subscriptions").json()["items"]
+    assert listed[0]["last_received_at"] and listed[0]["last_receipt_error"] == ""
     with SessionLocal() as db:
         rows = db.query(PushSubscription).all()
         assert len(rows) == 1 and rows[0].last_success_at is not None
@@ -178,7 +188,7 @@ def test_send_refuses_offsite_urls_in_payload():
     captured: list[dict] = []
     original = webpush.send_one
     try:
-        webpush.send_one = lambda target, payload, client: captured.append(payload) or 201  # type: ignore[assignment]
+        webpush.send_one = lambda target, payload, client: captured.append(payload) or 201  # type: ignore[assignment]  # noqa: E501
         with SessionLocal() as db:
             user = db.query(User).filter(User.username == "admin").one()
             _, p256dh, auth = _receiver()

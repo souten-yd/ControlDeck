@@ -5,6 +5,7 @@
 - POST   /push/subscriptions  この端末を登録（同じ endpoint は上書き）
 - DELETE /push/subscriptions  この端末を外す（endpoint で指す）
 - POST   /push/test           自分の端末すべてへ試しに送る
+- POST   /push/receipts       端末の Service Worker が「受け取った」と返す（届いたかを画面で確かめるため）
 """
 from __future__ import annotations
 
@@ -40,6 +41,12 @@ class SubscriptionBody(BaseModel):
     label: str = Field(default="", max_length=128)
 
 
+class ReceiptBody(BaseModel):
+    rid: str = Field(min_length=8, max_length=64)
+    shown: bool = True
+    error: str = Field(default="", max_length=200)
+
+
 class EndpointBody(BaseModel):
     endpoint: str = Field(min_length=10, max_length=2048)
 
@@ -57,6 +64,8 @@ def _out(row: PushSubscription) -> dict:
         "id": row.id, "label": row.label,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_received_at": row.last_received_at.isoformat() if row.last_received_at else None,
+        "last_receipt_error": row.last_receipt_error or "",
     }
 
 
@@ -130,6 +139,21 @@ def remove_device(subscription_id: int, request: Request, user: User = Depends(g
     db.commit()
     audit.record(db, "push.unsubscribe", user=user, resource_type="push_subscription", resource_id=str(subscription_id), request=request)
     return {"removed": True}
+
+
+@router.post("/receipts")
+def receipt(body: ReceiptBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Service Worker が push を受けたときの返事。番号は送るたびに作り、1 回だけ使える。"""
+    from datetime import datetime, timezone
+
+    subscription_id = webpush.take_receipt(body.rid)
+    row = db.get(PushSubscription, subscription_id) if subscription_id else None
+    if row is None or row.user_id != user.id:
+        return {"recorded": False}
+    row.last_received_at = datetime.now(timezone.utc)
+    row.last_receipt_error = "" if body.shown else (body.error.strip()[:200] or "表示できませんでした")
+    db.commit()
+    return {"recorded": True}
 
 
 @router.post("/test")

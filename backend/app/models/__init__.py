@@ -610,6 +610,9 @@ class PushSubscription(Base):
     label: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 端末の Service Worker が push を受けたと返事をした時刻と、表示に失敗したときの理由
+    last_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_receipt_error: Mapped[str] = mapped_column(String(200), default="")
 
 
 class AlertRule(Base):

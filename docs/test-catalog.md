@@ -2325,7 +2325,7 @@
 
 ### backend/tests/test_web_push.py
 
-目的: Web Push（端末への通知）。 目的: - 暗号化（RFC 8291 aes128gcm）が規格の例と 1 バイト違わず一致し、受け手の鍵で復号できる。 - VAPID（RFC 8292）の JWT が公開鍵で検証でき、aud は push service の origin、sub は https。 - 端末が渡す endpoint は既知の push service だけ受ける（内側の URL へ POST させない）。 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。 - VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
+目的: Web Push（端末への通知）。 目的: - 暗号化（RFC 8291 aes128gcm）が規格の例と 1 バイト違わず一致し、受け手の鍵で復号できる。 - VAPID（RFC 8292）の JWT が公開鍵で検証でき、aud は push service の origin、sub は https。 - 端末が渡す endpoint は既知の push service だけ受ける（内側の URL へ POST させない）。 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。 - VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。Urgency は high（すぐ届ける）。 - 端末の Service Worker が受け取ったと返すと記録し、画面で「届いたか」を確かめられる （2026-11-21 利用者「通知が届いていない気がする」。Apple は 201 を返していて、サーバーからは区別できなかった）。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
 
 - `test_encryption_matches_rfc8291_example`
 - `test_encryption_round_trips_with_a_fresh_receiver`
@@ -3043,7 +3043,7 @@
 
 ### frontend/e2e/web-push.spec.ts
 
-目的: 目的: - 設定 → 通知 の「この端末で受け取る」で、ブラウザの購読をサーバーへ登録し、一覧に端末が出る。止めると消える。 - Service Worker が push を受けたら通知を出し、押したら中の url（実行結果など）を開く。 push service は外にあるので、購読は差し替え、push は Chromium の DevTools から直接 Service Worker へ届ける。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、何も届いていなかった。
+目的: 目的: - 設定 → 通知 の「この端末で受け取る」で、ブラウザの購読をサーバーへ登録し、一覧に端末が出る。止めると消える。 - Service Worker が push を受けたら通知を出し、押したら中の url（実行結果など）を開く。 push service は外にあるので、購読は差し替え、push は Chromium の DevTools から直接 Service Worker へ届ける。 - push を受けたら、番号を添えて「受け取った」をサーバーへ返す（2026-11-21「届いていない気がする」）。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、何も届いていなかった。
 
 - subscribes this device, shows it, and the service worker shows pushed notifications
 - opening a notification link selects the run in Project Lab
