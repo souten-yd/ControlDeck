@@ -119,27 +119,11 @@ def _xsmall_files() -> tuple[str, dict]:
 
 
 MODELS["xsmall-reranker"]["model_file"], MODELS["xsmall-reranker"]["files"] = _xsmall_files()
-# ruri は 1 つのモデルとして見せ、CPU（int8）と GPU（fp16）をトグルで切り替える（2026-11-20 利用者「GPU で起動するか
-# CPU で起動するかを、モデルのボタンで切り替えられるように」）。両方入れておけば切り替えは即時
-RURI_IDS = {"cpu": "ruri-reranker", "gpu": "ruri-reranker-gpu"}
-
-
-def ruri_device() -> str:
-    value = _saved().get("ruri_device")
-    return value if value in RURI_IDS else "gpu"
-
-
-def set_ruri_device(device: str) -> None:
-    if device not in RURI_IDS:
-        raise ValueError(f"選べない値です: {device}")
-    _save({**_saved(), "ruri_device": device})
-
-
-def _auto_order(fast: bool) -> tuple[str, ...]:
-    """自動のときの優先順。選んだ側（CPU / GPU）の ruri を最優先し、会話は次に軽い xsmall、それ以外はもう一方の ruri。"""
-    preferred = RURI_IDS[ruri_device()]
-    other = RURI_IDS["cpu" if ruri_device() == "gpu" else "gpu"]
-    return (preferred, "xsmall-reranker", other) if fast else (preferred, other, "xsmall-reranker")
+# 自動のときの優先順。GPU の ruri は精度も速さも最良なので、入っていればどちらにも使う。
+# 2026-11-20 利用者「CPU にするとかなり遅くなるものは CPU / GPU の切り替えを消して」→ ruri は GPU（fp16）だけを
+# 画面に出す（CPU の ruri は 8〜12 秒と遅い）。GPU が使えないときの控えは CPU の xsmall（int8）
+_AUTO_ORDER = {"fast": ("ruri-reranker-gpu", "xsmall-reranker", "ruri-reranker"),
+               "accurate": ("ruri-reranker-gpu", "ruri-reranker", "xsmall-reranker")}
 _COMMON_PACKAGES = ("tokenizers==0.23.3", "numpy==2.5.5", "flatbuffers==25.12.19", "packaging==26.3", "protobuf==7.36.2")
 RUNTIME_PACKAGES = ("onnxruntime==1.32.0", *_COMMON_PACKAGES)
 # GPU: AMD の MIGraphX 版（PyPI）。ROCm の MIGraphX（/opt/rocm）を使う。実行環境 約 0.2 GB
@@ -259,7 +243,7 @@ def ready(model_id: str | None = None) -> bool:
 def pick(fast: bool, *, cpu_only: bool = False) -> str | None:
     """自動のときに使うモデル。GPU の ruri があれば最優先。無ければ会話（fast）は速い xsmall、それ以外は CPU の ruri。
     cpu_only: GPU の ruri が失敗したときの控え（CPU のものだけから選ぶ）。"""
-    for model_id in _auto_order(fast):
+    for model_id in _AUTO_ORDER["fast" if fast else "accurate"]:
         if (not cpu_only or _device(model_id) == "cpu") and ready(model_id):
             return model_id
     return None
@@ -269,7 +253,7 @@ def pick(fast: bool, *, cpu_only: bool = False) -> str | None:
 # auto: 入っているもの（GPU の ruri → 会話は xsmall・それ以外は CPU の ruri）、無ければ llama.cpp の reranker。
 # gpu: role=reranker の llama.cpp（Qwen3-Reranker-4B など）。none: 並べ替えない（検索の順のまま）
 # （"gpu" は従来の llama.cpp の reranker を指す。GPU の ruri は "ruri-reranker-gpu"）
-# "ruri" は CPU / GPU のうちトグルで選んだ側（入っていなければもう一方）
+# "ruri" は GPU の ruri（入っていなければ CPU の ruri）
 CHOICES = ("auto", "ruri", "xsmall-reranker", "gpu", "none")
 _LEGACY_CHOICES = {"ruri-reranker": "ruri", "ruri-reranker-gpu": "ruri"}   # v0.87〜0.88 の保存値
 _SELECTION_DEFAULT = {"chat": "auto", "knowledge": "auto"}
@@ -352,9 +336,7 @@ def choose(fast: bool) -> str:
     if chosen in ("gpu", "none"):
         return chosen
     if chosen == "ruri":
-        preferred = RURI_IDS[ruri_device()]
-        other = RURI_IDS["cpu" if ruri_device() == "gpu" else "gpu"]
-        for model_id in (preferred, other):
+        for model_id in ("ruri-reranker-gpu", "ruri-reranker"):
             if ready(model_id):
                 return model_id
     if chosen in MODELS and ready(chosen):

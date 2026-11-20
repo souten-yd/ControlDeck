@@ -1336,7 +1336,6 @@ def retrieval_models(user: User = Depends(require_permission("workflows.run"))):
         "selection": cpu_reranker.selection(),
         "choices": list(cpu_reranker.CHOICES),
         "in_use": {"chat": cpu_reranker.choose(True), "knowledge": cpu_reranker.choose(False)},
-        "ruri_device": cpu_reranker.ruri_device(),
     }
 
 
@@ -1387,51 +1386,6 @@ def retrieval_cpu_uninstall(model_id: str, request: Request,
 
 class RetrievalResidentBody(BaseModel):
     value: bool
-
-
-class RetrievalDeviceBody(BaseModel):
-    device: Literal["cpu", "gpu"]
-
-
-@router.put("/retrieval/ruri-device")
-async def retrieval_ruri_device(body: RetrievalDeviceBody, request: Request,
-                                user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
-    """ruri を CPU（int8）で動かすか GPU（fp16）で動かすか。使わなくなった側の worker は止める（VRAM / RAM を返す）。
-    選んだ側が未導入なら、画面がその導入を続けて始める。"""
-    from app.workflows import cpu_reranker
-
-    cpu_reranker.set_ruri_device(body.device)
-    other = cpu_reranker.RURI_IDS["cpu" if body.device == "gpu" else "gpu"]
-    worker = cpu_reranker._workers.get(other)
-    if worker is not None:
-        await worker.stop()
-    audit.record(db, "model.retrieval_device", user=user, resource_type="model", resource_id="ruri",
-                 request=request, metadata={"device": body.device})
-    return retrieval_models(user)
-
-
-@router.put("/retrieval/preset/{preset_id}/device")
-async def retrieval_preset_device(preset_id: str, body: RetrievalDeviceBody, request: Request,
-                                  user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
-    """llama.cpp の埋め込み・reranker を CPU / GPU で動かす（n_gpu_layers 0 / 自動）。動いていれば止め、次に使うときに
-    選んだ方で載り直す。CPU は GPU に一切触らない（--device none）。2026-11-20 実測: bge-m3 の CPU は質問 1 件 0.02 秒、
-    資料 32 件の保存 20.9 秒（GPU は約 1 秒）。"""
-    from app.models_mgmt import llama, role_presets
-
-    preset = role_presets.ROLE_PRESETS.get(preset_id)
-    if preset is None:
-        raise HTTPException(status_code=404, detail="未知のプリセットです")
-    alias = str(preset["alias"])
-    try:
-        instance = llama.get_instance(alias)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="導入されていません") from exc
-    llama.save_instance(alias, {"n_gpu_layers": 0 if body.device == "cpu" else 999})
-    if instance.get("loaded") or (await llama.health(alias)).get("ok"):
-        await asyncio.to_thread(llama.stop_instance, alias)
-    audit.record(db, "model.preset_device", user=user, resource_type="model", resource_id=preset_id,
-                 request=request, metadata={"device": body.device})
-    return {"device": body.device}
 
 
 @router.post("/retrieval/cpu/{model_id}/{action}")
