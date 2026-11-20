@@ -94,19 +94,31 @@ interface MetricsState {
   latest: MetricsSnapshot | null;
   status: MetricsStatus;
   history: MetricsSnapshot[]; // 直近スパークライン用（最大 120 点）
+  /** 受け取りが途切れた（画面を閉じていた・裏にあった）回数。変わったらサーバーの履歴を読み直す */
+  gapEpoch: number;
   push: (s: MetricsSnapshot) => void;
   setStatus: (s: MetricsStatus) => void;
 }
+
+/** 前の点からこれ以上空いたら「途切れた」とみなす（送られてくる間隔は 2 秒） */
+export const METRICS_GAP_MS = 15_000;
 
 export const useMetrics = create<MetricsState>((set) => ({
   latest: null,
   status: "connecting",
   history: [],
+  gapEpoch: 0,
+  // 2026-11-20 利用者「ブラウザを閉じてまた開くと、閉じていた間のグラフが更新されない」。
+  // 画面を閉じている間は受け取らない（電池のため）ので、戻ると手元の点の間が空いたまま詰めて描いていた。
+  // 途切れたら手元の点を捨てて数え直し、閉じていた間はサーバーの履歴（Dashboard が gapEpoch で読み直す）で埋める。
   push: (s) =>
-    set((st) => ({
-      latest: s,
-      history: [...st.history.slice(-119), s],
-    })),
+    set((st) => {
+      const previous = st.history[st.history.length - 1];
+      const gap = previous && Date.parse(s.timestamp) - Date.parse(previous.timestamp) > METRICS_GAP_MS;
+      return gap
+        ? { latest: s, history: [s], gapEpoch: st.gapEpoch + 1 }
+        : { latest: s, history: [...st.history.slice(-119), s] };
+    }),
   setStatus: (status) => set({ status }),
 }));
 

@@ -21,6 +21,8 @@ import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, resolveConversationPrefs, SEARCH_MODES, updateConversationPrefs, validChoice, validDepth, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ConversationPrefs, type ResearchDepth } from "./assistantMode";
 import { useAssistantAsr } from "./useAssistantAsr";
 import { useAssistantTts } from "./useAssistantTts";
+import { useWakeLock } from "../../hooks/useWakeLock";
+import { useUxPrefs } from "../../stores/uxPrefs";
 import { getSpeechEngines } from "../../api/speech";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
@@ -1356,6 +1358,9 @@ export default function AssistantChat() {
   ttsReplyRef.current = ttsReply;
   const [talk, setTalk] = useState<TalkPhase>("off");
   const talkRef = useRef<TalkPhase>("off");
+  // 読み上げ・音声入力・会話モードの間は画面を消さない（iPhone は消えると止まる。設定 → 操作性）
+  const keepAwake = useUxPrefs((s) => s.keepAwake);
+  useWakeLock(keepAwake && (tts.speaking || asr.active || talk !== "off"));
   const turnRef = useRef("");
   const replyStartedRef = useRef(false);
   const lastSpokenRef = useRef<string | undefined>(undefined);
