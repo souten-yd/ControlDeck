@@ -1116,6 +1116,8 @@ export default function AssistantChat() {
   const runningJob = messages.find((m) => m.streaming && m.jobId)?.jobId ?? null;
   const stopRunning = async () => {
     if (!runningJob) return;
+    // 生成中から読み上げているので、生成を止めたら読み上げも止める（2026-11-20 本番「止めたのに鳴り続けた」）
+    tts.stop();
     try {
       await api(`/jobs/${encodeURIComponent(runningJob)}/cancel`, { method: "POST" });
       show("止めています…");

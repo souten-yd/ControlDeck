@@ -4,7 +4,7 @@
  * 2026-11-20 利用者「長文を連続で読ませると飛び飛びになる。ストリーミング再生のように順番を守って再生して」。
  * 原因: Supertonic 3 の音声は前後に約 0.4 秒ずつ無音が付く（実測 15〜138 字で 0.31〜0.44 秒）。それを 1 文ずつ
  * audio 要素で鳴らしていたので、文の切れ目ごとに約 1 秒途切れていた。合成自体は速い（15 字 0.6 秒・138 字 1.9 秒）。
- * - 各音声の前後の無音を削り、文の間は SENTENCE_GAP_S だけ空ける
+ * - 各音声の前後の無音を削り、区切りの間は SENTENCE_GAP_S（文の間と同じ 0.3 秒）だけ空ける
  * - 前の音声の終わりの時刻に次を予約する（鳴らし終わるのを待ってから次を始めない）
  * - 生成中は、ある程度たまってからまとめて合成する（1 文ずつだと切れ目と抑揚の途切れが増える）。
  *   ただし予約した音声の残りが少なくなったら、たまった分だけで合成する（声を止めない）
@@ -15,8 +15,9 @@ import { synthesizeSpeech } from "../../api/speech";
 import { preparePlayback } from "../../lib/audioSession";
 import { nextSpoken, speechChunks, speechLang, voicedRange } from "./speakable";
 
-/** 文の間に空ける時間（無音を削った後） */
-const SENTENCE_GAP_S = 0.18;
+/** 区切りと区切りの間に空ける時間（無音を削った後）。区切りはいつも文の終わり。Supertonic 3 が 1 つの音声の中で
+ *  文の間に空ける長さ（実測 0.32 秒、SDK の既定 0.3 秒）にそろえる（2026-11-20 利用者「文と文の間は適切に開けて」） */
+const SENTENCE_GAP_S = 0.3;
 /** 生成中にまとめて合成する目安の文字数（最初の 1 回は早く鳴らすため短く） */
 const FIRST_CHARS = 60;
 const BATCH_CHARS = 160;
@@ -24,7 +25,9 @@ const BATCH_CHARS = 160;
 const LOW_WATER_S = 3;
 interface Stream {
   id: string;
-  queued: number;
+  queued: string;
+  /** この回答の音はすべてここを通す。止めたら外して、予約済みの音もまとめて消す */
+  gain: GainNode | null;
   pending: string;
   done: boolean;
   wake: (() => void) | null;
@@ -36,6 +39,9 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   const runRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
   const sourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // 止めた回答。生成の続きが届いても読み直さない（2026-11-20 本番「止めたのに鳴り続けた」: 止めた直後に届いた続きで、
+  // 同じ回答を最初から読み始めていた）
+  const stoppedIdRef = useRef<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
@@ -67,7 +73,12 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
     runRef.current += 1;
     const stream = streamRef.current;
     streamRef.current = null;
-    if (stream) { stream.done = true; stream.wake?.(); }
+    if (stream) {
+      stream.done = true;
+      stream.wake?.();
+      stoppedIdRef.current = stream.id;
+      try { stream.gain?.disconnect(); } catch { /* 外れている */ }
+    }
     for (const source of sourcesRef.current) {
       try { source.stop(); } catch { /* まだ始まっていない・終わった */ }
     }
@@ -80,6 +91,10 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
     preparePlayback();
     const ctx = context();
     if (ctx.state !== "running") await ctx.resume().catch(() => undefined);
+    if (run !== runRef.current) return false;
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    stream.gain = gain;
     if (ctx.state !== "running") {
       onErrorRef.current("ブラウザが自動再生を止めました。読み上げをいったん切って入れ直してください");
       return false;
@@ -124,7 +139,7 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
           const at = Math.max(ctx.currentTime + 0.05, endAt + (spoke ? SENTENCE_GAP_S : 0));
           const source = ctx.createBufferSource();
           source.buffer = decoded;
-          source.connect(ctx.destination);
+          source.connect(gain);
           source.onended = () => { sourcesRef.current = sourcesRef.current.filter((s) => s !== source); };
           source.start(at, from / decoded.sampleRate, (to - from) / decoded.sampleRate);
           sourcesRef.current.push(source);
@@ -150,9 +165,11 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   const feed = useCallback((id: string, markdown: string, done: boolean) => {
     let stream = streamRef.current;
     if (!stream || stream.id !== id) {
+      if (stoppedIdRef.current === id) return;   // 止めた回答は読み直さない
       stop();
+      stoppedIdRef.current = null;
       const run = runRef.current;
-      const created: Stream = { id, queued: 0, pending: "", done: false, wake: null, finished: Promise.resolve(false) };
+      const created: Stream = { id, queued: "", gain: null, pending: "", done: false, wake: null, finished: Promise.resolve(false) };
       streamRef.current = created;
       created.finished = playStream(created, run);
       stream = created;
