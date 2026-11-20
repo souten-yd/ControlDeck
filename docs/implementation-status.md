@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-20 自動でも、会話の LLM の判断で OpenCode に移る
+
+- 利用者「自動でも適切に OpenCode へ遷移する作りにできないか」「すぐ移る形で」。v0.90 で語・会話の流れ・圧縮ファイルによる自動の切り替えを止めたので、判断を会話の LLM に任せる。
+- 「自動」のチャットで、道具を呼べるモデル（`tools_verified`）に `hand_off_to_opencode`（`chat_tools.TOOL_HAND_OFF_OPENCODE`）を渡す。説明で「ファイルを作る・直す・読む・コマンドを実行する作業の依頼だけ。質問・説明・比較・相談には使わない」と決める。呼ばれたら同じ回答の枠のまま OpenCode の回（build）として始め直す（`_run_chat_job` の再入。画面には `handoff` を送り、途中の本文を消して「自動で OpenCode に任せました」を出す）。その回で Web を調べていれば、結果を OpenCode へ渡す。
+- 作業フォルダ: この会話で OpenCode が前に使ったもの、無ければ画面で選んでいる既存のプロジェクト。どちらも無ければ移らず、＋から OpenCode を選んで作業フォルダを選ぶよう伝える（新しいプロジェクトを勝手に作らない）。OpenCode が無効・画像つき・声の会話では道具を渡さない。
+- 実機（Strata qwen3.8-flash-next、思考なし）: 新しい会話 7 件（M5・M6 の質問は Web 検索、違い・書き方・コツの質問は答え、「足して」「まとめて」「直しておいて」は OpenCode）と、OpenCode で作業した会話の続き 4 件（「WAL って何？」と M5・M6 の質問は OpenCode に回さない）がすべて期待どおり。判断にかかる時間は約 2 秒。
+- 検証: `tests/test_chat_tools.py`（任せたら OpenCode の回へ・作業フォルダが無ければ伝える・渡さない条件）、E2E `assistant-plan`（handoff で OpenCode の回答に切り替わる。320px）・`assistant-claude-layout`・`assistant-voice-modes`・`assistant-mobile`。
+
 ## 2026-11-20 OpenCode は明示的に選ぶ・読み上げを生成中から・声の性別で話し方
 
 - 利用者「Mac の M5・M6 チップはローカル LLM としてどうですか、と聞いたら勝手に OpenCode が開いた。OpenCode は明示的に選ぶ必要があるように」。

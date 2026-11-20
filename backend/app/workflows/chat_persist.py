@@ -1259,6 +1259,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
     think = think_spec.ollama_think
     # 元のユーザー発話（検索モードではhistoryが差し替わるため先に控える）
     user_query = str(history[-1].get("content") or "") if history else ""
+    original_history = list(history)   # OpenCode へ引き継ぐとき用（チャットの回で資料などを足す前）
     provider = provider_for_base_url(base_url)
     request_id = job.id
     buf = {"content": "", "thinking": "", "last_ckpt": 0.0, "meta": {}}
@@ -1481,6 +1482,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 handoff_context, conv_id, params.get("user_message_id"), handoff_limit, str(project), fresh_session)
             # 「調べて反映して」: ControlDeck の調査で調べ、出典つきの根拠を OpenCode に渡す（同じ 1 回の送信で）
             research_note = ""
+            if params.get("handoff_note"):
+                research_note = "## 会話で調べたこと\n" + str(params["handoff_note"])
             if params.get("code_research"):
                 # OpenCode のモデルで調べる（別のモデルを起こさない）。量は引き継ぎの上限の半分まで
                 from app.models_mgmt.runtime_provider import resolve_target
@@ -1510,6 +1513,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 buf["meta"]["handoff"] = {"messages": handoff_count, "chars": len(handoff)}
                 job.log("progress", phase="handoff", label=f"この会話の {handoff_count} 件を OpenCode に引き継ぎます",
                         iteration=0, details={"chars": len(handoff)})
+            if params.get("handoff_task"):
+                # 自動の会話から LLM の判断で引き継いだ（画面に「自動で OpenCode に任せました」と出す）
+                buf["meta"]["auto_handoff"] = {"task": params["handoff_task"]}
             buf["meta"].update({"opencode_session": session_id, "project_path": str(project),
                                 "server_key": server.key, "agent": params.get("code_agent", "build"),
                                 "permission_mode": await asyncio.to_thread(chat_server.get_mode, server)})
@@ -1722,6 +1728,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
 
     history = voice_guard(history, str(params.get("voice_style") or ""))
 
+    handing_off = False
     try:
         def runtime_request_for(messages: list[dict], with_tools: bool) -> RuntimeChatRequest:
             return RuntimeChatRequest(
@@ -1757,6 +1764,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         # 機能の選択が「自動」なら、Web 検索もモデルが要ると判断したときに呼ぶ（送信前の機能の判定を省く）
         web_tool = (mode == "chat" and str(params.get("mode_choice") or "") == "auto"
                     and getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model))
+        # 自動なら、作業の依頼かどうかもモデルが判断して OpenCode に任せる（画像つき・声の会話では任せない）
+        code_target = (await asyncio.to_thread(_opencode_hand_off_target, conv_id, params)
+                       if web_tool and not params.get("attachments") and not params.get("voice_style") else None)
+        hand_off: dict | None = None
 
         async def web_search(query: str) -> list[tuple[dict, dict]]:
             from app.models_mgmt import context_budget
@@ -1773,7 +1784,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         web_sources: list[dict] = []
         while True:
             tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
-                [chat_tools.TOOL_WEB_SEARCH] if web_tool else [])
+                [chat_tools.TOOL_WEB_SEARCH] if web_tool else []) + (
+                [chat_tools.TOOL_HAND_OFF_OPENCODE] if code_target is not None and web_tool else [])
             with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
             last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
             if last:
@@ -1797,6 +1809,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 continue
             if not calls or last:
                 break   # 最後の回にまだ呼ぼうとしても、それ以上は実行しない
+            hand = next((c for c in calls if c["name"] == chat_tools.HAND_OFF_OPENCODE), None)
+            if hand is not None and code_target and any(code_target) and web_tool:
+                hand_off = {"task": str(chat_tools.arguments_of(hand).get("task") or "")[:500]}
+                break
             rounds += 1
             messages.append({"role": "assistant", "content": round_content or None,
                              "tool_calls": [{"id": c["id"], "type": "function",
@@ -1815,6 +1831,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         web_sources.extend(found)
                         buf["meta"]["sources"] = web_sources
                         job.log("sources", sources=web_sources)
+                elif call["name"] == chat_tools.HAND_OFF_OPENCODE:
+                    # 作業フォルダが決まっていない（この会話で OpenCode を使っておらず、画面でも選んでいない）
+                    result, record = (chat_tools.NO_PROJECT_NOTE,
+                                      {"name": call["name"], "error": "no_project"})
                 elif material_tool is not None:
                     job.log("stats", phase="retrieve", detail=f"資料を探しています: {query}" if query else "資料を探しています",
                             tok_per_sec=0, gen_tokens=0, prompt_tokens=None, context_max=None)
@@ -1828,6 +1848,19 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             await asyncio.to_thread(checkpoint)
         if stats.get("probe") is not None:
             await stats["probe"]
+        if hand_off is not None and code_target and any(code_target):
+            # OpenCode が引き継ぐ。同じ回答の枠のまま OpenCode の回として最初からやり直す（ここまでの本文は捨てる）。
+            # この回で Web を調べていれば、その結果を調べた結果として渡す
+            notes = [str(m.get("content") or "") for m in messages if m.get("role") == "tool"]
+            job.log("handoff", task=hand_off["task"])
+            job.log("progress", phase="handoff", label="OpenCode に任せます", iteration=0,
+                    details={"task": hand_off["task"]})
+            logger.info("自動の会話を OpenCode へ引き継ぎます: conv=%s", conv_id)
+            handing_off = True   # 引き継いだ後の失敗・中止は OpenCode の回が記録する（ここで上書きしない）
+            return await _run_chat_job(job, assistant_id, conv_id, original_history, {
+                **params, "mode": "code", "code_agent": "build", "code_research": False,
+                "code_project": code_target[0], "code_project_path": code_target[1],
+                "handoff_task": hand_off["task"], "handoff_note": "\n\n---\n\n".join(notes)[:12000]})
         if tool_log:
             buf["content"] = chat_tools.strip_tool_markup(buf["content"])
         emit_stats(final=True)
@@ -1852,10 +1885,14 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         await asyncio.to_thread(_maybe_title, conv_id)
         return {"assistant_message_id": assistant_id, "chars": len(buf["content"])}
     except asyncio.CancelledError:
+        if handing_off:
+            raise
         await provider.cancel(request_id)
         await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")
         raise
     except Exception as e:
+        if handing_off:
+            raise
         await asyncio.to_thread(checkpoint, True, "failed", f"{type(e).__name__}: {e}")
         raise
 
@@ -2165,6 +2202,50 @@ def _maybe_title(conv_id: str) -> None:
         db.close()
 
 
+def _last_code_project(db: Session, conv_id: str) -> tuple[str, str]:
+    """この会話で最後に OpenCode が動いた作業フォルダ（CodeDEV の直下なら名前、他はパス）。無ければ空。"""
+    for row in db.execute(select(ChatMessage).where(
+            ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+    ).order_by(ChatMessage.created_at.desc()).limit(50)).scalars():
+        try:
+            previous = json.loads(row.meta_json or "{}").get("project_path")
+        except (json.JSONDecodeError, AttributeError):
+            previous = None
+        if previous:
+            # CodeDEV の直下なら名前で開く（フォルダの取り込みの道を通すと、設定によって失敗するか、
+            # 丸ごと複製した別のプロジェクトで作業してしまう。レビュー指摘 2026-11-18）。消えていれば戻さない
+            from app.integrations.opencode import provider as opencode_provider
+
+            previous_path = Path(str(previous))
+            root = opencode_provider.codedev_root().resolve()
+            if previous_path.is_dir() and previous_path.resolve().parent == root:
+                return previous_path.resolve().name, ""
+            if previous_path.is_dir():
+                return "", str(previous_path)
+            return "", ""
+    return "", ""
+
+
+def _opencode_hand_off_target(conv_id: str, params: dict) -> tuple[str, str] | None:
+    """自動の会話で OpenCode に任せられるなら、その作業フォルダ。任せられなければ None。
+
+    2026-11-20 利用者「自動でも適切に OpenCode へ移る作りに。すぐ移る形で」。語ではなく会話の LLM が判断する
+    （chat_tools.TOOL_HAND_OFF_OPENCODE）。作業フォルダは、この会話で OpenCode が前に使ったもの、無ければ画面で選んで
+    いるもの。どちらも無ければ ("", "")（呼ばれたら、作業フォルダを選ぶよう利用者に伝えさせる。勝手に作らない）。"""
+    from app.features import registry
+
+    if not registry.is_enabled("opencode-v2"):
+        return None
+    db = SessionLocal()
+    try:
+        project, path = _last_code_project(db, conv_id)
+    finally:
+        db.close()
+    if not project and not path:
+        project = str(params.get("code_project") or "")
+    return project, path
+
+
 @router.post("/conversations/{conv_id}/send", status_code=201)
 async def send_message(
     conv_id: str, body: SendBody, request: Request,
@@ -2194,25 +2275,7 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     if body.mode == "code" and not body.code_project and not body.code_project_path:
         # 作業フォルダの指定が空なら、この会話で最後に OpenCode が動いたプロジェクトで続ける
         # （画面を開き直すと選択が外れていた。2026-11-18 利用者の依頼）
-        for row in db.execute(select(ChatMessage).where(
-                ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
-        ).order_by(ChatMessage.created_at.desc()).limit(50)).scalars():
-            try:
-                previous = json.loads(row.meta_json or "{}").get("project_path")
-            except (json.JSONDecodeError, AttributeError):
-                previous = None
-            if previous:
-                # CodeDEV の直下なら名前で開く（フォルダの取り込みの道を通すと、設定によって失敗するか、
-                # 丸ごと複製した別のプロジェクトで作業してしまう。レビュー指摘 2026-11-18）。消えていれば戻さない
-                from app.integrations.opencode import provider as opencode_provider
-
-                previous_path = Path(str(previous))
-                root = opencode_provider.codedev_root().resolve()
-                if previous_path.is_dir() and previous_path.resolve().parent == root:
-                    body.code_project = previous_path.resolve().name
-                elif previous_path.is_dir():
-                    body.code_project_path = str(previous_path)
-                break
+        body.code_project, body.code_project_path = _last_code_project(db, conv_id)
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
         raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
     # 履歴（system + 過去 + 今回）
@@ -2227,7 +2290,8 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     if body.mode != "code" and any('"mode": "code"' in (m.meta_json or "") for m in past if m.role == "assistant"):
         # OpenCode の作業の履歴があると、道具の無いチャットでも呼び出しを文字で書いてしまう（2026-11-18 本番）
         history.append({"role": "system", "content": "この返答では道具やコマンドを実行できません。<tool_call> などの呼び出しを"
-                        "書かず、分かる範囲を文章で答えてください。ファイルの確認や変更が必要なら、OpenCode で続けるよう伝えてください。"})
+                        "書かず、分かる範囲を文章で答えてください。ファイルの確認や変更が必要なら、OpenCode に任せる道具"
+                        "（hand_off_to_opencode）があれば呼び、無ければ OpenCode で続けるよう伝えてください。"})
     requested_ids = extract_reference_ids(body.content)
     requested_refs = resolve_references(db, conv_id, requested_ids)
     if requested_refs:
@@ -2768,6 +2832,8 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     await websocket.send_text(json.dumps({"type": "todos", "todos": ev.get("todos", [])}, ensure_ascii=False))
                 elif ev.get("message") == "changes":
                     await websocket.send_text(json.dumps({"type": "changes", "changes": ev.get("changes", [])}, ensure_ascii=False))
+                elif ev.get("message") == "handoff":
+                    await websocket.send_text(json.dumps({"type": "handoff", "task": ev.get("task", "")}, ensure_ascii=False))
                 elif ev.get("message") == "steer":
                     await websocket.send_text(json.dumps({"type": "steer", "text": ev.get("text", "")}, ensure_ascii=False))
             cursor = next_cursor

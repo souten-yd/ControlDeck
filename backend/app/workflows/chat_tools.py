@@ -60,6 +60,30 @@ TOOL_WEB_SEARCH = {
     },
 }
 
+HAND_OFF_OPENCODE = "hand_off_to_opencode"
+TOOL_HAND_OFF_OPENCODE = {
+    "type": "function",
+    "function": {
+        "name": HAND_OFF_OPENCODE,
+        "description": (
+            "OpenCode（コーディングエージェント）に作業を任せる。この会話の作業フォルダ（プロジェクト）のファイルを作る・直す・"
+            "読む・コマンドを実行する、といった実際の作業を利用者が頼んだときにだけ使う。"
+            "質問・説明・比較・相談・意見を求められたとき（製品・技術・モデルの評価や違いを聞かれたときも）は使わず、自分で答える。"
+            "呼んだら、この会話はそのまま OpenCode が引き継ぐ。呼ぶ前に本文を書かない。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string",
+                         "description": "OpenCode に頼む作業。会話の流れを踏まえ、代名詞を使わず具体的に書く。例: ログイン画面にパスワード表示の切り替えを足す"},
+            },
+            "required": ["task"],
+        },
+    },
+}
+
+NO_PROJECT_NOTE = ("作業フォルダ（プロジェクト）が決まっていないため、OpenCode に任せられませんでした。"
+                   "利用者に、＋から OpenCode を選んで作業フォルダを選び、もう一度送るよう短く伝えてください。")
+
 # 道具を受け付けなかった (base_url, model)。次からは最初から道具なしで送る（再起動で忘れる）
 _unsupported: set[tuple[str, str]] = set()
 

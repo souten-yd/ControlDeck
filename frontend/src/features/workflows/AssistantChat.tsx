@@ -134,7 +134,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { changes?: CodeChange[]; reverted?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { changes?: CodeChange[]; reverted?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
 }
@@ -156,6 +156,8 @@ interface Msg {
   answeredBy?: string;
   /** OpenCode のエージェント（plan は計画だけ。何も変えない） */
   agent?: "build" | "plan";
+  /** 自動の会話から、LLM の判断で OpenCode に任せた作業（2026-11-20 利用者「自動でも適切に OpenCode へ。すぐ移る」） */
+  autoHandoff?: string;
   /** OpenCode: 届いた順の並び（思考・本文は文字の位置、道具は ID）。思考を道具の前後で分けて出す */
   timeline?: TimelineSeg[];
   /** OpenCode: この回答が動いたプロジェクト（解決したパス） */
@@ -210,6 +212,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     agent: m.meta?.agent,
+    autoHandoff: m.meta?.auto_handoff?.task,
     timeline: m.meta?.timeline,
     projectPath: m.meta?.project_path,
     jobId: m.job_id,
@@ -560,6 +563,13 @@ export default function AssistantChat() {
             patchMsg((m) => ({ ...m, todos: d.todos as OpenCodeTodo[] }));
           } else if (d.type === "changes") {
             patchMsg((m) => ({ ...m, changes: d.changes as CodeChange[] }));
+          } else if (d.type === "handoff") {
+            // 会話の LLM が OpenCode に任せた。ここからは OpenCode の回答（チャットの途中の本文は捨てる）
+            pendingContent = "";
+            pendingThinking = "";
+            tts.stop();
+            patchMsg((m) => ({ ...m, content: "", thinking: undefined, timeline: [], answeredBy: "code", agent: "build",
+              autoHandoff: String(d.task ?? "") }));
           } else if (d.type === "steer") {
             patchMsg((m) => ({ ...m, timeline: [...(m.timeline ?? []), { k: "n" as const, text: String(d.text ?? "") }] }));
           } else if (d.type === "sources") patchMsg((m) => ({ ...m, kind: "sources", sources: d.sources }));
@@ -1230,6 +1240,8 @@ export default function AssistantChat() {
             engine, searxng_url: searxngUrl, attachments: imageIds,
             deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
             code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
+            // 自動で OpenCode に任せるときの作業フォルダ（既存のプロジェクトを選んでいるときだけ。新しくは作らない）
+            code_project: codeProject !== "__new__" && codeProject !== "__folder__" ? codeProject : "",
             ...sentPrefs,
           },
         });
@@ -2599,6 +2611,11 @@ function MessageBubble({
     <div data-assistant-message={msg.persistStatus ?? ""} className="flex min-w-0 flex-col items-start gap-0.5">
     <div className="flex w-full min-w-0 justify-start">
       <div className="w-full min-w-0 space-y-2 break-words px-1 text-[15px] leading-7 [overflow-wrap:anywhere]">
+        {msg.autoHandoff !== undefined && (
+          <p data-auto-handoff className="inline-flex max-w-full items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold leading-5 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-200">
+            <span aria-hidden>🛠️</span><span className="truncate">自動で OpenCode に任せました{msg.autoHandoff ? `：${msg.autoHandoff}` : ""}</span>
+          </p>
+        )}
         {msg.agent === "plan" && (
           <p data-plan-answer className="inline-flex items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold leading-5 text-sky-800 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-200">
             <span aria-hidden>📋</span>プラン（ファイルは変えていません）

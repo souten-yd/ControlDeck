@@ -249,3 +249,39 @@ test("with OpenCode chosen, a question stays in OpenCode", async ({ page, contex
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_project: "app" });
 });
+
+
+test("in auto, when the model hands the work to OpenCode the answer becomes an OpenCode answer", async ({ page, context }) => {
+  // 2026-11-20 利用者「自動でも適切に OpenCode へ遷移する作りに。すぐ移る形で」。判断は会話の LLM（サーバー）。
+  // 画面は自動のまま送り（OpenCode の会話なら作業フォルダも送る）、届いた handoff で OpenCode の回答に切り替える
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);
+  const again = await mock(page);
+  await page.routeWebSocket(/\/chat\/messages\/[^/]+\/stream/, (ws) => {
+    ws.send(JSON.stringify({ type: "delta", content: "OpenCode に任せます。" }));
+    setTimeout(() => ws.send(JSON.stringify({ type: "handoff", task: "テストを足す" })), 100);
+    setTimeout(() => ws.send(JSON.stringify({ type: "tool", tool: { id: "t1", name: "write", status: "completed", title: "test_app.py" } })), 200);
+    setTimeout(() => ws.send(JSON.stringify({ type: "delta", content: "テストを足しました。" })), 300);
+    setTimeout(() => { ws.send(JSON.stringify({ type: "done", status: "completed" })); void ws.close(); }, 450);
+  });
+  void sent;
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("テストも足しておいて");
+  await expect(shell.locator("[data-mode-detected]")).not.toContainText("OpenCode");   // 画面の語では決めない
+  await input.press("Enter");
+  await expect.poll(() => again.sent.length).toBe(1);
+  expect(again.sent[0]).toMatchObject({ mode_choice: "auto" });
+  expect(again.sent[0].mode).not.toBe("code");
+  const badge = shell.locator("[data-auto-handoff]");
+  await expect(badge).toContainText("自動で OpenCode に任せました：テストを足す");
+  await expect(shell.getByText("テストを足しました。")).toBeVisible();
+  await expect(shell.getByText("OpenCode に任せます。")).toHaveCount(0);   // 引き継ぐ前の本文は消す
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+});
