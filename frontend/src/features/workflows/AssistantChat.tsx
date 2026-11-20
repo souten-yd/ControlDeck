@@ -2157,7 +2157,7 @@ export default function AssistantChat() {
                     {talk === "speaking" ? <IconSpeaker /> : talk === "thinking" ? <span className="animate-pulse">…</span> : <IconMic />}
                   </span>
                   {talk === "listening"
-                    ? <VoiceWave meter={asr.meter} pending={asr.pending} finishing={false} />
+                    ? <VoiceWave meter={asr.meter} finishing={false} />
                     : <span className="min-w-0 flex-1 truncate px-1 text-sm text-zinc-600 dark:text-zinc-300">
                       {talk === "starting" ? "マイクを準備しています…" : talk === "thinking" ? "回答を待っています…" : "回答を読み上げています"}
                     </span>}
@@ -2176,7 +2176,7 @@ export default function AssistantChat() {
                   {/* 聞いている間（Claude のように波形と時間を出す）。✕ は取り消し（この回の文字を戻す）、✓ は終わり */}
                   <button type="button" onClick={cancelVoice} aria-label="音声入力を取り消す" title="取り消す（この回に入れた文字を戻す）"
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-zinc-600 hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-zinc-300 dark:hover:bg-zinc-800">✕</button>
-                  <VoiceWave meter={asr.meter} pending={asr.pending} finishing={asr.phase === "finishing"} />
+                  <VoiceWave meter={asr.meter} finishing={asr.phase === "finishing"} />
                   <button type="button" onClick={() => void asr.finish()} disabled={asr.phase !== "listening"}
                     aria-label="音声入力を終える" title="終える（文字は入力欄に残ります）"
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent-600 text-lg font-bold text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 disabled:opacity-60">✓</button>

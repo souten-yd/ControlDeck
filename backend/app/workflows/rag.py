@@ -375,6 +375,9 @@ async def search(
         # ベクトルスコア
         vec_rank: dict[int, float] = {}
         if mode in ("vector", "hybrid"):
+            # GPU の reranker を使うなら、埋め込み（bge-m3）より先に起動して場所を取る（2026-11-20 利用者と合意）。
+            # ruri は全部を GPU に載せないと動かないが、bge-m3 は空いている分だけ載せて残りを CPU で動かせる
+            await _warm_gpu_reranker(fast=rerank_budget_s is not None)
             q_emb = (await embed([question], cfg["embed_base_url"], cfg["embed_model"], api_key))[0]
             q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
             sims = []
@@ -455,6 +458,18 @@ async def search(
     context = "\n\n---\n\n".join(strip_instruction(m["context"]) for m in reranked)
     return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
             "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
+
+
+async def _warm_gpu_reranker(fast: bool) -> None:
+    from app.workflows import cpu_reranker
+
+    model_id = cpu_reranker.choose(fast)
+    if model_id in cpu_reranker.MODELS and cpu_reranker.MODELS[model_id]["device"] == "gpu" \
+            and not cpu_reranker.running(model_id):
+        try:
+            await cpu_reranker.warm(model_id)
+        except cpu_reranker.CpuRerankerError as exc:
+            logger.info("GPU の reranker を先に起動できませんでした（並べ替えは CPU の控えで行います）: %s", exc)
 
 
 # 再ランクの記録（自己診断）。2026-11-20 本番: GPU を他のモデルが使い切っていると reranker が CPU で動き、

@@ -1,5 +1,17 @@
 # 実装状況
 
+## 2026-11-20 GPU の補助は LLM の前に止める・reranker を埋め込みより先に・Embed / Reranker の表示・Maya の自動起動
+
+- 利用者と合意（「順番に頼らない方法」）: 埋め込み・reranker は Knowledge の検索・添付の保存・Workflow・拡張アプリなどで LLM より先に GPU に載ることがあり、載ったまま大きな LLM（Maya 31.5 GB・Radiance 31 GB / 34 GB）を起動すると OOM になり得る。
+  - LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った llama.cpp の埋め込み / reranker）を止める（`large_model_lifecycle.release_gpu_helpers`。`release_for`・llama.cpp の LLM の起動・切り替えの前）。常駐でも止める。CPU だけのものは止めない。
+  - 資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに合わせて残りを CPU で動かせる）。
+  - GPU の ruri は起動前に VRAM の空き（1.6 GB）を確かめ、足りなければ試さず CPU の控えを使う。使われなければ GPU は 3 分、CPU は 10 分で止める。
+  - 控えの xsmall を公式の int8（AVX-512 VNNI / AVX2）に（0.15 → 0.04 GB、速さ同じ、精度ほぼ同じ）。
+- Embed / Reranker の表示: 「使う reranker」・「埋め込み」・「reranker」に分け、CPU / GPU（ONNX）と GPU（llama.cpp）を同じカード（役割・CPU/GPU・おすすめの印、導入・ロード / アンロード・アンインストール・常駐）にそろえた。常駐は CPU / GPU の reranker にも付けた（`/models/retrieval/cpu/{id}/load|unload|resident`）。
+- 音声入力: 波形の右の「文字に…」を消した（利用者「いらない」）。
+- Maya: 止まっているときに AI チャットで送ると「Mayaが起動していないか」で失敗していた（他の runtime は自動起動する）。DeepSeek（maya-deepseek-xs）だけを登録した環境で、起動する名前に未登録の既定名 maya-s を使い、起動を試みていなかった。要求されたモデル（登録名）を起動するようにし、`running_alias` も登録済みの最初のものを返すようにした。
+- 検証: `tests/test_rag_db_nodes.py`（補助を LLM の前に止める・reranker を先に・VRAM の確認・常駐・xsmall の int8）、`tests/test_maya_s_addon.py`（止まっている Maya を起動する）、backend 全体 1788 passed、E2E `speech-engines`・`assistant-queue-voice`・`assistant-voice-modes`。
+
 ## 2026-11-20 Models: 導入でエラーが一瞬出て「処理中…」が消えない・アンインストール
 
 - 利用者（画面写真）「reranker と埋め込みなのに LLM の画面に出る」「導入を押すと一瞬エラーが出るが、導入されているような感じ。ずっと導入表示が出る」「TTS / ASR と埋め込み・reranker にアンインストールを」。

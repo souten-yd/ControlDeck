@@ -403,3 +403,64 @@ def test_gpu_preset_uninstall_removes_registration_and_file(admin_client, monkey
     r = admin_client.post("/api/v1/models/llama/role-presets/qwen3-reranker-4b/uninstall", headers=CSRF_HEADERS)
     assert r.status_code == 200 and r.json()["gguf_deleted"] and called == [("rerank-qwen3-4b", True)]
     assert admin_client.post("/api/v1/models/llama/role-presets/nope/uninstall", headers=CSRF_HEADERS).status_code == 404
+
+
+def test_gpu_helpers_are_released_before_an_llm_loads(monkeypatch):
+    """LLM を GPU に載せる前に、GPU の補助（GPU の ruri・GPU に載った埋め込み / reranker）を止める。CPU だけのものは止めない。
+    根拠: 2026-11-20 利用者と合意（順番に頼らない方法）。補助は Knowledge の検索・添付の保存・Workflow などで LLM より
+    先に載ることがあり、載ったまま大きな LLM（Maya 31.5 GB・Radiance 31 GB / 34 GB）を起動すると OOM になり得る。"""
+    from app.models_mgmt import large_model_lifecycle as life
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker
+
+    stopped = []
+
+    async def stop_device(device):
+        assert device == "gpu"
+        return ["ruri-reranker-gpu"]
+
+    monkeypatch.setattr(cpu_reranker, "stop_device", stop_device)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "embed-bge-m3", "role": "embedding", "loaded": True, "n_gpu_layers": 999},
+        {"alias": "embed-cpu", "role": "embedding", "loaded": True, "n_gpu_layers": 0},
+        {"alias": "rerank-qwen3-4b", "role": "reranker", "loaded": False},
+        {"alias": "chat", "role": "llm", "loaded": True},
+    ])
+    monkeypatch.setattr(llama, "stop_instance", lambda alias, **kw: (stopped.append(alias), (True, ""))[1])
+    released = run(life.release_gpu_helpers())
+    assert released == ["ruri-reranker-gpu", "embed-bge-m3"] and stopped == ["embed-bge-m3"]
+
+
+def test_gpu_reranker_starts_before_embedding_and_checks_vram(monkeypatch, tmp_path):
+    """資料の検索では GPU の ruri を埋め込みより先に起動する（ruri は全部を GPU に載せないと動かないが、bge-m3 は空きに
+    合わせて残りを CPU で動かせる）。GPU の ruri は起動前に VRAM の空きを確かめ、足りなければ試さない（CPU の控えへ）。
+    使われなくなったら GPU は 3 分、CPU は 10 分で止める。常駐なら止めない。xsmall は CPU に合わせた公式の int8 を使う。"""
+    from app.workflows import cpu_reranker, rag
+
+    order = []
+
+    async def warm(model_id):
+        order.append(("warm", model_id))
+
+    async def embed(texts, *args, **kwargs):
+        order.append(("embed", texts[0]))
+        return [np.array([1.0, 0.0, 0.0], dtype=np.float32)]
+
+    monkeypatch.setattr(cpu_reranker, "choose", lambda fast: "ruri-reranker-gpu")
+    monkeypatch.setattr(cpu_reranker, "running", lambda model_id: False)
+    monkeypatch.setattr(cpu_reranker, "warm", warm)
+    monkeypatch.setattr(rag, "embed", embed)
+    run(rag._warm_gpu_reranker(fast=True))
+    run(rag.embed(["q"], "", "", ""))
+    assert order == [("warm", "ruri-reranker-gpu"), ("embed", "q")]
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cpu_reranker, "gpu_free_bytes", lambda: 900 * 1024 ** 2)
+    with pytest.raises(cpu_reranker.CpuRerankerError, match="VRAM"):
+        run(cpu_reranker._Worker("ruri-reranker-gpu")._start())
+    assert cpu_reranker.GPU_IDLE_STOP_S == 180 and cpu_reranker.IDLE_STOP_S == 600
+    assert not cpu_reranker.resident("ruri-reranker-gpu")
+    cpu_reranker.set_resident("ruri-reranker-gpu", True)
+    assert cpu_reranker.resident("ruri-reranker-gpu") and cpu_reranker.status("ruri-reranker-gpu")["resident"]
+    name = cpu_reranker.MODELS["xsmall-reranker"]["model_file"]
+    assert name.startswith("onnx/model_qint8_") and cpu_reranker.MODELS["xsmall-reranker"]["files"][name][0] == 37367189

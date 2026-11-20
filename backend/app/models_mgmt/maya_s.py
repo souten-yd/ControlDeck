@@ -858,11 +858,15 @@ def is_running() -> bool:
 
 
 def running_alias() -> str:
-    """The Maya model now running, else the first one (the default target)."""
-    for record in _records():
+    """The Maya model now running, else the first registered one (the default target).
+
+    2026-11-20 本番: DeepSeek（maya-deepseek-xs）だけを登録した環境で、止まっているときに未登録の既定名 maya-s を
+    返していた。そのため AI チャットが起動を試みず「Mayaが起動していないか」で失敗した（他の runtime は自動起動する）。"""
+    records = _records()
+    for record in records:
         if _running(record["alias"]):
             return record["alias"]
-    return _ALIAS
+    return records[0]["alias"] if records else _ALIAS
 
 
 async def ensure_ready(alias: str, *, timeout_seconds: int = 420, start: bool | None = None) -> bool:

@@ -1384,6 +1384,45 @@ def retrieval_cpu_uninstall(model_id: str, request: Request,
     return state
 
 
+class RetrievalResidentBody(BaseModel):
+    value: bool
+
+
+@router.post("/retrieval/cpu/{model_id}/{action}")
+async def retrieval_cpu_load(model_id: str, action: str, request: Request,
+                             user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """reranker を先に載せる（load）・止める（unload）。GPU の ruri は空きが足りなければ載せない。"""
+    from app.workflows import cpu_reranker
+
+    if model_id not in cpu_reranker.MODELS or action not in ("load", "unload"):
+        raise HTTPException(status_code=404, detail="未知のモデルか操作です")
+    if action == "load":
+        try:
+            await cpu_reranker.warm(model_id)
+        except cpu_reranker.CpuRerankerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
+        worker = cpu_reranker._workers.get(model_id)
+        if worker is not None:
+            await worker.stop()
+    audit.record(db, f"model.retrieval_{action}", user=user, resource_type="model", resource_id=model_id, request=request)
+    return cpu_reranker.status(model_id)
+
+
+@router.put("/retrieval/cpu/{model_id}/resident")
+def retrieval_cpu_resident(model_id: str, body: RetrievalResidentBody, request: Request,
+                           user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """常駐（使われなくなっても止めない）。GPU のものも、大きな LLM を起動する前には止める。"""
+    from app.workflows import cpu_reranker
+
+    if model_id not in cpu_reranker.MODELS:
+        raise HTTPException(status_code=404, detail="未知のモデルです")
+    cpu_reranker.set_resident(model_id, body.value)
+    audit.record(db, "model.retrieval_resident", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"value": body.value})
+    return cpu_reranker.status(model_id)
+
+
 @router.post("/llama/role-presets/{preset_id}/uninstall")
 async def llama_role_preset_uninstall(preset_id: str, request: Request,
                                       user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):

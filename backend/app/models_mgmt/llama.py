@@ -1782,6 +1782,11 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
     if (await health(alias)).get("ok"):
         return True
     loop = asyncio.get_running_loop()
+    if str(inst.get("role") or "llm") == "llm":
+        # LLM を載せる前に、GPU の補助（埋め込み・reranker）を止める（OOM を防ぐ。large_model_lifecycle.release_gpu_helpers）
+        from app.models_mgmt import large_model_lifecycle
+
+        await large_model_lifecycle.release_gpu_helpers()
     # ここから先は実際に VRAM へ載せる。載せる前に、同じ device を抱えている
     # add-on へ返却を頼む。broker に許可を求めずに載せる作りなので、頼まないと
     # 仕事を終えて場所だけ抱えている相手の上へ重ねて載ることになる。

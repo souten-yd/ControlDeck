@@ -2014,118 +2014,21 @@ function CacheTypeSelect({ value, onChange, input }: { value: string; onChange: 
   </select>;
 }
 
-interface RolePreset {
-  id: string; label: string; description: string; role: string; alias: string;
-  file_exists: boolean; installed: boolean; loaded: boolean; idle_exclude: boolean;
-  runtime_status: string;
-}
 
-/** Embed / Reranker タブ: 推奨プリセットのワンタップ導入と稼働管理。 */
+/** Embed / Reranker タブ: 埋め込み・reranker の導入・選択・稼働管理（中身は RetrievalModelsPanel）。 */
 function EmbedRerankPanel() {
-  const show = useToasts((s) => s.show);
-  const can = useAuth((s) => s.can);
-  const qc = useQueryClient();
-  const [acting, setActing] = useState<string | null>(null);
-  const { data } = useQuery({
-    queryKey: ["role-presets"],
-    queryFn: () => api<{ presets: RolePreset[] }>("/models/llama/role-presets"),
-    refetchInterval: 8000,
-  });
   const { data: llamaSt } = useQuery({ queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status") });
-
-  const install = async (preset: RolePreset) => {
-    try {
-      await api(`/models/llama/role-presets/${preset.id}/install-jobs`, { method: "POST", json: {} });
-      show(`${preset.label} の導入を開始しました（サーバー側で継続）`, "info");
-    } catch (e) { show(e instanceof Error ? e.message : "導入開始に失敗", "error"); }
-  };
-  const act = async (preset: RolePreset, action: "load" | "unload") => {
-    setActing(preset.id);
-    try {
-      await api(`/models/providers/llama.cpp/models/${encodeURIComponent(preset.alias)}/${action}`, { method: "POST", json: {} });
-      show(action === "load" ? "ロードしました" : "アンロードしました");
-      qc.invalidateQueries({ queryKey: ["role-presets"] });
-    } catch (e) { show(e instanceof Error ? e.message : "失敗しました", "error"); }
-    finally { setActing(null); }
-  };
-  const [removing, setRemoving] = useState<RolePreset | null>(null);
-  const uninstall = async (preset: RolePreset) => {
-    try {
-      const res = await api<{ gguf_deleted: boolean; reason: string }>(`/models/llama/role-presets/${preset.id}/uninstall`, { method: "POST", json: {} });
-      show(res.gguf_deleted ? `${preset.label} を外し、モデルファイルも消しました` : `${preset.label} を外しました${res.reason ? `（ファイルは残しました: ${res.reason}）` : ""}`);
-      qc.invalidateQueries({ queryKey: ["role-presets"] });
-      qc.invalidateQueries({ queryKey: ["retrieval-models"] });
-    } catch (e) { show(e instanceof Error ? e.message : "外せませんでした", "error"); }
-  };
-  const toggleResident = async (preset: RolePreset, value: boolean) => {
-    try {
-      await api(`/models/llama/instances/${encodeURIComponent(preset.alias)}`, { method: "PUT", json: { idle_exclude: value } });
-      show(value ? "GPU常駐を有効にしました" : "アイドル時に自動アンロードします");
-      qc.invalidateQueries({ queryKey: ["role-presets"] });
-    } catch (e) { show(e instanceof Error ? e.message : "設定に失敗", "error"); }
-  };
-
   return (
     <div className="space-y-3">
       <p className="text-xs text-zinc-400">
-        RAG検索の品質を上げる補助モデルです。RAG利用時に自動ロードされ、アイドルで自動アンロードされます（常駐も選択可）。
+        RAG 検索の品質を上げる補助モデルです。使うときに自動で載り、しばらく使われなければ止まります（常駐も選べます）。
       </p>
-      <RetrievalModelsPanel />
-      <p className="pt-2 text-xs font-medium text-zinc-500">GPU（llama.cpp）の埋め込み・reranker</p>
       {llamaSt && !llamaSt.installed && (
         <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-4 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
-          llama.cpp が未導入です。LLM/VLMタブの「GGUF登録」→ 導入から先にセットアップしてください。
+          llama.cpp が未導入です。GPU（llama.cpp）の埋め込み・reranker を使うには、LLM/VLM タブの「GGUF登録」→ 導入から先にセットアップしてください。
         </div>
       )}
-      {(data?.presets ?? []).map((preset) => {
-        const running = preset.runtime_status === "RUNNING" || preset.loaded;
-        return (
-          <div key={preset.id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="flex items-center gap-3">
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${running ? "bg-emerald-500" : preset.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
-                title={running ? "稼働中" : preset.installed ? "停止中" : "未導入"} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{preset.label}
-                  <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${preset.role === "embedding" ? "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300" : "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"}`}>
-                    {preset.role === "embedding" ? "埋め込み" : "再ランク"}
-                  </span>
-                </p>
-                <p className="mt-0.5 text-xs text-zinc-400">{preset.description}</p>
-              </div>
-              {can("workflows.edit") && (
-                preset.installed ? (
-                  <div className="flex shrink-0 gap-1">
-                    <button disabled={acting === preset.id} onClick={() => act(preset, running ? "unload" : "load")}
-                      className="rounded-xl bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-700 disabled:cursor-wait disabled:opacity-60 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300">
-                      {acting === preset.id ? "..." : running ? "アンロード" : "ロード"}
-                    </button>
-                    <button onClick={() => setRemoving(preset)}
-                      className="rounded-xl px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40">アンインストール</button>
-                  </div>
-                ) : (
-                  <button onClick={() => install(preset)} disabled={!llamaSt?.installed}
-                    className="shrink-0 rounded-xl bg-accent-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
-                    導入
-                  </button>
-                )
-              )}
-            </div>
-            {preset.installed && can("workflows.edit") && (
-              <label className="mt-3 flex items-center justify-between rounded-xl border border-zinc-100 px-3 py-2 dark:border-zinc-800">
-                <span className="text-xs">GPU常駐（アイドル自動アンロードから除外）
-                  <span className="block text-[10px] text-zinc-400">RAGの初回応答を速くする代わりにVRAMを使い続けます</span>
-                </span>
-                <input type="checkbox" checked={preset.idle_exclude} onChange={(e) => toggleResident(preset, e.target.checked)} className="h-4 w-4" />
-              </label>
-            )}
-          </div>
-        );
-      })}
-      {removing && (
-        <ConfirmDialog title={`${removing.label} をアンインストールしますか？`}
-          message="止めて登録を消し、モデルファイル（GGUF）も消します。もう一度使うときは導入し直します。" confirmLabel="アンインストール"
-          onConfirm={() => { void uninstall(removing); setRemoving(null); }} onClose={() => setRemoving(null)} />
-      )}
+      <RetrievalModelsPanel llamaInstalled={Boolean(llamaSt?.installed)} />
     </div>
   );
 }
