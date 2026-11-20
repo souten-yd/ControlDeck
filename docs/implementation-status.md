@@ -49,6 +49,19 @@
     - DevTools から Service Worker へ push を届け、通知の中身と行き先を確かめた。
     - 通知の link の印は、読んだら消える。
 - 実機で未確認：iPhone のホーム画面版で受け取れるか、押すと開くか。
+- **外の資料での確認（2026-11-21、AGENTS.md「分からないことの調べ方」）**
+  - **Apple の文書**（[Sending web push notifications in web apps and browsers](https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers)）：
+    - 合っていたこと：sub は URL か `mailto:`、aud は push service の origin、exp は 1 日以内。届いたら必ず表示する。中身は 4KB まで。410 は失効。
+    - 食い違っていたこと：JWT を「1 時間に 1 回より頻繁に作り直さない」とある。送るたびに作っていたので、push service と sub ごとに、期限の 1 時間前まで使い回すよう直した（テストを追加）。
+  - **WebKit のソース**（`PushManager.cpp`）：
+    - `subscribe` は、許可が「未定」のときだけ操作の直後か（transient activation）を確かめて消費する。
+    - 画面では、押した直後・最初の await より前に `Notification.requestPermission()` を呼んでいる。許可済みになった後の `subscribe` は操作を要らないので、今の順で iPhone でも通る。
+  - **コミュニティの報告**（[taOS #2166](https://github.com/jaylfc/taOS/pull/2166)、Stack Overflow の転載、web-push の README）：
+    - Apple は sub に `.local` や localhost を使うと拒むらしい。Apple の文書には書かれていない。
+    - ControlDeck の sub は、開いている https の host を使う。iPhone の Web Push は正しい証明書の https（Tailscale の ts.net など）でしか動かないので、ふつうは当たらない。
+  - **端の戻る（フリック）**（[W3C manifest の議論 2025-05](https://lists.w3.org/Archives/Public/public-webapps-github/2025May/0270.html)、[pqina](https://pqina.nl/blog/blocking-navigation-gestures-on-ios-13-4)、WebKit Bugzilla）：
+    - ホーム画面の Web アプリで、戻る操作を止める標準の手段は無い。
+    - 端の touchstart を止めるのが唯一知られた回避策で、v0.99 の作りと同じ。慣性スクロールの途中で端から引くと、iOS が先に取って戻る（WebKit 側の制限で、JS では止められない）。
 
 ## 2026-11-20 メニューを指で引き出す（v0.98 のフリックの作り直し）
 

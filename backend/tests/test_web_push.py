@@ -7,6 +7,7 @@
 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。
 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。
 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。
+- VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。
 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
 """
 from __future__ import annotations
@@ -91,6 +92,17 @@ def test_vapid_token_verifies_with_the_public_key():
     body = json.loads(webpush.b64url_decode(claims))
     assert body == {"aud": "https://web.push.apple.com", "exp": 1000 + webpush.TTL_SECONDS, "sub": "https://deck.example.ts.net"}
     assert body["exp"] - 1000 <= 24 * 3600   # RFC 8292: 24 時間以内
+
+
+def test_vapid_token_is_reused_for_an_hour_or_more():
+    """Apple は JWT を 1 時間に 1 回より頻繁に作り直さないよう求める。期限の 1 時間前までは使い回す。"""
+    key = ec.generate_private_key(ec.SECP256R1())
+    first = webpush.vapid_authorization("https://web.push.apple.com/a", "https://deck.example", now=10_000, key=key)
+    assert webpush.vapid_authorization("https://web.push.apple.com/b", "https://deck.example", now=10_000 + 3600, key=key) == first
+    other = webpush.vapid_authorization("https://fcm.googleapis.com/x", "https://deck.example", now=10_000 + 3600, key=key)
+    assert other != first                                  # push service（aud）ごとに別
+    near_expiry = 10_000 + webpush.TTL_SECONDS - webpush.JWT_REUSE_MARGIN_SECONDS
+    assert webpush.vapid_authorization("https://web.push.apple.com/a", "https://deck.example", now=near_expiry, key=key) != first
 
 
 def test_only_known_push_services_are_accepted():

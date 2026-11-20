@@ -110,19 +110,38 @@ def public_key() -> str:
     return b64url(_public_bytes(_private_key()))
 
 
+# 作った JWT を push service（aud）と sub ごとに使い回す。Apple は「1 時間に 1 回より頻繁に作り直さない」
+# と求めている（developer.apple.com「Sending web push notifications in web apps and browsers」）。
+_jwt_cache: dict[tuple[str, str, bytes], tuple[float, str]] = {}
+_jwt_lock = threading.Lock()
+JWT_REUSE_MARGIN_SECONDS = 3600
+
+
 def vapid_authorization(endpoint: str, subject: str, *, now: float | None = None,
                         key: ec.EllipticCurvePrivateKey | None = None) -> str:
-    """RFC 8292 の Authorization 頭（vapid t=<JWT>, k=<公開鍵>）。"""
+    """RFC 8292 の Authorization 頭（vapid t=<JWT>, k=<公開鍵>）。
+
+    期限（12 時間）の 1 時間前までは同じ JWT を返す。Apple は期限が 1 日より先だと拒む（BadJwtToken）。"""
     key = key or _private_key()
     parsed = urlparse(endpoint)
-    claims = {"aud": f"{parsed.scheme}://{parsed.netloc}", "exp": int((now or time.time()) + TTL_SECONDS), "sub": subject}
+    aud = f"{parsed.scheme}://{parsed.netloc}"
+    current = now or time.time()
+    cache_key = (aud, subject, _public_bytes(key))
+    with _jwt_lock:
+        cached = _jwt_cache.get(cache_key)
+        if cached and cached[0] - current > JWT_REUSE_MARGIN_SECONDS:
+            return cached[1]
+    claims = {"aud": aud, "exp": int(current + TTL_SECONDS), "sub": subject}
     signing_input = (
         b64url(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode())
         + "." + b64url(json.dumps(claims, separators=(",", ":")).encode())
     )
     r, s = decode_dss_signature(key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256())))
     token = f"{signing_input}.{b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
-    return f"vapid t={token}, k={b64url(_public_bytes(key))}"
+    header = f"vapid t={token}, k={b64url(_public_bytes(key))}"
+    with _jwt_lock:
+        _jwt_cache[cache_key] = (claims["exp"], header)
+    return header
 
 
 # ---- RFC 8291 の暗号化 ----

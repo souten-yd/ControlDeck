@@ -54,7 +54,9 @@ export function PushDevices() {
   const enable = async () => {
     setBusy(true);
     try {
-      // 押した操作の中で許可を求める（iOS は操作の外では聞けない）
+      // 押した操作の中で、最初の await より前に許可を求める。WebKit の PushManager::subscribe は、許可が
+      // まだ「未定」のときだけ操作の直後か（transient activation）を確かめて消費する。ここで許可済みに
+      // しておけば、鍵を取りに行った後の subscribe は操作を要らない（WebKit の PushManager.cpp で確認）。
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
         show("通知が許可されていません。端末の設定で ControlDeck の通知を許可してください", "error");
