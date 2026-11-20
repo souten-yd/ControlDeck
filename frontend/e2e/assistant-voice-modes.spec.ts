@@ -6,7 +6,7 @@
 //       API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
-import { nextSpoken, speakableText, speechChunks, stablePrefix } from "../src/features/workflows/speakable";
+import { nextSpoken, speakableText, speechChunks, stablePrefix, voicedRange } from "../src/features/workflows/speakable";
 
 test("speakable text keeps the main words and drops code, tables, links and sources", () => {
   const spoken = speakableText([
@@ -44,14 +44,15 @@ async function fakeMicrophone(page: Page) {
   });
 }
 
-/** 0.3 秒の無音 WAV（模擬の TTS が返す） */
+/** 模擬の TTS が返す WAV: 0.4 秒の無音・0.3 秒の音・0.4 秒の無音（Supertonic 3 と同じく前後に無音が付く） */
 function silentWav(): Buffer {
-  const samples = 13230;
+  const lead = 17640, tone = 13230, samples = lead * 2 + tone;
   const buffer = Buffer.alloc(44 + samples * 2);
   buffer.write("RIFF", 0); buffer.writeUInt32LE(36 + samples * 2, 4); buffer.write("WAVEfmt ", 8);
   buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
   buffer.writeUInt32LE(44100, 24); buffer.writeUInt32LE(88200, 28); buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
   buffer.write("data", 36); buffer.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < tone; i++) buffer.writeInt16LE(Math.round(8000 * Math.sin((2 * Math.PI * 440 * i) / 44100)), 44 + (lead + i) * 2);
   return buffer;
 }
 
@@ -272,4 +273,60 @@ test("TTS reply mode starts reading while the answer is still being written", as
   expect(timeline.indexOf("tts:最初の文です。")).toBeLessThan(timeline.indexOf("done"));
   const icon = shell.locator("[data-speaker-toggle] svg").first();
   await expect(icon).not.toHaveClass(/animate-pulse/);
+});
+
+
+test("leading and trailing silence of each synthesized piece is cut so pieces join without gaps", () => {
+  // 2026-11-20 利用者「長文を連続で読ませると飛び飛びになる」。Supertonic 3 の音声は前後に約 0.4 秒ずつ無音が付き、
+  // 1 文ずつ鳴らすと切れ目ごとに約 1 秒途切れていた（実測）。無音を削って前の終わりに続けて予約する
+  const rate = 44100;
+  const samples = new Float32Array(rate);   // 1 秒: 0.4 秒の無音・0.2 秒の音・0.4 秒の無音
+  for (let i = Math.round(rate * 0.4); i < Math.round(rate * 0.6); i++) samples[i] = 0.5 * Math.sin(i / 10) + (i % 2 ? 0.2 : -0.2);
+  const [from, to] = voicedRange(samples, rate);
+  expect(from / rate).toBeGreaterThan(0.35);
+  expect(to / rate).toBeLessThan(0.65);
+  expect((to - from) / rate).toBeLessThan(0.3);
+  expect(voicedRange(new Float32Array(rate), rate)).toEqual([0, 0]);   // 全部が無音なら鳴らさない
+});
+
+test("a long answer is played in order with only a short pause between pieces", async ({ page, context }) => {
+  // 鳴らした音の予約（AudioBufferSourceNode.start）を記録し、前の終わりから次の始まりまでの間を測る
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.addInitScript(() => {
+    const w = window as unknown as { __starts: { when: number; dur: number }[] };
+    w.__starts = [];
+    const original = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (when?: number, offset?: number, duration?: number) {
+      w.__starts.push({ when: when ?? 0, dur: duration ?? this.buffer?.duration ?? 0 });
+      return original.call(this, when, offset, duration);
+    };
+  });
+  await establishSession(page, context);
+  await page.evaluate(() => { localStorage.removeItem("cd-chat-conversation"); localStorage.setItem("cd-assistant-tts-reply", "1"); });
+  const state = await mockChat(page, []);
+  const sentence = "これは長い回答の文で、順番どおりに途切れず読まれるかを確かめます。";
+  const long = Array.from({ length: 24 }, (_, i) => `${i + 1}番目。${sentence}`).join("");
+  await page.routeWebSocket(/\/chat\/messages\/[^/]+\/stream/, (ws) => {
+    ws.send(JSON.stringify({ type: "snapshot", content: "", thinking: "" }));
+    setTimeout(() => {
+      ws.send(JSON.stringify({ type: "delta", content: long }));
+      ws.send(JSON.stringify({ type: "done", status: "completed" }));
+      void ws.close();
+    }, 100);
+  });
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await shell.locator("[data-assistant-input]").fill("長く説明して");
+  await shell.getByRole("button", { name: "送信" }).click();
+  await expect(shell.locator("[data-speaker-toggle]")).toHaveAttribute("data-speaking", "true");
+  await expect.poll(() => state.spoken.join("")).toBe(long);                       // 抜けも重なりもなく、順番どおり
+  await expect(shell.locator("[data-speaker-toggle]")).toHaveAttribute("data-speaking", "false", { timeout: 15000 });
+  const starts = await page.evaluate(() => (window as unknown as { __starts: { when: number; dur: number }[] }).__starts.filter((s) => s.dur > 0.01));
+  expect(starts.length).toBe(state.spoken.length);
+  for (let i = 1; i < starts.length; i++) {
+    const gap = starts[i].when - (starts[i - 1].when + starts[i - 1].dur);
+    expect(gap).toBeGreaterThanOrEqual(0);              // 重ならない
+    expect(gap).toBeLessThan(0.25);                     // 前は無音 0.4＋0.4 秒と鳴らし直しで約 1 秒空いていた
+  }
 });

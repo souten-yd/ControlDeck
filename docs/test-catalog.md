@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 176 ファイル、1582 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、174 テスト
+- E2E: 86 spec、176 テスト
 
 ## backend（backend/tests）
 
@@ -2651,6 +2651,8 @@
 - a reply is read once by the tab that sent it, not by another tab watching the same chat
 - a streaming answer is cut at sentence ends and every part is read once
 - TTS reply mode starts reading while the answer is still being written
+- leading and trailing silence of each synthesized piece is cut so pieces join without gaps
+- a long answer is played in order with only a short pause between pieces
 
 ### frontend/e2e/background-return.spec.ts
 
