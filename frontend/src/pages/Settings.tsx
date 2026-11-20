@@ -658,13 +658,12 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
   ["runtime", "LLM ランタイム（GPU）", "ローカル LLM を動かす推論エンジン。モデルの登録と切り替えは Models で行います"],
   ["addon", "拡張アプリ", "画像・音・特許などのアプリ。導入すると左のメニューに並びます"],
   ["speech", "音声（TTS / ASR）", "音声合成と音声認識のエンジン。使うエンジンの選択と試し聞きは Models の TTS / ASR で行います"],
-  ["retrieval", "検索（RAG）", "Knowledge と会話の資料の検索結果を並べ替えるモデル"],
   ["tools", "その他の道具", "アプリの書き出しなど、特定の機能で使う道具"],
 ];
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "retrieval-model"; route_gated: boolean;
+  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -1209,13 +1208,7 @@ function AddonsSection() {
                                 アンインストールしても保管庫（ソース・重み）は残ります。
                               </p>
                             )}
-                            {addon.kind === "retrieval-model" && (
-                              <p className="text-[11px] text-zinc-500">
-                                導入（タップ 1 つでモデルの取得と準備まで）すると、GPU の reranker の代わりに CPU で並べ替えます（VRAM を使いません）。
-                                両方入れると、会話は速い方、Knowledge・Workflow は高精度の方を使います。版は固定で、アンインストールしても取得したモデルは残ります。
-                              </p>
-                            )}
-                            {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && addon.kind !== "retrieval-model" && (
+                            {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && (
                               <button onClick={() => void update(addon)} disabled={busy}
                                 title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>

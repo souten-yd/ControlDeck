@@ -116,9 +116,8 @@ def _inside(path: Path, root: Path) -> Path:
 
 def archive_root(model_id: str) -> Path:
     spec = _spec(model_id)
-    root = (data_dir() / "archives" / spec["repo"].split("/")[1]).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    # 作らない（状態を見るだけでフォルダができないように。2026-11-20 本番で、未導入なのに空のフォルダが残っていた）
+    return (data_dir() / "archives" / spec["repo"].split("/")[1]).resolve()
 
 
 def source_dir(model_id: str) -> Path:
@@ -145,9 +144,7 @@ def _disabled_marker(model_id: str) -> Path:
 
 
 def runtime_root() -> Path:
-    root = (data_dir() / "runtimes" / "reranker-cpu" / "v1").resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return (data_dir() / "runtimes" / "reranker-cpu" / "v1").resolve()   # 作るのは導入のときだけ
 
 
 def python_path() -> Path:
@@ -186,10 +183,52 @@ def ready(model_id: str | None = None) -> bool:
 
 
 def pick(fast: bool) -> str | None:
-    """使うモデル。会話（fast）は速いもの、それ以外は精度の高いものを優先し、無ければもう一方。"""
+    """自動のときに使う CPU のモデル。会話（fast）は速いもの、それ以外は精度の高いものを優先し、無ければもう一方。"""
     want = "fast" if fast else "accurate"
     installed = [m for m in MODELS if ready(m)]
     return next((m for m in installed if MODELS[m]["prefer"] == want), installed[0] if installed else None)
+
+
+# 使う reranker の選択（Models の「Embed / Reranker」）。会話の資料と、Knowledge・Workflow で別に選ぶ。
+# auto: CPU が入っていればそれ（会話は速い xsmall、それ以外は精度の ruri）、無ければ GPU。
+# gpu: role=reranker の llama.cpp（Qwen3-Reranker-4B など）。none: 並べ替えない（検索の順のまま）
+CHOICES = ("auto", *MODELS, "gpu", "none")
+_SELECTION_DEFAULT = {"chat": "auto", "knowledge": "auto"}
+
+
+def _selection_path() -> Path:
+    return data_dir() / "retrieval-settings.json"
+
+
+def selection() -> dict:
+    try:
+        saved = json.loads(_selection_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = {}
+    return {k: (saved.get(k) if saved.get(k) in CHOICES else v) for k, v in _SELECTION_DEFAULT.items()}
+
+
+def set_selection(values: dict) -> dict:
+    current = selection()
+    for key, value in values.items():
+        if key not in _SELECTION_DEFAULT or value not in CHOICES:
+            raise ValueError(f"選べない値です: {key}={value}")
+        current[key] = value
+    path = _selection_path()
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(path)
+    return current
+
+
+def choose(fast: bool) -> str:
+    """並べ替えに使うもの: CPU のモデル ID・"gpu"・"none"。選んだ CPU のモデルが使えなければ自動と同じに戻る。"""
+    chosen = selection()["chat" if fast else "knowledge"]
+    if chosen in ("gpu", "none"):
+        return chosen
+    if chosen in MODELS and ready(chosen):
+        return chosen
+    return pick(fast) or "gpu"
 
 
 def limits(model_id: str, fast: bool) -> tuple[int, int]:
@@ -295,6 +334,7 @@ async def _build_int8(job: jobs.Job, model_id: str) -> dict:
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
     out = model_path(model_id).parent
+    out.parent.mkdir(parents=True, exist_ok=True)
     staging = _inside(out.with_name(out.name + ".part"), archive_root(model_id))
     shutil.rmtree(staging, ignore_errors=True)
     try:
@@ -336,6 +376,7 @@ async def install(job: jobs.Job, model_id: str) -> dict:
         if spec["build"] == "convert-int8":
             await _build_int8(job, model_id)
     runtime = runtime_root()
+    runtime.mkdir(parents=True, exist_ok=True)
     marker = runtime / "venv-ready"
     if not venv_ready():
         job.set_progress("reranker の実行環境を準備中", 2, 3)
@@ -360,7 +401,8 @@ def uninstall(model_id: str) -> dict:
     worker = _workers.pop(model_id, None)
     if worker is not None:
         worker.kill()
-    _disabled_marker(model_id).write_text("1\n", encoding="utf-8")
+    if archive_root(model_id).is_dir():
+        _disabled_marker(model_id).write_text("1\n", encoding="utf-8")
     if not any(ready(m) for m in MODELS if m != model_id):
         root = (data_dir() / "runtimes" / "reranker-cpu").resolve()
         if root.exists():
@@ -372,7 +414,7 @@ def start_install_job(model_id: str, owner_user_id: int | None) -> jobs.Job:
     current = jobs.get(_install_jobs[model_id]) if model_id in _install_jobs else None
     if current and current.status in ("queued", "running"):
         return current
-    job = jobs.create("feature.install", f"{_spec(model_id)['name']} を導入",
+    job = jobs.create("model.preset", f"導入: {_spec(model_id)['name']}",
                       lambda job: install(job, model_id), owner_user_id=owner_user_id, priority=-5)
     _install_jobs[model_id] = job.id
     return job

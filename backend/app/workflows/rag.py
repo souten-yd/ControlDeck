@@ -494,8 +494,10 @@ async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool 
 
     if len(matches) <= top_k:
         return matches[:top_k]
-    model_id = cpu_reranker.pick(fast)
-    if model_id is not None:
+    model_id = cpu_reranker.choose(fast)   # Models の「Embed / Reranker」で選んだもの（既定は自動）
+    if model_id == "none":
+        return matches[:top_k]
+    if model_id != "gpu":
         rerank_stats["calls"] += 1
         pool_factor, max_tokens = cpu_reranker.limits(model_id, fast)
         pool = matches[:top_k * pool_factor]

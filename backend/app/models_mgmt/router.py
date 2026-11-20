@@ -1314,6 +1314,73 @@ async def llama_role_preset_install(
     return {"job_id": job.id}
 
 
+class RetrievalSelectionBody(BaseModel):
+    chat: str | None = None
+    knowledge: str | None = None
+
+
+@router.get("/retrieval")
+def retrieval_models(user: User = Depends(require_permission("workflows.run"))):
+    """RAG の補助モデル（埋め込み・reranker）の一覧と、使う reranker の選択。
+
+    2026-11-20 利用者「Models タブで導入できるように。どのモデルを使うか選べるように」。CPU の reranker
+    （xsmall・ruri）と、GPU の llama.cpp のプリセット（bge-m3・Qwen3-Reranker-4B）を同じ場所に並べる。"""
+    from app.models_mgmt import llama, role_presets
+    from app.workflows import cpu_reranker
+
+    gpu = [p for p in role_presets.preset_status() if p.get("role") == "reranker"]
+    return {
+        "cpu_rerankers": [cpu_reranker.status(m) for m in cpu_reranker.MODELS],
+        "gpu_reranker_installed": llama.find_role_instance("reranker") is not None,
+        "gpu_rerankers": gpu,
+        "selection": cpu_reranker.selection(),
+        "choices": list(cpu_reranker.CHOICES),
+        "in_use": {"chat": cpu_reranker.choose(True), "knowledge": cpu_reranker.choose(False)},
+    }
+
+
+@router.put("/retrieval/selection")
+def retrieval_select(body: RetrievalSelectionBody, request: Request,
+                     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    from app.workflows import cpu_reranker
+
+    values = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        selected = cpu_reranker.set_selection(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "model.retrieval_select", user=user, resource_type="model", resource_id="reranker",
+                 request=request, metadata=selected)
+    return {"selection": selected, "in_use": {"chat": cpu_reranker.choose(True), "knowledge": cpu_reranker.choose(False)}}
+
+
+@router.post("/retrieval/cpu/{model_id}/install-jobs", status_code=201)
+def retrieval_cpu_install(model_id: str, request: Request,
+                          user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """CPU の reranker をタップ 1 つで導入する（取得・ruri は int8 へ変換・実行環境・試しの並べ替え）。"""
+    from app.workflows import cpu_reranker
+
+    if model_id not in cpu_reranker.MODELS:
+        raise HTTPException(status_code=404, detail="未知のモデルです")
+    job = cpu_reranker.start_install_job(model_id, user.id)
+    audit.record(db, "model.retrieval_install", user=user, resource_type="model", resource_id=model_id,
+                 request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.post("/retrieval/cpu/{model_id}/uninstall")
+def retrieval_cpu_uninstall(model_id: str, request: Request,
+                            user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """使わなくする。取得・変換したファイル（保管庫）は残す（入れ直しで取り直さない）。"""
+    from app.workflows import cpu_reranker
+
+    if model_id not in cpu_reranker.MODELS:
+        raise HTTPException(status_code=404, detail="未知のモデルです")
+    state = cpu_reranker.uninstall(model_id)
+    audit.record(db, "model.retrieval_uninstall", user=user, resource_type="model", resource_id=model_id, request=request)
+    return state
+
+
 @router.get("/llama/options")
 async def llama_options(user: User = Depends(require_permission("workflows.edit"))):
     """稼働バイナリの --help から利用可能な引数を返す（実在オプションのみ UI 表示するため）。"""

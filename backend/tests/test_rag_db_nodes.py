@@ -248,22 +248,22 @@ def test_rerank_query_carries_the_previous_topic():
     assert len(query.split("\n")[0]) == CHAT_RERANK_TOPIC_CHARS
 
 
-def test_cpu_reranker_feature_status_and_actions(monkeypatch, tmp_path):
-    """機能追加の「検索（RAG）」に CPU の reranker を 2 つ（速い xsmall・高精度 ruri）出す。導入は非同期ジョブだけ、
-    更新は無い（版固定）。アンインストールは使わなくするだけで、取得・変換したファイル（保管庫）は残す。
-    実行環境は共有で、ほかに使うモデルが無くなったら消す。"""
-    from app.features import registry
+def test_cpu_rerankers_are_installed_and_chosen_in_models(admin_client, monkeypatch, tmp_path):
+    """Models の「Embed / Reranker」で CPU の reranker（速い xsmall・高精度 ruri）を導入・選択する。
+    根拠: 2026-11-20 利用者「Models タブで導入できるように。どのモデルを使うか選べるように」。
+    - 状態を見るだけではフォルダを作らない（本番で、未導入なのに空のフォルダが残っていた）
+    - 選択は会話と Knowledge・Workflow で別。選んだ CPU のモデルが未導入なら自動に戻る。gpu・none も選べる
+    - アンインストールは使わなくするだけで、取得・変換したファイル（保管庫）は残す。実行環境は共有"""
     from app.workflows import cpu_reranker
+    from tests.conftest import CSRF_HEADERS
 
     monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
-    for feature_id in ("xsmall-reranker", "ruri-reranker"):
-        state = registry.status(feature_id)
-        assert state["category"] == "retrieval" and not state["installed"] and state["health"] == "not-installed"
-        with pytest.raises(registry.FeatureError):
-            registry.install(feature_id)
-        with pytest.raises(registry.FeatureError):
-            registry.update(feature_id)
-    # xsmall: 公式の ONNX を取るだけ（サイズで確かめる）。ruri: 変換した int8
+    data = admin_client.get("/api/v1/models/retrieval").json()
+    assert [m["id"] for m in data["cpu_rerankers"]] == ["xsmall-reranker", "ruri-reranker"]
+    assert not any(m["installed"] for m in data["cpu_rerankers"]) and data["selection"] == {"chat": "auto", "knowledge": "auto"}
+    assert not (tmp_path / "archives").exists() and not (tmp_path / "runtimes").exists()   # 見るだけでは作らない
+    assert data["in_use"] == {"chat": "gpu", "knowledge": "gpu"}                            # CPU が無ければ GPU
+    # 導入済みにする（xsmall は取得したファイル、ruri は変換した int8、実行環境は共有）
     for name, (size, _) in cpu_reranker.MODELS["xsmall-reranker"]["files"].items():
         target = cpu_reranker.source_dir("xsmall-reranker") / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -277,12 +277,20 @@ def test_cpu_reranker_feature_status_and_actions(monkeypatch, tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text("")
     (cpu_reranker.runtime_root() / "venv-ready").write_text(",".join(cpu_reranker.RUNTIME_PACKAGES))
-    assert registry.status("xsmall-reranker")["installed"] and registry.status("ruri-reranker")["installed"]
-    registry.uninstall("ruri-reranker")
-    assert not registry.status("ruri-reranker")["installed"] and ruri.is_file()     # 保管庫は残る
-    assert python.exists() and registry.status("xsmall-reranker")["installed"]       # 実行環境は共有
-    registry.uninstall("xsmall-reranker")
+    data = admin_client.get("/api/v1/models/retrieval").json()
+    assert data["in_use"] == {"chat": "xsmall-reranker", "knowledge": "ruri-reranker"}      # 自動
+    r = admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "ruri-reranker", "knowledge": "none"},
+                         headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["in_use"] == {"chat": "ruri-reranker", "knowledge": "none"}
+    assert admin_client.put("/api/v1/models/retrieval/selection", json={"chat": "bogus"},
+                            headers=CSRF_HEADERS).status_code == 422
+    r = admin_client.post("/api/v1/models/retrieval/cpu/ruri-reranker/uninstall", headers=CSRF_HEADERS)
+    assert r.status_code == 200 and not r.json()["installed"] and ruri.is_file()             # 保管庫は残る
+    data = admin_client.get("/api/v1/models/retrieval").json()
+    assert data["in_use"]["chat"] == "xsmall-reranker" and python.exists()                  # 選んだものが無ければ自動
+    admin_client.post("/api/v1/models/retrieval/cpu/xsmall-reranker/uninstall", headers=CSRF_HEADERS)
     assert not python.exists()
+    assert admin_client.post("/api/v1/models/retrieval/cpu/nope/install-jobs", headers=CSRF_HEADERS).status_code == 404
 
 
 def test_large_conversation_materials_are_searched_only_when_the_message_points_at_them():
@@ -296,3 +304,21 @@ def test_large_conversation_materials_are_searched_only_when_the_message_points_
         assert needs_materials(text), text
     for text in ("こんにちは", "ありがとう！", "なるほど、了解です", "今日はいい天気だね", "それでいいよ", "発表の練習をしたい"):
         assert not needs_materials(text), text
+
+
+def test_rerank_follows_the_selection(monkeypatch):
+    """選んだものを並べ替えに使う: none は並べ替えず検索の順、gpu は CPU が入っていても GPU（llama.cpp）を使う。"""
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker, rag
+
+    async def never(*args, **kwargs):
+        pytest.fail("CPU の reranker を使った")
+
+    monkeypatch.setattr(cpu_reranker, "ready", lambda model_id=None: True)
+    monkeypatch.setattr(cpu_reranker, "score", never)
+    matches = [{"text": str(i), "context": str(i)} for i in range(6)]
+    monkeypatch.setattr(cpu_reranker, "selection", lambda: {"chat": "none", "knowledge": "gpu"})
+    assert [m["text"] for m in run(rag._rerank("q", matches, 2, fast=True))] == ["0", "1"]
+    asked = []
+    monkeypatch.setattr(llama, "find_role_instance", lambda role: asked.append(role) or None)
+    assert [m["text"] for m in run(rag._rerank("q", matches, 2))] == ["0", "1"] and asked == ["reranker"]

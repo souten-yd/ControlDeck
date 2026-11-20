@@ -83,24 +83,30 @@ test("Supertonic 3 is offered under 音声 in the feature list", async ({ page, 
   await row.screenshot({ path: `${shots}/speech-feature-320.png` });
 });
 
-test("the CPU reranker is offered under 検索（RAG） in the feature list", async ({ page, context }) => {
-  // 2026-11-20 利用者「reranker は CPU に入れる形で」。導入前は「導入」だけで、更新ボタンは出さない（版固定）
+test("CPU rerankers are installed and chosen in Models > Embed / Reranker", async ({ page, context }) => {
+  // 2026-11-20 利用者「Models タブで導入できるように。どのモデルを使うか選べるように」。
+  // 会話と Knowledge・Workflow で別に選ぶ。未導入のものは選べない。設定の機能追加には出さない
   await establishSession(page, context);
   for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/settings/features");
-    // 速い xsmall（おすすめ）と高精度の ruri を並べる。どちらもタップ 1 つで導入
-    for (const [id, name] of [["xsmall-reranker", "japanese-reranker-xsmall-v2"], ["ruri-reranker", "ruri-v3-reranker-310m"]]) {
-      const item = page.locator(`#feature-${id}`);
-      await item.scrollIntoViewIfNeeded();
-      await expect(item).toBeVisible();
-      await expect(item).toContainText(name);
-      await expect(item.getByRole("button", { name: "導入" })).toBeVisible();
-      await expect(item.getByRole("button", { name: "更新" })).toHaveCount(0);
+    await page.goto("/models?tab=embed");
+    const panel = page.locator("[data-retrieval-models]");
+    await expect(panel).toBeVisible();
+    for (const id of ["xsmall-reranker", "ruri-reranker"]) {
+      const card = page.locator(`#retrieval-${id}`);
+      await expect(card).toBeVisible();
+      await expect(card.getByRole("button", { name: "導入" })).toBeVisible();
     }
-    const row = page.locator("#feature-xsmall-reranker").locator("..");
-    await expect(page.getByRole("heading", { name: /検索（RAG）/ })).toBeVisible();
+    const chat = panel.locator("select").first();
+    await expect(chat).toHaveValue("auto");
+    await expect(chat.locator('option[value="xsmall-reranker"]')).toHaveAttribute("disabled", "");   // 未導入
+    await expect(panel.locator('[data-in-use="chat"]')).toContainText("未導入");   // 検証用には reranker が無い
+    await chat.selectOption("none");
+    await expect(panel.locator('[data-in-use="chat"]')).toContainText("並べ替えない");
+    await chat.selectOption("auto");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await row.screenshot({ path: `${shots}/retrieval-feature-${width}.png` });
+    await panel.screenshot({ path: `${shots}/retrieval-models-${width}.png` });
   }
+  await page.goto("/settings/features");
+  await expect(page.locator("#feature-ruri-reranker")).toHaveCount(0);
 });

@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-20 Models の「Embed / Reranker」で CPU の reranker を導入・選択する
+
+- 利用者「reranker と埋め込みモデルは適切に選定されているか。Models タブで導入できるか、どのモデルを使うか選べるか」。v0.85 では CPU の reranker が設定の「機能追加 → 検索（RAG）」にあり、Models の「Embed / Reranker」（GPU の bge-m3・Qwen3-Reranker-4B）と場所が分かれ、使うモデルを選ぶ画面も無かった。本番では未導入なのに空のフォルダが残っていた（状態を見るだけで `archives/`・`runtimes/` のフォルダを作っていた）。
+- 変更: CPU の xsmall・ruri を Models の「Embed / Reranker」へ移し、タップ 1 つで導入・外す。「使う reranker」を会話の資料と Knowledge・Workflow で別に選ぶ（自動 / xsmall / ruri / GPU / 並べ替えない。未導入のものは選べない。選んだものが外れたら自動に戻る）。選択は `data/retrieval-settings.json`。API は `/models/retrieval`。機能追加の「検索（RAG）」は削除。状態を見るだけではフォルダを作らない。
+- 道具（#479 の続き）: Strata（Qwen3.8 Flash Next）をゲートウェイ経由で確かめ `tools_verified` にした（挨拶・計算では呼ばず、番組表・天気は探して答えた）。Maya（DS-XS）は挨拶でも資料を探したので渡さない。
+- 検証: `tests/test_rag_db_nodes.py`（導入・選択・外す・保管庫を残す・見るだけでフォルダを作らない・選択に従う）、E2E `speech-engines`（1280 / 320 で表示・選択、機能追加に出さない）。
+
 ## 2026-11-20 AI アシスタント: 会話でモデル自身が道具を呼ぶ（資料の検索・Web 検索）
 
 - 利用者「ローカル LLM の会話でモデル自身が道具を呼ぶ仕組みを入れてほしい」「毎回チェックする必要はない。Claude と同じ方法で」。
