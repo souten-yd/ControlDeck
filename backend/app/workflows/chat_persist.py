@@ -1545,11 +1545,16 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                     logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
 
             _steer_targets[assistant_id] = steer
+            # 添付した画像は OpenCode の発言に付ける（OpenCode が画像を読めるモデルへそのまま渡す）
+            image_files = await asyncio.to_thread(_image_files, conv_id, params.get("attachments") or [])
+            if image_files:
+                buf["meta"]["images"] = len(image_files)
             try:
                 result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                     on_reasoning=on_reasoning, on_tool=on_tool,
                                                     on_permission=on_permission,
-                                                    agent=params.get("code_agent", "build"), on_status=on_status)
+                                                    agent=params.get("code_agent", "build"), on_status=on_status,
+                                                    **({"files": image_files} if image_files else {}))
             except BaseException:
                 await record_changes()
                 raise
@@ -1765,8 +1770,11 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         web_tool = (mode == "chat" and str(params.get("mode_choice") or "") == "auto"
                     and getattr(provider, "tools_verified", False) and chat_tools.supported(base_url, model))
         # 自動なら、作業の依頼かどうかもモデルが判断して OpenCode に任せる（画像つき・声の会話では任せない）
+        # 画像つきは、OpenCode のモデルが画像を読めるときだけ任せる（読めないモデルへ渡すと画像が消える）
+        images_ok = not [a for a in (params.get("attachments") or []) if _ATTACHMENT_ID_RE.fullmatch(str(a))] \
+            or not await asyncio.to_thread(opencode_image_problem)
         code_target = (await asyncio.to_thread(_opencode_hand_off_target, conv_id, params)
-                       if web_tool and not params.get("attachments") and not params.get("voice_style") else None)
+                       if web_tool and images_ok and not params.get("voice_style") else None)
         hand_off: dict | None = None
 
         async def web_search(query: str) -> list[tuple[dict, dict]]:
@@ -2202,6 +2210,37 @@ def _maybe_title(conv_id: str) -> None:
         db.close()
 
 
+def _image_files(conv_id: str, ids: list) -> list[dict]:
+    """添付した画像を OpenCode の発言に付ける形（data: の URI）にする。"""
+    import base64
+
+    mime_by_ext = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+    files = []
+    for attachment_id in ids:
+        if not _ATTACHMENT_ID_RE.fullmatch(str(attachment_id)):
+            continue
+        path = _attachment_dir(conv_id) / str(attachment_id)
+        if path.is_file():
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+            files.append({"uri": f"data:{mime_by_ext[path.suffix]};base64,{data}", "name": path.name})
+    return files
+
+
+def opencode_image_problem() -> str:
+    """OpenCode のモデルが画像を読めなければ、その理由（読めるか分からなければ空。送ってみる）。
+
+    2026-11-20 利用者「OpenCode にそのまま渡すのがいい。VLM が使えないものはモデルの判定で分かるので、使えませんと示して」。"""
+    from app.integrations.opencode import provider as opencode_provider
+    from app.models_mgmt import gateway
+
+    settings = opencode_provider.get_settings()
+    sees, name = gateway.target_sees_images(str(settings.get("base_url") or ""), str(settings.get("model") or ""))
+    if sees is False:
+        return (f"OpenCode のモデル（{name}）は画像を読めません。画像を読めるモデルに切り替えるか、"
+                "＋から Chat を選んでください")
+    return ""
+
+
 def _last_code_project(db: Session, conv_id: str) -> tuple[str, str]:
     """この会話で最後に OpenCode が動いた作業フォルダ（CodeDEV の直下なら名前、他はパス）。無ければ空。"""
     for row in db.execute(select(ChatMessage).where(
@@ -2330,6 +2369,10 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
                    if _ATTACHMENT_ID_RE.fullmatch(a) and (_attachment_root(conv_id) / a).is_file()]
     archive_rows = await asyncio.to_thread(_sent_archives, conv_id, list(body.attachments))
     sent_archives = [row["id"] for row in archive_rows]
+    if sent_images and body.mode == "code":
+        problem = await asyncio.to_thread(opencode_image_problem)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
     if sent_archives and body.mode != "code":
         raise HTTPException(status_code=422, detail="圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください")
     user_meta: dict = {}
@@ -2581,6 +2624,10 @@ async def add_queue(conv_id: str, body: QueueBody, user: User = Depends(require_
     _owned_conversation(db, conv_id, user)
     if body.mode not in {"auto", "chat", "web", "academic", "deep", "research", "code"}:
         raise HTTPException(status_code=422, detail="未対応のチャットモードです")
+    if body.mode == "code" and any(_ATTACHMENT_ID_RE.fullmatch(str(a)) for a in body.attachments):
+        problem = await asyncio.to_thread(opencode_image_problem)   # 送るときではなく、入れたときに知らせる
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
     if len(_queued(db, conv_id, ("queued", "failed"))) >= QUEUE_LIMIT:
         raise HTTPException(status_code=409, detail=f"送信待ちは {QUEUE_LIMIT} 件までです")
     item = ChatQueuedRequest(id=_new_id(), conversation_id=conv_id, content=body.content,

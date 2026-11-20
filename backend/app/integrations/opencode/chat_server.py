@@ -504,7 +504,7 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
                    on_tool: Callback, on_permission: Callback, agent: str = "build",
-                   on_status: Callback | None = None) -> dict:
+                   on_status: Callback | None = None, files: list[dict] | None = None) -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
     子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
@@ -614,7 +614,9 @@ async def run_turn(server: Server, session_id: str, text: str, *,
         await asyncio.wait_for(ready.wait(), timeout=15)
         # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
         await switch_agent(server, session_id, agent)
-        prompted = await _call(server, "POST", f"/api/session/{session_id}/prompt", {"text": text})
+        # 画像は data: の URI で発言に添付する（OpenCode が読み、画像を受け取れるモデルにそのまま渡す）
+        prompted = await _call(server, "POST", f"/api/session/{session_id}/prompt",
+                               {"text": text, **({"files": files} if files else {})})
         message_id = str((prompted or {}).get("id") or "")   # この回の変更を調べる・取り消す目印
         if message_id and on_status:                         # 止めた回でも変更を確かめられるよう、先に知らせる
             await on_status({"phase": "waiting", "message_id": message_id})

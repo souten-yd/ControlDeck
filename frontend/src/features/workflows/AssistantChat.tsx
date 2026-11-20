@@ -483,7 +483,8 @@ export default function AssistantChat() {
   // 2026-11-18 利用者「調査とプランを選べるが、プロジェクトを選べない。どこに書き込まれるのか」
   // OpenCode は明示的に選んだときだけ（2026-11-20 利用者）。プランは＋か Shift+Tab で選ぶ明示の指定なので、
   // 調査・自動と組み合わせても効く（調べた結果で OpenCode が計画する）。語や会話の流れでは OpenCode へ回さない
-  const plansInOpenCode = codeAgent === "plan" && opencodeAvailable && !attachments.some((a) => a.kind === "image");
+  // 画像も OpenCode に渡す（読めないモデルなら送るときにサーバーが知らせる。2026-11-20 利用者の依頼）
+  const plansInOpenCode = codeAgent === "plan" && opencodeAvailable;
   const detected = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const autoDecision = plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
     ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
@@ -1140,7 +1141,7 @@ export default function AssistantChat() {
     // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
-    const planInOpenCode = agent === "plan" && opencodeAvailable && attachments.every((a) => a.kind !== "image");
+    const planInOpenCode = agent === "plan" && opencodeAvailable;
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
@@ -1160,11 +1161,6 @@ export default function AssistantChat() {
     }
     const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
     const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
-    if (readyImages.length > 0 && selectedMode === "code") {
-      // OpenCode は画像を受け取れない。黙って落とさず、知らせる（レビュー指摘 2026-11-18）
-      show("画像は OpenCode に渡せません。＋から Chat を選ぶと画像を見て答えます", "error");
-      return;
-    }
     if (readyArchives.length > 0 && selectedMode !== "code") {
       show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
       return;
@@ -1189,7 +1185,7 @@ export default function AssistantChat() {
       if (hold) deferredQueueRef.current = true;
       const json = selectedMode === "code"
         ? { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-          attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs }
+          attachments: [...readyArchives, ...readyImages].map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs }
         : { content: text, mode: choice === "auto" ? "auto" : selectedMode, base_url: baseUrl, model, engine,
           searxng_url: searxngUrl, attachments: readyImages.map((a) => a.id), deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
           code_project_path: deepSources.includes("local_code") ? deepProjectPath : "", ...sentPrefs };
@@ -1267,9 +1263,10 @@ export default function AssistantChat() {
         const res = await api<{ assistant_message_id: string; job_id?: string; user_message_id?: string }>(`/chat/conversations/${cid}/send`, {
           method: "POST",
           json: { content: text, mode: "code", base_url: baseUrl, model, code_project: codeProjectName, code_project_path: codeFolder,
-            attachments: readyArchives.map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs },
+            // 画像は OpenCode の発言に添付する（OpenCode のモデルが画像を読めなければサーバーが 422 で知らせる）
+            attachments: [...readyArchives, ...readyImages].map((a) => a.id), code_research: researchFirst, code_research_depth: choice === "investigate" ? researchDepth : "auto", code_agent: agent, ...sentPrefs },
         });
-        setAttachments((prev) => prev.filter((a) => a.kind !== "archive"));
+        setAttachments((prev) => prev.filter((a) => a.kind !== "archive" && a.kind !== "image"));
         if (choice === "investigate") finishOneShot();
         setResolvedDecision(null);
         qc.invalidateQueries({ queryKey: ["opencode-projects"] });
@@ -1306,11 +1303,16 @@ export default function AssistantChat() {
         patchLast((m) => ({ ...m, content: result, streaming: false }));
       }
     } catch (e) {
-      patchLast((m) =>
-        m.role === "assistant"
-          ? { ...m, content: `⚠️ ${e instanceof Error ? e.message : "エラーが発生しました"}`, streaming: false }
-          : m,
-      );
+      const message = e instanceof Error ? e.message : "エラーが発生しました";
+      // 回答の枠を作る前に断られた（OpenCode のモデルが画像を読めない等）: 送れていない発言を取り下げて入力へ戻し、
+      // 理由を出す（以前は最後の発言が利用者のものだと何も出ず、送れたように見えた）
+      if (messagesRef.current[messagesRef.current.length - 1] === userMsg) {
+        setMessages((prev) => prev.filter((m) => m !== userMsg));
+        setInput((prev) => prev || text);
+        show(message, "error");
+      } else {
+        patchLast((m) => (m.role === "assistant" ? { ...m, content: `⚠️ ${message}`, streaming: false } : m));
+      }
     } finally {
       setRouting(false);
       if (!buildContinues) setBusy(false);

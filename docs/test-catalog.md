@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 176 ファイル、1582 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、176 テスト
+- backend: 176 ファイル、1584 テスト（目的の未記入 93 ファイル）
+- E2E: 86 spec、177 テスト
 
 ## backend（backend/tests）
 
@@ -577,7 +577,7 @@
 - `test_final_round_turns_tool_exchanges_into_plain_notes` — 上限まで呼んだ後の最後の回: 道具のやり取りを普通の資料にまとめる。残したままだと Radiance が 3 回中 2 回、
 - `test_auto_mode_lets_the_model_hand_work_to_opencode` — 「自動」では、作業の依頼かどうかを会話の LLM が判断し、OpenCode に任せる道具を呼んだら同じ回答の枠のまま
 - `test_hand_off_without_a_project_asks_the_user_to_choose_one` — 作業フォルダが決まっていなければ移らない（新しいプロジェクトを勝手に作らない）。選んで送り直すよう伝えさせる。
-- `test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice` — OpenCode が無効・画像つき（OpenCode は画像を見られない）・声の会話では渡さない。
+- `test_opencode_tool_is_not_offered_without_opencode_or_for_images_and_voice` — OpenCode が無効・声の会話では渡さない。画像つきは、OpenCode のモデルが画像を読めないときだけ渡さない
 
 ### backend/tests/test_chatflow.py
 
@@ -1568,6 +1568,8 @@
 - `test_plan_is_passed_to_opencode_and_recorded_on_the_answer` — プランで送ると、OpenCode に plan のエージェントで渡り、回答に印が残る（画面が「プラン」と出す）。
 - `test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times`
 - `test_chat_after_opencode_is_told_it_has_no_tools_and_tool_text_is_reported` — OpenCode の後のチャットには道具が無いと伝える。文字だけの呼び出しは自己診断で分かる（2026-11-18 本番）。
+- `test_attached_images_are_given_to_opencode_when_its_model_reads_images` — AI アシスタントで添付した画像を、OpenCode の発言に data: の URI で付ける（OpenCode が画像を読めるモデルへ渡す）。
+- `test_image_reading_is_judged_like_the_models_tab` — 画像を読めるかは Models の表示と同じ: llama.cpp は mmproj、Strata は vision が off でない、Radiance は常に、Maya は vision。
 
 ### backend/tests/test_opencode_dev_tools.py
 
@@ -2633,6 +2635,7 @@
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - with OpenCode chosen, a question stays in OpenCode
 - in auto, when the model hands the work to OpenCode the answer becomes an OpenCode answer
+- with OpenCode chosen, an attached image is sent to OpenCode, and a model that cannot read images says so
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 

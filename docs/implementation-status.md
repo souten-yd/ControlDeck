@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-20 AI アシスタントで添付した画像を OpenCode に渡す（読めないモデルは送る前に知らせる）
+
+- 利用者「OpenCode って画像見られなかったっけ？」「VLM を使う予定なので OpenCode にそのまま渡すのがいい。VLM が使えないものはモデルの判定で分かるので、使えませんと示して」。
+- 調べた結果: OpenCode は画像を読める。ControlDeck は OpenCode のモデルを画像入力ありで登録しており（`provider.py` の capabilities）、いまのモデル（ゲートウェイの auto → Strata qwen3.8-flash-next）も画像を読めた（赤い画像に「赤」）。OpenCode v2 の発言の API は `files`（`data:` の URI）を受け付ける。外へ出ない設定（モデル一覧の取得なし・外向きの通信は存在しないプロキシへ）で本物の OpenCode を偽のモデルの窓口へつなぎ、添付した画像が `image_url` でモデルへ届くことを確かめた。渡していなかったのは ControlDeck の側（画面が「画像は OpenCode に渡せません」と止め、自動の引き継ぎも画像つきでは任せなかった）。
+- 変更: 添付した画像を OpenCode の発言に `data:` の URI で付ける（`chat_persist._image_files`、`chat_server.run_turn(files=)`）。OpenCode のモデルが画像を読めるかは Models の表示と同じ判定（`gateway.instance_sees_images`: llama.cpp は mmproj、Strata は vision が off でない、Radiance は常に、Maya は vision）。読めなければ送信・送信待ちの時点で 422「OpenCode のモデル（名前）は画像を読めません」。外部のモデルなど分からないときは送ってみる。プランも画像つきで OpenCode へ。自動の引き継ぎは、画像を読めるモデルなら画像つきでも任せる。
+- あわせて直した不具合: 回答の枠を作る前に送信が断られると、エラーがどこにも出ず送れたように見えていた。送れていない発言を取り下げて入力へ戻し、理由を出す。
+- 検証: `tests/test_opencode_chat_timeline.py`（画像が data: URI で OpenCode へ・読めないモデルは送信も送信待ちも 422・判定が Models と同じ）、`tests/test_chat_tools.py`、E2E `assistant-plan`（OpenCode を選んで画像を送る・読めないモデルの知らせ・入力へ戻す。320px）・`assistant-claude-layout`・`assistant-mobile`・`assistant-voice-modes`・`assistant-queue-voice`。
 ## 2026-11-20 読み上げをつなぎ目なしで順に鳴らす（長文が飛び飛びになっていた）
 
 - 利用者「長文を TTS で連続的に読ませたら飛び飛びになった。ストリーミング再生のように順番を守って再生して」。
