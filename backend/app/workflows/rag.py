@@ -1,34 +1,37 @@
-"""RAG ストア v2。
+"""RAG の窓口（v3）。保存と検索は app.knowledge.store（統合ナレッジストア）が受け持つ。
 
-コレクションごとに SQLite（data_dir/rag/{collection}.db）へ保存する。
-- meta:       コレクション設定（埋め込み model/url, チャンク戦略, ハイブリッド重み 等）
-- documents:  取り込んだ文書（source, 追加日時, チャンク数）
-- chunks:     子チャンク（embedding + parent テキスト）。検索対象
-- chunks_fts: FTS5 全文索引（キーワード/ハイブリッド検索用）
+既存の呼び出し（会話別 RAG・ワークフローのノード・Knowledge 画面・Deep Research）の関数と戻り値の形を保つ。
+v2 からの変更点:
+- 保存先は data_dir/knowledge/{general,patents,standards}.sqlite3。旧 data_dir/rag/{collection}.db は
+  コレクションを初めて使うときに取り込む（app.knowledge.migrate）。旧ファイルは消さない。
+- 2,000 チャンクで黙って切り詰めていたのをやめ、埋め込みを 64 件ずつ送る。
+- ベクトル検索は「毎回全件を読んで 1 件ずつ計算」から RAM 上の行列計算へ。
+- 全文検索は日本語 2-gram（2 文字の語も当たる）。
+- async の中で SQLite を同期的に呼ばない（asyncio.to_thread）。
 
-検索モード: vector（コサイン類似）/ fulltext（FTS5 BM25）/ hybrid（RRF 融合）。
-parent_child 戦略のときは子で検索し、親テキストを文脈として返す（重複親は統合）。
+検索モード: vector / fulltext / hybrid（RRF）/ graph。parent_child は子で検索し親を文脈にする。
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import time
+from functools import wraps
 from pathlib import Path
 
 import httpx
 import numpy as np
 
-import logging
-
-from app.config import data_dir
+from app.knowledge import migrate, store
 from app.workflows import chunkers
 
 logger = logging.getLogger("control_deck.rag")
 
-COLLECTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+COLLECTION_RE = store.COLLECTION_RE
+EMBED_BATCH = 64
 
 DEFAULT_CONFIG = {
     "embed_base_url": "http://127.0.0.1:11434/v1",
@@ -48,49 +51,31 @@ class RagError(ValueError):
     pass
 
 
-def _rag_dir() -> Path:
-    d = data_dir() / "rag"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _fts5_ok(conn: sqlite3.Connection) -> bool:
-    # trigram トークナイザで日本語(CJK)も部分一致検索できるようにする
-    try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-            "text, content='chunks', content_rowid='id', tokenize='trigram')"
-        )
-        return True
-    except sqlite3.OperationalError:
+def _as_rag_error(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
         try:
-            conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, content='chunks', content_rowid='id')")
-            return True
-        except sqlite3.OperationalError:
-            return False
+            return fn(*args, **kwargs)
+        except store.KnowledgeError as exc:
+            raise RagError(str(exc)) from exc
+    return wrapper
 
 
-def _db(collection: str) -> sqlite3.Connection:
-    if not COLLECTION_RE.match(collection):
+def _check_name(collection: str) -> None:
+    if not COLLECTION_RE.match(collection or ""):
         raise RagError(f"不正なコレクション名: {collection}（英数・ハイフン・アンダースコア 1〜64 文字）")
-    conn = sqlite3.connect(_rag_dir() / f"{collection}.db")
-    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS documents ("
-        "id INTEGER PRIMARY KEY, source TEXT, added_at REAL, chunk_count INTEGER, meta TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS chunks ("
-        "id INTEGER PRIMARY KEY, doc_id INTEGER, text TEXT, parent TEXT, "
-        "embedding BLOB, dim INTEGER, idx INTEGER)"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_doc ON chunks(doc_id)")
-    _fts5_ok(conn)
-    return conn
+
+
+def _ensure(collection: str) -> store.CollectionRef | None:
+    _check_name(collection)
+    migrate.ensure_legacy_collection(collection)
+    return store.find_collection(collection)
 
 
 def collection_exists(collection: str) -> bool:
-    return (_rag_dir() / f"{collection}.db").exists()
+    if not COLLECTION_RE.match(collection or ""):
+        return False
+    return _ensure(collection) is not None
 
 
 def _managed_embed_defaults() -> dict:
@@ -111,18 +96,9 @@ def _managed_embed_defaults() -> dict:
     return {}
 
 
-def get_config(collection: str) -> dict:
-    conn = _db(collection)
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key='config'").fetchone()
-    finally:
-        conn.close()
+def _merged(raw: dict) -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    if row:
-        try:
-            cfg.update(json.loads(row[0]))
-        except json.JSONDecodeError:
-            pass
+    cfg.update({k: v for k, v in (raw or {}).items() if k in DEFAULT_CONFIG})
     # 埋め込みが既定値のまま（=明示設定なし）なら管理中の推奨モデルへ動的追従
     if (cfg["embed_base_url"] == DEFAULT_CONFIG["embed_base_url"]
             and cfg["embed_model"] == DEFAULT_CONFIG["embed_model"]):
@@ -130,52 +106,51 @@ def get_config(collection: str) -> dict:
     return cfg
 
 
+def get_config(collection: str) -> dict:
+    ref = _ensure(collection)
+    return _merged(ref.config if ref else {})
+
+
+@_as_rag_error
 def set_config(collection: str, config: dict) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg.update({k: v for k, v in config.items() if k in DEFAULT_CONFIG})
-    conn = _db(collection)
-    try:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('config', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps(cfg),),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    if _ensure(collection) is None:
+        store.create_collection(collection, config=cfg, description=str(cfg.get("description", "")))
+    else:
+        store.set_collection_config(collection, cfg)
     return cfg
 
 
+@_as_rag_error
 def create_collection(collection: str, config: dict | None = None) -> dict:
     if collection_exists(collection):
         raise RagError(f"コレクションは既に存在します: {collection}")
-    set_config(collection, config or {})
+    cfg = dict(DEFAULT_CONFIG)
+    cfg.update({k: v for k, v in (config or {}).items() if k in DEFAULT_CONFIG})
+    kind = "conversation" if collection.startswith("chat-") else "general"
+    store.create_collection(collection, kind=kind, config=cfg, description=str(cfg.get("description", "")))
     return {"collection": collection, "config": get_config(collection)}
 
 
+@_as_rag_error
 def copy_collection(source: str, target: str) -> bool:
-    """コレクションを丸ごと写す（会話の分岐で資料を引き継ぐ）。sqlite の backup で整合した複写を作る。"""
-    if not COLLECTION_RE.match(source) or not COLLECTION_RE.match(target):
-        raise RagError("不正なコレクション名")
-    src_path, dst_path = _rag_dir() / f"{source}.db", _rag_dir() / f"{target}.db"
-    if not src_path.exists() or dst_path.exists():
+    """コレクションを丸ごと写す（会話の分岐で資料を引き継ぐ）。"""
+    _check_name(source)
+    _check_name(target)
+    if _ensure(source) is None or collection_exists(target):
         return False
-    src = sqlite3.connect(src_path)
-    dst = sqlite3.connect(dst_path)
-    try:
-        src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
-    return True
+    return store.copy_collection(source, target)
 
 
+@_as_rag_error
 def delete_collection(collection: str) -> None:
-    if not COLLECTION_RE.match(collection):
-        raise RagError("不正なコレクション名")
-    p = _rag_dir() / f"{collection}.db"
-    if p.exists():
-        p.unlink()
+    _check_name(collection)
+    store.delete_collection(collection)
+    migrate.mark_deleted(collection)
+    graph = _graph_path(collection)
+    if graph.exists():
+        graph.unlink()
 
 
 async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> list[np.ndarray]:
@@ -201,95 +176,61 @@ async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> li
     return [np.array(item["embedding"], dtype=np.float32) for item in data["data"]]
 
 
+async def _embed_batched(texts: list[str], cfg: dict, api_key: str) -> list[np.ndarray]:
+    out: list[np.ndarray] = []
+    for start in range(0, len(texts), EMBED_BATCH):
+        out.extend(await embed(texts[start:start + EMBED_BATCH], cfg["embed_base_url"], cfg["embed_model"], api_key))
+    if len(out) != len(texts):
+        raise RagError(f"埋め込みの件数が合いません（{len(out)} / {len(texts)}）")
+    return out
+
+
 async def add_document(
     collection: str, text: str, source: str, api_key: str = "",
     config_override: dict | None = None, reset: bool = False,
 ) -> dict:
-    """文書を取り込む。コレクション設定のチャンク戦略で分割し、埋め込み+FTS登録する。"""
-    cfg = get_config(collection)
+    """文書を取り込む。コレクション設定のチャンク戦略で分割し、埋め込み+全文索引に登録する。"""
+    ref = await asyncio.to_thread(_ensure, collection)
+    cfg = _merged(ref.config if ref else {})
     if config_override:
         cfg.update({k: v for k, v in config_override.items() if k in DEFAULT_CONFIG})
-        set_config(collection, cfg)
+    if ref is None or config_override:
+        await asyncio.to_thread(set_config, collection, cfg)
     chunk_objs = chunkers.chunk(text, cfg)
     if not chunk_objs:
         raise RagError("入力テキストが空です")
-    if len(chunk_objs) > 2000:
-        chunk_objs = chunk_objs[:2000]
-    embeddings = await embed(
-        [c.text for c in chunk_objs], cfg["embed_base_url"], cfg["embed_model"], api_key
-    )
-    conn = _db(collection)
+    embeddings = await _embed_batched([c.text for c in chunk_objs], cfg, api_key)
+    chunks = [store.NewChunk(text=c.text, parent=c.parent, vector=e) for c, e in zip(chunk_objs, embeddings)]
     try:
-        if reset:
-            conn.execute("DELETE FROM chunks")
-            conn.execute("DELETE FROM documents")
-            try:
-                conn.execute("DELETE FROM chunks_fts")
-            except sqlite3.OperationalError:
-                pass
-        cur = conn.execute(
-            "INSERT INTO documents (source, added_at, chunk_count, meta) VALUES (?, ?, ?, ?)",
-            (source or "document", time.time(), len(chunk_objs), json.dumps({"strategy": cfg["strategy"]})),
-        )
-        doc_id = cur.lastrowid
-        has_fts = _fts5_ok(conn)
-        for i, (c, emb) in enumerate(zip(chunk_objs, embeddings)):
-            rid = conn.execute(
-                "INSERT INTO chunks (doc_id, text, parent, embedding, dim, idx) VALUES (?, ?, ?, ?, ?, ?)",
-                (doc_id, c.text, c.parent, emb.tobytes(), len(emb), i),
-            ).lastrowid
-            if has_fts:
-                conn.execute("INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)", (rid, c.text))
-        conn.commit()
-        total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    finally:
-        conn.close()
+        result = await asyncio.to_thread(
+            store.add_document, collection, chunks, source=source or "document", title=source or "",
+            meta={"strategy": cfg["strategy"]}, model=cfg["embed_model"], replace_collection=reset)
+    except store.KnowledgeError as exc:
+        raise RagError(str(exc)) from exc
     return {
-        "collection": collection, "doc_id": doc_id, "source": source,
-        "added_chunks": len(chunk_objs), "total_chunks": total, "strategy": cfg["strategy"],
+        "collection": collection, "doc_id": result["doc_id"], "source": source,
+        "added_chunks": result["added_chunks"], "total_chunks": result["total_chunks"], "strategy": cfg["strategy"],
     }
 
 
+@_as_rag_error
 def list_documents(collection: str) -> list[dict]:
-    conn = _db(collection)
-    try:
-        rows = conn.execute(
-            "SELECT id, source, added_at, chunk_count, meta FROM documents ORDER BY added_at DESC"
-        ).fetchall()
-    finally:
-        conn.close()
-    out = []
-    for i, source, added_at, cc, meta in rows:
-        try:
-            m = json.loads(meta or "{}")
-        except json.JSONDecodeError:
-            m = {}
-        out.append({"id": i, "source": source, "added_at": added_at, "chunk_count": cc, "strategy": m.get("strategy")})
-    return out
+    if _ensure(collection) is None:
+        return []
+    return store.list_documents(collection)
 
 
+@_as_rag_error
 def delete_document(collection: str, doc_id: int) -> None:
-    conn = _db(collection)
-    try:
-        ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE doc_id=?", (doc_id,)).fetchall()]
-        conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-        conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
-        try:
-            for rid in ids:
-                conn.execute("DELETE FROM chunks_fts WHERE rowid=?", (rid,))
-        except sqlite3.OperationalError:
-            pass
-        conn.commit()
-    finally:
-        conn.close()
+    if _ensure(collection) is not None:
+        store.delete_document(collection, int(doc_id))
 
 
-def _fts_query(question: str) -> str:
-    # trigram: 3文字以上の語を "..." 句として OR 結合（部分一致）。3文字未満は捨てる。
-    terms = [t for t in re.findall(r"[\w一-龠ぁ-んァ-ヶー]+", question) if len(t) >= 3]
-    if not terms:
-        return '"' + question.strip()[:64].replace('"', "") + '"'
-    return " OR ".join(f'"{t}"' for t in terms[:32])
+@_as_rag_error
+def chunk_rows(collection: str) -> list[dict]:
+    if _ensure(collection) is None:
+        raise RagError(f"コレクションが存在しません: {collection}")
+    return store.chunk_rows(collection)
 
 
 # 検索結果を資料として保存するときに先頭へ入っていた回答の指示文。資料として渡すときは除く
@@ -304,11 +245,7 @@ def collection_size_chars(collection: str) -> int:
     """会話の資料の大きさ（断片の文字数の合計）。モデルへ「資料がどれぐらいあるか」を伝えるのに使う。"""
     if not collection_exists(collection):
         return 0
-    conn = _db(collection)
-    try:
-        return int(conn.execute("SELECT COALESCE(SUM(LENGTH(text)), 0) FROM chunks").fetchone()[0])
-    finally:
-        conn.close()
+    return store.collection_text_chars(collection)
 
 
 def collection_materials(collection: str, max_chars: int) -> str | None:
@@ -319,13 +256,7 @@ def collection_materials(collection: str, max_chars: int) -> str | None:
     埋め込みも並べ替えも要らず、毎回同じ内容・同じ位置なので、モデルが前回の読み込みを使い回せる。"""
     if not collection_exists(collection):
         return None
-    conn = _db(collection)
-    try:
-        rows = conn.execute(
-            "SELECT c.doc_id, c.text, c.parent, d.source FROM chunks c LEFT JOIN documents d ON d.id = c.doc_id "
-            "ORDER BY c.doc_id, c.idx").fetchall()
-    finally:
-        conn.close()
+    rows = store.material_rows(collection)
     parts: list[str] = []
     seen_parents: set[str] = set()
     current = None
@@ -356,9 +287,9 @@ async def search(
     mode_override: str | None = None, rerank_budget_s: float | None = None,
     min_rerank_score: float | None = None, rerank_query: str | None = None,
 ) -> dict:
-    if not collection_exists(collection):
+    if not await asyncio.to_thread(collection_exists, collection):
         raise RagError(f"コレクションが存在しません: {collection}")
-    cfg = get_config(collection)
+    cfg = await asyncio.to_thread(get_config, collection)
     mode = mode_override or cfg["search_mode"]
     top_k = max(1, min(int(top_k), 20))
     if mode == "graph":
@@ -366,88 +297,33 @@ async def search(
         from app.workflows import rag_graph
 
         return await rag_graph.graph_search(collection, question, top_k, api_key=api_key)
-    conn = _db(collection)
-    try:
-        rows = conn.execute("SELECT id, text, parent, embedding, dim FROM chunks").fetchall()
-        if not rows:
-            return {"matches": [], "context": "", "count": 0}
+    query_vector = None
+    if mode in ("vector", "hybrid"):
+        # GPU の reranker を使うなら、埋め込み（bge-m3）より先に起動して場所を取る（2026-11-20 利用者と合意）。
+        # ruri は全部を GPU に載せないと動かないが、bge-m3 は空いている分だけ載せて残りを CPU で動かせる
+        await _warm_gpu_reranker(fast=rerank_budget_s is not None)
+        query_vector = (await embed([question], cfg["embed_base_url"], cfg["embed_model"], api_key))[0]
+    found = await asyncio.to_thread(
+        store.search, [collection], question, query_vector=query_vector, model=cfg["embed_model"],
+        mode=mode, hybrid_weight=float(cfg.get("hybrid_weight", 0.5)), limit=top_k * 8)
+    if not found:
+        return {"matches": [], "context": "", "count": 0}
 
-        # ベクトルスコア
-        vec_rank: dict[int, float] = {}
-        if mode in ("vector", "hybrid"):
-            # GPU の reranker を使うなら、埋め込み（bge-m3）より先に起動して場所を取る（2026-11-20 利用者と合意）。
-            # ruri は全部を GPU に載せないと動かないが、bge-m3 は空いている分だけ載せて残りを CPU で動かせる
-            await _warm_gpu_reranker(fast=rerank_budget_s is not None)
-            q_emb = (await embed([question], cfg["embed_base_url"], cfg["embed_model"], api_key))[0]
-            q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
-            sims = []
-            for cid, text, parent, blob, dim in rows:
-                emb = np.frombuffer(blob, dtype=np.float32)
-                if emb.shape[0] != q_emb.shape[0]:
-                    continue
-                sim = float(np.dot(q_norm, emb / (np.linalg.norm(emb) + 1e-8)))
-                sims.append((cid, sim))
-            sims.sort(key=lambda x: -x[1])
-            for rank, (cid, _) in enumerate(sims):
-                vec_rank[cid] = rank
-
-        # 全文スコア（FTS5 BM25）
-        fts_rank: dict[int, float] = {}
-        if mode in ("fulltext", "hybrid"):
-            try:
-                frows = conn.execute(
-                    "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 100",
-                    (_fts_query(question),),
-                ).fetchall()
-                for rank, (rid,) in enumerate(frows):
-                    fts_rank[rid] = rank
-            except sqlite3.OperationalError:
-                # FTS 未対応環境: LIKE フォールバック
-                terms = re.findall(r"[\w一-龠ぁ-んァ-ヶ]+", question)[:5]
-                if terms:
-                    like = " OR ".join(["text LIKE ?"] * len(terms))
-                    frows = conn.execute(
-                        f"SELECT id FROM chunks WHERE {like} LIMIT 100",
-                        tuple(f"%{t}%" for t in terms),
-                    ).fetchall()
-                    for rank, (rid,) in enumerate(frows):
-                        fts_rank[rid] = rank
-
-        text_by_id = {cid: (text, parent) for cid, text, parent, _, _ in rows}
-
-        # スコア融合（Reciprocal Rank Fusion）
-        K = 60
-        w = float(cfg.get("hybrid_weight", 0.5))
-        scores: dict[int, float] = {}
-        if mode == "vector":
-            for cid, rank in vec_rank.items():
-                scores[cid] = 1.0 / (K + rank)
-        elif mode == "fulltext":
-            for cid, rank in fts_rank.items():
-                scores[cid] = 1.0 / (K + rank)
-        else:  # hybrid RRF
-            for cid, rank in vec_rank.items():
-                scores[cid] = scores.get(cid, 0) + w / (K + rank)
-            for cid, rank in fts_rank.items():
-                scores[cid] = scores.get(cid, 0) + (1 - w) / (K + rank)
-
-        ranked = sorted(scores.items(), key=lambda x: -x[1])
-        # rerank用に多め（top_k*4）の候補を集め、reranker未登録時は先頭top_kを使う
-        matches = []
-        seen_parents: set[str] = set()
-        for cid, sc in ranked:
-            if len(matches) >= top_k * 4:
-                break
-            text, parent = text_by_id[cid]
-            # parent_child のときは親を文脈にする（重複親は1回だけ）
-            context_text = parent or text
-            if parent:
-                if parent in seen_parents:
-                    continue
-                seen_parents.add(parent)
-            matches.append({"score": round(sc, 5), "text": text, "context": context_text})
-    finally:
-        conn.close()
+    # rerank用に多め（top_k*4）の候補を集め、reranker未登録時は先頭top_kを使う
+    matches = []
+    seen_parents: set[str] = set()
+    for item in found:
+        if len(matches) >= top_k * 4:
+            break
+        parent = item.get("parent")
+        # parent_child のときは親を文脈にする（重複親は1回だけ）
+        if parent:
+            if parent in seen_parents:
+                continue
+            seen_parents.add(parent)
+        matches.append({"score": item["score"], "text": item["text"], "context": parent or item["text"],
+                        "source": item["source"], "chunk_ref": item["chunk_ref"], "doc_ref": item["doc_ref"],
+                        "locator": item["locator"]})
 
     reranked = await _maybe_rerank(rerank_query or question, matches, top_k, budget_s=rerank_budget_s)
     if min_rerank_score is not None and any(m.get("rerank_engine") == "llama" for m in reranked):
@@ -556,27 +432,42 @@ async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool 
 
 def list_collections() -> list[dict]:
     result = []
-    for f in sorted(_rag_dir().glob("*.db")):
-        try:
-            conn = sqlite3.connect(f)
-            chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            docs = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            row = conn.execute("SELECT value FROM meta WHERE key='config'").fetchone()
-            conn.close()
-            cfg = dict(DEFAULT_CONFIG)
-            if row:
-                try:
-                    cfg.update(json.loads(row[0]))
-                except json.JSONDecodeError:
-                    pass
-            result.append({
-                "collection": f.stem, "chunks": chunks, "documents": docs,
-                "strategy": cfg["strategy"], "search_mode": cfg["search_mode"],
-                "embed_model": cfg["embed_model"], "description": cfg.get("description", ""),
-            })
-        except sqlite3.Error:
-            continue
-    return result
+    names = set()
+    for item in store.list_collections():
+        cfg = _merged(item["config"])
+        names.add(item["collection"])
+        result.append({
+            "collection": item["collection"], "chunks": item["chunks"], "documents": item["documents"],
+            "strategy": cfg["strategy"], "search_mode": cfg["search_mode"], "embed_model": cfg["embed_model"],
+            "description": item.get("description") or cfg.get("description", ""),
+            "shard": item["shard"], "kind": item["kind"], "sensitivity": item["sensitivity"],
+        })
+    # まだ取り込んでいない旧コレクションも一覧に出す（読み取りだけ。取り込みは初回利用時）
+    for plan in migrate.pending_legacy(skip=names):
+        cfg = _merged(plan["config"])
+        result.append({
+            "collection": plan["name"], "chunks": plan["chunks"], "documents": plan["documents"],
+            "strategy": cfg["strategy"], "search_mode": cfg["search_mode"], "embed_model": cfg["embed_model"],
+            "description": cfg.get("description", ""), "shard": "general", "kind": "legacy",
+            "sensitivity": "confidential",
+        })
+    return sorted(result, key=lambda c: c["collection"])
+
+
+# ---- GraphRAG の三つ組（コレクションごとの別ファイル） ----
+
+
+def _graph_path(collection: str) -> Path:
+    from app.knowledge import storage
+
+    _check_name(collection)
+    return storage.graphs_dir() / f"{collection}.sqlite3"
+
+
+def graph_db(collection: str) -> sqlite3.Connection:
+    path = _graph_path(collection)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(path, timeout=10)
 
 
 # ---- 検索強化: HyDE / マルチクエリ（RAG-Fusion） ----
@@ -658,15 +549,23 @@ async def search_enhanced(
 
 async def build(collection: str, text: str, source: str, base_url: str, model: str, api_key: str, reset: bool) -> dict:
     """旧 rag.build 互換。base_url/model を設定へ反映してから取り込む。"""
-    if not collection_exists(collection):
-        create_collection(collection, {"embed_base_url": base_url, "embed_model": model})
+    if not await asyncio.to_thread(collection_exists, collection):
+        await asyncio.to_thread(create_collection, collection, {"embed_base_url": base_url, "embed_model": model})
     else:
-        set_config(collection, {**get_config(collection), "embed_base_url": base_url, "embed_model": model})
+        current = await asyncio.to_thread(get_config, collection)
+        await asyncio.to_thread(set_config, collection, {**current, "embed_base_url": base_url, "embed_model": model})
     return await add_document(collection, text, source, api_key=api_key, reset=reset)
 
 
 async def query(collection: str, question: str, top_k: int, base_url: str, model: str, api_key: str) -> dict:
     """旧 rag.query 互換。"""
-    if collection_exists(collection):
-        set_config(collection, {**get_config(collection), "embed_base_url": base_url, "embed_model": model})
+    if await asyncio.to_thread(collection_exists, collection):
+        current = await asyncio.to_thread(get_config, collection)
+        await asyncio.to_thread(set_config, collection, {**current, "embed_base_url": base_url, "embed_model": model})
     return await search(collection, question, top_k, api_key=api_key)
+
+
+def stored_config(collection: str) -> dict:
+    """保存されている生の設定（既定値の補完なし）。テストと診断用。"""
+    ref = _ensure(collection)
+    return json.loads(json.dumps(ref.config)) if ref else {}

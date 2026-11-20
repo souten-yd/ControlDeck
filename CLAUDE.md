@@ -7,6 +7,9 @@
 **OpenCode v2 を ControlDeck の開発環境にする**（UI 検証・精密調査・コードレビュー）。
 計画・評価・段階・進捗は `docs/PLAN-opencode-dev-environment.md` が正。続きを始める前に必ず読み、終えたら「進捗」の表を更新する。
 
+**統合ナレッジ基盤と Patent 画面**（PatentBuddy・ResearchDataHub を ControlDeck へ統合。一般・特許・規格の分野別 DB、横断検索、PDF 解析。特許の業務は `backend/app/patents/` と `/patents`。PatentBuddy Add-on は 2026-11-21 に撤去）。
+**まず `docs/HANDOFF-knowledge-platform.md`（引き継ぎ・現状・作業一覧）を読む。** 計画・棚卸し・段階・データ回収とリポジトリを閉じる手順は `docs/PLAN-knowledge-platform.md`。進捗が動いたら両方を更新する（`AGENTS.md`「引き継ぎ資料の決まり」）。
+
 ## 読む順
 
 1. `AGENTS.md`

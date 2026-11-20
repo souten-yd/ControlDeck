@@ -904,7 +904,7 @@ function EgressBlock({ state }: { state: CloudState }) {
           onChange={(v) => (v ? setConfirming(caller) : save.mutate({ [caller]: false }))} />
       ))}
       <p className="text-[11px] leading-relaxed text-zinc-500">
-        ローカル専用を求める Add-on（PatentBuddy など）は、この設定に関係なく外部へ送信されません。
+        ローカル専用を求める機能（Patent の AI 支援、Add-on の local-only 要求など）は、この設定に関係なく外部へ送信されません。
       </p>
       {confirming && (
         <ConfirmDialog danger={false} title={`${label(confirming)} から外部へ送信できるようにしますか？`}

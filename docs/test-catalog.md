@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 179 ファイル、1608 テスト（目的の未記入 93 ファイル）
-- E2E: 90 spec、187 テスト
+- backend: 184 ファイル、1655 テスト（目的の未記入 93 ファイル）
+- E2E: 92 spec、189 テスト
 
 ## backend（backend/tests）
 
@@ -1126,6 +1126,46 @@
 
 - `test_cancelled_stream_joins_update_and_disconnect_waiters`
 
+### backend/tests/test_knowledge_documents.py
+
+目的: 文書を単位にした RAG（書誌の関係・全文か骨格・規格・PDF・AI アシスタントの道具）。 目的: - 特許・規格は文書を単位に探し、入るなら全文、入らなければ骨格（要約・請求項・適用範囲・引用規格）と該当箇所を 元の順で渡すこと。reranker の上位 k 件で文書の中身を削らないこと。 - 公報番号・規格番号で書誌の関係（引用する・引用される・別の版）を結び、検索で 1 hop 広げること。 - 規格は条項で分割し、番号で引け、利用判定で本文の保存・AI 利用を止めること。旧版を現行にしないこと。 - PDF からページの文章・図のページの画像・原本を保存し、ページを locator に持つこと。 - AI アシスタントの道具は、cloud のモデルへ機密・AI 利用の許されない規格を渡さないこと。 根拠: 2026-11-21 利用者「特許・規格は書誌全体が関係する。上位何件に絞れない。コンテキストが十分なら全文を入れて回答」 「PDF から画像・文章・波形グラフ・表を抽出して記録し、体系的に引き出す規格検索」。docs/research-patent-standards-rag.md。
+
+- `test_bibliographic_links_and_one_hop_expansion`
+- `test_whole_documents_when_they_fit_else_outline_with_all_claims`
+- `test_cloud_consumers_get_no_confidential_or_prohibited_documents`
+- `test_standards_are_split_by_clause_and_gated_by_license`
+- `test_new_edition_supersedes_the_current_one`
+- `test_pdf_pages_figures_and_original_are_kept`
+- `test_assistant_tool_respects_the_consumer`
+- `test_knowledge_api_find_document_and_asset`
+
+### backend/tests/test_knowledge_storage.py
+
+目的: ナレッジの保存先・保存対象・バックアップ（app.knowledge.storage / backup）。 目的: - 保存対象（DB・図・原本・抽出結果）ごとに保存先を分けられ、許可ルートの外・ネットワーク上の FS の SQLite を拒むこと。 - NAS が外れて目印が無いとき、そこへ黙って書かず「この PC」に置き、後で移せること。 - バックアップの世代を照合でき、稼働中のデータを上書きせずに空のディレクトリへ戻せること。 根拠: 2026-11-19 利用者「ローカル保存・サーバーへのバックアップ・図表などを分けて設定できるように。 保存場所と保存対象を分けて設定できれば柔軟にできる」。SQLite をネットワーク越しに開くとロックが効かず壊れる。
+
+- `test_targets_must_be_inside_allowed_roots`
+- `test_sqlite_is_refused_on_network_filesystems`
+- `test_unmounted_target_is_not_written_and_blobs_move_later`
+- `test_backup_verify_and_restore_to_an_empty_directory`
+
+### backend/tests/test_knowledge_store.py
+
+目的: 統合ナレッジストア（app.knowledge）と旧データの取り込み。 目的: - 旧 rag.py の欠陥を直したまま戻らないこと: 2,000 チャンクでの黙った切り詰め、2 文字の日本語語が 全文検索に当たらない（trigram）、検索のたびに全件を読み 1 件ずつ計算する。 - 旧 data/rag/*.db と ResearchDataHub の library.sqlite3 を、元を書き換えずに取り込めること。 何度流しても同じ結果で、消したコレクションは復活しないこと。 - 分野（一般・特許・規格）を別ファイルに分けても、呼び出し側は名前だけで検索できること。 - クラウド LLM 向けの横断検索で、会話に紐づかない機密文書を返さないこと（アイデアの流出防止）。 根拠: 2026-11-19 利用者の決定「PatentBuddy・ResearchDataHub を ControlDeck に統合し、データを回収する。 DB は分けるが ControlDeck からは意識しない。守りたいのはアイデアの流出」。docs/PLAN-knowledge-platform.md。
+
+- `test_no_silent_truncation_and_batched_embedding`
+- `test_two_character_japanese_terms_hit_fulltext`
+- `test_vector_cache_follows_writes_and_deletes`
+- `test_same_ext_id_and_hash_writes_nothing`
+- `test_legacy_collection_is_imported_on_first_use_without_touching_source`
+- `test_migrate_cli_plan_writes_nothing_then_apply_is_idempotent`
+- `test_researchdatahub_import_goes_to_patent_shard_with_assets`
+- `test_researchdatahub_cases_stop_the_import`
+- `test_shards_are_separate_files_but_search_is_by_name`
+- `test_cloud_cross_search_hides_confidential_except_bound_conversation`
+- `test_blob_path_rejects_traversal`
+- `test_concurrent_first_use_imports_legacy_once`
+- `test_failed_copy_leaves_no_empty_target`
+
 ### backend/tests/test_large_model_lifecycle.py
 
 目的: Idle unload, on-demand start and auto-start for Maya-S and Strata.
@@ -1692,6 +1732,18 @@
 - `test_totp_enrollment_cannot_be_bypassed`
 - `test_another_user_cannot_list_or_delete_key`
 
+### backend/tests/test_patents.py
+
+目的: Patent 機能（特許調査・検討）と、PatentBuddy Add-on の撤去。 目的: - 案件・出来事・請求項の版・先行文献・クレームチャート・AI 支援の記録が API から使えること。 - 期限の目安と構成要件分解が ResearchDataHub から移植したとおりに動くこと。 - AI 支援はローカル専用のモデルでだけ動き、検証できなければ 503 で止まり、外部へ回さないこと（アイデアの流出防止）。 - AI の答えは「モデルの推論・未確認」として保存されること。 - PatentBuddy は機能追加のカタログに出ず、導入済みなら起動時に外れ、データ（feature-data）は残ること。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。アドオンと機能追加画面の導入項目を一式削除し、 特許調査検討用ツールである Patent 機能をつけて」。docs/PLAN-knowledge-platform.md（K-PR3）。
+
+- `test_deadlines_and_claim_elements_follow_japanese_practice`
+- `test_case_lifecycle_over_api`
+- `test_search_and_claim_chart_use_the_shared_knowledge`
+- `test_assist_refuses_without_a_verified_local_model`
+- `test_assist_runs_local_only_and_is_saved_as_unreviewed_inference`
+- `test_patentbuddy_is_gone_from_the_catalog_and_retired_when_installed`
+- `test_assists_cut_by_restart_are_marked_interrupted`
+
 ### backend/tests/test_paths.py
 
 目的: **未記入**
@@ -1826,7 +1878,7 @@
 
 - `test_chunkers`
 - `test_rag_build_and_query` — 埋め込みをモックして build → query のコサイン検索を確認する。
-- `test_rag_invalid_collection`
+- `test_rag_invalid_collection` — コレクション名でパスを抜けられないこと（保存先・グラフのファイル名に使うため）。
 - `test_db_query_sqlite`
 - `test_db_query_rejects_non_dml`
 - `test_db_query_sqlite_path_must_be_in_root`
@@ -2141,6 +2193,26 @@
 - `test_synthesis_rejects_out_of_range_before_starting_a_process`
 - `test_input_filter_presets_and_custom_values` — 入力フィルター: 初めは推奨。プリセットを選ぶとその値に揃い、細かい値を変えるとカスタムになる。範囲外は受け取らない。
 - `test_speech_engines_can_be_uninstalled` — TTS / ASR のアンインストール（2026-11-20 利用者の依頼）。ASR はそのエンジンのモデルだけを消し、sherpa-onnx の venv
+
+### backend/tests/test_standards_license.py
+
+目的: Purpose: keep standards licence decisions fail-closed and explainable. Basis: docs/standards-license-policy.md (moved from ResearchDataHub on 2026-11-19 when it was merged into ControlDeck). ISO/IEC/JSA/ASTM terms checked on 2026-11-19 forbid AI input of purchased standards; JSA also forbids LAN/network use. A wrong "allowed" here would send licensed text to embeddings or LLMs, so every path that can open AI use is pinned by a test.
+
+- `test_common_designations`
+- `test_unknown_designation`
+- `test_unknown_channel_is_metadata_only`
+- `test_unknown_publisher_is_metadata_only`
+- `test_purchased_iso_iec_jis_astm_never_reach_ai_or_server`
+- `test_record_cannot_exceed_publisher_ceiling`
+- `test_free_view_never_stores_text`
+- `test_unknown_operation_raises`
+- `test_contract_without_reference_is_closed`
+- `test_contract_with_reference_grants_recorded_scope`
+- `test_stale_review_stops_ai`
+- `test_public_law_is_allowed`
+- `test_open_publication_stores_but_ai_waits_for_review`
+- `test_every_snapshot_is_well_formed`
+- `test_no_snapshot_allows_ai_by_default`
 
 ### backend/tests/test_strata_gateway.py
 
@@ -2799,6 +2871,12 @@
 
 - GPU settings apply only on request (${width}px)
 
+### frontend/e2e/knowledge.spec.ts
+
+目的: Knowledge: 探す・資料・規格のタブ。規格は入手経路から保存・AI 利用の判定を見せ、購入品は番号と題名だけで登録する。 根拠: 2026-11-21 利用者「規格検索の RAG」「利用者が知らなくていい情報は隠し、必要なら開けるように」。 */
+
+- Knowledge: 規格を登録して番号で探す（${width}px）
+
 ### frontend/e2e/llama-runtime-settings.spec.ts
 
 目的: **未記入**
@@ -2883,6 +2961,12 @@
 目的: **未記入**
 
 - changes password and revokes the current session without viewport overflow
+
+### frontend/e2e/patents.spec.ts
+
+目的: Patent（特許調査・検討）画面。案件の作成 → 概要 → 期限 → 請求項 → AI 支援を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」。 検証用インスタンスにはローカルのモデルが無いので、AI 支援は「外部へ送らない」案内が出ることを確かめる。 */
+
+- Patent: 案件を作って期限と請求項を扱う（${width}px）
 
 ### frontend/e2e/persistent-login.spec.ts
 

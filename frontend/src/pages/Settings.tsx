@@ -93,7 +93,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     icon: IconMenu, keywords: ["フリック", "スワイプ", "メニュー", "ジェスチャー", "画面", "スリープ", "消灯", "読み上げ", "先頭", "スクロール", "便利"],
     allowed: () => true },
   { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
-    icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "PatentBuddy", "スキル", "manifest"],
+    icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "スキル", "manifest"],
     allowed: (can) => can("settings.manage") },
   { id: "gpu", label: "GPU 設定", summary: "発熱を抑えるクロック・電圧と、電力・静音",
     icon: IconChip, keywords: ["GPU", "クロック", "周波数", "電圧", "アンダーボルト", "電力", "静音", "VRAM", "R9700", "ホットスポット"],

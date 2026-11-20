@@ -1,5 +1,41 @@
 # 実装状況
 
+## 2026-11-21 文書単位の RAG・規格検索・PDF の取り込み・発明の音声ヒアリング
+
+- 利用者「特許・規格は書誌全体が関係する。上位何件に絞れない。コンテキストが十分なら全文を入れて回答」「PDF から画像・文章・波形グラフ・表を抽出して記録し、体系的に引き出す規格検索」「発明を音声で長く話し、AI が本質・請求項に分解するヒアリング」「知らなくていい情報は隠す」。調査と採用した方式は `docs/research-patent-standards-rag.md`、引き継ぎは `docs/HANDOFF-knowledge-platform.md`（引き継ぎ資料の決まりを `AGENTS.md` に追加）。
+- 文書単位の検索（断片を文書ごとに集める、番号の完全一致を先頭）、入るなら全文・入らなければ骨格（要約・請求項の全文・適用範囲・引用規格）と該当箇所を元の順で（`knowledge/documents.py`・`context.py`）。予算はモデルの窓から（`context_budget` の徹底の量）。
+- 書誌の関係: 公報番号・規格番号・DOI を規則で取り出し（`biblio.py`）、引用する・引用される・別の版で結び、検索で 1 hop 広げる。LLM の GraphRAG は使わない。
+- 規格: Knowledge →「規格の管理」。入手経路から本文の保存・AI 利用を判定して見せ（理由は既定で隠す）、条項見出しで分割、番号で引く、新しい版で旧版を自動で旧版にする。購入した ISO/IEC/JIS は番号と題名だけ。
+- PDF: ページの文章（Poppler）、文字の少ないページは OCR（Tesseract jpn+eng）、図のページの画像と埋め込み画像、ローカルの VLM で図・表・グラフ（軸・単位・値）の説明（モデルの推論・未確認）。原本は保存先の設定どおり。Knowledge の資料に PDF を選ぶと自動でこの取り込みになる。
+- 文書の表示（本文・図のタップ拡大・関係する文書・詳細は折りたたみ）。Knowledge →「探す」で資料・特許・規格を横断。
+- AI アシスタントの道具 `search_knowledge`: ControlDeck 管理のローカル GGUF なら機密も、そうでなければ公開・AI 利用の許されたものだけ。
+- Patent: ヒアリング（話して記録。区切りごとに保存、AI で本質・構成要件・請求項案・確認したいことに整理）、文献はナレッジの文書単位で探す、AI 支援の根拠は全文か骨格で渡す。
+- 直した不具合: SQLite の表を作ったかの覚え書きがファイルの置き換え（復元・移動・作り直し）で古くなり、表が無いまま使っていた → inode も鍵に。
+- 検証: `tests/test_knowledge_documents.py`（8）ほか、全体 1866 passed（落ちた 2 件は既知の不安定なテストで単独では通る）。E2E `patents`・`knowledge`（1280/320、横はみ出し無し）。実 PDF（特開2026-116114、15 ページ）で 2.8 秒、35 断片、OCR 1 ページ、図のページ 12、番号一致・骨格（要約・請求項）を確認。VLM の説明はローカルの画像モデルがある本番で動く（検証用インスタンスには無い）。
+- 未: 座標（bbox）・WebP・レイアウト解析（Pillow・Docling の導入は了承待ち）、特許ファミリー・IPC の関係、保存先の設定画面。
+
+## 2026-11-21 Patent 画面（特許調査・検討）と PatentBuddy Add-on の撤去、ナレッジの保存先の設定
+
+- 利用者「ControlDeck に統合する件を進めて。PatentBuddy のアドオンは不要になるので、アドオンと機能追加画面の PatentBuddy 導入項目などを一式削除し、特許調査検討用ツールである Patent 機能をつけて」。計画は `docs/PLAN-knowledge-platform.md`（K-PR3 を前倒し）。
+- Patent 画面（ナビの AI → Patent、`/patents`）: 案件（11 段階）、概要（技術分野・課題・解決手段・効果・実施例）、出来事から期限の目安（審査請求 3 年・公開 18 か月・拒絶理由の応答 60/90 日・特許料など）、請求項の版と構成要件の分解、クレームチャート（構成要件ごとにナレッジ全体を検索）、先行文献（ナレッジの検索から X/Y/A/P/E で登録、番号の直接入力）、AI 支援 12 種（発明ヒアリング・検索式・新規性・進歩性・請求項ドラフト・拒絶理由への応答など）、公報・論文の取り込み（特許の分野。既定は機密、公開済みだけ公開にできる）。
+- AI 支援は ControlDeck が管理するローカルの GGUF だけで動かす（`ai_gateway.require_local_target`）。使えなければ 503 で止め、クラウドへ回さない。結果は「モデルの推論・未確認」で保存し、確認済み・不採用を付けられる。Jobs で動き、GPU は既存の順番待ちに従う。
+- 保存は `data_dir/knowledge/patents.sqlite3`（特許の分野）。中身は ResearchDataHub の `qnaplibrary/patents.py` から移植（期限・構成要件・指示文）。
+- PatentBuddy: 機能追加のカタログ（`trusted-catalog.json`）から外し、導入済みなら起動時に片付ける（`RETIRED_FEATURES`。サービス・Add-on の登録・実行ファイルを消し、`data/feature-data/patent-buddy` は残す）。設定の検索語・アイコンの割り当て・フロンティアモデルの説明文から名前を外した。
+- ナレッジの保存先・保存対象・バックアップ（`./deck.sh knowledge-storage`）: 保存先を名前で登録（NAS はマウント先）、DB（分野ごと）・GraphRAG・原本・図・抽出結果の置き場所を別々に、SQLite はネットワーク上の FS に置かせない、目印で外れた NAS に書かない、バックアップの世代・照合・空の場所への復元・blobs の移し替え・DB の移動。設定画面と定時バックアップは未着手。
+- main に入っていた reranker の選択・時間の上限・小さい会話の資料を全部入れる処理（#475〜）を、統合ストアの窓口へ移した。
+- 検証: `tests/test_patents.py`（7）、`tests/test_knowledge_storage.py`（4）、`tests/test_knowledge_store.py`・`tests/test_rag_db_nodes.py` ほか。E2E `patents`（PC 幅・320px、作成→期限→請求項→AI 支援の案内、横はみ出し無し）、`frontier-models`、`feature-auto-update`。`release-bundle-settings`・`feature-boot-restore` は導入済みの環境が要るので未実施。
+
+## 2026-11-19 統合ナレッジストア（PatentBuddy・ResearchDataHub の統合 K-PR1）
+
+- 利用者「すべて ControlDeck に統合する。PatentBuddy・ResearchDataHub のデータを回収し、使わなくなったリポジトリを閉じる」「DB は分けるが ControlDeck からは意識しない」「横断検索したい。守りたいのはアイデアの流出」。計画の正本は `docs/PLAN-knowledge-platform.md`。
+- `backend/app/knowledge/`: 分野別 SQLite（general / patents / standards）、日本語 2-gram の全文検索（ResearchDataHub から移植。2 文字の語も当たる）、RAM 上の行列によるベクトル検索、RRF、機密区分（confidential / public）と cloud 向け横断検索の除外、原本・図のハッシュ名保存。
+- `rag.py` は窓口だけにし、関数と戻り値の形を保った。直したこと: 2,000 チャンクで黙って切り詰める（埋め込みは 64 件ずつ送る）、検索のたびに全件を読み 1 件ずつ計算する、async の中の同期 SQLite。GraphRAG の三つ組はコレクションごとの別ファイル。
+- 旧 `data/rag/*.db` はコレクションを初めて使うときに取り込む（旧ファイルは書き換えない・消さない。消したコレクションは復活しない）。`./deck.sh knowledge-migrate [--apply]` で一括取り込みと ResearchDataHub の取り込み（patents 分野、原本 PDF・図・ローカル AI の要約は未確認の推論として）。
+- 規格の利用判定（`standards_license.py`）と根拠 `docs/standards-license-policy.md` を ResearchDataHub から移した。
+- 検証: `tests/test_knowledge_store.py`（13）、`tests/test_standards_license.py`（15）、既存の RAG・会話・Deep Research・ワークフローのテスト。本番データの複製で取り込みのリハーサル（45 コレクション・158 文書・1,144 チャンク、旧ファイル不変）。100k チャンクで warm のベクトル検索 15.5 ms（旧方式 431 ms）。
+- 未実施: 本番への取り込み（Release 後に行う）、画面の変更なし（Knowledge 画面の分野・機密区分の表示は K-PR2/3）。
+
+
 ## 2026-11-21 通知が端末に届いたかを確かめられるようにする
 
 - 利用者「通知が届いていない気がする」。

@@ -7,6 +7,9 @@ import { BottomSheet, ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skel
 import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { knowledgeApi } from "../api/knowledge";
+import { KnowledgeSearch } from "../features/knowledge/KnowledgeSearch";
+import { StandardsPanel } from "../features/knowledge/StandardsPanel";
 
 interface Collection {
   collection: string;
@@ -46,6 +49,7 @@ export default function KnowledgePage() {
   const [creating, setCreating] = useState(false);
   const [openName, setOpenName] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [tab, setTab] = useState<"find" | "collections" | "standards">("find");
 
   const { data: cols, isLoading } = useQuery({
     queryKey: ["knowledge"],
@@ -62,11 +66,13 @@ export default function KnowledgePage() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <PageHeader title="Knowledge" description="RAG 用ナレッジベース。文書を取り込み、チャンク戦略・検索方式を設定して、ワークフローの RAG 検索ノードから利用できます。" actions={can("workflows.edit") && (
+      <PageHeader title="Knowledge" description="資料・特許・規格をまとめて探し、AI アシスタントや Patent から使えるようにします。" actions={tab === "collections" && can("workflows.edit") && (
           <IconButton variant="primary" label="コレクション作成" onClick={() => setCreating(true)}><IconPlus /></IconButton>
         )} />
+      <SegmentedTabs className="mb-4" value={tab} onChange={setTab}
+        tabs={[["find", "探す"], ["collections", "資料の管理", "資料管理"], ["standards", "規格の管理", "規格管理"]] as const} />
 
-      {isLoading ? (
+      {tab === "find" ? <KnowledgeSearch /> : tab === "standards" ? <StandardsPanel /> : isLoading ? (
         <Skeleton className="h-24" />
       ) : !cols || cols.length === 0 ? (
         <EmptyState>コレクションがありません。作成して文書を取り込みましょう。</EmptyState>
@@ -292,7 +298,10 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
   const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
   const [jobId, setJobId] = useState<string | null>(null);
   const add = useMutation({
-    mutationFn: () => api<{ job_id: string }>(`/knowledge/collections/${name}/ingest-jobs`, { method: "POST", json: { source, text: src === "text" ? text : "", url: src === "url" ? url : "", path: src === "file" ? path : "" } }),
+    // PDF は文章・OCR・図表まで取り出す専用の取り込みへ（ページ・図・原本を残す）
+    mutationFn: () => src === "file" && path.toLowerCase().endsWith(".pdf")
+      ? knowledgeApi.addPdf(name, path, source)
+      : api<{ job_id: string }>(`/knowledge/collections/${name}/ingest-jobs`, { method: "POST", json: { source, text: src === "text" ? text : "", url: src === "url" ? url : "", path: src === "file" ? path : "" } }),
     onSuccess: ({ job_id }) => setJobId(job_id),
     onError: (e) => show(e instanceof Error ? e.message : "取り込み開始に失敗しました", "error"),
   });

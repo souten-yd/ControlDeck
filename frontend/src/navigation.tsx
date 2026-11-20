@@ -10,6 +10,7 @@ import {
   IconHome,
   IconLogs,
   IconPackage,
+  IconPatent,
   IconSettings,
   IconTerminal,
 } from "./components/icons";
@@ -53,6 +54,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/assistant", group: "ai", label: "AI Assistant", icon: IconAssistant },
   { to: "/github", group: "dev", label: "GitHub", icon: IconBranch, permission: "apps.view" },
   { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
+  { to: "/patents", group: "ai", label: "Patent", icon: IconPatent, permission: "workflows.run" },
   { to: "/models", group: "ai", label: "Models", icon: IconChip, permission: "workflows.run" },
   { to: "/opencode-v2", group: "dev", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
   { to: "/diagnostics", group: "system", label: "Diagnostics", icon: IconPulse, permission: "settings.manage" },

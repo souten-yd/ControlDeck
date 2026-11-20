@@ -136,6 +136,15 @@ def test_models_without_tools_fall_back_to_the_keyword_rule(monkeypatch):
     chat_tools._unsupported.discard(("http://x", "m"))
 
 
+@pytest.fixture(autouse=True)
+def _no_shared_knowledge(monkeypatch):
+    """ここは会話の資料・Web 検索の道具を確かめる。ナレッジ横断の道具（test_knowledge_documents.py）は出さない
+    （DB はテスト全体で共有され、他のテストが作ったコレクションで道具の一覧が変わるため）。"""
+    from app.knowledge import store
+
+    monkeypatch.setattr(store, "has_shared_collections", lambda: False)
+
+
 def _setup_job(conv, msg):
     """会話と回答の行を作る。ID は他のテストと重ならないよう tt- を付ける（DB はテスト全体で共有）。"""
     from app.database import SessionLocal
