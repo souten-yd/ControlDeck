@@ -98,3 +98,16 @@ export function nextSpoken(markdown: string, queued: number, done: boolean): { t
   }
   return { text: rest, queued: queued + rest.length, capped: false };
 }
+
+/** 無音とみなす振幅（16 bit の 1%） */
+const SILENCE = 0.01;
+
+/** 前後の無音を削った範囲（サンプル位置）。全部が無音なら空 */
+export function voicedRange(samples: Float32Array, rate: number): [number, number] {
+  let start = 0;
+  while (start < samples.length && Math.abs(samples[start]) < SILENCE) start++;
+  let end = samples.length;
+  while (end > start && Math.abs(samples[end - 1]) < SILENCE) end--;
+  const pad = Math.round(rate * 0.03);   // 子音の立ち上がり・余韻を切らない
+  return start >= end ? [0, 0] : [Math.max(0, start - pad), Math.min(samples.length, end + pad)];
+}

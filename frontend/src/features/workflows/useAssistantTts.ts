@@ -1,56 +1,68 @@
 /** AI アシスタントの読み上げ（TTS 返答・会話モード）。
  *
- * 文の区切りごとに合成し、鳴らしている間に次を作る（最初の音が早く出る。Supertonic 3 は 6.5 秒を 0.8 秒で作る）。
- * 回答の生成中から読み始める（feed）: 文の終わりまで流れてきた分を順に合成して鳴らす。2026-11-20 利用者「長文だと
- * 生成し終えるまで何も再生されずテンポが悪い。デコードの速さを考えて途切れないよう順次再生して」。
- * 生成（毎秒数十文字）は読み上げ（毎秒 8 文字前後）よりずっと速いので、最初の文を鳴らしている間に次がそろう。
- * 声と速さは Models の TTS で選んだ既定（サーバー側）。iPhone は利用者の操作の中で一度鳴らした
- * audio 要素でないと後から鳴らせないので、モードを入れたときに unlock() で無音を鳴らしておく。 */
+ * 回答の生成中から読み始め（feed）、合成した音声を順番どおりに、つなぎ目なしで並べて鳴らす（Web Audio の予約再生）。
+ * 2026-11-20 利用者「長文を連続で読ませると飛び飛びになる。ストリーミング再生のように順番を守って再生して」。
+ * 原因: Supertonic 3 の音声は前後に約 0.4 秒ずつ無音が付く（実測 15〜138 字で 0.31〜0.44 秒）。それを 1 文ずつ
+ * audio 要素で鳴らしていたので、文の切れ目ごとに約 1 秒途切れていた。合成自体は速い（15 字 0.6 秒・138 字 1.9 秒）。
+ * - 各音声の前後の無音を削り、文の間は SENTENCE_GAP_S だけ空ける
+ * - 前の音声の終わりの時刻に次を予約する（鳴らし終わるのを待ってから次を始めない）
+ * - 生成中は、ある程度たまってからまとめて合成する（1 文ずつだと切れ目と抑揚の途切れが増える）。
+ *   ただし予約した音声の残りが少なくなったら、たまった分だけで合成する（声を止めない）
+ * 声と速さは Models の TTS で選んだ既定（サーバー側）。iPhone は利用者の操作の中で AudioContext を動かさないと
+ * 後から鳴らせないので、モードを入れたときなどに unlock() を呼ぶ。 */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { synthesizeSpeech } from "../../api/speech";
-import { nextSpoken, speakableText, speechChunks, speechLang } from "./speakable";
+import { nextSpoken, speechChunks, speechLang, voicedRange } from "./speakable";
 
-interface Stream { id: string; queued: number; pending: string[]; done: boolean; wake: (() => void) | null; finished: Promise<boolean> }
-
-// 0.1 秒の無音（44.1 kHz・16 bit・1 ch の WAV）
-function silentWav(): string {
-  const samples = 4410;
-  const buffer = new ArrayBuffer(44 + samples * 2);
-  const view = new DataView(buffer);
-  const write = (offset: number, text: string) => { for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i)); };
-  write(0, "RIFF"); view.setUint32(4, 36 + samples * 2, true); write(8, "WAVE"); write(12, "fmt ");
-  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
-  view.setUint32(24, 44100, true); view.setUint32(28, 88200, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
-  write(36, "data"); view.setUint32(40, samples * 2, true);
-  return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+/** 文の間に空ける時間（無音を削った後） */
+const SENTENCE_GAP_S = 0.18;
+/** 生成中にまとめて合成する目安の文字数（最初の 1 回は早く鳴らすため短く） */
+const FIRST_CHARS = 60;
+const BATCH_CHARS = 160;
+/** 予約した音声の残りがこれより少なければ、たまった分だけで合成する */
+const LOW_WATER_S = 3;
+interface Stream {
+  id: string;
+  queued: number;
+  pending: string;
+  done: boolean;
+  wake: (() => void) | null;
+  finished: Promise<boolean>;
 }
 
 export function useAssistantTts({ onError }: { onError: (message: string) => void }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
   const runRef = useRef(0);
-  const urlRef = useRef<string | null>(null);
-  const stopWaitRef = useRef<(() => void) | null>(null);
   const streamRef = useRef<Stream | null>(null);
+  const sourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const [speaking, setSpeaking] = useState(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
-  const element = () => {
-    if (!audioRef.current) audioRef.current = new Audio();
-    return audioRef.current;
-  };
-  const releaseUrl = () => {
-    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    urlRef.current = null;
+  const context = () => {
+    if (!ctxRef.current) {
+      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      // iPhone の Web Audio はマナーモードで消える（audio 要素は鳴っていた）。再生用の音として扱わせる（Safari 16.4 以降）
+      const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+      if (session) { try { session.type = "playback"; } catch { /* 古い Safari */ } }
+      ctxRef.current = new Ctor();
+    }
+    return ctxRef.current;
   };
 
   /** 利用者の操作の中で呼ぶ（iPhone で後から鳴らせるようにする） */
   const unlock = useCallback(() => {
-    const audio = element();
-    if (!audio.paused) return;   // 読み上げ中は邪魔しない（もう鳴らせる状態）
-    const url = silentWav();
-    audio.src = url;
-    void audio.play().catch(() => undefined).finally(() => URL.revokeObjectURL(url));
+    try {
+      const ctx = context();
+      if (ctx.state !== "running") void ctx.resume().catch(() => undefined);
+      // 無音を一度鳴らす（iOS は操作の中で音を出した AudioContext だけ後から鳴らせる）
+      const source = ctx.createBufferSource();
+      source.buffer = ctx.createBuffer(1, 1, 22050);
+      source.connect(ctx.destination);
+      source.start();
+    } catch {
+      // 音を出せない環境: 読み上げの時に知らせる
+    }
   }, []);
 
   const stop = useCallback(() => {
@@ -58,65 +70,81 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
     const stream = streamRef.current;
     streamRef.current = null;
     if (stream) { stream.done = true; stream.wake?.(); }
-    const audio = audioRef.current;
-    if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
-    stopWaitRef.current?.();
-    stopWaitRef.current = null;
-    releaseUrl();
+    for (const source of sourcesRef.current) {
+      try { source.stop(); } catch { /* まだ始まっていない・終わった */ }
+    }
+    sourcesRef.current = [];
     setSpeaking(false);
   }, []);
 
-  const play = (blob: Blob, run: number) => new Promise<void>((resolve) => {
-    if (run !== runRef.current) { resolve(); return; }
-    const audio = element();
-    releaseUrl();
-    urlRef.current = URL.createObjectURL(blob);
-    const done = () => {
-      audio.removeEventListener("ended", done);
-      audio.removeEventListener("error", done);
-      stopWaitRef.current = null;
-      resolve();
-    };
-    stopWaitRef.current = done;
-    audio.addEventListener("ended", done);
-    audio.addEventListener("error", done);
-    audio.src = urlRef.current;
-    audio.play().catch((error: unknown) => {
-      onErrorRef.current(error instanceof Error && error.name === "NotAllowedError"
-        ? "ブラウザが自動再生を止めました。読み上げをいったん切って入れ直してください" : "音声を再生できませんでした");
-      done();
+  const playStream = async (stream: Stream, run: number): Promise<boolean> => {
+    const ctx = context();
+    if (ctx.state !== "running") await ctx.resume().catch(() => undefined);
+    if (ctx.state !== "running") {
+      onErrorRef.current("ブラウザが自動再生を止めました。読み上げをいったん切って入れ直してください");
+      return false;
+    }
+    let endAt = 0;          // 予約した音声が鳴り終わる時刻（ctx.currentTime の目盛り）
+    let first = true;
+    let firstWaited = false;
+    let spoke = false;
+    const remaining = () => Math.max(0, endAt - ctx.currentTime);
+    const waitFor = (ms: number) => new Promise<void>((resolve) => {
+      const timer = window.setTimeout(() => { stream.wake = null; resolve(); }, ms);
+      stream.wake = () => { window.clearTimeout(timer); stream.wake = null; resolve(); };
     });
-  });
-
-  /** 回答の Markdown を読む。読み終わる（または止める・失敗する）と解決する。読めたら true */
-  const speak = useCallback(async (markdown: string): Promise<boolean> => {
-    stop();
-    const run = runRef.current;
-    const text = speakableText(markdown);
-    const chunks = speechChunks(text);
-    if (chunks.length === 0) return false;
-    const lang = speechLang(text);
-    setSpeaking(true);
     try {
-      let next: Promise<Blob> = synthesizeSpeech({ text: chunks[0], lang });
-      for (let i = 0; i < chunks.length; i++) {
-        const blob = await next;
-        if (run !== runRef.current) return false;
-        if (i + 1 < chunks.length) {
-          next = synthesizeSpeech({ text: chunks[i + 1], lang });
-          next.catch(() => undefined);   // 止めたときに未処理の失敗を出さない
+      while (run === runRef.current) {
+        // 合成に回す分を決める: 生成が終わった・たまった・予約の残りが少ない、のどれか
+        const want = first ? FIRST_CHARS : BATCH_CHARS;
+        const ready = stream.pending.length > 0 && (stream.done || stream.pending.length >= want
+          || (first ? firstWaited : remaining() < LOW_WATER_S));
+        if (!ready) {
+          if (stream.done && !stream.pending) break;
+          if (first && stream.pending) {
+            // 最初の文が短い（挨拶など）: 少しだけ続きを待ち、来なければその分で鳴らし始める
+            await waitFor(400);
+            firstWaited = true;
+            continue;
+          }
+          // 予約した音声が残っているうちは待って、まとめて合成する（続きが流れてくると起きる）
+          await waitFor(stream.pending ? Math.max(100, (remaining() - LOW_WATER_S) * 1000) : 2000);
+          continue;
         }
-        await play(blob, run);
-        if (run !== runRef.current) return false;
+        const text = stream.pending;
+        stream.pending = "";
+        first = false;
+        for (const chunk of speechChunks(text, 300, 300)) {
+          const blob = await synthesizeSpeech({ text: chunk, lang: speechLang(chunk) });
+          if (run !== runRef.current) return false;
+          const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+          if (run !== runRef.current) return false;
+          const [from, to] = voicedRange(decoded.getChannelData(0), decoded.sampleRate);
+          if (to <= from) continue;
+          const at = Math.max(ctx.currentTime + 0.05, endAt + (spoke ? SENTENCE_GAP_S : 0));
+          const source = ctx.createBufferSource();
+          source.buffer = decoded;
+          source.connect(ctx.destination);
+          source.onended = () => { sourcesRef.current = sourcesRef.current.filter((s) => s !== source); };
+          source.start(at, from / decoded.sampleRate, (to - from) / decoded.sampleRate);
+          sourcesRef.current.push(source);
+          endAt = at + (to - from) / decoded.sampleRate;
+          spoke = true;
+          setSpeaking(true);
+        }
       }
-      return true;
+      // 予約した音声が鳴り終わるまで待つ（会話モードは読み終えてから聞き直す）
+      while (run === runRef.current && remaining() > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, Math.min(250, remaining() * 1000 + 20)));
+      }
+      return spoke && run === runRef.current;
     } catch (error) {
       if (run === runRef.current) onErrorRef.current(error instanceof Error ? error.message : "読み上げに失敗しました");
       return false;
     } finally {
-      if (run === runRef.current) { releaseUrl(); setSpeaking(false); }
+      if (run === runRef.current) setSpeaking(false);
     }
-  }, [stop]);
+  };
 
   /** 生成中の回答を、流れてきた分から順に読む（同じ id で何度でも呼ぶ。done で残りを読み切る） */
   const feed = useCallback((id: string, markdown: string, done: boolean) => {
@@ -124,15 +152,15 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
     if (!stream || stream.id !== id) {
       stop();
       const run = runRef.current;
-      const created: Stream = { id, queued: 0, pending: [], done: false, wake: null, finished: Promise.resolve(false) };
-      created.finished = playStream(created, run);
+      const created: Stream = { id, queued: 0, pending: "", done: false, wake: null, finished: Promise.resolve(false) };
       streamRef.current = created;
+      created.finished = playStream(created, run);
       stream = created;
     }
     if (stream.done) return;
     const next = nextSpoken(markdown, stream.queued, done);
     stream.queued = next.queued;
-    if (next.text) stream.pending.push(next.text);
+    stream.pending += next.text;
     if (done || next.capped) stream.done = true;
     stream.wake?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,55 +170,18 @@ export function useAssistantTts({ onError }: { onError: (message: string) => voi
   const finished = useCallback((id: string): Promise<boolean> =>
     streamRef.current?.id === id ? streamRef.current.finished : Promise.resolve(false), []);
 
-  const playStream = async (stream: Stream, run: number): Promise<boolean> => {
-    const chunks: string[] = [];
-    let first = true;
-    let spoke = false;
-    const pull = () => {
-      if (!stream.pending.length) return;
-      const text = stream.pending.join("");
-      stream.pending = [];
-      // 最初は短く（早く鳴らし始める）、後はたまった分を長めにまとめる（つなぎ目を減らす）
-      chunks.push(...speechChunks(text, first ? 80 : 300, 300));
-      first = false;
-    };
-    const synth = (text: string) => {
-      const job = synthesizeSpeech({ text, lang: speechLang(text) });
-      job.catch(() => undefined);   // 止めたときに未処理の失敗を出さない
-      return job;
-    };
-    let current: Promise<Blob> | null = null;
-    try {
-      while (run === runRef.current) {
-        pull();
-        if (!current) {
-          if (!chunks.length) {
-            if (stream.done) break;
-            await new Promise<void>((resolve) => { stream.wake = resolve; });
-            stream.wake = null;
-            continue;
-          }
-          setSpeaking(true);
-          current = synth(chunks.shift()!);
-        }
-        const blob = await current;
-        current = null;
-        if (run !== runRef.current) return false;
-        pull();
-        if (chunks.length) current = synth(chunks.shift()!);   // 鳴らしている間に次を作る
-        await play(blob, run);
-        spoke = true;
-      }
-      return spoke && run === runRef.current;
-    } catch (error) {
-      if (run === runRef.current) onErrorRef.current(error instanceof Error ? error.message : "読み上げに失敗しました");
-      return false;
-    } finally {
-      if (run === runRef.current) { releaseUrl(); setSpeaking(false); }
-    }
-  };
+  /** 回答の Markdown をまとめて読む。読み終わる（または止める・失敗する）と解決する。読めたら true */
+  const speak = useCallback(async (markdown: string): Promise<boolean> => {
+    const id = `speak-${Date.now()}-${Math.random()}`;
+    feed(id, markdown, true);
+    return finished(id);
+  }, [feed, finished]);
 
-  useEffect(() => () => { runRef.current += 1; audioRef.current?.pause(); releaseUrl(); }, []);
+  useEffect(() => () => {
+    runRef.current += 1;
+    for (const source of sourcesRef.current) { try { source.stop(); } catch { /* 終わった */ } }
+    void ctxRef.current?.close().catch(() => undefined);
+  }, []);
 
   return { speak, feed, finished, stop, unlock, speaking };
 }
