@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import threading
@@ -27,6 +28,7 @@ from app.config import data_dir
 from app.knowledge import store
 
 LEGACY_DEFAULT_MODEL = "nomic-embed-text"
+ANSWER_TITLE = re.compile(r"^\w{0,12}回答[:：]")
 RDH_DEFAULT = Path("/data1tb/ResearchDataHub/data/library.sqlite3")
 
 
@@ -128,9 +130,11 @@ def import_legacy_collection(path: Path) -> dict:
                 meta = json.loads(doc["meta"] or "{}")
             except json.JSONDecodeError:
                 meta = {}
+            # 旧 RAG は AI の回答も原文と同じに入っていた。「…回答:」は推論として取り込む
+            basis = "model_inference" if ANSWER_TITLE.match(doc["source"] or "") else "source_fact"
             result = store.add_document(name, chunks, source=doc["source"] or "document",
                                         title=doc["source"] or "", meta=meta, model=model,
-                                        ext_id=f"legacy:{doc['id']}")
+                                        ext_id=f"legacy:{doc['id']}", basis=basis)
             _set_created(name, result["doc_id"], doc["added_at"])
             imported_chunks += len(chunks)
     finally:

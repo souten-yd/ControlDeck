@@ -43,6 +43,32 @@ export interface ClaimChart {
   rows: { element: ClaimElement; query: string; evidence: { doc_ref: string; title: string; collection: string; snippet: string }[] }[];
 }
 
+export interface CountRow { key: string; count: number }
+export interface PatentAnalytics {
+  documents: number;
+  coverage: { year: number; applicant: number; ipc: number; claims: number };
+  by_year: CountRow[];
+  applicants: CountRow[];
+  ipc_subclasses: CountRow[];
+  countries: CountRow[];
+  kinds: CountRow[];
+  applicant_ipc: { applicant: string; ipc: string; count: number }[];
+  applicant_year: { applicant: string; year: string; count: number }[];
+  claims_histogram: CountRow[];
+  note: string;
+}
+export interface MapPoint { ref: string; title: string; x: number; y: number; applicant: string; ipc: string; year: string }
+export interface PatentMap { points: MapPoint[]; model: string; explained: number[] }
+/** 公報の書誌（knowledge/biblio.py の形）。source は読み取り方（manual / ocr_extract / rule_extract など）。 */
+export interface Biblio {
+  title?: string; applicants?: string[]; inventors?: string[]; ipc?: string[];
+  filing_date?: string; publication_date?: string; priority_date?: string;
+  country?: string; kind?: string; claims_count?: number | null; source?: string;
+}
+export interface SimilarHit {
+  ref: string; title: string; score: number; snippet: string; applicants: string[]; ipc: string[]; date: string; registered: boolean;
+}
+
 export const patentsApi = {
   meta: () => api<PatentMeta>("/patents/meta"),
   list: () => api<CaseSummary[]>("/patents/cases"),
@@ -70,4 +96,10 @@ export const patentsApi = {
   removeAssist: (id: number, assistId: number) => api<CaseDetail>(`/patents/cases/${id}/assists/${assistId}`, { method: "DELETE" }),
   addLiterature: (body: { title: string; text: string; url: string; public: boolean }) =>
     api<{ job_id: string }>("/patents/literature", { method: "POST", json: body }),
+  analytics: () => api<PatentAnalytics>("/patents/analytics"),
+  analyticsMap: () => api<PatentMap>("/patents/analytics/map"),
+  refreshBiblio: () => api<{ job_id: string }>("/patents/analytics/refresh-biblio", { method: "POST" }),
+  patchBiblio: (ref: string, fields: Partial<Biblio>) =>
+    api<Biblio>(`/patents/documents/${encodeURIComponent(ref)}/biblio`, { method: "PATCH", json: { fields } }),
+  similar: (id: number) => api<{ query: string; results: SimilarHit[] }>(`/patents/cases/${id}/similar`),
 };

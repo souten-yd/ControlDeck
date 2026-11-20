@@ -19,6 +19,7 @@
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
 #   ./deck.sh test-catalog テストの目録 docs/test-catalog.md を作り直す（テストを足す前に重複を探す）
 #   ./deck.sh knowledge-migrate [--apply] 旧 RAG・ResearchDataHub のデータを統合ナレッジへ取り込む（既定は計画の表示だけ）
+#   ./deck.sh knowledge-rebuild [--apply] ナレッジの作り直し（AI の回答の区別・埋め込み・PDF の取り込み直し。既定は計画の表示）
 #   ./deck.sh knowledge-storage ...  ナレッジの保存先・保存対象・バックアップ（status|add-target|place|backup|verify|restore-to|relocate|move-db）
 #   ./deck.sh approval ... L2 の承認を依頼する（request|list）。利用者はホーム画面で承認・却下
 #   ./deck.sh change-class 変更の危険度の区分（L0/L1/L2、docs/POLICY-autonomous-development.md）
@@ -651,6 +652,12 @@ cmd_knowledge_migrate() {
   exec "$VENV/bin/python" -m app.knowledge.migrate "$@"
 }
 
+cmd_knowledge_rebuild() {
+  check_root; check_python; ensure_venv
+  cd "$REPO_ROOT/backend"
+  exec "$VENV/bin/python" -m app.knowledge.rebuild "$@"
+}
+
 cmd_knowledge_storage() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
@@ -878,6 +885,7 @@ case "${1:-start}" in
   test-catalog) shift; cmd_test_catalog "$@" ;;
   knowledge-migrate) shift; cmd_knowledge_migrate "$@" ;;
   knowledge-storage) shift; cmd_knowledge_storage "$@" ;;
+  knowledge-rebuild) shift; cmd_knowledge_rebuild "$@" ;;
   change-class) shift; cmd_change_class "$@" ;;
   approval) shift; cmd_approval "$@" ;;
   searxng) shift; cmd_searxng "$@" ;;

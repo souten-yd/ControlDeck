@@ -187,9 +187,11 @@ async def _embed_batched(texts: list[str], cfg: dict, api_key: str) -> list[np.n
 
 async def add_document(
     collection: str, text: str, source: str, api_key: str = "",
-    config_override: dict | None = None, reset: bool = False,
+    config_override: dict | None = None, reset: bool = False, basis: str = "source_fact",
 ) -> dict:
-    """文書を取り込む。コレクション設定のチャンク戦略で分割し、埋め込み+全文索引に登録する。"""
+    """文書を取り込む。コレクション設定のチャンク戦略で分割し、埋め込み+全文索引に登録する。
+
+    basis: 原文の事実（source_fact）か、AI の回答（model_inference）か。AI の回答を根拠として扱わないため（計画 §10.2）。"""
     ref = await asyncio.to_thread(_ensure, collection)
     cfg = _merged(ref.config if ref else {})
     if config_override:
@@ -204,7 +206,8 @@ async def add_document(
     try:
         result = await asyncio.to_thread(
             store.add_document, collection, chunks, source=source or "document", title=source or "",
-            meta={"strategy": cfg["strategy"]}, model=cfg["embed_model"], replace_collection=reset)
+            meta={"strategy": cfg["strategy"]}, model=cfg["embed_model"], replace_collection=reset, body=text,
+            basis=basis)
     except store.KnowledgeError as exc:
         raise RagError(str(exc)) from exc
     return {

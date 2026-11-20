@@ -632,7 +632,7 @@ def _install_documents(conv_id: str, project: Path, always: bool) -> tuple[str, 
     return pdf_import.prompt_note(placed), placed
 
 
-async def register_chat_document(conv_id: str, text: str, source: str) -> dict | None:
+async def register_chat_document(conv_id: str, text: str, source: str, *, basis: str = "source_fact") -> dict | None:
     """会話コレクションへ文書を登録する（呼び出し側は失敗を致命にしない）。
 
     コレクション名はID固定（chat-<id>）だが、表示用descriptionへ会話タイトルを
@@ -656,7 +656,7 @@ async def register_chat_document(conv_id: str, text: str, source: str) -> dict |
     description = f"会話「{title}」の資料（自動登録）" if title else "AIチャットの会話資料（自動登録）"
     return await rag.add_document(
         conversation_collection(conv_id), cleaned[:800_000], source,
-        config_override={"description": description, **_collection_embed_override()},
+        config_override={"description": description, **_collection_embed_override()}, basis=basis,
     )
 
 
@@ -1903,8 +1903,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         if mode in ("web", "academic", "research") or web_sources:
             source_hint = user_query[:60] if user_query else mode
             try:
+                # AI の回答は「推論」として残す（後の質問で原文の根拠と取り違えない）
                 await register_chat_document(conv_id, buf["content"],
-                                             f"{'web' if web_sources else mode}回答: {source_hint}")
+                                             f"{'web' if web_sources else mode}回答: {source_hint}", basis="model_inference")
                 sources = (buf.get("meta") or {}).get("sources") or []
                 if sources:
                     lines = [

@@ -236,8 +236,10 @@ def search_documents(question: str, *, names: Iterable[str] | None = None, consu
     """断片を探して文書ごとに集め、文書の順位を返す。番号の完全一致は先頭。1 hop の関係を足す。"""
     if consumer not in CONSUMERS:
         raise store.KnowledgeError("consumer は human / local / cloud")
-    names = list(names) if names is not None else [c["collection"] for c in store.list_collections()]
     bound = list(bound)
+    # 会話の資料は、その会話の中（bound）でだけ使う。別の会話の AI の回答や雑談（天気など）を混ぜない
+    names = list(names) if names is not None else [c["collection"] for c in store.list_collections()
+                                                    if c["kind"] != "conversation" or c["collection"] in bound]
     hits = store.search(names, question, query_vector=query_vector, model=model, mode=mode, limit=limit * 10)
     docs: dict[str, dict] = {}
     for hit in hits:

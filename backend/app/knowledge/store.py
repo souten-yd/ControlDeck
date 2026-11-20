@@ -772,8 +772,8 @@ def search_all(question: str, *, consumer: str, bound: Iterable[str] = (), **kwa
     confidential な文書を返さない。consumer は呼び出し側が答えを作る LLM の種類で決める。"""
     if consumer not in ("local", "cloud"):
         raise KnowledgeError("consumer は local か cloud")
-    names = [c["collection"] for c in list_collections()]
     bound_set = set(bound)
+    names = [c["collection"] for c in list_collections() if c["kind"] != "conversation" or c["collection"] in bound_set]
     if consumer == "local":
         return search(names, question, **kwargs)
     others = [n for n in names if n not in bound_set]

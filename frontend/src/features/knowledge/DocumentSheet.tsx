@@ -5,6 +5,8 @@ import { knowledgeApi, AI_USE_LABEL, RELATION_LABEL, type DocumentAsset } from "
 import { BottomSheet, IconButton, Skeleton, secondaryButtonClass } from "../../components/ui";
 import { IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
+import type { Biblio } from "../../api/patents";
+import { BiblioBlock } from "./BiblioBlock";
 
 const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 const PREVIEW_CHARS = 4000;
@@ -41,6 +43,7 @@ export function DocumentSheet({ docRef, onClose }: { docRef: string; onClose: ()
               {doc.url && <a className="rounded-lg px-2 py-1 text-accent-700 hover:bg-accent-600/10 dark:text-accent-300" href={doc.url} target="_blank" rel="noreferrer">元のページ</a>}
             </div>
           )}
+          {Boolean(doc.meta?.biblio) && typeof doc.meta.biblio === "object" && <BiblioBlock key={doc.ref} docRef={doc.ref} biblio={doc.meta.biblio as Biblio} />}
           {images.length > 0 && (
             <section>
               <h3 className="mb-2 text-xs font-semibold text-zinc-500">図・ページ</h3>
