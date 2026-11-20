@@ -343,7 +343,7 @@ def collection_materials(collection: str, max_chars: int) -> str | None:
 async def search(
     collection: str, question: str, top_k: int, api_key: str = "",
     mode_override: str | None = None, rerank_budget_s: float | None = None,
-    min_rerank_score: float | None = None,
+    min_rerank_score: float | None = None, rerank_query: str | None = None,
 ) -> dict:
     if not collection_exists(collection):
         raise RagError(f"コレクションが存在しません: {collection}")
@@ -435,9 +435,11 @@ async def search(
     finally:
         conn.close()
 
-    reranked = await _maybe_rerank(question, matches, top_k, budget_s=rerank_budget_s)
-    if min_rerank_score is not None and any("rerank_score" in m for m in reranked):
-        # 並べ替えの点数が低いもの（関係の薄いもの）は入れない。挨拶なら何も入らない
+    reranked = await _maybe_rerank(rerank_query or question, matches, top_k, budget_s=rerank_budget_s)
+    if min_rerank_score is not None and any(m.get("rerank_engine") == "llama" for m in reranked):
+        # 並べ替えの点数が低いもの（関係の薄いもの）は入れない。挨拶なら何も入らない。
+        # Qwen3-Reranker の点数だけで切る。ruri は会話の流れを指す質問（「さっき調べた番組表」）にも低い点を
+        # 付けるので、点数では切らず上位の件数で入れる（docs/reranker-evaluation.md）
         reranked = [m for m in reranked if m.get("rerank_score", 0.0) >= min_rerank_score]
     context = "\n\n---\n\n".join(strip_instruction(m["context"]) for m in reranked)
     return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
@@ -458,7 +460,7 @@ async def _maybe_rerank(question: str, matches: list[dict], top_k: int, *, budge
         return await _rerank(question, matches, top_k)
     started = time.monotonic()
     try:
-        return await asyncio.wait_for(_rerank(question, matches, top_k), timeout=budget_s)
+        return await asyncio.wait_for(_rerank(question, matches, top_k, fast=True), timeout=budget_s)
     except TimeoutError:
         rerank_stats["timeouts"] += 1
         logger.warning("再ランクが %.1f 秒で終わらないため検索の順で続けます（%d 件）", budget_s, len(matches))
@@ -469,10 +471,32 @@ async def _maybe_rerank(question: str, matches: list[dict], top_k: int, *, budge
         rerank_stats["slowest_seconds"] = max(rerank_stats["slowest_seconds"], round(elapsed, 2))
 
 
-async def _rerank(question: str, matches: list[dict], top_k: int) -> list[dict]:
-    from app.models_mgmt import llama
+async def _rerank(question: str, matches: list[dict], top_k: int, *, fast: bool = False) -> list[dict]:
+    """CPU の reranker（ruri、導入済みなら優先）か、role=reranker の llama instance で並べ替える。
 
-    if len(matches) <= top_k or llama.find_role_instance("reranker") is None:
+    2026-11-20 利用者の判断: 日本語の並べ替えは CPU の ruri-v3-reranker-310m（精度が高く VRAM を使わない）。
+    未導入なら従来の GPU の reranker（Qwen3-Reranker）を使う。
+
+    fast（会話の資料。3 秒まで）: CPU では候補を上位 top_k×2 件・各 256 トークンに絞る。約 800 文字の断片 16 件で
+    1.65 秒（32 件・384 トークンだと 5.7 秒で間に合わない。2026-11-20 実測）。"""
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker
+
+    if len(matches) <= top_k:
+        return matches[:top_k]
+    if cpu_reranker.ready():
+        rerank_stats["calls"] += 1
+        pool = matches[:top_k * 2] if fast else matches
+        try:
+            scores = await cpu_reranker.score(question, [m["text"] for m in pool],
+                                              max_tokens=cpu_reranker.FAST_MAX_TOKENS if fast else cpu_reranker.MAX_TOKENS)
+        except (cpu_reranker.CpuRerankerError, ValueError):
+            return matches[:top_k]
+        matches = pool
+        order = sorted(range(len(matches)), key=lambda i: -scores[i])[:top_k]
+        return [{**matches[i], "rerank_score": round(scores[i], 5), "rerank_engine": cpu_reranker.ENGINE_ID}
+                for i in order]
+    if llama.find_role_instance("reranker") is None:
         return matches[:top_k]
     rerank_stats["calls"] += 1
     base = await llama.ensure_role_ready("reranker")
@@ -491,7 +515,8 @@ async def _rerank(question: str, matches: list[dict], top_k: int) -> list[dict]:
         for item in results[:top_k]:
             index = int(item.get("index", -1))
             if 0 <= index < len(matches):
-                picked.append({**matches[index], "rerank_score": round(float(item.get("relevance_score", 0.0)), 5)})
+                picked.append({**matches[index], "rerank_score": round(float(item.get("relevance_score", 0.0)), 5),
+                               "rerank_engine": "llama"})
         return picked or matches[:top_k]
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return matches[:top_k]

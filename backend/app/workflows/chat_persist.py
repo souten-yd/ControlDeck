@@ -1007,6 +1007,22 @@ CHAT_MATERIALS_ALL_CHARS = 32_000
 CHAT_MIN_RERANK_SCORE = 0.3
 
 
+def rerank_query_with_topic(said: list[str]) -> str:
+    """並べ替えに使う質問。直前の発言（話題）を前に添える。
+
+    「さっき調べた番組表の内容を教えて」のように会話の流れを指す質問は、それだけでは資料と結び付かない。
+    ruri の評価で、直前の話題を添えると番組表の資料の点が 0.02 → 0.47 に上がった（docs/reranker-evaluation.md）。"""
+    if not said:
+        return ""
+    current = said[-1]
+    previous = said[-2][-CHAT_RERANK_TOPIC_CHARS:] if len(said) >= 2 else ""
+    return f"{previous}\n{current}" if previous else current
+
+
+# 並べ替えの質問に添える直前の発言の長さ（後ろから）
+CHAT_RERANK_TOPIC_CHARS = 300
+
+
 def language_guard(history: list[dict], user_query: str) -> list[dict]:
     """日本語の質問には日本語で答えさせる。
 
@@ -1520,10 +1536,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             from app.workflows import rag
 
             collection = conversation_collection(conv_id)
-            question = next(
-                (str(m.get("content")) for m in reversed(history)
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)), "",
-            )
+            said = [str(m.get("content")) for m in history
+                    if m.get("role") == "user" and isinstance(m.get("content"), str)]
+            question = said[-1] if said else ""
             if question and rag.collection_exists(collection):
                 from app.models_mgmt import context_budget
 
@@ -1539,7 +1554,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                     job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
                             prompt_tokens=None, context_max=None)
                     found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k,
-                                             rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE)
+                                             rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE,
+                                             rerank_query=rerank_query_with_topic(said))
                     note = ("この会話に添付・収集された資料のうち、今の発言に関係する抜粋です。回答の根拠に使ってください:\n\n"
                             + str(found["context"])[:budget.rag_chars]) if found.get("context") else ""
                 if note:

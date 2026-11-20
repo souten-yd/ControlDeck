@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 175 ファイル、1553 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、170 テスト
+- backend: 175 ファイル、1557 テスト（目的の未記入 93 ファイル）
+- E2E: 86 spec、171 テスト
 
 ## backend（backend/tests）
 
@@ -1788,6 +1788,10 @@
 - `test_workflow_api_accepts_rag_db_nodes`
 - `test_chat_rerank_gives_up_after_its_budget_and_keeps_search_order` — 会話の回答前の再ランクは上限（3 秒）で打ち切り、検索の順のまま返す。打ち切りは自己診断に出る。
 - `test_small_conversation_materials_are_given_whole_without_search` — 会話の資料が小さければ探さずに全部、文書の順で渡す（並べ替えも埋め込みも使わない）。保存時に入っていた
+- `test_cpu_reranker_is_preferred_and_its_scores_do_not_gate` — CPU の reranker（ruri）が導入済みなら GPU の reranker より優先し、上位の件数で選ぶ（点数の門で切らない）。
+- `test_cpu_reranker_failure_keeps_search_order` — CPU の reranker が失敗しても会話を止めず、検索の順で返す。失敗は自己診断に出る。
+- `test_rerank_query_carries_the_previous_topic` — 会話の資料の並べ替えには、直前の発言（後ろ 300 字）を質問の前に添える。最初の発言はそのまま。
+- `test_cpu_reranker_feature_status_and_actions` — 機能追加の「検索（RAG）」に CPU の reranker を出す。導入は非同期ジョブだけ、更新は無い（版固定）。
 
 ### backend/tests/test_ratelimit.py
 
@@ -2842,6 +2846,7 @@
 
 - TTS / ASR tab lists engines and switches them at ${width}px
 - Supertonic 3 is offered under 音声 in the feature list
+- the CPU reranker is offered under 検索（RAG） in the feature list
 
 ### frontend/e2e/strata-memory-settings.spec.ts
 

@@ -82,3 +82,20 @@ test("Supertonic 3 is offered under 音声 in the feature list", async ({ page, 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await row.screenshot({ path: `${shots}/speech-feature-320.png` });
 });
+
+test("the CPU reranker is offered under 検索（RAG） in the feature list", async ({ page, context }) => {
+  // 2026-11-20 利用者「reranker は CPU に入れる形で」。導入前は「導入」だけで、更新ボタンは出さない（版固定）
+  await establishSession(page, context);
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/settings/features");
+    const row = page.locator("#feature-ruri-reranker");
+    await row.scrollIntoViewIfNeeded();
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("ruri-v3-reranker-310m");
+    await expect(page.getByRole("heading", { name: /検索（RAG）/ })).toBeVisible();
+    await expect(row.getByRole("button", { name: "更新" })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await row.screenshot({ path: `${shots}/retrieval-feature-${width}.png` });
+  }
+});
