@@ -1,4 +1,4 @@
-// 目的: 本体の自動更新が動いたことに気づけること。
+// 目的: 本体の自動更新が動いたことに気づけること。何から何へ更新するのかを Release の名前で出すこと。
 //       - 設定 → 更新とバックアップに履歴（時刻・自動/手動・版・成否）と、待っている理由が出る
 //       - 自動で更新した後、次に画面を開いたら一度だけ知らせ、もう一度開いても出さない
 //       320px でも横にはみ出さない。
@@ -22,6 +22,7 @@ for (const width of [320, 1280]) {
     await page.route(/\/api\/v1\/system\/control-deck-update\/history$/, (route) => route.fulfill({ json: history }));
     await page.route(/\/api\/v1\/system\/control-deck-update$/, (route) => route.fulfill({ json: {
       channel: "release", current_sha: "c".repeat(40), remote_sha: "d".repeat(40), release_tag: "ControlDeck_v0.98",
+      current_release_tag: "ControlDeck_v0.97",
       update_available: true, can_update: true, error: "", job: {} } }));
     await page.route(/\/api\/v1\/system\/control-deck-update\/auto$/, (route) => route.fulfill({ json: {
       enabled: true, idle_minutes: 5, check_interval_minutes: 30, busy: ["LLM の推論中"] } }));
@@ -41,7 +42,14 @@ for (const width of [320, 1280]) {
     await expect(list.locator("li").nth(0)).toContainText("成功");
     await expect(list.locator("li").nth(1)).toContainText("失敗: 更新後の画面が配信されません");
     await expect(list.locator("li").nth(2)).toContainText("手動");
-    await expect(page.locator("[data-auto-update-wait]")).toContainText("ControlDeck_v0.98 の適用を待っています: LLM の推論中");
+    await expect(page.locator("[data-auto-update-wait]")).toContainText("v0.98 の適用を待っています: LLM の推論中");
+    // 何から何へ更新するのかを Release の名前で出す（コミットの羅列だけにしない）
+    await expect(page.locator("[data-update-current]")).toContainText("いまの版: v0.97");
+    await expect(page.locator("[data-update-latest]")).toContainText("最新の正式 Release: v0.98");
+    await expect(page.locator("[data-update-latest]")).toContainText("v0.97 → v0.98");
+    await page.getByRole("button", { name: "本体を更新" }).click();
+    await expect(page.getByText("v0.97 から v0.98 へ更新し")).toBeVisible();
+    await page.getByRole("button", { name: "キャンセル" }).click();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow).toBeLessThanOrEqual(0);
     await page.screenshot({ path: `test-results/update-history-${width}.png`, fullPage: true });

@@ -158,6 +158,37 @@ def _remote_release() -> tuple[str, str]:
     return tag, sha
 
 
+def _release_names() -> dict[str, str]:
+    """コミット → 正式 Release の名前（ControlDeck_vX.Y）。取れなければ空。
+
+    2026-11-20 利用者「更新の画面が数値の羅列で、何から何へ更新するのか分からない。Release の名前で出して」。
+    同じコミットに複数の名前があれば、版の大きい方を使う。"""
+    try:
+        lines = _git("ls-remote", "--tags", "origin", "refs/tags/ControlDeck_v*", timeout=30).splitlines()
+    except SelfUpdateError:
+        return {}
+    names: dict[str, str] = {}
+    peeled: dict[str, str] = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 2 or not _SHA_RE.fullmatch(parts[0]):
+            continue
+        ref = parts[1].removeprefix("refs/tags/")
+        tag = ref.removesuffix("^{}")
+        if not re.fullmatch(r"ControlDeck_v[0-9]+\.[0-9]+(?:\.[0-9]+)?", tag):
+            continue
+        (peeled if ref.endswith("^{}") else names)[tag] = parts[0]
+    commits = {**names, **peeled}    # 注釈つきタグは ^{} の側がコミット
+
+    def key(tag: str) -> tuple[int, ...]:
+        return tuple(int(n) for n in tag.removeprefix("ControlDeck_v").split("."))
+
+    result: dict[str, str] = {}
+    for tag in sorted(commits, key=key):
+        result[commits[tag]] = tag
+    return result
+
+
 def _remote_main() -> str:
     # Compatibility for existing callers; the update source is now a release.
     return _remote_release()[1]
@@ -167,7 +198,8 @@ def status(*, refresh: bool = True) -> dict:
     state = _saved_state()
     result = {
         "current_sha": "", "remote_sha": "", "update_available": False,
-        "can_update": False, "channel": "release", "release_tag": "", "error": "", "job": state,
+        "can_update": False, "channel": "release", "release_tag": "", "current_release_tag": "",
+        "error": "", "job": state,
     }
     try:
         head = _preflight()
@@ -178,6 +210,8 @@ def status(*, refresh: bool = True) -> dict:
             result["release_tag"] = tag
             result["remote_sha"] = remote
             result["update_available"] = remote != head
+            # いまの版の名前（Release のコミットでなければ空。画面はコミットの短い形で出す）
+            result["current_release_tag"] = tag if remote == head else _release_names().get(head, "")
     except SelfUpdateError as exc:
         result["error"] = str(exc)
     return result

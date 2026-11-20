@@ -124,3 +124,29 @@ def test_finished_updates_are_kept_in_history(monkeypatch, tmp_path):
     for i in range(40):
         self_update._record_history({'phase': 'failed', 'error': 'x', 'finished_at': 400 + i})
     assert len(self_update.history()) == self_update.HISTORY_LIMIT
+
+
+def test_release_names_map_commits_to_the_newest_tag(monkeypatch):
+    """更新の画面はコミットではなく Release の名前で出す（2026-11-20 利用者「数値の羅列で何から何へか分からない」）。"""
+    a, b, c = 'a' * 40, 'b' * 40, 'c' * 40
+    listing = "\n".join([
+        f"{a}\trefs/tags/ControlDeck_v0.9",          # 注釈つき: タグ自身
+        f"{b}\trefs/tags/ControlDeck_v0.9^{{}}",     # 指すコミット
+        f"{c}\trefs/tags/ControlDeck_v0.95",
+        f"{c}\trefs/tags/ControlDeck_v0.100",        # 同じコミットなら版の大きい方
+        f"{a}\trefs/tags/not-a-release",
+    ])
+    monkeypatch.setattr(self_update, '_git', lambda *args, **kw: listing)
+    names = self_update._release_names()
+    assert names == {b: 'ControlDeck_v0.9', c: 'ControlDeck_v0.100'}
+
+
+def test_status_names_the_current_and_latest_release(monkeypatch):
+    head, latest = 'a' * 40, 'b' * 40
+    monkeypatch.setattr(self_update, '_saved_state', lambda: {})
+    monkeypatch.setattr(self_update, '_preflight', lambda: head)
+    monkeypatch.setattr(self_update, '_remote_release', lambda: ('ControlDeck_v0.96', latest))
+    monkeypatch.setattr(self_update, '_release_names', lambda: {head: 'ControlDeck_v0.95', latest: 'ControlDeck_v0.96'})
+    result = self_update.status()
+    assert (result['current_release_tag'], result['release_tag'], result['update_available']) == (
+        'ControlDeck_v0.95', 'ControlDeck_v0.96', True)
