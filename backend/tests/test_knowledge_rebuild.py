@@ -91,7 +91,7 @@ def test_plan_writes_nothing_and_apply_fixes_answers_and_embeddings(monkeypatch)
     assert store.list_documents("chat-cccc")[0]["basis"] == "source_fact"     # 計画では書かない
     out = asyncio.run(rebuild.apply())
     assert out["retagged"] == 1 and out["reembedded"] == 2 and not out["errors"]
-    assert rebuild.plan() == {"retag_ai_answers": [], "reembed": [], "reingest_pdf": []}
+    assert rebuild.plan() == {"retag_ai_answers": [], "reembed": [], "reingest_pdf": [], "describe_figures": []}
 
 
 @pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler-utils が無い")
@@ -122,3 +122,33 @@ def test_old_patent_pdf_is_reingested_and_case_refs_follow(tmp_path, monkeypatch
     doc = documents.get_document(new_ref)
     assert doc["meta"]["pdf"]["page_count"] == 2 and doc["meta"]["biblio"]["ipc"] == ["H02M 7/48"]
     assert pstore.get_case(case["id"])["refs"][0]["doc_ref"] == new_ref
+
+
+def test_embedding_input_is_capped_for_the_embedding_server(monkeypatch):
+    """llama.cpp の埋め込みは 1 件 512 トークンまで。1200 文字の断片は HTTP 500 で断られた（2026-11-21 本番）。
+    埋め込みに送る文字だけを上限で切り、断片の本文は切らない。"""
+    from app.workflows import rag
+
+    seen = []
+
+    async def embed(texts, base_url, model, api_key):
+        seen.extend(texts)
+        return [np.ones(4, dtype=np.float32) for _ in texts]
+
+    monkeypatch.setattr(rag, "embed", embed)
+    asyncio.run(rag._embed_batched(["あ" * 1200, "短い"], {"embed_base_url": "x", "embed_model": "m"}, ""))
+    assert len(seen[0]) == rag.EMBED_MAX_CHARS and seen[1] == "短い"
+
+
+def test_figure_reading_is_planned_but_left_to_the_server(monkeypatch, capsys):
+    """図表の読み取りは画像モデル（GPU）を使うので、サーバーの外の CLI では行わず、画面からの作り直しに回す。"""
+    from app.knowledge import rebuild, store
+
+    store.create_collection("lit", shard="patents", kind="patent")
+    doc = store.add_document("lit", [store.NewChunk("本文")], title="公報",
+                             meta={"pdf": {"figure_pages": [2], "figures_described": []}})
+    assert rebuild.plan()["describe_figures"] == [f"patents:{doc['doc_id']}"]
+    called = []
+    monkeypatch.setattr(rebuild, "_reingest", lambda *a, **k: called.append(a))
+    rebuild.main(["--apply"])
+    assert called == [] and "画面" in capsys.readouterr().out

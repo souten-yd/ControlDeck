@@ -18,6 +18,7 @@ export function RebuildSheet({ onClose }: { onClose: () => void }) {
     ["AI の回答を推論として区別", data.retag_ai_answers],
     ["埋め込みを作り直す", data.reembed],
     ["PDF を新しい取り込みで作り直す", data.reingest_pdf],
+    ["図表の読み取りがまだの文書", data.describe_figures ?? 0],
   ] : [];
   const total = rows.reduce((n, [, v]) => n + v, 0);
   return (
