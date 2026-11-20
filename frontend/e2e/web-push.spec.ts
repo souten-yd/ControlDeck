@@ -2,6 +2,7 @@
 // - 設定 → 通知 の「この端末で受け取る」で、ブラウザの購読をサーバーへ登録し、一覧に端末が出る。止めると消える。
 // - Service Worker が push を受けたら通知を出し、押したら中の url（実行結果など）を開く。
 //   push service は外にあるので、購読は差し替え、push は Chromium の DevTools から直接 Service Worker へ届ける。
+// - push を受けたら、番号を添えて「受け取った」をサーバーへ返す（2026-11-21「届いていない気がする」）。
 // 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、何も届いていなかった。
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
@@ -59,7 +60,10 @@ test("subscribes this device, shows it, and the service worker shows pushed noti
   await cdp.send("ServiceWorker.enable");
   const origin = new URL(page.url()).origin;
   const deliver = async (data: string) => cdp.send("ServiceWorker.deliverPushMessage", { origin, registrationId: await registrationId, data });
-  await deliver(JSON.stringify({ title: "Demo: test が完了しました", body: "実行 #3", url: "/project-lab?project=demo&run=3", tag: "project-run-3" }));
+  const receipt = page.context().waitForEvent("request", (request) => request.url().endsWith("/api/v1/push/receipts"));
+  await deliver(JSON.stringify({ title: "Demo: test が完了しました", body: "実行 #3", url: "/project-lab?project=demo&run=3", tag: "project-run-3", rid: "e2e-receipt-1" }));
+  // 受け取ったら番号を添えてサーバーへ返す（届いたかを画面で確かめるため）
+  expect((await receipt).postDataJSON()).toEqual({ rid: "e2e-receipt-1", shown: true, error: "" });
   // 外への行き先は使わない（中のページへだけ）。読めない中身でも何か出す（iOS は出さないと購読を外す）
   await deliver(JSON.stringify({ title: "x", url: "//evil.example/" }));
   await deliver("not json");

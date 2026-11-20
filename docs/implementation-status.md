@@ -1,5 +1,34 @@
 # 実装状況
 
+## 2026-11-21 通知が端末に届いたかを確かめられるようにする
+
+- 利用者「通知が届いていない気がする」。
+- **本番の記録で分かったこと**
+  - iPhone（Safari のホーム画面版）は 1 台、登録されていた。
+  - 「試しに送る」は 3 回とも、Apple の push service が受け取っていた（2xx、`sent: 1`）。
+  - つまり送る側は動いていた。届かなかったのは Apple より先（端末への配達か、端末での表示）。サーバーからは区別できなかった。
+- **調べて分かったこと**（AGENTS.md「分からないことの調べ方」）
+  - Apple の文書：すぐ届けたいなら `Urgency: high`。`normal` で送っていた。
+  - Apple Developer Forums の報告：
+    - 201 でも届かなかった例の原因が、集中モード（おやすみモード）だった。
+    - 200 でも Service Worker の push が呼ばれない例がある。
+- **直したこと**
+  - `Urgency` を `high` にした。
+  - 送るたびに番号（rid）を入れる。Service Worker は表示した後、その番号で `POST /push/receipts` を返す。表示に失敗したときは理由も返す。
+  - 画面の「試しに送る」は、30 秒まで返事を待って結果を出す。
+    - 「端末が受け取りました」：見えないなら、集中モードと iPhone の 設定 → 通知 → ControlDeck を確かめる。
+    - 「返事がありません」：古い Service Worker が残っているか、端末がネットに繋がっていない。
+  - 端末の一覧に、端末が最後に受け取った時刻と、表示に失敗した理由を出す。
+  - sw.js の版を v23 にした。
+- **検証**
+  - pytest `test_web_push`：番号は 1 回だけ使え、知らない番号は記録しない。Urgency が high。
+  - E2E `web-push`：Service Worker が番号を添えて返事をする。
+  - `./deck.sh test`：1820 passed。
+- 出典：
+  - [Apple: Sending web push notifications](https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers.md)
+  - [Apple Forums 770749（集中モードが原因だった例）](https://developer.apple.com/forums/thread/770749)
+  - [Apple Forums 848080（200 でも push が呼ばれない例）](https://developer.apple.com/forums/thread/848080)
+
 ## 2026-11-21 Project Lab の preview で HMR を通す・端末への通知（Web Push）
 
 利用者から渡された 2 つの提案（WS プレビュー、push 通知）を、実測とコードで確かめてから作った。

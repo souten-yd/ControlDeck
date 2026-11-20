@@ -196,7 +196,8 @@ def send_one(target: Target, payload: dict, *, client: httpx.Client) -> int:
         response = client.post(target.endpoint, content=encrypt(body, target.p256dh, target.auth), headers={
             "Authorization": vapid_authorization(target.endpoint, target.subject),
             "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream",
-            "TTL": str(TTL_SECONDS), "Urgency": "normal",
+            # 人に見せる通知なので high。Apple は「すぐ届けたいなら high」としている（normal は電池のために遅れうる）
+            "TTL": str(TTL_SECONDS), "Urgency": "high",
         })
         return response.status_code
     except (httpx.HTTPError, ValueError) as error:
@@ -248,7 +249,8 @@ def send_to(*, title: str, body: str, url: str = "/", tag: str | None = None,
         client = client or httpx.Client(timeout=15, follow_redirects=False, trust_env=False)
         try:
             for target in targets:
-                status = send_one(target, payload, client=client)
+                receipt = _issue_receipt(target.subscription_id)
+                status = send_one(target, {**payload, "rid": receipt}, client=client)
                 row = db.get(PushSubscription, target.subscription_id)
                 if status in (404, 410):
                     if row is not None:
@@ -276,6 +278,34 @@ def send_in_background(**kwargs) -> None:
             logger.exception("Web Push を送れませんでした")
 
     threading.Thread(target=run, name="web-push", daemon=True).start()
+
+
+# ---- 端末からの受け取りの返事 ----
+# push service が 201 を返しても、端末へ届いて表示されたとは限らない（集中モード・古い Service Worker・
+# 端末が繋がっていない）。Service Worker が push を受けたら、この番号を添えて返事をする。
+# 2026-11-21 利用者「通知が届いていない気がする」。サーバーの記録では Apple は 3 回とも受け取っていた。
+RECEIPT_TTL_SECONDS = 2 * 24 * 3600
+_receipts: dict[str, tuple[int, float]] = {}
+_receipts_lock = threading.Lock()
+
+
+def _issue_receipt(subscription_id: int) -> str:
+    rid = base64.urlsafe_b64encode(os.urandom(12)).decode().rstrip("=")
+    now = time.time()
+    with _receipts_lock:
+        for key in [key for key, (_, at) in _receipts.items() if now - at > RECEIPT_TTL_SECONDS]:
+            _receipts.pop(key, None)
+        _receipts[rid] = (subscription_id, now)
+    return rid
+
+
+def take_receipt(rid: str) -> int | None:
+    """送った push の番号から、どの端末へ送ったかを返す（1 回だけ）。"""
+    with _receipts_lock:
+        found = _receipts.pop(rid, None)
+    if found is None or time.time() - found[1] > RECEIPT_TTL_SECONDS:
+        return None
+    return found[0]
 
 
 def endpoint_digest(endpoint: str) -> str:
