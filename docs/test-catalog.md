@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 176 ファイル、1579 テスト（目的の未記入 93 ファイル）
-- E2E: 86 spec、172 テスト
+- E2E: 86 spec、173 テスト
 
 ## backend（backend/tests）
 
@@ -2625,7 +2625,8 @@
 - plan is clearly shown, sent as plan and can be built afterwards (${width}px)
 - the plus menu switches between build and plan, and Shift+Tab leaves plan back to Auto
 - auto stays auto, and a fixed mode survives reopening per conversation
-- choosing plan selects OpenCode, and asking to research makes it investigate first, then plan
+- research with plan goes to OpenCode: investigate first, then plan
+- plan with auto plans in OpenCode, and leaving plan stops going to OpenCode
 - the plus menu stays on a short screen, scrolls inside and follows the arrow keys
 - with OpenCode chosen, a question stays in OpenCode
 

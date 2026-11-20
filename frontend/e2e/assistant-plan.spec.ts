@@ -150,9 +150,10 @@ test("auto stays auto, and a fixed mode survives reopening per conversation", as
   await expect(pill).toHaveCount(0);                                     // 新しい会話は自動から
 });
 
-test("choosing plan selects OpenCode, and asking to research makes it investigate first, then plan", async ({ page, context }) => {
+test("research with plan goes to OpenCode: investigate first, then plan", async ({ page, context }) => {
   // 2026-11-18 利用者「OpenCode で調査を実行した結果でプランを作って実行するイメージ」。
-  // 2026-11-20: プランは OpenCode の機能なので、選ぶと OpenCode を明示的に選んだことになる（自動では OpenCode へ回さない）
+  // 2026-11-20 利用者「プランと検索を選んだら、検索の結果でプランを立てて OpenCode を実行する作りか。OpenCode へ自動で
+  // 遷移しないだけだと不具合が出そう」: プランは明示の指定なので、調査と組み合わせても OpenCode で計画する
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -163,15 +164,41 @@ test("choosing plan selects OpenCode, and asking to research makes it investigat
   await expect(shell.getByText("作りました")).toBeVisible();
   await shell.locator("[data-assistant-plus]").click();
   await page.locator('[data-agent-option="plan"]').click();
-  await expect(shell.locator('[data-composer-pill="mode"] [data-pill-label]')).toContainText("OpenCode");
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-mode-option="investigate"]').click();
   // 書き込み先が分かり、選べる（2026-11-18 利用者「プロジェクトを選べない。どこに書き込まれるのか」）
   await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toBeVisible();
   await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）")).toHaveValue("app");
   const input = shell.locator("[data-assistant-input]");
-  await input.fill("最新の情報を調べて Plan15 の作り方を検討して");
+  await input.fill("Plan15 の作り方を検討して");
   await input.press("Enter");
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ mode: "code", code_research: true, code_agent: "plan" });
+});
+
+test("plan with auto plans in OpenCode, and leaving plan stops going to OpenCode", async ({ page, context }) => {
+  // 2026-11-20: 自動の判定は OpenCode を選ばないが、プランを選んでいれば自動のままでも OpenCode で計画する（プランは明示の指定）
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await establishSession(page, context);
+  const { sent } = await mock(page);
+  await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));
+  await page.goto("/assistant");
+  const shell = page.locator("[data-assistant-shell]");
+  await expect(shell.getByText("作りました")).toBeVisible();
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-agent-option="plan"]').click();
+  const input = shell.locator("[data-assistant-input]");
+  await input.fill("ログイン画面の作り直しを考えて");
+  await expect(shell.locator("[data-mode-detected]")).toContainText("OpenCode");
+  await input.press("Enter");
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ mode: "code", code_agent: "plan", mode_choice: "auto" });
+  expect(Boolean(sent[0].code_research)).toBe(false);
+  await shell.locator("[data-assistant-plus]").click();
+  await page.locator('[data-agent-option="build"]').click();
+  await input.fill("ログイン画面の作り直しを考えて");
+  await expect(shell.locator("[data-mode-detected]")).not.toContainText("OpenCode");   // プランを外せば自動では回さない
 });
 
 test("the plus menu stays on a short screen, scrolls inside and follows the arrow keys", async ({ page, context }) => {

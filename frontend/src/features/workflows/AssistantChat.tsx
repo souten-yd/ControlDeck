@@ -478,10 +478,13 @@ export default function AssistantChat() {
   const archiveWaiting = attachments.some((a) => a.kind === "archive" && a.status === "ready");
   // プランは OpenCode の機能。プラン中は、調査は「調べて計画」、自動のチャットも OpenCode の計画として扱う。
   // 2026-11-18 利用者「調査とプランを選べるが、プロジェクトを選べない。どこに書き込まれるのか」
-  // OpenCode は明示的に選んだときだけ（2026-11-20 利用者）。プランも OpenCode を選んでいるときだけ効く
-  const plansInOpenCode = codeAgent === "plan" && modeChoice === "code" && opencodeAvailable && !attachments.some((a) => a.kind === "image");
+  // OpenCode は明示的に選んだときだけ（2026-11-20 利用者）。プランは＋か Shift+Tab で選ぶ明示の指定なので、
+  // 調査・自動と組み合わせても効く（調べた結果で OpenCode が計画する）。語や会話の流れでは OpenCode へ回さない
+  const plansInOpenCode = codeAgent === "plan" && opencodeAvailable && !attachments.some((a) => a.kind === "image");
   const detected = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
-  const autoDecision = detected;
+  const autoDecision = plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
+    ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
+    : detected;
   const displayedDecision = input.trim() || archiveWaiting ? autoDecision : (resolvedDecision ?? autoDecision);
   const effectiveMode: Mode = modeChoice === "auto" ? displayedDecision.mode
     : modeChoice === "investigate"
@@ -1067,8 +1070,6 @@ export default function AssistantChat() {
     if (agent === codeAgent) return;
     setCodeAgent(agent);
     rememberPrefs({ agent });
-    // プランは OpenCode の機能。選んだら OpenCode を明示的に選んだことにする（自動では OpenCode へ回さないため）
-    if (agent === "plan" && modeChoice !== "code") chooseMode("code");
     show(agent === "plan" ? "プラン: 計画だけを立てます（ファイルは変えません）" : "ビルド: 作る・直すに戻しました");
   };
   // Shift+Tab と札: Auto → 確認 → プラン → Auto（Claude Code と同じ並び）。権限を変えられない人はビルド ⇄ プラン
@@ -1129,14 +1130,18 @@ export default function AssistantChat() {
     // 画像は OpenCode に渡せない（VLM のチャットで見る）。画像があるときは会話の流れで OpenCode へ回さない
     const decision = detectAssistantMode(text, workflows ?? [], can("workflows.edit"), opencodeAvailable,
       readyImages.length > 0 ? {} : conversationContext);
-    const planInOpenCode = agent === "plan" && choice === "code" && opencodeAvailable && attachments.every((a) => a.kind !== "image");
+    const planInOpenCode = agent === "plan" && opencodeAvailable && attachments.every((a) => a.kind !== "image");
     // OpenCode を手で選んでいても、「調べて反映して」なら先に調べる
     let researchFirst = choice === "auto" ? Boolean(decision.research)
       : choice === "code" ? wantsResearch(text) : false;
     let selectedMode: Mode = choice === "auto" ? decision.mode
       : choice === "investigate" ? (researchDepth === "auto" ? "web" : researchDepth) : choice;
-    // プラン中に調べることを頼まれたら、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）
-    if (planInOpenCode && SEARCH_MODES.includes(decision.mode)) researchFirst = true;
+    // プラン中の調査は、調べた結果をもとに OpenCode が計画する（2026-11-18 利用者の依頼）。
+    // 調査を選んでいる・自動で調査と判定した → 先に調べて OpenCode のプランへ。自動のチャット → OpenCode のプランへ
+    if (planInOpenCode && (SEARCH_MODES.includes(selectedMode) || (choice === "auto" && selectedMode === "chat"))) {
+      researchFirst = SEARCH_MODES.includes(selectedMode);
+      selectedMode = "code";
+    } else if (planInOpenCode && choice === "code" && SEARCH_MODES.includes(decision.mode)) researchFirst = true;
     let selectedPlan: AssistantPlan | undefined;
     const selectedRunTarget = runTarget || decision.workflowId || "";
     if (selectedMode === "run" && selectedRunTarget === "") {
