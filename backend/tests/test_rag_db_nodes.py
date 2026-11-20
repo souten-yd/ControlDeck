@@ -113,7 +113,7 @@ def test_chat_rerank_gives_up_after_its_budget_and_keeps_search_order(monkeypatc
     from app.diagnostics import selftest
     from app.workflows import rag
 
-    async def slow(question, matches, top_k):
+    async def slow(question, matches, top_k, **_):
         await asyncio.sleep(5)
         return list(reversed(matches))[:top_k]
 
@@ -159,3 +159,140 @@ def test_small_conversation_materials_are_given_whole_without_search(monkeypatch
     assert text.index("横浜は晴れ") < text.index("最高気温") < text.index("メモの本文")   # 文書の順・断片の順
     assert "以下の検索結果を根拠に" not in text and "web:天気" in text
     assert rag.collection_materials("chat-x", 20) is None                                # 大きければ探す方へ
+
+
+def test_cpu_reranker_is_preferred_and_its_scores_do_not_gate(monkeypatch):
+    """CPU の reranker が導入済みなら GPU の reranker より優先し、上位の件数で選ぶ（点数の門で切らない）。
+    会話（3 秒まで）は速い xsmall を、Knowledge・Workflow は精度の ruri を優先する。ruri を会話で使うときは候補と長さを絞る。
+    根拠: 2026-11-20 評価（docs/reranker-evaluation.md）と利用者「軽量・高速なら精度は多少落ちてもよい」。
+    ruri は日本語が最良（JQaRA 0.877）だが約 800 文字 32 件で 5.7 秒、xsmall は 0.748 で 0.6 秒。ruri は「さっき調べた番組表」
+    のように会話の流れを指す質問に 0.02 しか付けず、門にすると要る資料を落とす。"""
+    from app.models_mgmt import llama
+    from app.workflows import cpu_reranker, rag
+
+    installed = {"xsmall-reranker", "ruri-reranker"}
+    monkeypatch.setattr(cpu_reranker, "ready", lambda model_id=None: bool(installed) if model_id is None else model_id in installed)
+    monkeypatch.setattr(llama, "find_role_instance", lambda role: pytest.fail("GPU の reranker を使った"))
+    assert cpu_reranker.pick(fast=True) == "xsmall-reranker" and cpu_reranker.pick(fast=False) == "ruri-reranker"
+    installed.discard("xsmall-reranker")
+    assert cpu_reranker.pick(fast=True) == "ruri-reranker"   # 片方しか無ければそれを使う
+
+    asked = {}
+
+    async def scores(query, documents, model_id, max_tokens, **_):
+        asked.update(model=model_id, count=len(documents), max_tokens=max_tokens, query=query)
+        return [float(i) for i in range(len(documents))]
+
+    monkeypatch.setattr(cpu_reranker, "score", scores)
+    many = [{"text": f"資料{i}", "context": f"資料{i}"} for i in range(16)]
+    # 会話: ruri しか無ければ候補 top_k×2。資料は切らずに 1024 トークンまで読む（利用者「短く切らないで」）
+    picked = run(rag._maybe_rerank("番組表を調べて\nさっきの番組表を教えて", many, 2, budget_s=3.0))
+    assert asked == {"model": "ruri-reranker", "count": 4, "max_tokens": 1024, "query": "番組表を調べて\nさっきの番組表を教えて"}
+    assert [m["text"] for m in picked] == ["資料3", "資料2"]
+    assert all(m["rerank_engine"] == "ruri-reranker" for m in picked)
+    # Knowledge 等（上限なし）: 候補 top_k×4
+    run(rag._maybe_rerank("q", many, 2))
+    assert (asked["count"], asked["max_tokens"]) == (8, 1024)
+    # xsmall があれば会話はそちら。速いので候補を絞らない
+    installed.add("xsmall-reranker")
+    run(rag._maybe_rerank("q", many, 2, budget_s=3.0))
+    assert (asked["model"], asked["count"], asked["max_tokens"]) == ("xsmall-reranker", 8, 1024)
+
+    # rag.search の門: CPU の点では切らない。Qwen（llama）の点なら切る
+    async def fake_embed(texts, base_url, model, api_key):
+        return [np.array([1.0, 0.5, 0.1], dtype=np.float32) for _ in texts]
+
+    monkeypatch.setattr(rag, "embed", fake_embed)
+    rag.delete_collection("gatecol")
+    run(rag.build("gatecol", "\n\n".join(f"資料{i}の本文" for i in range(6)), "t", "http://x/v1", "m", "", reset=True))
+    seen = {}
+    for engine, expected in (("ruri-reranker", 1), ("llama", 0)):
+        async def fake_rerank(question, found, top_k, engine=engine, **_):
+            seen["question"] = question
+            return [{**m, "rerank_score": 0.02, "rerank_engine": engine} for m in found[:top_k]]
+
+        monkeypatch.setattr(rag, "_rerank", fake_rerank)
+        result = run(rag.search("gatecol", "さっきの", top_k=1, min_rerank_score=0.3, rerank_query="話題\nさっきの"))
+        assert result["count"] == expected and seen["question"] == "話題\nさっきの"
+    rag.delete_collection("gatecol")
+
+
+def test_cpu_reranker_failure_keeps_search_order(monkeypatch):
+    """CPU の reranker が失敗しても会話を止めず、検索の順で返す。失敗は自己診断に出る。"""
+    from app.diagnostics import selftest
+    from app.workflows import cpu_reranker, rag
+
+    async def broken(query, documents, **_):
+        cpu_reranker.last_error = "worker が起動しませんでした"
+        raise cpu_reranker.CpuRerankerError(cpu_reranker.last_error)
+
+    monkeypatch.setattr(cpu_reranker, "ready", lambda model_id=None: model_id in (None, "xsmall-reranker"))
+    monkeypatch.setattr(cpu_reranker, "score", broken)
+    monkeypatch.setattr(cpu_reranker, "last_error", "")
+    matches = [{"text": str(i), "context": str(i)} for i in range(5)]
+    assert [m["text"] for m in run(rag._rerank("q", matches, 2))] == ["0", "1"]
+    level, message = selftest._chat_rerank()
+    assert level == "warn" and "CPU の reranker" in message
+
+
+def test_rerank_query_carries_the_previous_topic():
+    """会話の資料の並べ替えには、直前の発言（後ろ 300 字）を質問の前に添える。最初の発言はそのまま。
+    根拠: 2026-11-20 評価。「さっき調べた番組表の内容を教えて」だけでは ruri が番組表の資料に 0.02、添えると 0.47。"""
+    from app.workflows.chat_persist import CHAT_RERANK_TOPIC_CHARS, rerank_query_with_topic
+
+    assert rerank_query_with_topic([]) == ""
+    assert rerank_query_with_topic(["こんにちは"]) == "こんにちは"
+    long = "あ" * 1000 + "番組表を調べて"
+    query = rerank_query_with_topic([long, "さっきの内容を教えて"])
+    assert query.endswith("番組表を調べて\nさっきの内容を教えて")
+    assert len(query.split("\n")[0]) == CHAT_RERANK_TOPIC_CHARS
+
+
+def test_cpu_reranker_feature_status_and_actions(monkeypatch, tmp_path):
+    """機能追加の「検索（RAG）」に CPU の reranker を 2 つ（速い xsmall・高精度 ruri）出す。導入は非同期ジョブだけ、
+    更新は無い（版固定）。アンインストールは使わなくするだけで、取得・変換したファイル（保管庫）は残す。
+    実行環境は共有で、ほかに使うモデルが無くなったら消す。"""
+    from app.features import registry
+    from app.workflows import cpu_reranker
+
+    monkeypatch.setattr(cpu_reranker, "data_dir", lambda: tmp_path)
+    for feature_id in ("xsmall-reranker", "ruri-reranker"):
+        state = registry.status(feature_id)
+        assert state["category"] == "retrieval" and not state["installed"] and state["health"] == "not-installed"
+        with pytest.raises(registry.FeatureError):
+            registry.install(feature_id)
+        with pytest.raises(registry.FeatureError):
+            registry.update(feature_id)
+    # xsmall: 公式の ONNX を取るだけ（サイズで確かめる）。ruri: 変換した int8
+    for name, (size, _) in cpu_reranker.MODELS["xsmall-reranker"]["files"].items():
+        target = cpu_reranker.source_dir("xsmall-reranker") / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as stream:
+            stream.truncate(size)
+    ruri = cpu_reranker.model_path("ruri-reranker")
+    ruri.parent.mkdir(parents=True)
+    ruri.write_bytes(b"x")
+    cpu_reranker.tokenizer_path("ruri-reranker").write_text("{}")
+    python = cpu_reranker.python_path()
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    (cpu_reranker.runtime_root() / "venv-ready").write_text(",".join(cpu_reranker.RUNTIME_PACKAGES))
+    assert registry.status("xsmall-reranker")["installed"] and registry.status("ruri-reranker")["installed"]
+    registry.uninstall("ruri-reranker")
+    assert not registry.status("ruri-reranker")["installed"] and ruri.is_file()     # 保管庫は残る
+    assert python.exists() and registry.status("xsmall-reranker")["installed"]       # 実行環境は共有
+    registry.uninstall("xsmall-reranker")
+    assert not python.exists()
+
+
+def test_large_conversation_materials_are_searched_only_when_the_message_points_at_them():
+    """大きい会話の資料は、発言が資料・前に調べたもの・詳しい内容を指すときだけ探す。挨拶・お礼・雑談では探さない。
+    根拠: 2026-11-20 利用者「毎回チェックする必要はない。前の会話の文脈で評価するはず。Claude と同じ方法で」。
+    Claude も文脈に収まらない資料は、要ると判断したときだけ検索の道具で調べる。"""
+    from app.workflows.chat_persist import needs_materials
+
+    for text in ("さっき調べた番組表の内容を教えて", "添付した PDF の 3 ページ目は？", "出典はどこ？",
+                 "その記事をもっと詳しく", "Can you check the document again?", "要約して"):
+        assert needs_materials(text), text
+    for text in ("こんにちは", "ありがとう！", "なるほど、了解です", "今日はいい天気だね", "それでいいよ", "発表の練習をしたい"):
+        assert not needs_materials(text), text

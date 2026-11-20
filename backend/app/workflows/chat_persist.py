@@ -1007,6 +1007,41 @@ CHAT_MATERIALS_ALL_CHARS = 32_000
 CHAT_MIN_RERANK_SCORE = 0.3
 
 
+# 資料を指す言い方。大きい資料の会話では、これを含む発言のときだけ資料を探す（needs_materials）
+_MATERIAL_HINT = re.compile(
+    r"資料|添付|ファイル|PDF|ＰＤＦ|文書|ドキュメント|記事|論文|レポート|出典|引用|ソース|根拠|参考|"
+    r"さっき|先ほど|先程|前に|以前|調べた|検索した|探した|載って|書いて|書かれ|内容|詳しく|詳細|具体的|"
+    r"どこに|ページ|一覧|番組表|まとめて|要約|"
+    r"\b(?:document|file|pdf|source|article|paper|report|earlier|above|cite|details?)\b",
+    re.IGNORECASE)
+
+
+def needs_materials(text: str) -> bool:
+    """大きい会話の資料を探すべき発言か。資料・前に調べたもの・詳しい内容を指すときだけ True。
+
+    2026-11-20 利用者「調査のときは使うかもしれないが、それ以外は前の会話の文脈で答えるはず。毎回チェックする
+    必要はない。Claude と同じ方法で」。Claude は資料が文脈に収まらないとき、要ると判断したときだけ検索の道具を
+    呼ぶ。ここのローカル LLM の会話には道具を呼ぶ仕組みが無いので、発言が資料を指しているかで決める。
+    挨拶・お礼・雑談・前の答えへの相づちでは探さない（埋め込みも並べ替えも動かない）。"""
+    return bool(_MATERIAL_HINT.search(text))
+
+
+def rerank_query_with_topic(said: list[str]) -> str:
+    """並べ替えに使う質問。直前の発言（話題）を前に添える。
+
+    「さっき調べた番組表の内容を教えて」のように会話の流れを指す質問は、それだけでは資料と結び付かない。
+    ruri の評価で、直前の話題を添えると番組表の資料の点が 0.02 → 0.47 に上がった（docs/reranker-evaluation.md）。"""
+    if not said:
+        return ""
+    current = said[-1]
+    previous = said[-2][-CHAT_RERANK_TOPIC_CHARS:] if len(said) >= 2 else ""
+    return f"{previous}\n{current}" if previous else current
+
+
+# 並べ替えの質問に添える直前の発言の長さ（後ろから）
+CHAT_RERANK_TOPIC_CHARS = 300
+
+
 def language_guard(history: list[dict], user_query: str) -> list[dict]:
     """日本語の質問には日本語で答えさせる。
 
@@ -1520,10 +1555,9 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
             from app.workflows import rag
 
             collection = conversation_collection(conv_id)
-            question = next(
-                (str(m.get("content")) for m in reversed(history)
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)), "",
-            )
+            said = [str(m.get("content")) for m in history
+                    if m.get("role") == "user" and isinstance(m.get("content"), str)]
+            question = said[-1] if said else ""
             if question and rag.collection_exists(collection):
                 from app.models_mgmt import context_budget
 
@@ -1534,12 +1568,18 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 if materials:
                     note = ("この会話でこれまでに添付・収集した資料です。今の発言に関係するときだけ根拠に使い、"
                             "関係しなければ触れないでください:\n\n" + materials)
+                elif not needs_materials(question):
+                    # 大きい資料でも、資料を指していない発言では探さない（前の会話の流れで答える）。2026-11-20 利用者
+                    # 「毎回チェックする必要はない。Claude と同じ方法で」。Claude も資料が文脈に収まらないときは、
+                    # 要ると判断したときだけ検索の道具を呼び、毎回すべての資料を調べてはいない
+                    note = ""
                 else:
                     # 大きい資料: 探して並べ替え、点数の低いものは入れない。並べ替えは 3 秒まで
                     job.log("stats", phase="retrieve", detail="会話の資料を探しています", tok_per_sec=0, gen_tokens=0,
                             prompt_tokens=None, context_max=None)
                     found = await rag.search(collection=collection, question=question, top_k=budget.rag_top_k,
-                                             rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE)
+                                             rerank_budget_s=CHAT_RERANK_BUDGET_S, min_rerank_score=CHAT_MIN_RERANK_SCORE,
+                                             rerank_query=rerank_query_with_topic(said))
                     note = ("この会話に添付・収集された資料のうち、今の発言に関係する抜粋です。回答の根拠に使ってください:\n\n"
                             + str(found["context"])[:budget.rag_chars]) if found.get("context") else ""
                 if note:

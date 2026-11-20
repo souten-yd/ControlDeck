@@ -196,15 +196,20 @@ def _chat_rerank():
     """会話の資料の再ランク: 時間切れで打ち切っていないか（GPU が埋まって reranker が CPU で遅いと起きる）。
 
     2026-11-20 本番: Radiance が VRAM を使い切っていて reranker が CPU で動き、挨拶 1 つで 22.6 秒待たせていた。"""
-    from app.workflows import rag
+    from app.workflows import cpu_reranker, rag
 
     stats = rag.rerank_stats
+    picked = cpu_reranker.pick(fast=True)
+    engine = f"CPU（{cpu_reranker.MODELS[picked]['name']}）" if picked else "GPU の reranker（llama.cpp）"
+    if cpu_reranker.ready() and cpu_reranker.last_error:
+        # 2026-11-20 CPU の reranker を足した。失敗すると並べ替えずに検索の順で入れるので、気づけるようにする
+        return "warn", f"CPU の reranker が失敗し、検索の順のまま使いました: {cpu_reranker.last_error}"
     if stats["timeouts"]:
-        return "warn", (f"会話の資料の再ランクが {stats['timeouts']} 回、時間切れで打ち切られました（最長 {stats['slowest_seconds']} 秒）。"
-                        "GPU が他のモデルで埋まっていると reranker が CPU で遅くなります")
+        return "warn", (f"会話の資料の再ランク（{engine}）が {stats['timeouts']} 回、時間切れで打ち切られました"
+                        f"（最長 {stats['slowest_seconds']} 秒）。GPU の reranker は、GPU が他のモデルで埋まっていると遅くなります")
     if not stats["calls"]:
-        return True, "会話の資料の再ランクはまだ使われていません"
-    return True, f"会話の資料の再ランク: 起動してから {stats['calls']} 回、最長 {stats['slowest_seconds']} 秒"
+        return True, f"会話の資料の再ランク（{engine}）はまだ使われていません"
+    return True, f"会話の資料の再ランク（{engine}）: 起動してから {stats['calls']} 回、最長 {stats['slowest_seconds']} 秒"
 
 
 def _speech_output():
