@@ -2323,9 +2323,15 @@ export default function AssistantChat() {
                     onClick={() => { if (returnChoiceRef.current) finishOneShot(); else chooseMode("auto"); }} />
                 )}
                 {(confidential || (!convId && newSecret)) && (
-                  <ComposerPill icon="🔒" label="秘密の会話" tone="amber"
-                    title="秘密の会話: 外部への調査と外部の AI を使いません（タップで設定を開く）" kind="secret"
-                    onClick={() => setShowSettings(true)} />
+                  // ほかのアイコン（マイク・スピーカー）と同じフラットなボタン。ロック中だと分かるよう線の色だけ琥珀色
+                  // （2026-11-21 利用者「周りがオレンジの鍵を、他のアイコンと同じフラットに」）
+                  <button type="button" data-composer-pill="secret" onClick={() => setShowSettings(true)}
+                    title="秘密の会話: 外部への調査と外部の AI を使いません（タップで設定を開く）"
+                    aria-label="秘密の会話: 外部への調査と外部の AI を使いません（タップで設定を開く）"
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-lg text-amber-600 transition hover:bg-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/40 dark:text-amber-400 dark:hover:bg-zinc-800">
+                    <IconLock />
+                    <span data-pill-label className="sr-only">秘密の会話</span>
+                  </button>
                 )}
                 {planActive ? (
                   <ComposerPill icon="📋" label="プラン" tone="plan"
