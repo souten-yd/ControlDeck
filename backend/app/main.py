@@ -297,6 +297,7 @@ from app.project_lab.router import router as project_lab_router  # noqa: E402
 from app.alerts.router import router as alerts_router  # noqa: E402
 from app.alerts.push_router import router as push_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
+from app.remote_desktop.settings_router import router as remote_desktop_settings_router  # noqa: E402
 from app.gitrepos.router import router as gitrepos_router  # noqa: E402
 from app.workflows.knowledge_router import router as knowledge_router  # noqa: E402
 from app.patents.router import router as patents_router  # noqa: E402
@@ -350,6 +351,7 @@ app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(push_router, prefix=API)
 app.include_router(remote_router, prefix=API)
+app.include_router(remote_desktop_settings_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)
 # OpenAI互換ゲートウェイ。OpenCode等の直結クライアントにもKV受け入れ制御を効かせる。
 # 認証はセッションCookieではなく専用APIキー（OpenAI互換クライアントはCookieを持てない）。
@@ -389,13 +391,18 @@ def meta():
     ui = get_config().ui
     from app.features.registry import list_features
     from app.plugins.registry import enabled_navigation
+    from app.remote_desktop import toggle as remote_toggle
+
+    enabled_features = [item["id"] for item in list_features() if item["enabled"]]
+    if remote_toggle.is_enabled():
+        enabled_features.append(remote_toggle.FEATURE_ID)
 
     return {
         "app_name": ui.app_name,
         "accent_color": ui.accent_color,
         "default_theme": ui.default_theme,
         "metric_refresh_seconds": ui.metric_refresh_seconds,
-        "enabled_features": [item["id"] for item in list_features() if item["enabled"]],
+        "enabled_features": enabled_features,
         "plugin_navigation": enabled_navigation(),
     }
 

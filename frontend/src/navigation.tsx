@@ -48,7 +48,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/workflows", group: "dev", label: "Workflows", icon: IconFlow, anyPermission: ["workflows.run", "workflows.edit"] },
   { to: "/applications", group: "dev", label: PRODUCT_NAMES.appStudio, icon: IconPackage, permission: "application_builder.view" },
   { to: "/project-lab", group: "dev", label: "Project Lab", icon: IconFlask, permission: "project_lab.view" },
-  { to: "/remote", group: "main", label: "Remote", icon: IconRemote, permission: "remote_desktop.use" },
+  { to: "/remote", group: "main", label: "Remote", icon: IconRemote, feature: "remote-desktop", permission: "remote_desktop.use" },
   { to: "/files", group: "main", label: "Files", icon: IconFile, permission: "files.view" },
   { to: "/terminal", group: "dev", label: "Terminal", icon: IconTerminal, permission: "terminal.use" },
   { to: "/assistant", group: "ai", label: "AI Assistant", icon: IconAssistant },

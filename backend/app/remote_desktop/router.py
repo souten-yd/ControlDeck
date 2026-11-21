@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, WebSocketException
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,10 +12,24 @@ from sqlalchemy.orm import Session
 from app.audit import service as audit
 from app.database import SessionLocal, get_db
 from app.models import RemoteConnection, User
-from app.remote_desktop import activity, guacd, service
+from app.remote_desktop import activity, guacd, service, toggle
 from app.security.deps import authenticate_websocket, require_permission
 
-router = APIRouter(prefix="/remote", tags=["remote_desktop"])
+
+
+def require_remote_enabled(conn: HTTPConnection) -> None:
+    """設定でオフのとき、リモートの API・WebSocket をすべて断る（認証より前。画面だけの無効化にしない）。"""
+    if toggle.is_enabled():
+        return
+    if conn.scope["type"] == "websocket":
+        raise WebSocketException(code=4403, reason=toggle.DISABLED_DETAIL)
+    raise HTTPException(status_code=403, detail=toggle.DISABLED_DETAIL)
+
+
+router = APIRouter(prefix="/remote", tags=["remote_desktop"], dependencies=[Depends(require_remote_enabled)])
+
+# 開いている中継。オフにした瞬間に閉じる（settings_router から）。
+open_tunnels: set[WebSocket] = set()
 
 DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22}
 
@@ -154,6 +169,7 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         return
 
     activity.connected()
+    open_tunnels.add(websocket)
 
     # 双方向パイプ: guacd(TCP) <-> WebSocket(text)
     # guacd の出力は UTF-8 テキスト（Guacamole プロトコル）。任意バイト境界で分割されるため
@@ -194,6 +210,7 @@ async def tunnel(websocket: WebSocket, connection_id: int, width: int = 1024, he
         t1.cancel()
         t2.cancel()
         activity.disconnected()
+        open_tunnels.discard(websocket)
         writer.close()
         try:
             await websocket.close()

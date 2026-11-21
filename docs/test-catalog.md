@@ -2173,6 +2173,18 @@
 - `test_prerelease_cannot_replace_stable_release`
 - `test_unorderable_changed_version_fails_closed`
 
+### backend/tests/test_remote_desktop_toggle.py
+
+目的: リモートデスクトップの有効・無効の切り替え（設定、ControlDeck 側の強制、特権補助の enable/disable）を守る。
+
+- `test_default_is_enabled_and_meta_lists_it` — 既定は有効。meta の enabled_features に remote-desktop が出る。
+- `test_disable_stops_server_blocks_api_and_hides_feature_then_enable_restores` — オフで xrdp を stop+disable、リモートの API・WebSocket は 403、meta から消える。オンで戻る。
+- `test_old_helper_or_catalog_saves_setting_and_reports_update_needed` — 補助・一覧が古いときは設定を保存し「補助の更新が要ります」を返す。本物の失敗は隠さない。
+- `test_permission_and_audit` — 不正な入力の拒否、監査（enable/disable）、未認証の拒否。
+- `test_builtin_catalog_defines_both_xrdp_units` — `./deck.sh service` が書く一覧に xrdp と sesman が入る。
+- `test_helper_accepts_enable_disable_and_rejects_unknown` — 補助が enable/disable を受け付け、一覧に無い id・不正な action を断る（subprocess はモック）。
+- `test_isolated_instance_never_touches_the_machine_service` — 検証用インスタンスは機械の xrdp を操作しない。
+
 ### backend/tests/test_remote_desktop.py
 
 目的: **未記入**
@@ -3287,6 +3299,12 @@
 目的: 音声の成果物は再生器を出す。 以前は Centered（文言用の grid）に入れており、place-items-center が中身を内容幅 まで縮めていた。audio は内容幅を持たないので幅 0 になり、携帯では押せなかった。 読み込みは成功していたぶん、見た目だけでは気づけない壊れ方だった。
 
 - an audio artifact gets a player wide enough to press
+
+### frontend/e2e/remote-desktop-toggle.spec.ts
+
+目的: 設定のリモートデスクトップの切り替えで、ナビの「Remote」が消え、/remote に無効の表示が出て、オンで戻ること（1280・320px）。
+
+- remote desktop toggle hides and restores the feature at ${viewport.width}px
 
 ### frontend/e2e/release-bundle-settings.spec.ts
 

@@ -127,14 +127,14 @@ class SystemServiceDefinition(BaseModel):
 
     label: str = Field(min_length=1, max_length=80)
     unit: str = Field(pattern=r"^[A-Za-z0-9@_.-]+\.service$", max_length=128)
-    actions: list[str] = Field(default_factory=lambda: ["start", "stop", "restart"], min_length=1, max_length=3)
+    actions: list[str] = Field(default_factory=lambda: ["start", "stop", "restart"], min_length=1, max_length=5)
 
     @field_validator("actions")
     @classmethod
     def _safe_actions(cls, value: list[str]) -> list[str]:
-        allowed = {"start", "stop", "restart"}
+        allowed = {"start", "stop", "restart", "enable", "disable"}
         if len(set(value)) != len(value) or any(action not in allowed for action in value):
-            raise ValueError("system service actionsは重複なしのstart/stop/restartだけです")
+            raise ValueError("system service actionsは重複なしのstart/stop/restart/enable/disableだけです")
         return value
 
 

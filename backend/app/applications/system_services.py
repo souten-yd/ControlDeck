@@ -19,7 +19,7 @@ HELPER_PATH = Path("/usr/local/libexec/control-deck-hw-helper")
 SUDO_PATH = Path("/usr/bin/sudo")
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _UNIT_RE = re.compile(r"^[A-Za-z0-9@_.-]+\.service$")
-_ACTIONS = {"start", "stop", "restart"}
+_ACTIONS = {"start", "stop", "restart", "enable", "disable"}
 _MAX_CATALOG_BYTES = 64 * 1024
 
 
@@ -72,7 +72,7 @@ def installed_catalog() -> dict[str, InstalledSystemService]:
         if (
             not isinstance(label, str) or not 1 <= len(label) <= 80
             or not isinstance(unit, str) or not _UNIT_RE.fullmatch(unit)
-            or not isinstance(actions, list) or not 1 <= len(actions) <= 3
+            or not isinstance(actions, list) or not 1 <= len(actions) <= 5
             or any(not isinstance(action, str) or action not in _ACTIONS for action in actions)
             or len(set(actions)) != len(actions)
         ):
@@ -141,19 +141,33 @@ def control(service_id: str, action: str) -> tuple[bool, str]:
     return False, message
 
 
+# ControlDeck 自身の機能が使う組み込みの定義。設定（config.yaml）に同じ id があればそちらを優先する。
+# リモートデスクトップの有効・無効（app/remote_desktop/toggle.py）が xrdp の 2 つの unit を扱う。
+# 1 つの id に 1 つの unit という一覧の形は変えず、id を 2 つに分ける。
+BUILTIN_SERVICES: dict[str, dict[str, object]] = {
+    "remote-desktop": {
+        "label": "リモートデスクトップ（xrdp）",
+        "unit": "xrdp.service",
+        "actions": ["start", "stop", "enable", "disable"],
+    },
+    "remote-desktop-session": {
+        "label": "リモートデスクトップのセッション管理（xrdp-sesman）",
+        "unit": "xrdp-sesman.service",
+        "actions": ["start", "stop", "enable", "disable"],
+    },
+}
+
+
 def render_config_catalog() -> dict[str, object]:
     definitions = get_config().applications.system_services
-    return {
-        "version": 1,
-        "services": {
-            service_id: {
-                "label": definition.label,
-                "unit": definition.unit,
-                "actions": definition.actions,
-            }
-            for service_id, definition in sorted(definitions.items())
-        },
-    }
+    services: dict[str, object] = {key: dict(value) for key, value in BUILTIN_SERVICES.items()}
+    for service_id, definition in definitions.items():
+        services[service_id] = {
+            "label": definition.label,
+            "unit": definition.unit,
+            "actions": definition.actions,
+        }
+    return {"version": 1, "services": dict(sorted(services.items()))}
 
 
 def main() -> None:

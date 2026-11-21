@@ -23,7 +23,7 @@ SERVICE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 UNIT_RE = re.compile(r"^[A-Za-z0-9@_.-]+\.service$")
 CATALOG_PATH = Path("/etc/control-deck/system-services.json")
 SYSTEMCTL = Path("/usr/bin/systemctl")
-SYSTEM_ACTIONS = {"start", "stop", "restart"}
+SYSTEM_ACTIONS = {"start", "stop", "restart", "enable", "disable"}
 MAX_CATALOG_BYTES = 64 * 1024
 
 
@@ -445,7 +445,7 @@ def control_system_service(action: str, service_id: str) -> None:
     if (
         not isinstance(unit, str) or not UNIT_RE.fullmatch(unit)
         or not isinstance(actions, list) or action not in actions
-        or len(actions) > 3 or len(set(actions)) != len(actions)
+        or len(actions) > 5 or len(set(actions)) != len(actions)
         or any(item not in SYSTEM_ACTIONS for item in actions)
     ):
         fail("system service定義または操作が許可されていません")
@@ -489,7 +489,7 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "fan-curve" and sys.argv[2] == "reset":
         with_od_lock(lambda: control_fan_curve("reset", sys.argv[3]))
         return
-    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | fan-zero-rpm allow|deny BDF | system-service ACTION ID")
+    fail("usage: control-deck-hw-helper apply-amd ... | fan-curve apply|reset ... | fan-zero-rpm allow|deny BDF | system-service ACTION ID（ACTION は start|stop|restart|enable|disable）")
 
 
 if __name__ == "__main__":
