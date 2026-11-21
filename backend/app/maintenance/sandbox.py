@@ -34,6 +34,9 @@ MIRROR_PORT_SPAN = 100
 CONTAINER_PREFIX = "cd-sandbox-"
 GATEWAY_PORT_BASE = 18900
 GATEWAY_PORT_SPAN = 100
+# 箱の中の OpenCode の会話サーバー（`opencode serve`）を ControlDeck へ公開するポート（pod の -p）
+SERVE_PORT_BASE = 19000
+SERVE_PORT_SPAN = 100
 # 開発役のモデルの順番（使い切ったら次へ。利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」）。
 # 最後はローカル LLM（ゲートウェイの中継経由）。Zen のキーが無い・箱で allow_zen が off なら opencode* は飛ばす。
 DEFAULT_MODEL_CHAIN = ["opencode-go/glm-5.3", "opencode/hy4-flash-free", "opencode/deepseek-v4.1-flash-free",
@@ -144,6 +147,10 @@ class Sandbox:
         return int(self.meta["gateway_port"])
 
     @property
+    def serve_port(self) -> int:
+        return int(self.meta["serve_port"])
+
+    @property
     def owner(self) -> str:
         return str(self.meta.get("owner") or "")
 
@@ -175,6 +182,10 @@ def _free_gateway_port() -> int:
     return _pick_port("gateway_port", GATEWAY_PORT_BASE, GATEWAY_PORT_SPAN, "ゲートウェイの中継")
 
 
+def _free_serve_port() -> int:
+    return _pick_port("serve_port", SERVE_PORT_BASE, SERVE_PORT_SPAN, "会話サーバー")
+
+
 def _read_meta(path: Path) -> dict:
     try:
         return json.loads((path / "sandbox.json").read_text(encoding="utf-8"))
@@ -190,6 +201,11 @@ def load(name: str) -> Sandbox:
     if not meta.get("gateway_port"):
         # 中継の導入前に作った箱。割り当てて保存する（以後は同じポートを使う）。
         meta["gateway_port"] = _free_gateway_port()
+        _save_meta(path, meta)
+    if not meta.get("serve_port"):
+        # 会話サーバーの導入前に作った箱。割り当てて保存する（pod の公開ポートが増えるので、
+        # pod は次の起動で作り直される。動いているコンテナがあるときは ensure_pod が作り直さない）。
+        meta["serve_port"] = _free_serve_port()
         _save_meta(path, meta)
     return Sandbox(name, path, meta)
 
@@ -236,6 +252,7 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
         meta = {
             "name": name, "source": str(top), "git_common_dir": str(common), "revision": revision,
             "origin": origin, "port": _free_port(), "gateway_port": _free_gateway_port(),
+            "serve_port": _free_serve_port(),
             "allow_load": bool(allow_load), "allow_zen": bool(allow_zen), "owner": owner, "github": bool(github), "created_at": time.time(),
             # 依存はホストのものを overlay でつなぐ（箱の中で書いてもホストは変わらない）。
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
@@ -347,14 +364,25 @@ def pod_name(box: Sandbox) -> str:
 
 
 def _pod_spec(box: Sandbox) -> str:
-    spec = json.dumps({"gateway_port": box.gateway_port, "ports": [box.port]}, sort_keys=True)
+    spec = json.dumps({"gateway_port": box.gateway_port, "ports": [box.port, box.serve_port]}, sort_keys=True)
     return hashlib.sha256(spec.encode()).hexdigest()[:16]
 
 
-def ensure_pod(box: Sandbox) -> str:
+def _pod_running_containers(name: str) -> bool:
+    """pod の中に動いているコンテナがあるか（infra は数えない）。調べられなければ「ある」とみなす（安全側）。"""
+    podman = shutil.which("podman") or "podman"
+    result = subprocess.run([podman, "ps", "-q", "--filter", f"pod={name}"],
+                            capture_output=True, text=True, timeout=30, check=False)
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
+def ensure_pod(box: Sandbox, *, need_serve_port: bool = False) -> str:
     """箱ごとの pod。pod の中は互いに 127.0.0.1 で届き、ホストへは中継のポート（-T）だけ届く。
 
     設定（中継のポートと公開ポート）のハッシュを label に持ち、同じなら使い回し、違えば作り直す。
+    ただし動いているコンテナがあるときは作り直さない（ミラーや作業中の OpenCode を落とさない）。
+    今の pod を使う。会話サーバーのように新しい公開ポートが要る呼び出し（need_serve_port）だけは、
+    その場合エラーにする（先に箱の中の処理を止めてもらう）。
     """
     podman = shutil.which("podman") or "podman"
     name, spec = pod_name(box), _pod_spec(box)
@@ -363,10 +391,17 @@ def ensure_pod(box: Sandbox) -> str:
     if found.returncode == 0 and found.stdout.strip() == spec:
         return name
     if found.returncode == 0:
+        if _pod_running_containers(name):
+            if need_serve_port:
+                raise SandboxError(
+                    f"作業場 {box.name} は古い形の pod で動いています（動いているコンテナがあるので作り直しません）。"
+                    "ミラーなど箱の中の処理を止めてから、もう一度開いてください")
+            return name
         subprocess.run([podman, "pod", "rm", "-f", name], capture_output=True, text=True, timeout=60, check=False)
     made = subprocess.run(
         [podman, "pod", "create", "--name", name, "--userns=keep-id",
          "--network", f"pasta:-T,{box.gateway_port}", "-p", f"127.0.0.1:{box.port}:{box.port}",
+         "-p", f"127.0.0.1:{box.serve_port}:{box.serve_port}",
          "--label", f"controldeck.spec={spec}"],
         capture_output=True, text=True, timeout=60, check=False)
     if made.returncode != 0:
@@ -474,8 +509,9 @@ def ensure_gateway(box: Sandbox) -> None:
 
 
 def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
-                detach: bool = False, env: dict[str, str] | None = None, env_file: Path | None = None) -> list[str]:
-    pod = ensure_pod(box)
+                detach: bool = False, env: dict[str, str] | None = None, env_file: Path | None = None,
+                need_serve_port: bool = False) -> list[str]:
+    pod = ensure_pod(box, need_serve_port=need_serve_port)
     ensure_gateway(box)
     readonly = [Path(box.meta["git_common_dir"])]
     overlays = []
@@ -595,11 +631,17 @@ def _set_git_identity(work: Path, name: str) -> None:
 DEVELOPMENT_SKILL = "controldeck-development"
 
 
-def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "") -> Path:
+PERMISSION_PLUGIN_COPY = "controldeck-permission"
+
+
+def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
+                    chat_server: bool = False, default_model: str = "") -> Path:
     """箱の中の OpenCode の設定を作る。本番と同じ生成処理で作り、箱から見えないパスだけ写し替える。
 
     ControlDeck の MCP は、箱の中の bridge から中継経由で載せる（呼べる道具は中継が絞る）。
-    トークンは中継だけが持つので、ここには入らない。UI 検証の画面写真は箱の中へ撮る。指示ファイルとスキルは箱の中へ写す（本番の data は箱から見えない）。
+    トークンは中継だけが持つので、ここには入らない。
+    chat_server=True は AI アシスタントの会話サーバー用（権限プラグイン・ask の規則・question の deny・todo を足す。
+    プラグインは箱から見えないので箱のホームへ写す）。default_model は設定の既定のモデル（`provider/モデル`）。UI 検証の画面写真は箱の中へ撮る。指示ファイルとスキルは箱の中へ写す（本番の data は箱から見えない）。
     """
     from app.integrations.opencode import provider
 
@@ -607,6 +649,8 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "") 
     base_url = f"http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1"
     payload = provider._config_payload(f"sandbox-{box.name}", base_url, model)
     payload["provider"]["controldeck"]["options"]["apiKey"] = "sandbox"
+    if default_model:
+        payload["model"] = opencode_model(normalize_model(default_model))
     servers = dict(payload.get("mcp") or {})
     servers.pop("controldeck_addons", None)
     copied = box.home / ".controldeck"
@@ -669,7 +713,13 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "") 
     config_dir = box.home / ".config" / "opencode"
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "opencode.json"
-    text = json.dumps(provider._v2_payload(payload), ensure_ascii=False, indent=1)
+    v2 = provider._v2_payload(payload)
+    if chat_server:
+        plugin = copied / "plugins" / PERMISSION_PLUGIN_COPY
+        shutil.rmtree(plugin, ignore_errors=True)
+        shutil.copytree(provider.PERMISSION_PLUGIN, plugin, symlinks=False)
+        v2 = provider._apply_chat_server(v2, plugin)
+    text = json.dumps(v2, ensure_ascii=False, indent=1)
     from app.models_mgmt import gateway
 
     real_key = gateway.get_api_key()

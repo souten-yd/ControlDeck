@@ -29,6 +29,7 @@ import { OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
+import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace } from "./DevWorkspace";
 import { writeClipboard } from "../../lib/clipboard";
 import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
@@ -351,6 +352,14 @@ export default function AssistantChat() {
     enabled: opencodeAvailable,
     staleTime: 30_000,
   });
+  // 開発の作業場（開発用の箱）。自分のものだけ。OpenCode の作業フォルダに選べる
+  const { data: workspaceList } = useQuery({
+    queryKey: ["opencode-workspaces"],
+    queryFn: () => api<{ workspaces: DevWorkspace[] }>("/opencode/workspaces"),
+    enabled: opencodeAvailable,
+    staleTime: 30_000,
+  });
+  const workspaces = workspaceList?.workspaces;
   const { data: conversations } = useQuery({
     queryKey: ["chat-conversations"],
     queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
@@ -669,11 +678,18 @@ export default function AssistantChat() {
       setCodeFolderPath("");
       return;
     }
+    const workspace = workspaces?.find((w) => w.repo_path === path);
+    if (workspace) {
+      setCodeProject(workspaceValue(workspace.name));
+      setCodeNewName("");
+      setCodeFolderPath("");
+      return;
+    }
     const name = path.split("/").pop() ?? "";
     const listed = codeProjects?.projects.some((p) => p.name === name && (p.path === path || codeProjects.root.replace(/\/+$/, "") === path.slice(0, -name.length - 1)));
     if (listed) {
       setCodeProject(name);
-    } else if (!codeProjects) {
+    } else if (!codeProjects || !workspaces) {
       // 一覧がまだ届いていない。フォルダとして持っておき、一覧が届いたら名前に直す（下の useEffect）
       setCodeFolderPath(path);
       setCodeProject("__folder__");
@@ -688,7 +704,13 @@ export default function AssistantChat() {
 
   // プロジェクトの一覧が後から届いたら、CodeDEV の中のフォルダ指定はプロジェクト名の選択に直す
   useEffect(() => {
-    if (codeProject !== "__folder__" || !codeProjects) return;
+    if (codeProject !== "__folder__" || !codeProjects || !workspaces) return;
+    const workspace = workspaces.find((w) => w.repo_path === codeFolderPath);
+    if (workspace) {
+      setCodeProject(workspaceValue(workspace.name));
+      setCodeFolderPath("");
+      return;
+    }
     const root = codeProjects.root.replace(/\/+$/, "");
     const name = codeFolderPath.split("/").pop() ?? "";
     const listed = codeProjects.projects.some((p) => p.name === name && (p.path === codeFolderPath || codeFolderPath === `${root}/${name}`));
@@ -696,7 +718,7 @@ export default function AssistantChat() {
       setCodeProject(name);
       setCodeFolderPath("");
     }
-  }, [codeProjects?.root, codeProject, codeFolderPath]);
+  }, [codeProjects?.root, workspaces, codeProject, codeFolderPath]);
 
   const openConversation = async (id: string): Promise<boolean> => {
     if (!id || id === convId || busy) return false;
@@ -1198,8 +1220,19 @@ export default function AssistantChat() {
       show("実行するワークフローを選択してください", "error");
       return;
     }
-    const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" ? "" : codeProject;
-    const codeFolder = codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    const workspace = selectedWorkspace(codeProject, workspaces);
+    const isWorkspaceValue = codeProject.startsWith(WS_PREFIX) || codeProject === WS_NEW;
+    const codeProjectName = codeProject === "__new__" ? codeNewName.trim() : codeProject === "__folder__" || isWorkspaceValue ? "" : codeProject;
+    // 作業場は作業ツリーのパスで送る（サーバーが箱の中で OpenCode を動かす。持ち主だけ）
+    const codeFolder = workspace ? workspace.repo_path : codeProject === "__folder__" ? codeFolderPath.trim() : "";
+    if (selectedMode === "code" && codeProject === WS_NEW) {
+      show("作業場を作ってから送ってください（「作る」を押します）", "error");
+      return;
+    }
+    if (selectedMode === "code" && codeProject.startsWith(WS_PREFIX) && !workspace) {
+      show("この作業場は見つかりません。選び直してください", "error");
+      return;
+    }
     if (readyArchives.length > 0 && selectedMode !== "code") {
       show("圧縮ファイルは OpenCode で展開して使います。＋から OpenCode を選んでください", "error");
       return;
@@ -1276,7 +1309,7 @@ export default function AssistantChat() {
             deep_depth: deepDepth, deep_sources: deepSources, voice_style: talkRef.current !== "off" ? voiceStyle() : "",
             code_project_path: deepSources.includes("local_code") ? deepProjectPath : "",
             // 自動で OpenCode に任せるときの作業フォルダ（既存のプロジェクトを選んでいるときだけ。新しくは作らない）
-            code_project: codeProject !== "__new__" && codeProject !== "__folder__" ? codeProject : "",
+            code_project: codeProject !== "__new__" && codeProject !== "__folder__" && !codeProject.startsWith(WS_PREFIX) && codeProject !== WS_NEW ? codeProject : "",
             ...sentPrefs,
           },
         });
@@ -2144,6 +2177,12 @@ export default function AssistantChat() {
                   <option key={p.name} value={p.name}>📚 {p.name}</option>
                 ))}
                 {codeFolderPath && <option value="__folder__">📁 {codeFolderPath}</option>}
+                <optgroup label="開発の作業場">
+                  {(workspaces ?? []).map((w) => (
+                    <option key={w.name} value={workspaceValue(w.name)}>🧪 {w.name}（{w.source_label}）</option>
+                  ))}
+                  <option value={WS_NEW}>🧪 ＋ 新しい作業場…</option>
+                </optgroup>
               </select>
               {codeProject === "__new__" && (
                 <input
@@ -2161,6 +2200,15 @@ export default function AssistantChat() {
                 className="grid w-10 shrink-0 place-items-center rounded-lg border border-zinc-300 text-base dark:border-zinc-700"
               >📁</button>
             </div>
+          )}
+          {effectiveMode === "code" && (codeProject.startsWith(WS_PREFIX) || codeProject === WS_NEW) && (
+            <WorkspaceBar
+              value={codeProject}
+              workspaces={workspaces ?? []}
+              projects={codeProjects?.projects ?? []}
+              onCreated={(name) => setCodeProject(workspaceValue(name))}
+              onDeleted={() => setCodeProject("__new__")}
+            />
           )}
           {codePicker && (
             <FilePicker

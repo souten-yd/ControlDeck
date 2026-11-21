@@ -128,6 +128,68 @@ def delete_project(
     return {"ok": True, "name": result["name"]}
 
 
+class WorkspaceBody(BaseModel):
+    # "controldeck"（ControlDeck 本体の origin/main）か "codedev:<プロジェクト名>"
+    source: str = Field(min_length=1, max_length=96)
+    name: str = Field(default="", max_length=32)
+
+
+def _workspace_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/workspaces")
+def list_workspaces(user: User = Depends(require_permission("terminal.use"))):
+    """自分の開発の作業場（開発用の箱）の一覧。他人の作業場は出さない。"""
+    from app.maintenance import workspaces
+
+    try:
+        return {"workspaces": workspaces.list_for(user.username)}
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+@router.post("/workspaces", status_code=201)
+def create_workspace(
+    body: WorkspaceBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """作業場を作る（ControlDeck 本体の origin/main、または CodeDEV の git のプロジェクトから）。"""
+    from app.maintenance import workspaces
+
+    try:
+        result = workspaces.create(user.username, body.source.strip(), body.name)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    audit.record(db, "opencode.workspace.create", user=user, resource_type="opencode_workspace",
+                 resource_id=result["name"], request=request, metadata={"source": result["source"]})
+    return result
+
+
+@router.delete("/workspaces/{name}")
+def delete_workspace(
+    name: str, request: Request, confirm: bool = False,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """作業場を消す。未コミット・未 push の変更があれば、confirm=true が無い限り 409 で断る。"""
+    from app.integrations.opencode import chat_server
+    from app.maintenance import workspaces
+
+    try:
+        box = workspaces.get(name, user.username)
+        workspaces.delete(name, user.username, confirm=confirm)
+    except workspaces.UnsavedChanges as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "dirty": exc.dirty, "unpushed": exc.unpushed}) from exc
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    # 会話サーバー（この作業場の中で動いていたもの）も止める。箱の pod は destroy が消している
+    chat_server.stop(chat_server.server_key(box.repo, user.id))
+    audit.record(db, "opencode.workspace.delete", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request, metadata={"confirmed": confirm})
+    return {"ok": True, "name": name}
+
+
 class SessionBody(BaseModel):
     project_path: str = Field(default="", max_length=4096)
     project_name: str = Field(default="", max_length=64)

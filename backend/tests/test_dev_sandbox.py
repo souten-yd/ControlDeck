@@ -25,7 +25,8 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_data_dir", lambda: data)
     monkeypatch.setattr(sandbox, "_free_port", lambda: 18800)
     monkeypatch.setattr(sandbox, "_free_gateway_port", lambda: 18900)
-    monkeypatch.setattr(sandbox, "ensure_pod", lambda box: sandbox.pod_name(box))
+    monkeypatch.setattr(sandbox, "_free_serve_port", lambda: 19000)
+    monkeypatch.setattr(sandbox, "ensure_pod", lambda box, **kw: sandbox.pod_name(box))
     monkeypatch.setattr(sandbox, "ensure_gateway", lambda box: None)
     monkeypatch.setattr(sandbox, "_users_with_permission",
                         lambda permission, name="": [name or "admin1"] if permission != "none" else [])
@@ -182,6 +183,7 @@ def test_ensure_pod_reuses_same_spec_and_recreates_on_change(repo, monkeypatch):
     REAL_ENSURE_POD(box)
     create = next(c for c in calls if c[1:3] == ["pod", "create"])
     assert "pasta:-T,18900" in create and "127.0.0.1:18800:18800" in create
+    assert "127.0.0.1:19000:19000" in create, "会話サーバーのポート（serve_port）も公開する"
     assert not any(c[1:3] == ["pod", "rm"] for c in calls), "無ければ rm しない"
     label[0] = sandbox._pod_spec(box)
     calls.clear()

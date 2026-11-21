@@ -66,6 +66,8 @@ class Server:
     started_at: float
     last_used: float
     owner: int | None = None
+    # 作業場（開発用の箱）の中で動くサーバーなら、その箱の名前。空は今までのプロジェクトの箱
+    workspace: str = ""
 
     @property
     def base(self) -> str:
@@ -229,6 +231,11 @@ def stop(key: str) -> None:
         return
     _stop_unit(server.unit)
     _state_path(key).unlink(missing_ok=True)
+    if server.workspace:
+        # 設定は箱のホームの中（箱ごと残る）。消すのはパスワードの env-file と権限のファイルだけ
+        _workspace_env_file(key).unlink(missing_ok=True)
+        Path(server.permission_file).unlink(missing_ok=True)
+        return
     shutil.rmtree(server.config, ignore_errors=True)
 
 
@@ -313,19 +320,126 @@ def _start(project: Path, owner_user_id: int | None, key: str) -> Server:
     return server
 
 
-async def ensure(project: Path, owner_user_id: int | None) -> Server:
-    """このプロジェクトのサーバーを返す。無ければ起こし、応答するまで待つ。"""
+def _workspace_env_file(key: str) -> Path:
+    return _state_dir() / f"{key}.env"
+
+
+def workspace_box(project: Path, owner_user_id: int | None):
+    """プロジェクトが作業場ならその箱（持ち主の会話だけ）。作業場でなければ None。
+
+    持ち主（meta の owner）と会話の利用者が一致しなければ断る（他人の作業場へ入れない）。
+    """
+    from app.maintenance import sandbox, workspaces
+
+    box = workspaces.box_for_project(project)
+    if box is None:
+        return None
+    try:
+        expected = sandbox._owner_user_id(box.owner) if box.owner else None
+    except sandbox.SandboxError:
+        expected = None
+    if owner_user_id is None or expected is None or expected != owner_user_id:
+        raise ChatServerError("この作業場は、作った人だけが使えます")
+    return box
+
+
+def _start_workspace(box, owner_user_id: int | None, key: str, *, network: str = "gateway") -> Server:
+    """作業場（開発用の箱）の pod の中で `opencode serve` を起こす（同期。to_thread で呼ぶ）。
+
+    設定は sandbox.opencode_config（中継を向く・鍵が無い・開発のスキル・レビュー役・モデルの順番の最初）に、
+    会話サーバー用の部分（権限プラグイン・ask・question の deny・todo）を足して箱のホームへ書く。
+    ControlDeck からは pod が公開する 127.0.0.1:<serve_port> で話す。パスワードは env-file（argv に出さない）。
+
+    network: 今は "gateway"（中継だけに届く pod）のみ。秘密の会話用に "none"（network を持たない箱）を
+    段 2 で足すための引数。未対応の値は断る。
+    """
+    from app.integrations.opencode import provider
+    from app.maintenance import sandbox, workspaces
+
+    if network != "gateway":
+        raise ChatServerError(f"作業場の network は {network} にまだ対応していません")
+    systemd_run = shutil.which("systemd-run")
+    if systemd_run is None:
+        raise ChatServerError("systemd user manager を利用できません")
+    _, binary = provider.active_binary()
+    try:
+        chosen = sandbox.model_chain(box)[0]
+        sandbox.opencode_config(box, model="auto" if "/" in chosen else chosen, work_model=chosen,
+                                chat_server=True, default_model=chosen)
+    except sandbox.SandboxError as exc:
+        raise ChatServerError(str(exc)) from exc
+    config_dir = box.home / ".config" / "opencode"
+    permission_file = config_dir / "controldeck-permission.json"
+    port = box.serve_port
+    password = secrets.token_urlsafe(24)
+    # パスワードと（使えるなら）Zen のキーを 1 つの env-file で渡す。箱のフォルダの外・0600・argv に出さない
+    env_file = _workspace_env_file(key)
+    lines = [f"OPENCODE_PASSWORD={password}"]
+    zen_file = sandbox.zen_env_file(box)
+    if zen_file is not None:
+        try:
+            lines.append(zen_file.read_text(encoding="utf-8").strip())
+        finally:
+            zen_file.unlink(missing_ok=True)
+    fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.chmod(env_file, 0o600)
+    server = Server(key=key, port=port, password=password, unit=f"cd-opencode-chat-{key}",
+                    config=str(config_dir), project=str(box.repo), permission_file=str(permission_file),
+                    started_at=time.time(), last_used=time.time(), owner=owner_user_id, workspace=box.name)
+    set_mode(server, str(provider.get_settings().get("chat_permission_mode") or "auto"))
+    command = [str(binary), "serve", "--hostname", "127.0.0.1", "--port", str(port)]
+    try:
+        argv_podman = sandbox.podman_argv(
+            box, command, name=f"{sandbox.CONTAINER_PREFIX}{box.name}-chat", env_file=env_file,
+            env={"CONTROLDECK_PERMISSION_FILE": str(permission_file), "CONTROLDECK_ISOLATION": "box",
+                 "CONTROL_DECK_OPENCODE_BOX": "1"},
+            need_serve_port=True)
+    except sandbox.SandboxError as exc:
+        env_file.unlink(missing_ok=True)
+        raise ChatServerError(str(exc)) from exc
+    # 前回の残り（コンテナ名が同じだと起動できない）を先に消す
+    _stop_unit(server.unit)
+    podman = shutil.which("podman") or "podman"
+    subprocess.run([podman, "rm", "-f", f"{sandbox.CONTAINER_PREFIX}{box.name}-chat"],
+                   capture_output=True, timeout=60, check=False)
+    argv = [systemd_run, "--user", "--quiet", "--collect", f"--unit={server.unit}",
+            f"--working-directory={box.repo}", *argv_podman]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        env_file.unlink(missing_ok=True)
+        raise ChatServerError(f"OpenCode のサーバーを起動できませんでした（{result.stderr.strip()[:200]}）")
+    _save(server)
+    workspaces.touch(box)
+    return server
+
+
+async def ensure(project: Path, owner_user_id: int | None, *, network: str = "gateway") -> Server:
+    """このプロジェクトのサーバーを返す。無ければ起こし、応答するまで待つ。
+
+    プロジェクトが作業場（開発用の箱）なら、その箱の pod の中で起こす（持ち主だけ）。
+    network は作業場の起動へ渡す（今は "gateway" だけ。秘密の会話用の "none" を段 2 で足す余地）。
+    """
     key = server_key(project, owner_user_id)
+    box = await asyncio.to_thread(workspace_box, project, owner_user_id)
     lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
         await asyncio.to_thread(reap_idle, keep=key)
         server = await asyncio.to_thread(load, key)
         if server is not None and await _healthy(server):
             await asyncio.to_thread(touch, server)
+            if box is not None:
+                from app.maintenance import workspaces
+
+                await asyncio.to_thread(workspaces.touch, box)
             return server
         if server is not None:
             await asyncio.to_thread(stop, key)
-        server = await asyncio.to_thread(_start, project, owner_user_id, key)
+        if box is not None:
+            server = await asyncio.to_thread(_start_workspace, box, owner_user_id, key, network=network)
+        else:
+            server = await asyncio.to_thread(_start, project, owner_user_id, key)
         deadline = time.monotonic() + START_TIMEOUT
         while time.monotonic() < deadline:
             if await _healthy(server):
@@ -345,6 +459,12 @@ async def resolve_project(project_name: str = "", project_path: str = "") -> Pat
     if project_name.strip():
         project = Path((await asyncio.to_thread(provider.ensure_project, project_name))["path"])
     elif project_path.strip():
+        from app.maintenance import workspaces
+
+        # 作業場（開発用の箱）の作業ツリーは取り込まずそのまま使う（持ち主の確認は ensure）
+        direct = Path(project_path.strip()).expanduser()
+        if await asyncio.to_thread(workspaces.box_for_project, direct) is not None:
+            return await asyncio.to_thread(direct.resolve)
         imported = await asyncio.to_thread(provider.import_project, project_path)
         project = Path(imported["path"])
     else:
