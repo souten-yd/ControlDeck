@@ -54,6 +54,23 @@ class RagError(ValueError):
     pass
 
 
+def require_loopback_embed(base_url: str) -> None:
+    """埋め込みの宛先はループバックだけ。資料（未公開の発明を含みうる）の本文を外部 URL へ送らない。
+
+    2026-11-21 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に」。
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(str(base_url or "")).hostname or ""
+        ok = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        ok = False
+    if not ok:
+        raise RagError("埋め込みの宛先はこの PC（ループバック）だけ指定できます。外部の URL へは資料を送れません")
+
+
 def _as_rag_error(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -118,6 +135,7 @@ def get_config(collection: str) -> dict:
 def set_config(collection: str, config: dict) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg.update({k: v for k, v in config.items() if k in DEFAULT_CONFIG})
+    require_loopback_embed(cfg["embed_base_url"])
     if _ensure(collection) is None:
         store.create_collection(collection, config=cfg, description=str(cfg.get("description", "")))
     else:
@@ -131,6 +149,7 @@ def create_collection(collection: str, config: dict | None = None) -> dict:
         raise RagError(f"コレクションは既に存在します: {collection}")
     cfg = dict(DEFAULT_CONFIG)
     cfg.update({k: v for k, v in (config or {}).items() if k in DEFAULT_CONFIG})
+    require_loopback_embed(cfg["embed_base_url"])
     kind = "conversation" if collection.startswith("chat-") else "general"
     store.create_collection(collection, kind=kind, config=cfg, description=str(cfg.get("description", "")))
     return {"collection": collection, "config": get_config(collection)}
@@ -160,6 +179,7 @@ async def embed(texts: list[str], base_url: str, model: str, api_key: str) -> li
     from app.models_mgmt import llama
     from app.models_mgmt.runtime_policy import ensure_gpu_profile
 
+    require_loopback_embed(base_url)   # 保存済みの設定が外部 URL でも送らない
     try:
         await asyncio.to_thread(ensure_gpu_profile, base_url=base_url)
     except RuntimeError as exc:
