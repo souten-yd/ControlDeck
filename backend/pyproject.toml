@@ -25,3 +25,6 @@ dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 通ったテストの一時フォルダは残さない（2026-11-21: 90GB の見かけの GGUF を作るテストが残した分で、
+# 箱の /tmp が見かけ 372GB になった）。失敗したテストの分だけ調べるために残す
+tmp_path_retention_policy = "failed"
