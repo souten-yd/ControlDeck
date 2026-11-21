@@ -342,6 +342,8 @@ DB・バックアップ・設定 JSON は引き続き許可ルートの外にあ
 - **UI 未実装**: エンドポイント管理・並べ替え（↑↓）・複製。設計書「UI/UX 設計」の
   Models 画面カード刷新（実装順序 6）と一緒にやる方が手戻りがない。
 - `default_model_ref` のフォールバック実装（優先度最上位を既定にする）は未着手。
+  → 2026-11-22 廃止。実装せず未使用の定義を削除した（既定は `selected_runtime` + `preferred_models` +
+  `gateway.resolve_instance` のフォールバックで決まる。上の「既知のバグ」の項参照）。
 
 ---
 
@@ -692,12 +694,24 @@ repo 検索 → バリアント一覧（サイズと選択中ライブラリの�
 
 ### 既知のバグ（設計書「今回スコープ外」にも記載。直せるなら直す）
 
+> 2026-11-22 点検結果（各行に状態）。この節は 2026-08 のまま古くなっていた。詳細は `docs/implementation-status.md` の 2026-11-22 の項。
+
 - `llama.py:248` — `save_instance` が `role == "llm"` のとき**常に `selected_alias` を奪う**。
-  他モデルを保存しただけで既定チャット先が切り替わる。
-- `router.py:755` — `llama_delete_instance` の `gguf_deleted` がハードコードの `False`。
-- `RuntimePolicy.default_model_ref` は定義だけで**参照ゼロ**（A で実用化する）。
+  他モデルを保存しただけで既定チャット先が切り替わる。 → **直っていた**（966f1d7 で修正済み。
+  現状は「新規登録時・既定が未設定時だけ引き継ぐ」。テスト: `test_llama_runtime.py` の
+  `test_multi_instance_catalog_uniqueness_and_unit_names` 末尾）。
+- `router.py:755` — `llama_delete_instance` の `gguf_deleted` がハードコードの `False`。 → **直っていた**（966f1d7 で修正済み。
+  router は `delete_instance` の実結果を透過し、本体を実際に消したときだけ True。
+  テスト: `test_delete_instance_can_remove_gguf_but_protects_shared_files`）。
+- `RuntimePolicy.default_model_ref` は定義だけで**参照ゼロ**（A で実用化する）。 → **直した（未使用定義を削除）**。
+  既定のモデルの決め方は `selected_runtime` + `preferred_models` + `gateway.resolve_instance` のフォールバックに
+  置き換わっており、実用化の必要はなくなった（読む場所を足すと `preferred_models` と二重の既定になる）。
+  古い JSON に残っても読める（pydantic が読み捨てる。テスト: `test_runtime_policy.py::test_default_model_ref_is_dropped_from_policy`）。
 - `ollama-settings.json` の `idle_unload_enabled` / `idle_unload_minutes` は UI から書けるが効かない
-  （実際の idle ループは `RuntimePolicy` を読む）。
+  （実際の idle ループは `RuntimePolicy` を読む）。 → **直した（死んだキーを削除）**。
+  画面（⚙️共通設定）は 32e5c7b 以降すでに RuntimePolicy を編集しており、ollama 側に残っていた
+  `DEFAULT_SETTINGS` と `SettingsBody` の同名キーを削除（書いても効かないふりをやめた）。
+  テスト: `test_models_local_register.py::test_ollama_settings_has_no_dead_idle_unload_keys`。
 
 ---
 

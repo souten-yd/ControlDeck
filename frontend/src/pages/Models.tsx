@@ -97,7 +97,6 @@ interface RuntimePolicy {
   vram_margin_gib: number;
   gateway_only: boolean;
   drain_timeout_sec: number;
-  default_model_ref: string;
   preferred_models?: Partial<Record<"ollama" | LocalRuntime, string>>;
   assistant_name: string;
   chat: { timeout_seconds: number };

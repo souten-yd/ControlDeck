@@ -115,7 +115,9 @@ class RuntimePolicy(BaseModel):
     # LLMを退避させる経路そのものを持たない。明示的な解放要求だけ受け付ける。
     gateway_only: bool = True
     drain_timeout_sec: int = Field(default=120, ge=1, le=600)
-    default_model_ref: str = Field(default="", max_length=512)
+    # 既定モデルの指定は selected_runtime + preferred_models（ランタイム別の優先モデル）で持つ。
+    # 単一の default_model_ref は gateway.resolve_instance のフォールバック（起動中 → 優先 → 登録順）で
+    # 置き換わったため未使用。旧 model-runtime-policy.json に残っても pydantic が読み捨てる。
     preferred_models: dict[Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"],
                            Annotated[str, Field(max_length=512)]] = Field(default_factory=dict)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)

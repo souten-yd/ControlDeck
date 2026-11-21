@@ -29,7 +29,7 @@ test("explains cold bootstrap, warm threshold, and suppression at mobile and des
       idle_unload_enabled: false, idle_unload_minutes: 30, max_loaded_models: 1,
       supervision: "managed", gateway_only: true, warm_idle_sec: 600,
       min_uptime_sec: 120, drain_timeout_sec: 120, yield_max_level: 4,
-      default_model_ref: "", assistant_name: "Assistant", chat: { timeout_seconds: 300 },
+      assistant_name: "Assistant", chat: { timeout_seconds: 300 },
       deep_research: { evidence_context_chars: 90000, max_report_tokens: 32768, timeout_seconds: 1800 },
       amd_gpu: { enabled: false, profile: "quiet", power_limit_watts: 210,
         memory_clock_mode: "auto", memory_clock_level: 0, core_clock_mode: "auto", core_clock_level: 0 },

@@ -26,7 +26,7 @@ test("uses the common provider routes for pull and model configuration", async (
     policy: {
       selected_runtime: "ollama", selected_backend: "", coexistence: "exclusive",
       idle_unload_enabled: false, idle_unload_minutes: 30, max_loaded_models: 1,
-      default_model_ref: "", assistant_name: "Assistant",
+      assistant_name: "Assistant",
       chat: { reasoning: "off", timeout_seconds: 120 },
       deep_research: { evidence_context_chars: 90000, max_report_tokens: 32768, timeout_seconds: 1800 },
       amd_gpu: { enabled: false, profile: "balanced", power_limit_watts: 0,

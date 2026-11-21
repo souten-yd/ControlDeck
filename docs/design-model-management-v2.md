@@ -30,7 +30,7 @@ Model 画面の設定階層が現状の使い方と噛み合っていない。
 - HF からの GGUF 直ダウンロードは `role_presets.install` に既に実装がある（`.part` → `replace()` の原子的置換 + `job.set_progress`）。`huggingface_hub` 依存は無く httpx のみ。
 - **ダウンロード経路にディスク空き容量チェックが無い**。既存の実装パターンは `files/archives.py:62 _ensure_free_space` のみ。
 - 並べ替え UI の前例は `features/settings/MobileNavigationSettings.tsx:28-61` の ↑↓ ボタン方式（DnD ライブラリは未導入）。
-- `RuntimePolicy.default_model_ref` は定義だけで**参照ゼロ**。
+- `RuntimePolicy.default_model_ref` は定義だけで**参照ゼロ**。（→ 2026-11-22 廃止済み。既定は `selected_runtime` + `preferred_models` + `resolve_instance` のフォールバックで決まり、定義は削除した。`docs/HANDOVER-model-management-v2.md`「既知のバグ」参照）
 
 ---
 
@@ -108,7 +108,7 @@ for other in instances_on_endpoint(endpoint_id):
 1. **一覧の表示順**: `list_instances()` を `(order, alias)` でソート。`provider_adapters.list_models` / providers の `models` も同順。
 2. **自動起動の優先順位**: 同一エンドポイントで `auto_start` が複数あるとき、**最優先の 1 件だけ `systemctl --user enable`**、他は明示的に disable。`sync_instance_unit` を `_sync_endpoint_units(endpoint_id)` に一般化し、endpoint 内の全 unit の enable 状態を毎回まとめて同期する。
 3. **オンデマンド起動のフォールバック**: `ensure_ready_by_base_url` が上記の逆引き 3 番目で最優先を選ぶ。
-4. **既定モデルのフォールバック**: `RuntimePolicy.default_model_ref` が空 or 解決不能なとき、選択中ランタイムの `role == "llm"` 最優先 instance を既定にする（現在 未使用の `default_model_ref` をここで初めて実用化する）。
+4. **既定モデルのフォールバック**: `RuntimePolicy.default_model_ref` が空 or 解決不能なとき、選択中ランタイムの `role == "llm"` 最優先 instance を既定にする（現在 未使用の `default_model_ref` をここで初めて実用化する）。（→ 2026-11-22 この方針は不採用。フォールバックは `default_model_ref` なしで `gateway.resolve_instance` に実装済みで、単一の既定参照は `preferred_models` と二重になるため `default_model_ref` は削除）
 
 同時ロード上限（`provider_adapters._enforce_load_limit`）の**自動アンロードは行わない**（現状どおりエラー）。ただしエラーメッセージに「アンロード候補 = ロード中で最も優先度が低いモデル」を添える。
 
@@ -582,7 +582,7 @@ runroot = "/run/user/1000/containers"
 |---|---|
 | `llama.py` | endpoints / order / think / kv_unified、排他起動、`resolve_instance_by_port`、`duplicate_instance`、`delete_instance(delete_file=)`、`reorder_instances` |
 | `ollama.py` | `MODEL_CONFIG_KEYS` に `think_budget_tokens` / `order`、`normalize_think` 拡張、`reorder_models`、`runtime_env` に `OLLAMA_NUM_PARALLEL` |
-| `runtime_policy.py` | `ChatDefaults.reasoning` 削除、`default_model_ref` の解決を実装、port 逆引きを `resolve_instance_by_port` へ |
+| `runtime_policy.py` | `ChatDefaults.reasoning` 削除、`default_model_ref` の解決を実装（→ 2026-11-22 不採用。未使用のまま削除。HANDOVER「既知のバグ」参照）、port 逆引きを `resolve_instance_by_port` へ |
 | `runtime_provider.py` | `RuntimeChatRequest` に `ThinkSpec` / `reasoning_effort`、SGLang provider |
 | `provider_adapters.py` | order 順の一覧、SGLang 分岐、上限エラーへの候補提示 |
 | `providers.py` | endpoint 単位のグルーピング |
@@ -642,7 +642,7 @@ frontend/src/api/models.ts  api() ラッパ（api/flowApp.ts・projectLab.ts が
 - 新規 `test_model_thinking.py`: `auto/off/level/custom` × llama argv / Ollama think 値 / OpenAI `reasoning_effort` の解決。レガシー値（`on` / `max` / `""`）の読み替え。
 - 新規 `test_model_libraries.py`: ライブラリ登録が `files.resolve()` で許可ルート外を拒否すること、複数ライブラリ横断のスキャン、孤児 GGUF の検出（参照中は孤児にしない）、容量集計、`model_libraries` 未設定時の既定 1 件へのフォールバック。
 - 新規 `test_hf_download.py`: tree API のパース（分割 GGUF のグルーピング）、`.part` → `replace()`、**選択ライブラリのファイルシステムに対する**空き容量不足での事前エラー、Range レジューム。
-- `test_runtime_policy.py`: `chat.reasoning` を含む旧 JSON がエラーなく読めること、`default_model_ref` 未設定時の最優先モデルへのフォールバック。
+- `test_runtime_policy.py`: `chat.reasoning` を含む旧 JSON がエラーなく読めること、`default_model_ref` 未設定時の最優先モデルへのフォールバック（→ 2026-11-22 フォールバックは `default_model_ref` なしで実装済み。旧 JSON が読める側だけ `test_default_model_ref_is_dropped_from_policy` で担保）。
 - `test_llm_providers.py`: endpoint グルーピング後の provider カタログ形状、order 順の `list_models`。
 
 ### E2E（`frontend/e2e/`）

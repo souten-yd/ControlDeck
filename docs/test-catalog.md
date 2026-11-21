@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 206 ファイル、1878 テスト（目的の未記入 93 ファイル）
+- backend: 206 ファイル、1880 テスト（目的の未記入 93 ファイル）
 - E2E: 103 spec、207 テスト
 
 ## backend（backend/tests）
@@ -1720,6 +1720,7 @@
 - `test_model_config_crud` — モデル個別設定（keep_alive/idle_exclude）の保存・取得・クリア。
 - `test_model_options_typed_and_effective` — 生成/ロードパラメータが型検証され、effective_options が options だけ返す。
 - `test_kv_cache_settings_and_env`
+- `test_ollama_settings_has_no_dead_idle_unload_keys` — ollama-settings.json に idle アンロードの死んだキーを持たせない。
 - `test_think_normalize_and_config` — think の正規化と個別設定の保存/クリア。
 - `test_native_base_helper`
 
@@ -2359,6 +2360,7 @@
 目的: **未記入**
 
 - `test_runtime_policy_roundtrip`
+- `test_default_model_ref_is_dropped_from_policy` — RuntimePolicy から未使用の default_model_ref を消し、古い設定ファイルも読める。
 - `test_apply_exclusive_llama_unloads_ollama`
 - `test_apply_exclusive_ollama_stops_llama`
 - `test_runtime_policy_rejects_invalid_limits`

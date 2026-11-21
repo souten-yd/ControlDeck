@@ -1,5 +1,42 @@
 # 実装状況
 
+## 2026-11-22 モデル管理の既知の不具合 4 件の点検（件1・2は直っていた／件3・4の死んだ設定を整理）
+
+- 対象: `docs/HANDOVER-model-management-v2.md`「既知のバグ」の 4 件。文書は 2026-08 で止まっていて古いため、
+  今のコードで 1 件ずつ起きるかを確かめた。
+- 件1 `save_instance` が既定チャット先（`selected_alias`）を常に奪う: **直っていた**（追加のコード変更なし）。
+  今の実装は「新規登録時か、まだ既定が無いときだけ引き継ぐ」（`llama.py` の `save_instance` 末尾。
+  966f1d7 で入った）。既存モデルの保存で奪わないことは `test_llama_runtime.py::test_multi_instance_catalog_uniqueness_and_unit_names`、
+  削除で変わらないことは `test_delete_instance_keeps_selection_when_other_model_removed` が確かめている。
+  利用者の明示的な切り替えは `select_instance`（`POST /llama/instances/{alias}/select`）。
+- 件2 `llama_delete_instance` の `gguf_deleted` が常に False: **直っていた**（追加のコード変更なし）。
+  今の router は `llama.delete_instance(alias, delete_file=…)` の実結果を透過し（`{"ok": True, **result}`）、
+  `delete_instance` は GGUF 本体を実際に消したときだけ `gguf_deleted: True`（共有参照・権限外は理由つきで False）。
+  966f1d7 で入った。`test_llama_runtime.py::test_delete_instance_can_remove_gguf_but_protects_shared_files` と
+  API 透過は `test_rag_db_nodes.py` が確かめている。
+- 件3 `RuntimePolicy.default_model_ref` が定義だけで参照ゼロ: **使われていない定義として整理（削除）**。
+  既定のモデルの決め方は今のコードでは ① gateway の `resolve_instance`（`auto`・未登録時: 選択中ランタイム →
+  起動中 → `preferred_models` の優先 → 登録順）② ⚙️共通設定の `selected_runtime` と `preferred_models`
+  （ランタイム別の優先モデル。保存時に起動可否を検証）に置き換わっており、単一の `default_model_ref` を読む箇所は
+  バックエンドに 1 件も無い（grep で確認）。読む場所を新しく作ると `preferred_models` と二重の既定になって
+  挙動が変わるので、定義を削除（`runtime_policy.py`）し、フロントの型と e2e の mock からも該当キーを落とした。
+  古い `model-runtime-policy.json` にキーが残っていても pydantic が読み捨てるのでそのまま読める
+  （`test_runtime_policy.py::test_default_model_ref_is_dropped_from_policy` で担保）。設計書（A フェーズ）の実用化は
+  他仕組みで代替済みとして行わない。
+- 件4 `ollama-settings.json` の `idle_unload_enabled` / `idle_unload_minutes` が書けるが効かない:
+  **画面は既に RuntimePolicy（⚙️共通設定）を指している**（Models の「アイドル時に自動アンロード」は policy を編集。
+  ollama・llama.cpp・Maya-S/Strata のアイドルループはすべて 32e5c7b 以降 RuntimePolicy を読む）。
+  残っていた ollama 側の死んだキーを整理: `ollama.DEFAULT_SETTINGS` と API の `SettingsBody` から削除し、
+  `PUT /models/settings` に渡っても設定ファイルへ書かれないようにした（モジュール docstring にも「⚙️共通設定が正」を明記）。
+  すでに古い `ollama-settings.json` に残ったキーは読み込み時に混ざるだけ（どのループも読まない）で実害なし。手動掃除は不要。
+  テスト: `test_models_local_register.py::test_ollama_settings_has_no_dead_idle_unload_keys`。
+- 検証: 関連 backend テスト（`tests/test_llama*.py`・`tests/test_*model*.py`・`tests/test_runtime*.py`・
+  `tests/test_llm*.py` で 277 件、`tests/test_rag_db_nodes.py` 22 件）すべてパス。新規テスト 2 件は修正前に落ちることを確認。
+  `cd frontend && npm run build` 成功。`./deck.sh dev-check` 合格。
+- 確かめられなかった点: e2e `model-provider-common.spec.ts` と `resource-load-profile-ui.spec.ts` はこの作業ツリーの
+  **変更前からも失敗**（変更を退避して再実行して同一の失敗を確認。側ナビの「閉じる」ボタンの strict 一致と、
+  LLM 共通設定ダイアログの文言 drift が原因で、今回の変更とは無関係）。実画面での ⚙️共通設定の操作確認は未実施。
+
 ## 2026-11-22 開発用の箱の npm・pip をオフラインに
 
 - 実機: 箱の OpenCode（GLM-5.3、K1b の作業中）が `npx tsc` を流し、npm からパッケージを取ってきた（外部からの取得の禁止に反する。本人の報告で判明）。箱の環境に `npm_config_offline=true`・`PIP_NO_INDEX=1`。手元（キャッシュ）に無いものは取りに行かず失敗する（`npx` で `only-if-cached` の失敗を確認）。

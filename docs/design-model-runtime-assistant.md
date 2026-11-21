@@ -124,6 +124,9 @@ llama.cpp optionは導入binaryの`--help`を正とし、名前・型・選択�
   "chat": {"reasoning": "auto", "timeout_seconds": 300}
 }
 ```
+（2026-11-22 注記: `default_model_ref` は実装されないまま 2026-11-22 に削除した。既定のモデルは
+`selected_runtime` + `preferred_models` + `gateway.resolve_instance` のフォールバックで決まる。
+`docs/HANDOVER-model-management-v2.md`「既知のバグ」参照）
 
 チャット・ワークフロー生成の出力tokenはruntime共通policyに重複保存しない。Ollamaは選択モデルの
 `num_predict`、管理下llama.cppはbase URLに対応するinstanceの`n_predict`を正本とする。`-1/-2`等の

@@ -166,6 +166,29 @@ def test_kv_cache_settings_and_env(admin_client):
     admin_client.put("/api/v1/models/settings", json={"kv_cache_type": "f16", "flash_attention": False}, headers=CSRF_HEADERS)
 
 
+def test_ollama_settings_has_no_dead_idle_unload_keys(admin_client):
+    """ollama-settings.json に idle アンロードの死んだキーを持たせない。
+
+    目的: ollama-settings の idle_unload_enabled / idle_unload_minutes はどの経路でも
+    効かない（実際のアイドルループは RuntimePolicy を読む）ので、設定 API から
+    書けるふりも既定辞書に載ることもなくす。
+    根拠: HANDOVER-model-management-v2.md「既知のバグ」の 1 件。32e5c7b で
+    アイドル停止は ⚙️共通設定（RuntimePolicy）に統一済みで、ollama 側だけ
+    「書けるが効かない」キーが残っていた（2026-11-22 確認）。
+    """
+    from app.models_mgmt import ollama
+
+    assert "idle_unload_enabled" not in ollama.DEFAULT_SETTINGS
+    assert "idle_unload_minutes" not in ollama.DEFAULT_SETTINGS
+    r = admin_client.put("/api/v1/models/settings",
+                         json={"idle_unload_enabled": True, "idle_unload_minutes": 5},
+                         headers=CSRF_HEADERS)
+    assert r.status_code == 200
+    assert "idle_unload_enabled" not in r.json()
+    settings = ollama.get_settings()
+    assert "idle_unload_enabled" not in settings and "idle_unload_minutes" not in settings
+
+
 def test_think_normalize_and_config(admin_client):
     """think の正規化と個別設定の保存/クリア。"""
     from app.models_mgmt import ollama

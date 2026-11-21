@@ -5,7 +5,9 @@ HuggingFace(GGUF) 検索、アイドル自動アンロードを提供する。
 
 - 呼び出し時オートロード: Ollama ネイティブ（推論 API を叩くと自動ロード）
 - アイドル自動アンロード: 本モジュールのループが /api/ps を監視し、
-  idle_unload_minutes 経過したモデルへ keep_alive=0 を送って解放する
+  idle_unload_minutes 経過したモデルへ keep_alive=0 を送って解放する。
+  有効化と分数は ⚙️共通設定（RuntimePolicy。llama.cpp と共通）が正で、
+  ollama-settings.json には持たない（持っても効かない）
 """
 from __future__ import annotations
 
@@ -95,8 +97,8 @@ KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
 
 DEFAULT_SETTINGS = {
     "base_url": DEFAULT_BASE_URL,
-    "idle_unload_enabled": False,
-    "idle_unload_minutes": 30,
+    # idle 自動アンロードは ⚙️共通設定（RuntimePolicy）が正。ここに同じキーを持つと
+    # 「書けるのに効かない」になるため持たせない（HANDOVER-model-management-v2.md 既知のバグ）。
     "default_keep_alive": "30m",  # ロード時の既定保持時間（大型モデルの都度ロードを防ぐ）
     "default_model": "",          # LLM ノードの既定に使える
     # モデル別の詳細設定 {"モデル名": {"keep_alive": "1h", "idle_exclude": true, "num_ctx": 8192, ...}}
