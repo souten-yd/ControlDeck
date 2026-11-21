@@ -202,78 +202,14 @@ async def _web_results(body: SearchBody, query: str, limit: int) -> list[dict]:
 
 
 async def _page_text(url: str, limit_chars: int = 3500) -> str:
-    """公開ページ/PDF本文を有限長で抽出。private addressとredirect SSRFを拒否する。"""
-    import ipaddress
-    import io
-    import socket
-    from urllib.parse import urljoin, urlsplit
+    """公開ページ/PDF の本文を有限長で。取得は Web 収集エンジンの共通の取得（解決した IP に接続・各段のリダイレクトを検査）。
 
-    from bs4 import BeautifulSoup
+    以前はここで公開 IP を確かめてから httpx が別に名前解決していた（DNS rebinding で抜けられた）。本文も
+    BeautifulSoup で 1 行に連結していた。docs/PLAN-web-collector.md W1。"""
+    from app.web_collector import fetch
 
-    try:
-        async def validate_public(target: str) -> None:
-            parsed = urlsplit(target)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname:
-                raise ValueError("HTTP(S)公開URLではありません")
-            default_port = 443 if parsed.scheme == "https" else 80
-            infos = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or default_port, type=socket.SOCK_STREAM)
-            addresses = {ipaddress.ip_address(info[4][0]) for info in infos}
-            if not addresses or any(
-                address.is_private or address.is_loopback or address.is_link_local
-                or address.is_multicast or address.is_reserved or address.is_unspecified
-                for address in addresses
-            ):
-                raise ValueError("非公開addressは取得できません")
-
-        current = url
-        content = b""
-        content_type = ""
-        async with httpx.AsyncClient(timeout=20, follow_redirects=False,
-                                     headers={"User-Agent": "Mozilla/5.0 ControlDeck"}) as client:
-            for _ in range(5):
-                await validate_public(current)
-                async with client.stream("GET", current) as response:
-                    if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
-                        current = urljoin(current, response.headers["location"])
-                        continue
-                    if response.status_code >= 400:
-                        return ""
-                    content_type = response.headers.get("content-type", "text/html").casefold()
-                    chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in response.aiter_bytes():
-                        size += len(chunk)
-                        if size > 20 * 1024 * 1024:
-                            return ""
-                        chunks.append(chunk)
-                    content = b"".join(chunks)
-                    break
-            else:
-                return ""
-        if "pdf" in content_type or current.casefold().endswith(".pdf"):
-            from pypdf import PdfReader
-
-            reader = PdfReader(io.BytesIO(content))
-            pages: list[str] = []
-            used = 0
-            for page in reader.pages[:80]:
-                text = page.extract_text() or ""
-                pages.append(text)
-                used += len(text)
-                if used >= limit_chars:
-                    break
-            return "\n".join(pages)[:limit_chars]
-        if "html" not in content_type and "text/" not in content_type:
-            return ""
-        encoding = "utf-8"
-        text_content = content.decode(encoding, errors="replace")
-        soup = BeautifulSoup(text_content, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
-            tag.decompose()
-        text = " ".join(soup.get_text(" ", strip=True).split())
-        return text[:limit_chars]
-    except Exception:
-        return ""
+    page = await fetch.collect(url, limit_chars=max(limit_chars, 1))
+    return page["markdown"][:limit_chars] if page["status"] == "success" else ""
 
 
 @router.post("/searxng-warmup")

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 189 ファイル、1683 テスト（目的の未記入 93 ファイル）
-- E2E: 93 spec、195 テスト
+- backend: 191 ファイル、1698 テスト（目的の未記入 93 ファイル）
+- E2E: 94 spec、196 テスト
 
 ## backend（backend/tests）
 
@@ -945,6 +945,15 @@
 - `test_opencode_tools_are_grouped_with_opencode`
 - `test_status_reports_the_category`
 
+### backend/tests/test_feature_search_tools.py
+
+目的: 機能と拡張: 「検索と収集」の分類、Python ライブラリの機能（専用 venv）、更新ありの確認、まとめて導入。 目的: - Web 本文抽出（Trafilatura）は分類「検索と収集」に出て、専用 venv に**版を固定して**入れ、更新で最新版へ上げること（本体の venv を汚さない）。 - 導入済みかは「専用 venv の Python でライブラリを import できるか」で決め、版を出すこと（壊れていれば再導入を促す）。 - pip・npm の機能でも PyPI / npm の最新版と比べて「更新あり」を出せること。 - 分類ごとの「まとめて導入」が、未導入の pip・npm の機能だけを 1 つの Job で入れ、失敗を結果に残すこと。 根拠: 2026-11-21 利用者「必要なコードやプラグインは、ControlDeck の設定の機能と拡張に導入ボタンと更新ボタンを付けて、 個別管理・一括導入・更新ができるようにすること」。docs/PLAN-web-collector.md §3。外部（PyPI）へは出ない（差し替え）。
+
+- `test_web_extract_is_a_pinned_python_library_in_the_search_category`
+- `test_broken_library_asks_for_reinstall`
+- `test_update_check_compares_with_pypi`
+- `test_install_all_in_a_category_runs_one_job`
+
 ### backend/tests/test_features.py
 
 目的: **未記入**
@@ -1784,6 +1793,7 @@
 - `test_deadline_notices_once_per_threshold_without_case_names`
 - `test_api_refuses_unapproved_queries`
 - `test_deleting_a_case_removes_its_watches_hits_and_notices` — 案件の番号は使い回される。消した案件のウォッチ・候補・通知の記録が次の案件に出てはいけない（2026-11-21 E2E で発見）。
+- `test_jpo_needs_registration_and_ten_digit_application_numbers` — 特許庁 API は利用登録の後に通知されるトークン取得の URL・ID・パスワードで使う。番号で引くだけ（言葉では探せない）。
 
 ### backend/tests/test_patents.py
 
@@ -2448,6 +2458,21 @@
 - `test_a_slow_check_does_not_kill_the_process` — 確認が返らないだけで落とさない。この loop が動けている＝生きている。
 - `test_an_unhealthy_answer_still_stops_the_ping` — 本当に駄目なときは従来どおり黙り、systemd の再起動へ委ねる。
 
+### backend/tests/test_web_collector.py
+
+目的: Web 収集エンジン W1（共通の取得・抽出・SSRF）。 目的: - 内部のアドレス（ループバック・プライベート・リンクローカル＝クラウドのメタデータ・CGNAT・IPv4 射影の IPv6）へ接続しないこと。 - DNS の答えに内部のアドレスが 1 つでも混ざれば拒むこと。リダイレクトの先も各段で検査すること。 - 接続は**検査した IP にそのまま**行うこと（検査の後で別に名前解決しない。DNS rebinding の対策）。Host は元の名前のまま。 - 失敗を status で区別すること（security_rejected / blocked / captcha / too_large / http_error）。 - Trafilatura が無くても、見出し・段落の区切りを残して本文を取り出すこと（以前は 1 行に連結）。 - Deep Research の `_page_text` と Workflow の `web.scrape` が同じ安全な取得を使うこと。 根拠: docs/research-web-collector.md §1・§3、docs/PLAN-web-collector.md W1（2026-11-21 利用者「検索基盤の強化」）。 外部へは出ない（名前の解決は差し替え、相手はローカルの試験サーバー）。
+
+- `test_internal_addresses_are_not_public`
+- `test_dns_answers_mixing_an_internal_address_are_rejected`
+- `test_collect_refuses_internal_targets_without_connecting`
+- `test_connection_is_pinned_to_the_checked_address_and_keeps_the_host_name`
+- `test_redirect_to_an_internal_host_is_checked_at_each_hop`
+- `test_failures_are_classified`
+- `test_fallback_extraction_keeps_headings_and_paragraphs`
+- `test_japanese_legacy_encodings_are_decoded`
+- `test_deep_research_and_workflow_scrape_share_the_guarded_fetch`
+- `test_trafilatura_worker_extracts_markdown_in_a_separate_process` — 本物の Trafilatura を専用 venv の子プロセスで動かす。表・見出しを Markdown で残し、メニュー・フッターを落とす。
+
 ### backend/tests/test_web_push.py
 
 目的: Web Push（端末への通知）。 目的: - 暗号化（RFC 8291 aes128gcm）が規格の例と 1 バイト違わず一致し、受け手の鍵で復号できる。 - VAPID（RFC 8292）の JWT が公開鍵で検証でき、aud は push service の origin、sub は https。 - 端末が渡す endpoint は既知の push service だけ受ける（内側の URL へ POST させない）。 - 404・410 の端末は消す。届いたら最後に届いた時刻を残す。endpoint は一覧に出さない。 - Project Run が終わったら起動した人へ送る。取り消しでは送らない。同じ終わりは 1 回だけ。 - 通知チャンネル push は、監視を見られる人（system.view）の端末へ送る。 - VAPID の JWT は 1 時間以上使い回す（Apple の文書の求め）。Urgency は high（すぐ届ける）。 - 端末の Service Worker が受け取ったと返すと記録し、画面で「届いたか」を確かめられる （2026-11-21 利用者「通知が届いていない気がする」。Apple は 201 を返していて、サーバーからは区別できなかった）。 根拠: 2026-11-21 利用者の依頼（通知の片方向を塞ぐ）。本番は通知先が 0 件で、自動更新にも気づけなかった。
@@ -2555,7 +2580,7 @@
 - `test_python_exec_disabled_by_default`
 - `test_loop_foreach_execution`
 - `test_loop_count_and_done_branch`
-- `test_scrape_selector`
+- `test_scrape_selector` — web.scrape は Web 収集エンジンの共通の取得（fetch.collect）を使う。取得を差し替えてセレクタの抜き出しを確かめる。
 - `test_workflow_api_accepts_v2_nodes`
 
 ### backend/tests/test_workflow_pauses.py
@@ -3073,6 +3098,12 @@
 目的: **未記入**
 
 - runtime startup preferences can be selected and saved at ${width}px
+
+### frontend/e2e/settings-search-tools.spec.ts
+
+目的: 機能と拡張の「検索と収集」: Web 本文抽出（Trafilatura）の導入ボタン、取得先の設定（特許庁 API を含む）への入口、 分類ごとの「まとめて導入」。導入・まとめて導入は PyPI / npm から取得するので、ここでは押さない（見える・押せることまで）。 根拠: 2026-11-21 利用者「必要なコードやプラグインは、機能と拡張に導入ボタンと更新ボタンを付けて、個別管理・一括導入・更新」 「特許庁などからデータをダウンロードする API の設定はどこ？見当たらない」。 */
+
+- 機能と拡張: 検索と収集（${width}px）
 
 ### frontend/e2e/speech-engines.spec.ts
 

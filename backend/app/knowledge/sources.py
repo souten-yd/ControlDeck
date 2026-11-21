@@ -10,16 +10,12 @@
 from __future__ import annotations
 
 import base64
-import ipaddress
 import json
 import logging
 import re
-import socket
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 
 from app.config import data_dir
@@ -36,6 +32,10 @@ SOURCES = {
             "hint": "CQL。例: ic=H02M and pd>=2024 / ta=インバータ", "signup": "https://developers.epo.org/"},
     "uspto": {"label": "USPTO ODP（米国の出願）", "kind": "patent", "keys": ["uspto_key"],
               "hint": "検索語。例: inverter common mode", "signup": "https://data.uspto.gov/apis/getting-started"},
+    "jpo": {"label": "特許庁 特許情報取得 API（番号で経過・書誌を引く）", "kind": "patent",
+            "keys": ["jpo_token_url", "jpo_id", "jpo_password"],
+            "hint": "出願番号（西暦 4 桁＋通番 6 桁、例: 2020008423）。空白で区切って複数。言葉では探せません",
+            "signup": "https://www.jpo.go.jp/system/laws/sesaku/data/api-provision.html"},
     "openalex": {"label": "OpenAlex（論文）", "kind": "paper", "keys": [],
                  "hint": "検索語。例: common mode noise inverter", "signup": "https://openalex.org/"},
     "rss": {"label": "RSS / Atom（公開フィード）", "kind": "news", "keys": [], "hint": "フィードの URL", "signup": ""},
@@ -108,12 +108,6 @@ def listing() -> list[dict]:
 
 # ---- 取得（同期。呼び出し側は asyncio.to_thread） ----
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - urllib の約束
-        raise SourceError("リダイレクトは追いません")
-
-
-_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 _last_call: dict[str, float] = {}
 
 
@@ -121,36 +115,46 @@ def _public_host(url: str) -> None:
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "https" or not parts.hostname:
         raise SourceError("https の URL だけを使えます")
+
+
+async def _aget(url: str, headers: dict, data: bytes | None, method: str, timeout: int) -> bytes:
+    import httpx
+
+    from app.web_collector import egress
+
     try:
-        infos = socket.getaddrinfo(parts.hostname, parts.port or 443)
-    except socket.gaierror as exc:
-        raise SourceError(f"ホスト名を解決できません: {parts.hostname}") from exc
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            raise SourceError("内部のアドレスへは取りに行きません")
+        async with egress.guarded_client(timeout=timeout, headers={"User-Agent": UA, "Accept": "*/*"}) as client:
+            async with client.stream(method, url, content=data, headers=headers) as resp:
+                if 300 <= resp.status_code < 400:
+                    raise SourceError("リダイレクトは追いません")
+                if resp.status_code >= 400:
+                    raise SourceError(f"HTTP {resp.status_code}")
+                chunks, size = [], 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise SourceError("応答が大きすぎます")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+    except egress.EgressRejected as exc:
+        raise SourceError("内部のアドレスへは取りに行きません") from exc
+    except httpx.HTTPError as exc:
+        raise SourceError(f"接続できません: {type(exc).__name__}") from exc
 
 
 def http_get(url: str, *, headers: dict | None = None, data: bytes | None = None, method: str | None = None,
              pace: float = 1.0, timeout: int = 30) -> bytes:
+    """同期の取得（呼び出し側は asyncio.to_thread）。接続は Web 収集エンジンの出口（解決した IP にそのまま接続）。
+    以前は urllib で IP を確かめた後に別に名前解決していた（DNS rebinding で抜けられた）。"""
+    import asyncio
+
     _public_host(url)
     host = urllib.parse.urlsplit(url).hostname or ""
     wait = pace - (time.time() - _last_call.get(host, 0))
     if wait > 0:
         time.sleep(min(wait, 10))
     _last_call[host] = time.time()
-    request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*", **(headers or {})}, data=data,
-                                     method=method)
-    try:
-        with _opener.open(request, timeout=timeout) as resp:
-            raw = resp.read(MAX_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise SourceError(f"HTTP {exc.code}") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise SourceError(f"接続できません: {getattr(exc, 'reason', exc)}") from exc
-    if len(raw) > MAX_BYTES:
-        raise SourceError("応答が大きすぎます")
-    return raw
+    return asyncio.run(_aget(url, headers or {}, data, method or ("POST" if data is not None else "GET"), timeout))
 
 
 def _strip_html(text: str) -> str:
@@ -320,7 +324,89 @@ def gdelt(query: str, limit: int) -> list[dict]:
             for a in data.get("articles", []) or []]
 
 
-FETCHERS = {"epo": epo, "uspto": uspto, "openalex": openalex, "rss": rss, "gdelt": gdelt}
+# ---- 特許庁 特許情報取得 API（docs/research-web-collector.md §6）----
+# 利用登録の後に特許庁から通知される「トークン取得の URL」・ID・パスワードを使う（URL は公開されていない）。
+# 番号で引く API だけで、言葉で探す API は無い。上限は API ごと（app_progress は 400 回/日、2023 年資料）。
+JPO_BASE = "https://ip-data.jpo.go.jp/api/patent/v1"
+_jpo_token = {"value": "", "refresh": "", "exp": 0.0}
+
+
+def _jpo_auth() -> str:
+    token_url, user, password = _secret("jpo_token_url"), _secret("jpo_id"), _secret("jpo_password")
+    if not (token_url and user and password):
+        raise SourceError("特許庁 API のトークン取得の URL・ID・パスワードが未設定です（利用登録の後に通知されます）")
+    if not token_url.startswith("https://ip-data.jpo.go.jp/"):
+        raise SourceError("トークン取得の URL は https://ip-data.jpo.go.jp/ で始まるものを入れてください")
+    if _jpo_token["value"] and _jpo_token["exp"] > time.time() + 30:
+        return _jpo_token["value"]
+    form = {"grant_type": "password", "username": user, "password": password}
+    if _jpo_token["refresh"]:
+        form = {"grant_type": "refresh_token", "refresh_token": _jpo_token["refresh"]}
+    try:
+        raw = http_get(token_url, data=urllib.parse.urlencode(form).encode(), method="POST",
+                       headers={"Content-Type": "application/x-www-form-urlencoded"})
+    except SourceError:
+        if form["grant_type"] != "refresh_token":
+            raise
+        _jpo_token.update(refresh="")
+        return _jpo_auth()
+    data = json.loads(raw.decode())
+    _jpo_token.update(value=data["access_token"], refresh=data.get("refresh_token", ""),
+                      exp=time.time() + int(data.get("expires_in", 3600)))
+    return _jpo_token["value"]
+
+
+_JP_APP_NO = re.compile(r"^(\d{4})(\d{6})$")
+
+
+def jpo(query: str, limit: int) -> list[dict]:
+    """出願番号ごとに経過情報（app_progress）を引く。応答の中身は API の仕様どおりに残し、題名・出願人は分かる範囲で拾う。"""
+    numbers = [re.sub(r"[^0-9]", "", n) for n in re.split(r"[\s,、]+", query) if n.strip()]
+    bad = [n for n in numbers if not _JP_APP_NO.match(n)]
+    if not numbers or bad:
+        raise SourceError("出願番号は西暦 4 桁＋通番 6 桁の 10 桁で入れてください（例: 2020008423）")
+    token = _jpo_auth()
+    out = []
+    for number in numbers[:limit]:
+        raw = http_get(f"{JPO_BASE}/app_progress/{number}", headers={"Authorization": "Bearer " + token,
+                                                                    "Accept": "application/json"}, pace=1.5)
+        data = json.loads(raw.decode())
+        result = data.get("result", data)
+        code = str(result.get("statusCode", ""))
+        if code and code not in ("100", "0"):
+            out.append(_record(f"jpo:{number}", f"特願{number[:4]}-{number[4:]}（取得できません: {code}）", "", "jpo",
+                               json.dumps(result, ensure_ascii=False)[:4000], "patent",
+                               {"application_number": number, "office": "JP"}))
+            continue
+        body = result.get("data", result)
+        flat = json.dumps(body, ensure_ascii=False)
+        title = _first_key(body, ("inventionTitle", "invention_title", "title")) or f"特願{number[:4]}-{number[4:]}"
+        applicant = _first_key(body, ("applicantName", "applicant_name", "name"))
+        out.append(_record(f"jpo:{number}", title, "", "jpo", flat[:200_000], "patent",
+                           {"application_number": number, "office": "JP", "title": title,
+                            "applicants": [applicant] if applicant else []}))
+    return out
+
+
+def _first_key(value, names: tuple[str, ...]) -> str:
+    """入れ子の JSON から最初に見つかった名前の値（API の版で入れ子の形が変わっても拾えるように）。"""
+    if isinstance(value, dict):
+        for name in names:
+            if isinstance(value.get(name), str) and value[name].strip():
+                return value[name].strip()[:300]
+        for child in value.values():
+            found = _first_key(child, names)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value[:50]:
+            found = _first_key(child, names)
+            if found:
+                return found
+    return ""
+
+
+FETCHERS = {"jpo": jpo, "epo": epo, "uspto": uspto, "openalex": openalex, "rss": rss, "gdelt": gdelt}
 
 
 def fetch(source: str, query: str, limit: int = 25) -> list[dict]:

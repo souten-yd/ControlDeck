@@ -16,6 +16,7 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
+import { SourceKeysSheet } from "../features/patents/Sources";
 import { ExperienceSettings } from "../features/settings/ExperienceSettings";
 import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
@@ -687,12 +688,13 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
   ["runtime", "LLM ランタイム（GPU）", "ローカル LLM を動かす推論エンジン。モデルの登録と切り替えは Models で行います"],
   ["addon", "拡張アプリ", "画像・音・特許などのアプリ。導入すると左のメニューに並びます"],
   ["speech", "音声（TTS / ASR）", "音声合成と音声認識のエンジン。使うエンジンの選択と試し聞きは Models の TTS / ASR で行います"],
+  ["search", "検索と収集", "Web ページの本文抽出など、Deep Research・Workflow・特許の調査で使う道具と、公開データ（特許・論文）の取得先の鍵"],
   ["tools", "その他の道具", "アプリの書き出しなど、特定の機能で使う道具"],
 ];
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
+  kind: "npm" | "pip" | "python-lib" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -734,9 +736,13 @@ interface ReleaseStatus {
   error: string;
 }
 
-/** GPUランタイムの更新有無。GitHubを見るので一覧とは別クエリ・低頻度にする。 */
+/** pip・npm で入れる機能（PyPI / npm の最新版と比べて「更新あり」を出せる）。 */
+const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
+
+/** GPUランタイム・pip・npm の機能の更新有無。GitHub・PyPI・npm を見るので一覧とは別クエリ・低頻度にする。 */
 function useReleaseStatus(addons: AddonState[] | undefined) {
-  const runtimes = (addons ?? []).filter((item) => item.kind === "gpu-runtime" && item.installed);
+  const runtimes = (addons ?? []).filter((item) => item.installed
+    && (item.kind === "gpu-runtime" || (item.managed && PACKAGE_KINDS.includes(item.kind))));
   return useQuery({
     queryKey: ["feature-release-status", runtimes.map((item) => item.id).join(",")],
     queryFn: async () => {
@@ -1017,7 +1023,8 @@ function AddonsSection() {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobKind, setJobKind] = useState<"install" | "update">("install");
+  const [jobKind, setJobKind] = useState<"install" | "update" | "bulk">("install");
+  const [keysOpen, setKeysOpen] = useState(false);
   // Which card the running job belongs to: only that card shows progress.
   const [jobAddon, setJobAddon] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
@@ -1050,7 +1057,7 @@ function AddonsSection() {
     queryKey: ["feature-job", jobId],
     queryFn: () => api<{
       status: string; error: string; progress?: { status?: string };
-      result?: { version?: string; previous_version?: string };
+      result?: { version?: string; previous_version?: string; installed?: string[]; failed?: { id: string; error: string }[] };
     }>(`/jobs/${jobId}`),
     enabled: jobId !== null,
     refetchInterval: (q) => (q.state.data && !["queued", "running"].includes(q.state.data.status) ? false : 1200),
@@ -1065,6 +1072,13 @@ function AddonsSection() {
     }
     qc.invalidateQueries({ queryKey: ["features"] });
     qc.invalidateQueries({ queryKey: ["feature-release-status"] });
+    if (jobKind === "bulk") {
+      const failed = job.result?.failed ?? [];
+      show(failed.length
+        ? `${job.result?.installed?.length ?? 0} 件を導入しました。導入できなかったもの: ${failed.map((f) => f.id).join("、")}`
+        : `${job.result?.installed?.length ?? 0} 件をまとめて導入しました`, failed.length ? "error" : "info");
+      return;
+    }
     if (jobKind === "install") {
       show("導入が完了しました。「有効化」で利用を開始できます");
       return;
@@ -1121,6 +1135,16 @@ function AddonsSection() {
       show(e instanceof Error ? e.message : "更新開始に失敗しました", "error");
     }
   };
+  const installAll = async (category: string) => {
+    try {
+      const r = await api<{ job_id: string }>("/features/install-all-jobs", { method: "POST", json: { category } });
+      setJobKind("bulk");
+      setJobAddon(`category:${category}`);
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "まとめて導入を始められませんでした", "error");
+    }
+  };
   const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
     try {
       const r = await api<{ requires_reload?: boolean }>(`/features/${addon.id}/${action}`, { method: "POST", json: {} });
@@ -1144,7 +1168,7 @@ function AddonsSection() {
       : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled ? "導入済み — サービスの復旧が必要です"
       : addon.installed ? "導入済み（無効）— 有効化すると使えます"
       : addon.available ? addon.summary
-      : addon.kind === "pip" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
+      : addon.kind === "pip" || addon.kind === "python-lib" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
   /** その時に必要な操作だけを1つ前に出す。残りは「詳細」に入れる。 */
   const primary = (addon: AddonState) => {
     if (!addon.installed) {
@@ -1178,24 +1202,47 @@ function AddonsSection() {
   // 用途で分ける（導入の仕組みではなく、利用者から見た使い道）。各分類の中は
   // 利用中 → 導入済み（無効）→ 導入できる、の順。OpenCode 本体は拡張より先に置く。
   const rank = (a: AddonState) => (a.id === "opencode-v2" ? -1 : a.enabled ? 0 : a.installed ? 1 : 2);
-  const groups: [string, string, AddonState[]][] = FEATURE_CATEGORIES.map(([key, title, description]) => [
+  const groups: [string, string, AddonState[], string][] = FEATURE_CATEGORIES.map(([key, title, description]) => [
     title, description,
     (addons ?? []).filter((a) => (a.category ?? "tools") === key)
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "ja")),
+    key,
   ]);
+  const bulkable = (items: AddonState[]) => items.filter((a) => !a.installed && a.available && PACKAGE_KINDS.includes(a.kind));
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="sr-only">オプション機能</h2>
       <p className="mb-3 text-xs text-zinc-500">導入はユーザー領域へのインストールで、パスワードは不要です。</p>
       <FeatureAutoUpdate busy={busy} />
       <div className="space-y-5">
-        {groups.filter(([, , items]) => items.length > 0).map(([title, description, items]) => (
+        {groups.filter(([, , items]) => items.length > 0).map(([title, description, items, key]) => (
           <div key={title}>
-            <h3 className="flex flex-wrap items-baseline gap-x-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-              {title}
-              <span className="num font-normal text-zinc-400">利用中 {items.filter((a) => a.enabled).length} / {items.length}</span>
-            </h3>
+            <div className="flex flex-wrap items-center gap-x-2">
+              <h3 className="flex flex-1 flex-wrap items-baseline gap-x-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                {title}
+                <span className="num font-normal text-zinc-400">利用中 {items.filter((a) => a.enabled).length} / {items.length}</span>
+              </h3>
+              {bulkable(items).length > 1 && (
+                <button onClick={() => void installAll(key)} disabled={busy}
+                  className="min-h-9 rounded-lg px-2.5 text-xs font-medium text-accent-700 hover:bg-accent-600/10 disabled:opacity-40 dark:text-accent-300">
+                  {jobAddon === `category:${key}` && jobId ? "まとめて導入中…" : `まとめて導入（${bulkable(items).length}）`}
+                </button>
+              )}
+            </div>
             <p className="mb-2 text-[11px] text-zinc-400">{description}</p>
+            {jobAddon === `category:${key}` && jobId && (
+              <p className="mb-2 animate-pulse text-[11px] text-zinc-400">{job?.progress?.status || "まとめて導入中…"} — サーバー側で実行中。この画面を閉じても継続します</p>
+            )}
+            {key === "search" && (
+              <div className="mb-2 flex items-center gap-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">公開データの取得先（特許・論文）</p>
+                  <p className="text-xs text-zinc-500">EPO OPS・USPTO ODP・特許庁（JPO）の鍵やアカウント。Patent の「公報」からも開けます</p>
+                </div>
+                <button onClick={() => setKeysOpen(true)}
+                  className={`${btn} shrink-0 border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>取得先の設定</button>
+              </div>
+            )}
             <div className="space-y-2">
               {items.map((addon) => {
                 const hasUpdate = releases?.[addon.id]?.update_available;
@@ -1240,7 +1287,7 @@ function AddonsSection() {
                             )}
                             {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && (
                               <button onClick={() => void update(addon)} disabled={busy}
-                                title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : "npmの最新版へ更新します"}
+                                title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : ["pip", "python-lib"].includes(addon.kind) ? "PyPI の最新版へ更新します" : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
                                 {mine(addon) && jobKind === "update" ? "更新中…" : "更新"}
                               </button>
@@ -1276,6 +1323,7 @@ function AddonsSection() {
           Control Deckを再読み込みして反映しています…
         </p>
       )}
+      {keysOpen && <SourceKeysSheet onClose={() => setKeysOpen(false)} />}
       {uninstalling && (
         <ConfirmDialog
           title={`${(addons ?? []).find((a) => a.id === uninstalling)?.name ?? "オプション機能"} をアンインストールしますか？`}

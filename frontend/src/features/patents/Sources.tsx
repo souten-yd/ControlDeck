@@ -9,6 +9,7 @@ import { BottomSheet, Skeleton, primaryButtonClass } from "../../components/ui";
 import { errorText, input } from "./shared";
 
 export const KEY_LABEL: Record<string, string> = {
+  jpo_token_url: "トークン取得の URL（利用登録の後に特許庁から通知）", jpo_id: "ID（特許庁から通知）", jpo_password: "パスワード（特許庁から通知）",
   epo_key: "EPO Consumer Key", epo_secret: "EPO Consumer Secret", uspto_key: "USPTO API キー",
 };
 
@@ -107,13 +108,13 @@ export function SourceKeysSheet({ onClose }: { onClose: () => void }) {
               </div>
               {s.keys.map((k) => (
                 <label key={k} className="block text-xs font-medium text-zinc-500">{KEY_LABEL[k] ?? k}
-                  <input className={`${input} mt-1`} type="password" autoComplete="new-password" value={values[k] ?? ""}
+                  <input className={`${input} mt-1`} type={k.endsWith("_url") ? "url" : "password"} autoComplete="new-password" value={values[k] ?? ""}
                     placeholder={s.ready ? "設定済み（変えるときだけ入れる）" : ""} onChange={(e) => setValues({ ...values, [k]: e.target.value })} />
                 </label>
               ))}
               {s.signup && (
                 <a className="inline-flex min-h-11 items-center text-xs text-accent-700 hover:underline dark:text-accent-300" href={s.signup} target="_blank" rel="noreferrer">
-                  鍵を取得する（{new URL(s.signup).host}）
+                  {s.id === "jpo" ? "利用登録の案内（特許庁）" : `鍵を取得する（${new URL(s.signup).host}）`}
                 </a>
               )}
             </section>

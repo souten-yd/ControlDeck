@@ -64,11 +64,12 @@ def test_epo_records_use_the_shared_biblio_shape():
 def test_internal_addresses_plain_http_and_redirects_are_refused():
     from app.knowledge import sources
 
-    for url in ("http://example.com/feed", "https://127.0.0.1/feed", "https://10.0.0.5/x"):
-        with pytest.raises(sources.SourceError):
-            sources._public_host(url)
-    with pytest.raises(sources.SourceError):
-        sources._NoRedirect().redirect_request(None, None, 302, "", {}, "https://127.0.0.1/")
+    with pytest.raises(sources.SourceError, match="https"):
+        sources._public_host("http://example.com/feed")
+    # 内部のアドレスは接続の時点で拒む（Web 収集エンジンの出口。解決した IP にそのまま接続する）
+    for url in ("https://127.0.0.1/feed", "https://10.0.0.5/x", "https://169.254.169.254/latest/"):
+        with pytest.raises(sources.SourceError, match="内部"):
+            sources.http_get(url, pace=0)
 
 
 def test_keys_are_encrypted_and_never_returned():
@@ -149,7 +150,7 @@ def test_api_refuses_unapproved_queries(admin_client):
     r = admin_client.post("/api/v1/patents/sources/openalex/fetch", json={"query": "inverter"}, headers=CSRF_HEADERS)
     assert r.status_code == 422
     listed = admin_client.get("/api/v1/patents/sources").json()["sources"]
-    assert {s["id"] for s in listed} == {"epo", "uspto", "openalex", "rss", "gdelt"}
+    assert {s["id"] for s in listed} == {"jpo", "epo", "uspto", "openalex", "rss", "gdelt"}
 
 
 def test_deleting_a_case_removes_its_watches_hits_and_notices(monkeypatch):
@@ -172,3 +173,20 @@ def test_deleting_a_case_removes_its_watches_hits_and_notices(monkeypatch):
     conn = watch.connect()
     assert conn.execute("SELECT COUNT(*) FROM patent_notices").fetchone()[0] == 0
     conn.close()
+
+
+def test_jpo_needs_registration_and_ten_digit_application_numbers():
+    """特許庁 API は利用登録の後に通知されるトークン取得の URL・ID・パスワードで使う。番号で引くだけ（言葉では探せない）。
+    根拠: docs/research-web-collector.md §6（2026-11-21 利用者「特許庁などからデータをダウンロードする API の設定はどこ」）。"""
+    from app.knowledge import sources
+
+    with pytest.raises(sources.SourceError, match="10 桁"):
+        sources.fetch("jpo", "インバータ 損失")
+    with pytest.raises(sources.SourceError, match="未設定"):
+        sources.fetch("jpo", "2020008423")
+    sources.set_keys({"jpo_token_url": "https://evil.example.com/token", "jpo_id": "u", "jpo_password": "p"})
+    with pytest.raises(sources.SourceError, match="ip-data.jpo.go.jp"):
+        sources.fetch("jpo", "2020008423")
+    listed = {s["id"]: s for s in sources.listing()}
+    assert listed["jpo"]["ready"] and "evil" not in str(listed)
+    sources.set_keys({"jpo_token_url": "", "jpo_id": "", "jpo_password": ""})

@@ -10,6 +10,8 @@
 **統合ナレッジ基盤と Patent 画面**（PatentBuddy・ResearchDataHub を ControlDeck へ統合。一般・特許・規格の分野別 DB、横断検索、PDF 解析。特許の業務は `backend/app/patents/` と `/patents`。PatentBuddy Add-on は 2026-11-21 に撤去）。
 **まず `docs/HANDOFF-knowledge-platform.md`（引き継ぎ・現状・作業一覧）を読む。** 計画・棚卸し・段階・データ回収とリポジトリを閉じる手順は `docs/PLAN-knowledge-platform.md`。進捗が動いたら両方を更新する（`AGENTS.md`「引き継ぎ資料の決まり」）。
 
+**検索基盤の強化（Web 収集エンジン・特許の調査）**（2026-11-21〜）。**まず `docs/HANDOFF-web-collector.md` を読む。** 計画は `docs/PLAN-web-collector.md`、調査と採否は `docs/research-web-collector.md`。
+
 ## 読む順
 
 1. `AGENTS.md`

@@ -102,6 +102,19 @@ FEATURES: dict[str, dict] = {
         "summary": "関数の呼び出し元や同じ形のコードを構文で探す。OpenCode の「レビュー」で影響範囲を洗い出すのに使う",
         "requires": "opencode-v2",
     },
+    # 検索と収集（docs/PLAN-web-collector.md）。本体の venv を汚さず、機能の専用 venv に版を固定して入れる。
+    # ControlDeck は取得済みの HTML を子プロセス（app/web_collector/worker.py）に渡して本文を取り出す。
+    "web-extract": {
+        "name": "Web 本文抽出（Trafilatura）",
+        "kind": "python-lib",
+        "packages": ["trafilatura==2.3.1"],
+        "latest_packages": ["trafilatura"],
+        "module": "trafilatura",
+        "distribution": "trafilatura",
+        "category": "search",
+        "route_gated": False,
+        "summary": "Web ページから本文・見出し・表・リンクを Markdown で取り出す。Deep Research・Workflow・特許の調査で使う。未導入なら従来の簡易な抽出",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -165,6 +178,7 @@ CATEGORIES = {
     "runtime": "LLM ランタイム（GPU）",
     "addon": "拡張アプリ",
     "speech": "音声（TTS / ASR）",
+    "search": "検索と収集",
     "tools": "その他の道具",
 }
 
@@ -269,6 +283,8 @@ def _managed_executable(feature_id: str) -> Path:
         return root / "current" / selected[0].entrypoint if selected else root / "current" / "missing"
     if spec["kind"] == "pip":
         return root / "venv" / "bin" / spec["executable"]
+    if spec["kind"] == "python-lib":
+        return root / "venv" / "bin" / "python"
     if spec["kind"] in NPM_MODULE_KINDS:
         # プラグインと MCP サーバーは PATH 上の実行ファイルを持たない。導入済みの印は package.json。
         return root / "node_modules" / spec["module"] / "package.json"
@@ -306,6 +322,16 @@ def mcp_entry(feature_id: str) -> Path | None:
     return entry
 
 
+def _python_lib_version(spec: dict, python: Path) -> str:
+    """専用 venv の中のライブラリの版（import できなければ空）。"""
+    code = (f"import {spec['module']}, importlib.metadata as m; print(m.version({spec['distribution']!r}))")
+    try:
+        result = subprocess.run([str(python), "-I", "-c", code], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()[:80] if result.returncode == 0 else ""
+
+
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "speech-engine":
@@ -323,6 +349,10 @@ def executable(feature_id: str) -> Path | None:
         # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() else None
+    if spec["kind"] == "python-lib":
+        # venv の python は symlink。resolve すると venv の外の python を指すので解決しない。
+        managed = _managed_executable(feature_id)
+        return managed if managed.is_file() and _python_lib_version(spec, managed) else None
     binary_name = spec["executable"]
     managed = _managed_executable(feature_id)
     if managed.is_file() and os.access(managed, os.X_OK):
@@ -437,6 +467,11 @@ def status(feature_id: str) -> dict:
             healthy = True
         except (OSError, json.JSONDecodeError):
             error = "プラグインの package.json を読めません"
+    elif binary is not None and spec["kind"] == "python-lib":
+        version = _python_lib_version(spec, binary)
+        healthy = bool(version)
+        if not healthy:
+            error = f"{spec['module']} を読み込めません。再導入してください"
     elif binary is not None:
         try:
             result = subprocess.run(
@@ -546,7 +581,7 @@ def _npm_install(feature_id: str, package: str) -> subprocess.CompletedProcess[s
     )
 
 
-def _pip_install(feature_id: str, package: str) -> subprocess.CompletedProcess[str]:
+def _pip_install(feature_id: str, package: str | list[str]) -> subprocess.CompletedProcess[str]:
     """アドオン専用venvへ導入する。Control Deck本体のvenvは汚さない。"""
     root = _feature_root(feature_id)
     python = shutil.which("python3")
@@ -561,13 +596,16 @@ def _pip_install(feature_id: str, package: str) -> subprocess.CompletedProcess[s
         if created.returncode != 0:
             return created
     return subprocess.run(
-        [str(venv / "bin" / "pip"), "install", "--upgrade", "--disable-pip-version-check", package],
+        [str(venv / "bin" / "pip"), "install", "--upgrade", "--disable-pip-version-check",
+         *([package] if isinstance(package, str) else package)],
         capture_output=True, text=True, timeout=900, check=False,
     )
 
 
 def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedProcess[str]:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "python-lib":
+        return _pip_install(feature_id, spec["latest_packages"] if latest else spec["packages"])
     package = spec["package"]
     if spec["kind"] == "pip":
         return _pip_install(feature_id, package)
