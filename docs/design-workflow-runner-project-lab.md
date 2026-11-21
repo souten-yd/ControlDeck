@@ -125,6 +125,38 @@ sandbox の中のページは生まれが `null` になり、Cookie を送れず
 - 例: `"command": ["npx", "vite", "--port", "{port}", "--host", "{host}", "--strictPort", "--base", "{base}"]`
 - `{base}` を使わない dev server で絶対 path の資産を読むものは、sandbox の中では読めない（前と同じ）。Cookie の入口 `/project-view/{run_id}/` は残している。
 
+### 4.8 見張りモード（ライブ確認。2026-11-21）
+
+保存のたびに、AI も利用者も作り直された結果をすぐ確かめる。profile に任意の `watch` を書く。
+
+- `paths`（既定 `["**/*"]`）・`ignore`: project 直下からの相対 glob。`/` を含まない pattern はどの深さにも当たる。`.controldeck/`・`.git/`・`node_modules/`・`__pycache__/`・`build/` は常に見張らない。
+- `build`: argv（任意。shell 禁止、実行ファイルは許可 SDK だけ）。1 つの argv だけ。configure など前段は最初に一度手で行う。
+- `mode`: `restart`（build してから command を起こし直す。web の省略値）、`rerun`（build してから command を最後まで流し直す。ほかの省略値）、`native`（見張らない。Vite の HMR など。画面の記録だけ使う）。
+- `debounce_ms`: 100〜5000、既定 400。
+
+restart / rerun の run は、unit の中で command の代わりに見張り役（`python -m app.project_lab.live`）が動く。状態は `.controldeck/live/<run_id>.jsonl`（`phase`: idle / building / running / exited / failed）。画面には鍵付き入口の HTML だけに live.js が入り、再読み込み・状態・AI の知らせ（`.controldeck/live/<run_id>.notes` に 1 行書く）を受け、「記録」を入れると操作と気づきが `.controldeck/feedback/<run_id>.jsonl` に溜まる（入力は値を送らず長さだけ）。実行のメモリ上限は Project Lab の設定 `run_memory_max_mb`（既定 2048、512〜16384）。
+
+manifest の例（`.controldeck/project.json` の profiles の要素）:
+
+```json
+// Python の Web サーバー（保存で起こし直す。preview の鍵付き入口へ繋がると画面が読み込み直される）
+{"id": "web", "label": "Web", "type": "web", "command": ["python3", "app.py", "--port", "{port}"],
+ "watch": {"paths": ["**/*.py", "templates/**"], "mode": "restart"}}
+
+// Python のテスト（保存で最後まで流し直す。結果は状態ファイルと journal）
+{"id": "tests", "label": "pytest", "type": "test", "command": ["pytest", "-q"],
+ "watch": {"paths": ["**/*.py"], "ignore": ["docs/**"], "mode": "rerun", "debounce_ms": 600}}
+
+// C++（cmake でビルドしてから ctest を流し直す。configure は最初に一度 `cmake -S . -B build`。メモリは設定で増やす）
+{"id": "cpp", "label": "ctest", "type": "test", "command": ["ctest", "--test-dir", "build", "--output-on-failure"],
+ "watch": {"paths": ["src/**", "tests/**", "CMakeLists.txt"], "build": ["cmake", "--build", "build", "--parallel"], "mode": "rerun"}}
+
+// Vite（HMR はアプリ自身。見張り役は使わず、画面の記録だけ使う）
+{"id": "dev", "label": "Vite", "type": "web",
+ "command": ["npx", "vite", "--port", "{port}", "--host", "{host}", "--strictPort", "--base", "{base}"],
+ "watch": {"mode": "native"}}
+```
+
 ## 4.1 プロジェクトの削除
 
 置き場（CodeDEV）へフォルダを置けば自動で並ぶ一方、消す手段が画面に無かった。

@@ -29,6 +29,17 @@
 - 箱の OpenCode の設定: `controldeck_addons` を、箱の中の bridge（`addon_mcp_bridge.py` を箱の `home/.controldeck/` へ写して `/usr/bin/python3` で実行。箱はホストの /data1tb を見られないので写す）に差し替え、URL は中継、トークンは意味の無い値 `sandbox`、結果のフォルダは箱の中。本番の鍵に加え、中継のトークンが設定に入るなら書き出しを中止。
 - 検証: `tests/test_lab_mcp_tools.py`（7）、`tests/test_sandbox_gateway.py`（+6）、`tests/test_dev_sandbox.py`（+5）、`tests/test_addon_agent_mcp.py`（一覧の期待に lab_* を追加）。実機（podman・systemd・箱の OpenCode から呼ぶ）は未確認。
 
+## 2026-11-21 Project Lab の見張りモード（ライブ確認。Vite 以外にも）
+
+- 目的: OpenCode（AI）と利用者が、保存のたびに作り直された結果をすぐ確かめる。Web アプリ（Vite・Vite 以外・Python のサーバー）、Python のスクリプト・テスト、C++（ビルドして実行・ctest）。利用者は preview を触り、操作と気づきを記録して AI に渡せる。
+- manifest の profile に任意の `watch`: `{paths, ignore, build（argv）, mode: restart|rerun|native, debounce_ms 100〜5000}`。検証は command と同じ（相対パスだけ・`..` 禁止・shell の -c 禁止、build の実行ファイルは許可 SDK だけ）。`.controldeck/`・`.git/`・`node_modules/`・`__pycache__/`・`build/` は常に見張らない。mode の省略は web=restart、ほか=rerun。
+- 見張り役 `app/project_lab/live.py`: run の unit の中で command の代わりに動き（watchfiles、debounce でまとめて 1 回）、build → command。子は同じ unit の中（`web_preview_ready` が見える）。変更で前の子を SIGTERM→SIGKILL してから回す。build 失敗では command を起こさず failed。状態は `<project>/.controldeck/live/<run_id>.jsonl`、出力は journal にも出る。指示（spec）は data の下に 0600（鍵付き {base} を含むため）。
+- 実行のメモリ上限を設定 `run_memory_max_mb`（既定 2048、512〜16384）に。unit の MemoryMax に使う。
+- 画面: 鍵付き入口の text/html にだけ `__cd/live.js` の script を 1 本差し込む（identity で頼み直し・8 MiB 超は差し込まない・content-length を直す）。`__cd/live.js` と WS `__cd/live` は上流へ送らず ControlDeck が答える（ビルド中・再起動中でも答えられる）。WS は状態の `status`、restart の起き直し後の `reload`、AI の知らせ（`<project>/.controldeck/live/<run_id>.notes` に 1 行書く）の `note` を送り、画面の記録（クリック・入力の長さだけ・送信・遷移・エラー・fetch の失敗・気づき）を `<project>/.controldeck/feedback/<run_id>.jsonl` に追記する（1 件 16KB・1 秒 50 件・1 run 20MB）。
+- 検証: `tests/test_project_lab_live_config.py`（20）・`_live_supervisor.py`（7）・`_live_preview.py`（16）。実機（本物の systemd・Vite・iPhone Safari・C++）は未確認。
+- 実機（Opus、使い捨ての ControlDeck・ポート 18791・一時の CodeDEV）: Python の Web（restart）で HTML に live.js が 1 本入り、WS で status・note・reload が届き、保存で v1→v2 に変わった。画面からのクリックと気づきが `.controldeck/feedback/` に残った。C++（cmake＋ctest、rerun）で、成功（終了 0）・テスト失敗（終了 8、変わったファイル `src/main.cpp`）・コンパイル失敗（failed、エラー位置つき）を記録した。止めた後にユニット・子のプロセスは残らなかった。
+- 実機で見つけて直した: (1) 見張り役を `python -m app.project_lab.live` で起こすと、作業フォルダ（プロジェクト）の利用者の `app.py` が ControlDeck の `app` より先に読まれ、起動しなかった → `-P`（作業フォルダを import の探し先に入れない）。単体テストも本番と同じ作業フォルダに `app.py` を置く形に直した。(2) 終わり（exited）の記録に変わったファイルが入っていなかった。
+
 ## 2026-11-21 開発用サンドボックスにネットワークの境界（pod と LLM 中継）
 
 - 問題: 箱は `--network host` で、本番のゲートウェイが loopback＋`x-requested-with` なら鍵なしで通すため、箱の AI が本番のモデル切り替え（POST /api/v1/llm/v1/models/{m}/load）まで呼べた。opencode.json に本番の鍵も平文で書いていた。

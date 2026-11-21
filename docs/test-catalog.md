@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 194 ファイル、1740 テスト（目的の未記入 93 ファイル）
+- backend: 198 ファイル、1779 テスト（目的の未記入 93 ファイル）
 - E2E: 96 spec、198 テスト
 
 ## backend（backend/tests）
@@ -726,7 +726,7 @@
 
 ### backend/tests/test_dev_sandbox.py
 
-目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。
+目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。
 
 - `test_create_clones_without_touching_the_source`
 - `test_names_are_validated`
@@ -768,6 +768,10 @@
 - `test_mcp_tools_listing_is_narrowed_and_renewed_token_is_not_passed_on` — /tools は許可の道具だけ。上流の更新トークンの頭を箱へ渡さない。
 - `test_mcp_upstream_errors_pass_through_and_token_stays_out_of_logs` — 上流の拒否はそのまま返し、トークンをログに出さない。
 - `test_relay_reads_the_token_from_the_environment_not_argv` — トークンは環境変数で受け、argv で受けない。
+- `test_dev_box_runs_in_its_pod_not_on_the_host_network`
+- `test_ensure_pod_reuses_same_spec_and_recreates_on_change`
+- `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it`
+- `test_opencode_config_has_no_production_key_and_points_at_the_relay`
 
 ### backend/tests/test_diagnostics.py
 
@@ -1944,6 +1948,53 @@
 - `test_export_plan_endpoint_lists_what_will_be_dropped`
 - `test_archive_endpoint_returns_a_zip_without_secrets`
 
+### backend/tests/test_project_lab_live_config.py
+
+目的: Project Lab の見張りモードの設定（manifest の `watch`）と、実行のメモリの上限（`run_memory_max_mb`）。 目的: - `watch` の paths・ignore・build は command・artifacts と同じ検証（相対パスだけ、`..` 禁止、shell の -c 禁止）。 mode と debounce_ms の範囲。mode の省略値（web は restart、ほかは rerun）。 - watch があって mode が native 以外なら、systemd の unit は command の代わりに見張り役を起こす （spec は 0600・プロジェクトの外）。native は今までどおり command を直接起こす。 - 設定 `run_memory_max_mb`（既定 2048、512〜16384）が unit の MemoryMax に入る。 根拠: 2026-11-21 の設計。C++ のビルドは 2G では足りない。見張り役の指示には鍵付きの {base} が入るので置き場に気をつける。
+
+- `test_watch_accepts_a_full_declaration_and_fills_defaults`
+- `test_watch_rejects_unsafe_or_out_of_range_values`
+- `test_watch_is_only_for_runnable_profiles`
+- `test_run_memory_setting_range_default_and_persistence`
+- `test_memory_setting_api_validates_and_applies`
+- `test_watch_run_starts_the_supervisor_with_a_private_spec`
+- `test_native_watch_and_no_watch_start_the_command_directly`
+- `test_memory_max_follows_the_setting`
+- `test_start_run_resolves_the_build_executable_and_skips_native` — manifest から起こすとき、build の実行ファイルも許可 SDK だけ。native は見張り役を起こさない。
+
+### backend/tests/test_project_lab_live_preview.py
+
+目的: 見張りモードの画面側: live.js の差し込み（鍵付き入口の HTML だけ）と、WebSocket `__cd/live` の受け口。 目的: - 鍵付き入口の応答が text/html のときだけ、`</head>`（無ければ `</body>`、無ければ末尾）の前へ script を 1 本入れる。 接頭辞が正しい・content-length が合う・圧縮された HTML は圧縮なし（identity）で頼み直す・8 MiB 超と HTML 以外は触らない。`__cd/live.js` は上流へ送らず ControlDeck が答える。 - `__cd/live` は run の鍵で認証する。見張り役の状態を `status` で、restart の再起動を `reload` で、AI の知らせ （notes ファイル）を `note` で画面へ送る。native・見張り無しなら status を送らない。 - 画面から来た記録は `.controldeck/feedback/<run_id>.jsonl` へ追記する。1 件 16KB・1 秒 50 件・1 run 20MB まで。 根拠: 2026-11-21 の設計。記録の入口は誰でも（鍵があれば）叩けるので、ディスクと CPU を食い尽くされない上限が要る。 Vite の HMR など、アプリ自身の WebSocket・script を壊さないため、HTML 以外は今のまま流す。
+
+- `test_html_gets_exactly_one_script_before_head_close`
+- `test_script_goes_before_body_close_or_at_the_end`
+- `test_non_html_and_oversized_html_pass_through_untouched`
+- `test_html_just_under_the_limit_is_still_injected`
+- `test_8mib_is_the_real_limit`
+- `test_compressed_html_is_requested_again_without_compression`
+- `test_live_js_is_answered_by_control_deck_even_while_upstream_is_down`
+- `test_live_websocket_rejects_a_wrong_key_and_a_finished_run`
+- `test_records_are_appended_with_time_and_source`
+- `test_a_record_over_16kb_is_dropped_and_invalid_json_is_refused`
+- `test_records_are_limited_to_50_per_second`
+- `test_a_run_stops_accepting_records_at_the_total_limit`
+- `test_status_reload_and_note_reach_the_page_in_restart_mode`
+- `test_rerun_mode_sends_status_but_never_reload`
+- `test_native_or_unwatched_runs_get_no_status`
+- `test_old_notes_are_not_replayed_on_connect`
+
+### backend/tests/test_project_lab_live_supervisor.py
+
+目的: Project Lab の見張り役 `app.project_lab.live`（見張りモードの本体）。 目的: - 保存のたびに build → command を回す。まとめて 1 回（debounce）、build が失敗したら command を起こさず failed、rerun は最後まで流して exited と exit_code、restart は前の子を止めてから起こす。 - `.controldeck/` などの変更では回らない（状態ファイル自身の書き込みで回り続けない）。 - glob の当たり方（paths・ignore、`/` を含まない pattern はどの深さにも当たる）。 根拠: 2026-11-21 の設計（Vite 以外の Web・Python・C++ でも、保存したら結果をすぐ確かめる）。 状態ファイルへの書き込みを見張ると無限に回るので、常に見張らない場所を決めている。 実際に watchfiles と子プロセスを使う（本物の systemd・podman は使わない）。子は偽の python スクリプト。
+
+- `test_rerun_runs_to_the_end_and_reports_exit_code`
+- `test_a_burst_of_saves_runs_build_and_command_once`
+- `test_a_failed_build_never_starts_the_command`
+- `test_restart_stops_the_previous_child_before_starting_again`
+- `test_changes_under_controldeck_and_build_dirs_do_not_loop`
+- `test_ignore_patterns_keep_listed_files_from_triggering`
+- `test_glob_matching_rules`
+
 ### backend/tests/test_project_lab_publish.py
 
 目的: 静的サイト公開で、出してはいけない物が出ないことを守る。 公開は取り消しても索引や cache に残る。ダウンロードなら手元で気づけば済むが、 ここは気づいた時点で手遅れになる。選別が export と同じ規則を使い続けること、 index.html の無い場所を公開しないことをテストで固定する。
@@ -2243,6 +2294,18 @@
 - `test_generated_definition_validator`
 - `test_workflow_generation_uses_configured_schema_mode` — reasoningを無制限に走らせず、構造化出力を要求する。
 - `test_persistent_chat_defaults_to_fast_non_thinking_mode`
+
+### backend/tests/test_sandbox_gateway.py
+
+目的: サンドボックスの LLM 中継（app.maintenance.sandbox_gateway）。 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。 上流は httpx.MockTransport の偽物。
+
+- `test_only_allowed_calls_pass_and_load_needs_allow_load`
+- `test_headers_are_replaced_not_forwarded`
+- `test_body_over_32_mib_is_413`
+- `test_stream_chunks_arrive_separately`
+- `test_concurrency_limit_returns_429_without_waiting`
+- `test_upstream_down_is_502_and_slot_is_released`
+- `test_cloud_models_are_refused_unless_allowed` — 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。外部のモデルへの chat は既定で断り、上流へ送らない。
 
 ### backend/tests/test_searxng_helper.py
 

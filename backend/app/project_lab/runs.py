@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ProjectRun, ProjectRunArtifact
-from app.project_lab import service
+from app.project_lab import live_paths, service
 
 logger = logging.getLogger("control_deck.project_lab.runs")
 
@@ -151,8 +152,12 @@ def _launch(
     db: Session, *, project: Path, project_id: str, project_name: str, profile_id: str,
     profile_type: str, command: list[str], executable: str, cwd: Path, environment: dict[str, str],
     timeout_seconds: int, web_port: int | None, created_by: int | None, manifest,
+    watch=None, build: list[str] | None = None,
 ) -> ProjectRun:
-    """隔離済みsystemd user transient unitでcommandを起動し、実行記録を残す。"""
+    """隔離済みsystemd user transient unitでcommandを起動し、実行記録を残す。
+
+    watch（ProjectWatch）があり mode が native 以外のときは、command の代わりに見張り役
+    （`app.project_lab.live`）を起こし、見張り役が build → command を回す。"""
     systemd_run, _, _ = _systemd_tools()
     for row in db.execute(select(ProjectRun).where(ProjectRun.status.in_(RUNNING_STATES))).scalars().all():
         refresh_run(db, row)
@@ -175,6 +180,7 @@ def _launch(
     row.unit_name = f"control-deck-project-run-{row.id}"
     db.commit()
 
+    memory_mb = service.get_settings()["run_memory_max_mb"]
     argv = [
         systemd_run, "--user", "--quiet", f"--unit={row.unit_name}",
         "--property=Type=exec", f"--property=WorkingDirectory={cwd}",
@@ -182,7 +188,7 @@ def _launch(
         f"--property=RuntimeMaxSec={timeout_seconds}s", "--property=TimeoutStopSec=10s",
         "--property=NoNewPrivileges=yes", "--property=PrivateTmp=yes", "--property=ProtectSystem=strict",
         "--property=ProtectHome=read-only", f"--property=ReadWritePaths={project}",
-        "--property=MemoryMax=2G", "--property=TasksMax=128", "--property=CPUQuota=200%",
+        f"--property=MemoryMax={memory_mb}M", "--property=TasksMax=128", "--property=CPUQuota=200%",
         "--property=UMask=0077",
     ]
     for key, value in sorted(environment.items()):
@@ -197,7 +203,22 @@ def _launch(
         ])
     # {base} は run の番号が決まってから埋める。記録（command_json）には鍵を残さない。
     tail = [item.replace(PREVIEW_BASE_PLACEHOLDER, preview_base(row)) for item in command[1:]] if web_port is not None else command[1:]
-    argv.extend([executable, *tail])
+    if watch is not None and watch.mode != "native":
+        spec_file = live_paths.write_spec(row.id, {
+            "run_id": row.id, "project": str(project), "cwd": str(cwd),
+            "command": [executable, *tail], "build": list(build or []), "mode": watch.mode,
+            "paths": watch.paths, "ignore": watch.ignore, "debounce_ms": watch.debounce_ms,
+            "state_file": str(live_paths.state_file(project, row.id)),
+            # 見張り役のために入れる PYTHONPATH を、子へは渡さない（利用者の app パッケージと衝突する）
+            "child_pythonpath": environment.get("PYTHONPATH"),
+        })
+        backend_dir = str(Path(__file__).resolve().parents[2])
+        argv.append(f"--setenv=PYTHONPATH={backend_dir}")
+        # -P: 作業フォルダ（プロジェクト）を import の探し先に入れない。入れると利用者の app.py が
+        # ControlDeck の app より先に読まれ、見張り役が起動しない（2026-11-21 実機: ValueError in app.py）
+        argv.extend([sys.executable, "-P", "-m", "app.project_lab.live", "--spec", str(spec_file)])
+    else:
+        argv.extend([executable, *tail])
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
     if result.returncode != 0:
         row.status = "FAILED"
@@ -205,6 +226,7 @@ def _launch(
         row.error_redacted = service.redact_text((result.stderr or result.stdout or "systemd-run failed")[:4000])
         row.finished_at = datetime.now(timezone.utc)
         db.commit()
+        live_paths.remove_spec(row.id)
         raise ProjectRunError(row.error_redacted)
     row.status = "RUNNING"
     db.commit()
@@ -231,11 +253,16 @@ def start_run(
     web_port = _allocate_web_port(db) if profile.type == "web" else None
     command = _command_with_runtime(profile.command, web_port=web_port)
     executable = _resolve_executable(command[0], cwd, project)
+    watch = profile.watch if profile.watch and profile.watch.mode != "native" else None
+    build: list[str] = []
+    if watch is not None and watch.build:
+        build_command = _command_with_runtime(watch.build, web_port=web_port)
+        build = [_resolve_executable(build_command[0], cwd, project), *build_command[1:]]
     return _launch(
         db, project=project, project_id=project_id, project_name=manifest.name,
         profile_id=profile.id, profile_type=profile.type, command=command, executable=executable,
         cwd=cwd, environment=profile.environment, timeout_seconds=timeout_seconds,
-        web_port=web_port, created_by=created_by, manifest=manifest,
+        web_port=web_port, created_by=created_by, manifest=manifest, watch=watch, build=build,
     )
 
 
@@ -349,6 +376,7 @@ def refresh_run(db: Session, row: ProjectRun) -> ProjectRun:
     row.finished_at = datetime.now(timezone.utc)
     _finalize_artifacts(db, row)
     db.commit()
+    live_paths.remove_spec(row.id)
     _announce_finished(row)
     return row
 
@@ -429,6 +457,7 @@ def cancel_run(db: Session, row: ProjectRun) -> ProjectRun:
     row.finished_at = datetime.now(timezone.utc)
     _finalize_artifacts(db, row)
     db.commit()
+    live_paths.remove_spec(row.id)
     return row
 
 
