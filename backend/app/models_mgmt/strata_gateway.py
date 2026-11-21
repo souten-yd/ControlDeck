@@ -232,6 +232,82 @@ def get_instance(alias: str) -> dict:
     return _present({"alias": alias, **cfg}, running=_running())
 
 
+# GGUF の general.file_type（llama.cpp の LLAMA_FTYPE）。Strata の可否の説明に名前を出す。
+_FILE_TYPES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S",
+               12: "Q3_K_M", 13: "Q3_K_L", 14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K",
+               19: "IQ2_XXS", 20: "IQ2_XS", 21: "Q2_K_S", 22: "IQ3_XS", 23: "IQ3_XXS", 24: "IQ1_S", 25: "IQ4_NL",
+               26: "IQ3_S", 27: "IQ3_M", 28: "IQ2_S", 29: "IQ2_M", 30: "IQ4_XS", 31: "IQ1_M", 32: "BF16"}
+
+
+def gguf_header(path: Path, wanted: tuple[str, ...] = ("general.file_type", "general.quantized_by", "general.architecture")) -> dict:
+    """GGUF の先頭のメタデータから、指定した鍵だけを読む（テンソルは読まない）。"""
+    import struct
+
+    scalar = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+    out: dict = {}
+    with path.open("rb") as f:
+        if f.read(4) != b"GGUF":
+            return out
+        f.read(4)
+        _tensors, count = struct.unpack("<QQ", f.read(16))
+
+        def text() -> str:
+            (n,) = struct.unpack("<Q", f.read(8))
+            return f.read(min(n, 1 << 20)).decode("utf-8", "replace")
+
+        def value(kind: int):
+            if kind == 8:
+                return text()
+            if kind == 9:
+                (item,) = struct.unpack("<I", f.read(4))
+                (n,) = struct.unpack("<Q", f.read(8))
+                if item == 8:
+                    for _ in range(n):
+                        text()
+                else:
+                    f.seek(struct.calcsize("<" + scalar[item]) * n, 1)
+                return None
+            return struct.unpack("<" + scalar[kind], f.read(struct.calcsize("<" + scalar[kind])))[0]
+
+        for _ in range(min(count, 100_000)):
+            key = text()
+            (kind,) = struct.unpack("<I", f.read(4))
+            got = value(kind)
+            if key in wanted:
+                out[key] = got
+                if len(out) == len(wanted):
+                    break
+    return out
+
+
+from struct import error as struct_error  # noqa: E402
+
+
+def check_runnable(family: str, path: Path) -> None:
+    """Strata が動かせない GGUF を登録の時点で断る（起動して初めて分かると、ロードが何度も失敗する）。
+
+    Strata が動かすのは ISTA-DASLab の GSQ-RCO と Unsloth の UD-*（と Q8_0）だけで、ほかの K 量子化（Q4_K_S・Q4_K_M など）は
+    動かない（2026-11-21 本番: Uncensored の Q4_K_S が「a GGUF Strata cannot run」で 4 回失敗）。Unsloth の系列は
+    general.quantized_by が Unsloth か Q8_0 のときだけ通す。ほかの系列は Strata 自身の確認に任せる。
+    """
+    if family != "unsloth":
+        return
+    try:
+        header = gguf_header(path)
+    except (OSError, ValueError, KeyError, struct_error):
+        return                                  # 読めないものは Strata 自身の確認に任せる
+    if header.get("general.file_type") is None:
+        return
+    quantized_by = str(header.get("general.quantized_by") or "")
+    file_type = header.get("general.file_type")
+    if "unsloth" in quantized_by.casefold() or file_type == 7:
+        return
+    name = _FILE_TYPES.get(file_type, f"種類 {file_type}") if file_type is not None else "不明な量子化"
+    raise StrataGatewayError(
+        f"この GGUF（{name}・{quantized_by or '量子化した人の記載なし'}）は Strata では動きません。Strata が動かすのは Unsloth の UD-*"
+        "（UD-IQ4_XS・UD-Q4_K_XL など）・ISTA-DASLab の GSQ-RCO・Q8_0 だけです。ほかの量子化は llama.cpp で登録してください")
+
+
 def _validate_model_path(value: str) -> str:
     from app.files import service as files
 
@@ -306,6 +382,8 @@ def save_instance(alias: str, *, family: str, model: str,
     if not valid_context(context) or not (_MIN_PORT <= port <= _MAX_PORT):
         raise StrataGatewayError("コンテキストまたはポートがサポート範囲外です")
     model_path = _validate_model_path(model_path) if model_path else ""
+    if model_path:
+        check_runnable(family, Path(model_path))
     if kv not in {"int8", "q4_0", "k8v4", "fp16"} or vision not in {"on", "off", "gpu", "cpu"}:
         raise StrataGatewayError("KV形式または画像設定が不正です")
     if drafting not in {"auto", "mtp", "dflash2", "off"} or not 1 <= parallel <= 8:

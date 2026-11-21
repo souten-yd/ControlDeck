@@ -321,3 +321,39 @@ def test_legacy_memory_values_are_not_launch_changes_when_equal(monkeypatch, tmp
     monkeypatch.setattr(strata_gateway, "_running", lambda: [])
     strata_gateway.save_instance("legacy-memory", **args, replace=True, kv_resident=None, ram_keep_gib=None)
     assert "kv-resident" not in strata_gateway.engine_settings(strata_gateway._read()["legacy-memory"])
+
+
+def _gguf(path, file_type: int, quantized_by: str | None):
+    """最小の GGUF（メタデータだけ）。"""
+    import struct
+
+    def text(s: str) -> bytes:
+        b = s.encode()
+        return struct.pack("<Q", len(b)) + b
+
+    kv = [(b"general.architecture", 8, text("qwen4exp")), (b"general.file_type", 4, struct.pack("<I", file_type))]
+    if quantized_by is not None:
+        kv.append((b"general.quantized_by", 8, text(quantized_by)))
+    body = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, len(kv))
+    for key, kind, value in kv:
+        body += struct.pack("<Q", len(key)) + key + struct.pack("<I", kind) + value
+    path.write_bytes(body)
+    return path
+
+
+def test_strata_refuses_quantizations_it_cannot_run_at_registration(tmp_path):
+    """Strata は Unsloth の UD-*・GSQ-RCO・Q8_0 だけを動かす。ほかの K 量子化（Q4_K_S など）は登録の時点で断り、llama.cpp を案内する。
+    根拠: 2026-11-21 本番で Uncensored の Q4_K_S を Strata に登録し、ロードが「a GGUF Strata cannot run」で 4 回失敗した。"""
+    import pytest
+
+    from app.models_mgmt import strata_gateway
+
+    q4ks = _gguf(tmp_path / "Uncensored-Q4_K_S.gguf", 14, None)
+    with pytest.raises(strata_gateway.StrataGatewayError, match="Q4_K_S.*llama.cpp"):
+        strata_gateway.check_runnable("unsloth", q4ks)
+    strata_gateway.check_runnable("unsloth", _gguf(tmp_path / "ud.gguf", 30, "Unsloth"))        # UD-IQ4_XS
+    strata_gateway.check_runnable("unsloth", _gguf(tmp_path / "q8.gguf", 7, None))              # Q8_0
+    strata_gateway.check_runnable("qwen", q4ks)                                                  # 他の系列は Strata に任せる
+    (tmp_path / "broken.gguf").write_bytes(b"GGUF")
+    strata_gateway.check_runnable("unsloth", tmp_path / "broken.gguf")                           # 読めないものも任せる
+    assert strata_gateway.gguf_header(q4ks)["general.file_type"] == 14

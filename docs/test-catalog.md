@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 193 ファイル、1710 テスト（目的の未記入 93 ファイル）
-- E2E: 95 spec、197 テスト
+- backend: 193 ファイル、1711 テスト（目的の未記入 93 ファイル）
+- E2E: 96 spec、198 テスト
 
 ## backend（backend/tests）
 
@@ -2318,6 +2318,7 @@
 - `test_memory_settings_preserve_omitted_clear_auto_and_forward`
 - `test_invalid_memory_settings_are_rejected`
 - `test_legacy_memory_values_are_not_launch_changes_when_equal`
+- `test_strata_refuses_quantizations_it_cannot_run_at_registration` — Strata は Unsloth の UD-*・GSQ-RCO・Q8_0 だけを動かす。ほかの K 量子化（Q4_K_S など）は登録の時点で断り、llama.cpp を案内する。
 
 ### backend/tests/test_strata_memory.py
 
@@ -3023,6 +3024,12 @@
 目的: **未記入**
 
 - reload and text focus keep the ${viewport.width}px viewport contained
+
+### frontend/e2e/model-display-name.spec.ts
+
+目的: モデルの表示名: Models の個別設定で名前を付けると、一覧の名前が変わる。ゲートウェイでの名前（alias）は変えない。 根拠: 2026-11-21 利用者「モデルが同じ名前になるので分かりにくい。任意の名前に変えれるようにしたい」。 検証用インスタンスには Strata のモデルが無いので、一覧と登録の応答だけ差し替える（表示名の保存は本物の API）。 */
+
+- Models: 表示名を付ける
 
 ### frontend/e2e/model-provider-common.spec.ts
 
