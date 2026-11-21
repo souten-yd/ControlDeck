@@ -8,7 +8,7 @@
 - 規格の利用可否（保存・AI 利用）の判断: `docs/standards-license-policy.md`
 - 規約の原本: `AGENTS.md`、引き継ぎの入口: `CLAUDE.md`
 
-最終更新: 2026-11-22 K1b（知識エッセンスの画面）を追加 — K1a・K1b 完了（GLM-5.3、開発の箱の OpenCode）
+最終更新: 2026-11-22 K2（承認済みのエッセンスの横断検索・比較）を追加 — K1a・K1b・K2 完了（GLM-5.3、開発の箱の OpenCode）
 
 ## 1. 目的と利用者の決定（時系列）
 
@@ -118,8 +118,8 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
 | R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☑ backend（`knowledge/sources.py`・`patents/watch.py`）と画面（案件の「ウォッチ」、公報タブの「公開データを取得」「取得先の設定」）。EPO・USPTO の鍵は利用者が登録 |
 | R3-3 | AI クレームチャートの判定（`patents/judge.py`・`ClaimJudge.tsx`。○△×?、引用の実在確認で ? に落とす、人の行ごとの修正と確認済み、請求項・原文の版で stale） | ☑ 実装（本番での評価は `~/ControlDeck-評価/`） |
-| R3-4 | 知識エッセンス（抽出・レビュー）。PatentBuddy の K1a〜K2（#29〜#33）を作り直す。段 K1 | ☐ |
-| R3-5 | 知識マップ・横断比較・Idea Canvas。PatentBuddy の K3〜K5・3 段の画面（#34〜#38、#23 の関係の保存）を作り直す。段 K2〜K5 | ☐ |
+| R3-4 | 知識エッセンス（抽出・レビュー）。PatentBuddy の K1a〜K2（#29〜#33）を作り直す。段 K1 | ☑ K1a・K1b・K2（横断検索・比較）完了 |
+| R3-5 | 知識マップ・横断比較・Idea Canvas。PatentBuddy の K3〜K5・3 段の画面（#34〜#38、#23 の関係の保存）を作り直す。段 K2〜K5 | ◐ 横断比較（K2）は済み。知識マップ・Idea Canvas・3 段の画面は未 |
 | R3-6 | 集計・一括取り込み/書き出し・保存先の画面・PDF の精度 | ◐ 集計（特許の分析）を前倒し: 書誌の読み取り（1 ページ目の OCR）・`/api/v1/patents/analytics`・類似マップ・案件に近い公報・書誌の手直し。画面は R3-UI |
 | R3-UI | Patent を ControlDeck のページとして作り直す・分析のダッシュボード | ☑ `/patents`（案件・分析・公報）、`/patents/:id`（左に節、右に次の期限・次にやること）。Fable が作成し Claude が確認 |
 
@@ -136,7 +136,7 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 | 段 | 内容（PB の PR） | ControlDeck での作り方 | 状態 |
 |---|---|---|---|
 | K1 | 知識エッセンス: 抽出の契約（8 種: 課題・原因・原理・作用機構・実装・効果・制約・応用、1 文献 12 件まで、引用 1200 字まで）・ローカル AI での生成・検めて保存（引用が原文のその位置に 1 回だけあること、版の一致）・人のレビュー（承認・却下・差し戻し、追記だけ、版が変われば stale で旧承認は戻らない）・文献の画面のカード（#29〜#33） | `knowledge/essence.py`（契約と検め）・Job でローカル AI（`knowledge/analysis.py` の呼び方を使い回す）・ナレッジのストアに表を足す・API は `/api/v1/knowledge/documents/{id}/essences`（見る・始める・レビュー）・文献の画面（DocumentSheet）にカードとレビューの操作 | ☑ K1a・K1b |
-| K2 | 承認済みのエッセンスの横断検索と、別文献 2〜3 件の比較（#36） | 検索は `search_documents` を通し、承認済みのエッセンスだけを返す（版と引用を再照合）。比較は並べて見せるだけ（AI の判断を足さない） | ☐ |
+| K2 | 承認済みのエッセンスの横断検索と、別文献 2〜3 件の比較（#36） | 検索は `search_documents` を通し、承認済みのエッセンスだけを返す（版と引用を再照合）。比較は並べて見せるだけ（AI の判断を足さない） | ☑ `knowledge/cross.py`・Knowledge の「知識の横断」タブ |
 | K3 | 知識マップ（1〜2 hop、読み取りだけ）と技術仮説のリンク（承認済みの知識の間に `basis=inferred` で明示登録 → 別の操作で承認）。#23 の関係の保存（根拠つきのノード・エッジ、版で stale）を最小限（#34・#35・#23） | ナレッジのストアに関係の表（R2-3 の書誌の関係と同じ置き場に寄せる）。上限（ノード 61・エッジ 60）と打ち切りの表示 | ☐ |
 | K4 | Idea Canvas: 利用者が自分の言葉で発明の仮説を書き、根拠（承認済みのエッセンス 0〜3 件）を固定して版で保存。AI は作らない・保存しない・出願しない（#37） | ローカル専用。保存時に根拠の版と承認を再照合。アイデアから特許の案件を作る導線 | ☐ |
 | K5 | 資料 → 知識 → アイデアの 3 段の画面（PC 2 列・iPhone 1 列、引用元へ行って戻る）（#38） | Patent / Knowledge の React の画面として作り直す | ☐ |
@@ -160,6 +160,18 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた。ブランチは残す）、souten-yd/ResearchDataHub。Archive は反映の後。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-22 GLM-5.3（開発の箱の OpenCode、K2）: 承認済みの知識エッセンスの横断検索・比較。
+  `backend/app/knowledge/cross.py`（新規）+ router に `POST /knowledge/essences/search`・`/compare`
+  （読み取りだけ。権限は既存の閲覧 workflows.run）。検索は search_documents（consumer=local。prohibited
+  の文献は出ない）→ K1 の list_essences（版・レビューの判定を使い回す）→ 引用を原文ともう一度突き合わせ
+  （合わないものは出さない）。1 回の走査 40 文献・応答 50 件・続きは next_cursor。比較は別の文献 2〜3 件を
+  種類ごとの表に並べるだけ。画面は Knowledge の「知識の横断」タブ（`features/knowledge/EssenceCross.tsx`）:
+  検索 + 種類の絞り込み → カード（文献への導線・引用の折りたたみ・承認の日時）→ 比較に加える（2〜3 件）→
+  種類ごとの表（320px は横スクロール）。何も承認されていないときの案内。E2E
+  `knowledge-essence-cross.spec.ts`（5 passed。1280/320・ライト/ダーク・API 差し替え）と knowledge・
+  patents 系の回帰（backend 40・E2E 8）。レビュー役（別のモデル）を 2 回通し、major 1 件
+  （ページ送りで文献の途中を切ると残りが永久に出ない）を含む指摘を直して再レビューで合格。
 
 - 2026-11-22 GLM-5.3（開発の箱の OpenCode、K1b）: 知識エッセンスの画面。`frontend/src/features/knowledge/EssenceSection.tsx`
   （DocumentSheet の「知識エッセンス」の節）・API を `api/knowledge.ts` に追加・Job の進捗表示を `features/knowledge/JobProgress.tsx`

@@ -8,6 +8,7 @@ import { FilePicker } from "../components/FilePicker";
 import { IconFolder, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { knowledgeApi } from "../api/knowledge";
+import { EssenceCross } from "../features/knowledge/EssenceCross";
 import { JobProgress } from "../features/knowledge/JobProgress";
 import { KnowledgeSearch } from "../features/knowledge/KnowledgeSearch";
 import { StandardsPanel } from "../features/knowledge/StandardsPanel";
@@ -51,7 +52,7 @@ export default function KnowledgePage() {
   const [creating, setCreating] = useState(false);
   const [openName, setOpenName] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [tab, setTab] = useState<"find" | "collections" | "standards">("find");
+  const [tab, setTab] = useState<"find" | "cross" | "collections" | "standards">("find");
   const [rebuilding, setRebuilding] = useState(false);
 
   const { data: cols, isLoading } = useQuery({
@@ -73,14 +74,14 @@ export default function KnowledgePage() {
           <IconButton variant="primary" label="コレクション作成" onClick={() => setCreating(true)}><IconPlus /></IconButton>
         )} />
       <SegmentedTabs className="mb-4" value={tab} onChange={setTab}
-        tabs={[["find", "探す"], ["collections", "資料の管理", "資料管理"], ["standards", "規格の管理", "規格管理"]] as const} />
+        tabs={[["find", "探す"], ["cross", "知識の横断", "知識横断"], ["collections", "資料の管理", "資料管理"], ["standards", "規格の管理", "規格管理"]] as const} />
       {tab === "collections" && can("settings.manage") && (
         <div className="-mt-1 mb-3 flex justify-end">
           <button className="min-h-11 rounded-xl px-3 text-sm text-accent-700 hover:bg-accent-600/10 dark:text-accent-300" onClick={() => setRebuilding(true)}>作り直し</button>
         </div>
       )}
 
-      {tab === "find" ? <KnowledgeSearch /> : tab === "standards" ? <StandardsPanel /> : isLoading ? (
+      {tab === "cross" ? <EssenceCross /> : tab === "find" ? <KnowledgeSearch /> : tab === "standards" ? <StandardsPanel /> : isLoading ? (
         <Skeleton className="h-24" />
       ) : !cols || cols.length === 0 ? (
         <EmptyState>コレクションがありません。作成して文書を取り込みましょう。</EmptyState>

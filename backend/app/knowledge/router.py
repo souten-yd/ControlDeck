@@ -205,6 +205,43 @@ def review_essence_item(essence_ref: str, index: int, body: EssenceReviewBody, r
     return out
 
 
+class EssenceSearchBody(BaseModel):
+    q: str = Field(min_length=1, max_length=2000)
+    kind: str = Field(default="", max_length=32)
+    limit: int = Field(default=50, ge=1, le=50)
+    cursor: int = Field(default=0, ge=0, le=500)
+
+
+class EssenceCompareBody(BaseModel):
+    refs: list[str] = Field(min_length=2, max_length=3)
+
+
+@router.post("/essences/search")
+def search_essences(body: EssenceSearchBody, user: User = VIEW):
+    """承認済みの知識エッセンスを文献ごとに横断して探す（読み取りだけ。監査は不要）。
+
+    どの文献を探すかは画面の「探す」と同じ検索の入口（search_documents）に任せる。
+    consumer は local: エッセンスはローカル専用の AI の推論なので、利用条件で AI に
+    使えない文献（ai_use=prohibited）の知識は出さない。
+    同じ文献の item はページの途中で切らないため、応答は limit を最後の 1 文献の分だけ
+    超えうる（欠落・重複なしを優先する）。
+    """
+    from app.knowledge import cross
+
+    return _wrap(cross.search, body.q, body.kind, body.limit, body.cursor)
+
+
+@router.post("/essences/compare")
+def compare_essences(body: EssenceCompareBody, user: User = VIEW):
+    """別の文献 2〜3 件の承認済みのエッセンスを種類ごとに並べて見せる（読み取りだけ）。
+
+    AI の判断（意味の一致・新規性・進歩性など）は足さない。並べるだけ。
+    """
+    from app.knowledge import cross
+
+    return _wrap(cross.compare, body.refs)
+
+
 class PdfJobBody(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     title: str = Field(default="", max_length=300)

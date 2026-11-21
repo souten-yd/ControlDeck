@@ -31,6 +31,27 @@ export interface EssenceRow {
   status: string; error: string; job_id: string; created: number; updated: number;
   basis: string; stale: boolean; shard: string;
 }
+/** 知識の横断（K2）: 承認済みのエッセンスを文献ごとに横断して探した結果の 1 件。 */
+export interface CrossItem {
+  essence_ref: string; item_index: number;
+  doc_ref: string; doc_title: string;
+  kind: string; summary: string; quote: string; reviewed_at: number | null;
+}
+/** 比較の表のセルの中身（文献は列の見出しで分かるので、セルに文献の情報は入らない）。 */
+export type CrossCompareCell = Omit<CrossItem, "doc_ref" | "doc_title">;
+export interface CrossSearchResult {
+  items: CrossItem[]; next_cursor: number | null; limit: number; kinds: Record<string, string>;
+}
+export interface CrossCompareResult {
+  documents: { ref: string; title: string }[];
+  rows: { kind: string; label: string; cells: CrossCompareCell[][] }[];
+  kinds: Record<string, string>;
+}
+/** 種類の 8 種（backend/app/knowledge/essence.py の KINDS と同じ。初回検索前に絞り込みを選べるように固定で持つ）。 */
+export const ESSENCE_KINDS: Record<string, string> = {
+  problem: "課題", cause: "原因", principle: "原理", mechanism: "作用機構",
+  implementation: "実装", effect: "効果", constraint: "制約", application: "応用",
+};
 export interface LicenseDecision {
   storage: string; ai_use: string; operations: string[]; needs_review: boolean; reasons: string[]; publisher: string | null;
 }
@@ -71,6 +92,10 @@ export const knowledgeApi = {
   reviewEssence: (essenceRef: string, index: number, decision: string, note = "") =>
     api<{ essence_id: number; item_index: number; decision: string; reviewer: string }>(
       `/knowledge/essences/${encodeURIComponent(essenceRef)}/items/${index}/review`, { method: "POST", json: { decision, note } }),
+  searchEssences: (q: string, kind = "", cursor = 0, limit = 50) =>
+    api<CrossSearchResult>("/knowledge/essences/search", { method: "POST", json: { q, kind, cursor, limit } }),
+  compareEssences: (refs: string[]) =>
+    api<CrossCompareResult>("/knowledge/essences/compare", { method: "POST", json: { refs } }),
   standards: () => api<{ standards: StandardRow[]; instruments: Record<string, string> }>("/knowledge/standards"),
   decide: (body: Partial<StandardInput>) => api<LicenseDecision>("/knowledge/standards/decide", { method: "POST", json: body }),
   addStandard: (body: StandardInput) => api<{ job_id: string }>("/knowledge/standards", { method: "POST", json: body }),
