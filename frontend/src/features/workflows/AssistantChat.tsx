@@ -15,7 +15,6 @@ import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
 import { IconChip, IconConversation, IconMic, IconSparkle, IconSearch, IconSend, IconSpeaker, IconSpeakerOff, IconStop, IconTerminal } from "../../components/icons";
 import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
-import { useKeyboardViewportFit } from "../../hooks/useKeyboardViewportFit";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
 import { detectAssistantMode, resolveConversationPrefs, SEARCH_MODES, updateConversationPrefs, validChoice, validDepth, wantsResearch, type AssistantMode as Mode, type AssistantModeChoice, type ConversationPrefs, type ResearchDepth } from "./assistantMode";
@@ -273,7 +272,6 @@ function loadSettings() {
  *  同じドロワーを開く。画面は高さ固定で、動くのは会話の一覧だけ。 */
 export default function AssistantChat() {
   const shell = useShell();
-  useKeyboardViewportFit();
   const can = useAuth((s) => s.can);
   const show = useToasts((s) => s.show);
   const navigate = useNavigate();

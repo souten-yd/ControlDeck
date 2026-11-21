@@ -6,6 +6,7 @@ import { useMeta } from "../api/hooks";
 import { useAuth, useMetrics, useToasts } from "../stores";
 import { useMetricsStream } from "../hooks/useMetricsStream";
 import { useNavSwipe } from "../hooks/useNavSwipe";
+import { useKeyboardViewportFit } from "../hooks/useKeyboardViewportFit";
 import { useUxPrefs } from "../stores/uxPrefs";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
@@ -61,6 +62,8 @@ interface NavSection {
 }
 
 export default function AppLayout() {
+  // iPhone でキーボードが出ている間、殻を見えている範囲に合わせ、触った入力欄を見せる（全画面で 1 回）
+  useKeyboardViewportFit();
   const user = useAuth((s) => s.user);
   const can = useAuth((s) => s.can);
   const streamStatus = useMetrics((s) => s.status);
