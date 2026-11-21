@@ -46,7 +46,7 @@
 |---|---|---|---|
 | Opus（Claude Code） | ホスト | Claude のプラン | 計画・設計・安全・本番の操作・最終レビュー・マージ |
 | Sonnet・Haiku（Opus の子エージェント） | ホストの作業ツリー | Claude のプラン | Sonnet: 仕様の決まった実装・テスト。Haiku: 探す・読む・要約 |
-| ローカル LLM（箱の中の OpenCode） | `./deck.sh sandbox` の箱 | 電気代 | 量が多く手順の決まった実装。必ず Opus が監査する |
+| 箱の OpenCode（モデルの順番: Go の GLM-5.3 → Zen の無料 2 つ → ローカル LLM。使い切ったら次へ） | `./deck.sh sandbox` の箱 | Go の枠（月 500 ドル）→ 無料 → 電気代 | 量が多く手順の決まった実装。必ず Opus が監査する |
 | OpenRouter（箱の中の OpenCode） | 同上 | 残高 3 ドル | GPU を箱へ貸している間の開発役、ローカルで手に余る作業 |
 
 - 作業の場所（作業ツリー・箱）を分ければ、Claude の子エージェントとローカル LLM は同時に動かせる（Claude 側は GPU を使わない）。

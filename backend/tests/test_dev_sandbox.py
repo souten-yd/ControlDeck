@@ -362,3 +362,100 @@ def test_opencode_config_refuses_to_write_when_the_mcp_token_would_leak(repo, mo
     with pytest.raises(sandbox.SandboxError, match="MCP のトークン"):
         sandbox.opencode_config(box)
     assert not (box.home / ".config" / "opencode" / "opencode.json").exists()
+
+
+# --- モデルの順番（使い切ったら次へ） ---
+# 目的: 箱の OpenCode は既定で GLM(Go)→Zen 無料→ローカルの順に使い、上限に当たったら次へ移る。
+# 根拠: 利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」。上限以外のエラーで切り替えると不具合を隠す。
+CHAIN = ["opencode-go/glm-5.3", "opencode/hy4-flash-free", "opencode/deepseek-v4.1-flash-free", "controldeck/auto"]
+
+
+def test_default_chain_skips_opencode_models_without_zen_key_or_when_box_disallows(zen_box, monkeypatch):
+    """目的: 既定の順番、キー無し・allow_zen off で opencode* を飛ばす、meta の model_chain が優先、local は別名。"""
+    from app.integrations.opencode import zen
+
+    assert sandbox.DEFAULT_MODEL_CHAIN == CHAIN
+    assert sandbox.model_chain(zen_box) == CHAIN
+    zen_box.meta["allow_zen"] = False
+    assert sandbox.model_chain(zen_box) == ["controldeck/auto"]
+    zen_box.meta["allow_zen"] = True
+    monkeypatch.setattr(zen, "get", lambda: "")
+    assert sandbox.model_chain(zen_box) == ["controldeck/auto"]
+    monkeypatch.setattr(zen, "get", lambda: ZEN_KEY)
+    zen_box.meta["model_chain"] = ["opencode/hy4-flash-free", "local"]
+    assert sandbox.model_chain(zen_box) == ["opencode/hy4-flash-free", "controldeck/auto"]
+
+
+def _fake_opencode(monkeypatch, outputs):
+    """outputs: 実行ごとの (JSONL の行, 終了コード)。起動した argv を返す。"""
+    calls = []
+    real = sandbox.subprocess.Popen
+
+    class Proc(real):
+        def __new__(cls, argv, **kw):
+            return real(argv, **kw) if argv[0] == "git" else object.__new__(cls)
+
+        def __init__(self, argv, **kw):
+            self.argv = argv
+            lines, self.code = outputs[len(calls)]
+            self.stdout = iter(json.dumps(x) + "\n" for x in lines)
+            calls.append(argv)
+
+        def wait(self):
+            return self.code
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", Proc)
+    return calls
+
+
+def _model_of(argv):
+    return argv[argv.index("--model") + 1]
+
+
+def test_run_switches_model_on_limit_error_and_continues_the_session(zen_box, monkeypatch, capsys):
+    """目的: 上限の印（type=error＋limit 等）で次のモデルへ、取れた sessionID は --session で続け、last_model を保存する。"""
+    limit = {"type": "error", "error": {"message": "Monthly usage limit exceeded"}}
+    calls = _fake_opencode(monkeypatch, [([{"type": "step", "sessionID": "ses_1"}, limit], 1),
+                                         ([{"type": "text", "sessionID": "ses_1"}], 0)])
+    code = sandbox.run_with_chain(zen_box, "do it", CHAIN)
+    assert code == 0
+    assert [_model_of(a) for a in calls] == CHAIN[:2]
+    assert "--session" not in calls[0]
+    assert calls[1][calls[1].index("--session") + 1] == "ses_1"
+    assert "do it" in calls[1]
+    out = capsys.readouterr()
+    assert '"sessionID": "ses_1"' in out.out
+    assert "opencode-go/glm-5.3 -> opencode/hy4-flash-free" in out.err
+    assert sandbox.load("zen1").meta["last_model"] == "opencode/hy4-flash-free"
+    assert sandbox.status(sandbox.load("zen1"))["last_model"] == "opencode/hy4-flash-free"
+
+
+def test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted(zen_box, monkeypatch):
+    """目的: 道具の失敗では切り替えない。全部尽きたら最後の終了コードで終わる。"""
+    calls = _fake_opencode(monkeypatch, [([{"type": "error", "error": {"message": "tool crashed"}}], 3)])
+    assert sandbox.run_with_chain(zen_box, "x", CHAIN) == 3
+    assert len(calls) == 1
+    limit = {"type": "error", "error": {"message": "HTTP 429"}}
+    calls = _fake_opencode(monkeypatch, [([limit], 1), ([limit], 2)])
+    assert sandbox.run_with_chain(zen_box, "x", CHAIN[:2]) == 2
+    assert len(calls) == 2
+
+
+def test_explicit_model_is_used_alone_and_local_is_an_alias(zen_box, monkeypatch):
+    """目的: --model 明示は順番を使わず 1 つだけ。local はローカル LLM。"""
+    calls = _fake_opencode(monkeypatch, [([{"type": "error", "error": {"message": "quota"}}], 1)])
+    assert sandbox.main(["opencode", "zen1", "--run", "x", "--model", "local"]) == 1
+    assert [_model_of(a) for a in calls] == ["controldeck/auto"]
+
+
+def test_limit_detection_uses_word_boundaries():
+    """目的: 上限の印は語の区切りで見る。"rate" だけで判定すると generate・accurate を含むふつうのエラーで
+    誤って次のモデルへ移った（2026-11-21 監査で指摘）。"""
+    err = lambda message: {"type": "error", "error": {"message": message}}
+    for hit in ("Rate limit exceeded", "429 Too Many Requests", "monthly usage limit reached",
+                "insufficient credits", "402 Payment Required", "quota exceeded"):
+        assert sandbox.is_limit_error(err(hit)), hit
+    for miss in ("failed to generate the patch", "inaccurate tool arguments", "file not found",
+                 "tool edit failed: oldString not unique"):
+        assert not sandbox.is_limit_error(err(miss)), miss
+    assert not sandbox.is_limit_error({"type": "text", "part": {"text": "rate limit"}})

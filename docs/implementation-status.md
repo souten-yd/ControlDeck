@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-21 箱の OpenCode のモデルの順番（使い切ったら次へ）
+
+- 利用者「GLM を使い切り、無料で高性能なものを順次」（Go プランのキーを Zen の欄に登録済み。箱から GLM-5.3・Zen の無料 2 つが答えるのを実機で確認）。
+- `sandbox.py`: 既定の順番 `DEFAULT_MODEL_CHAIN`（`opencode-go/glm-5.3` → `opencode/hy4-flash-free` → `opencode/deepseek-v4.1-flash-free` → `controldeck/auto`）。Zen のキーが無い・箱で `allow_zen` off なら `opencode*` を飛ばす。箱の meta `model_chain` で置き換え、CLI `models <名前> [モデル ...]`（引数なしで表示、`--reset` で既定へ）。`local` は `controldeck/auto` の別名。
+- `opencode --run`: JSONL をそのまま標準出力へ流しつつ読み、`type: error` の行に limit / quota / exceeded / insufficient / rate / 429 / 402 / usage / billing があれば次のモデルで同じ指示をやり直す（sessionID が取れていれば `--session` で続き）。切り替えは標準エラーに 1 行。上限以外のエラーでは切り替えない。尽きたら最後の終了コード。`--model` 明示はその 1 つだけ。対話（`--run` なし）は順番の最初の使えるモデルで開く（切り替えなし）。
+- 最後に使ったモデルを meta `last_model` に保存し `status` に出す。
+- 検証: `tests/test_dev_sandbox.py`（+4）。
+
 ## 2026-11-21 使われていない OpenCode の会話サーバーを数分おきに止める
 
 - 実機: AI アシスタントの OpenCode の会話サーバー（プロジェクトの箱、host network・gh の設定を読み取り専用で見せる）が、17.5 時間使われていないのに 21 時間動いていた。止める処理 `chat_server.reap_idle` を、次の会話を始めたとき（`ensure`）にだけ呼んでいたため、最後に使ったサーバーは止まらなかった。
