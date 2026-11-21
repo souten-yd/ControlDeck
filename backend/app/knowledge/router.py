@@ -146,6 +146,65 @@ def remove_annotation(ref: str, note_id: int, user: User = Depends(EDIT)):
     return {"ok": True}
 
 
+class EssenceReviewBody(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected|returned)$")
+    note: str = Field(default="", max_length=1000)
+
+
+@router.post("/documents/{ref}/essences", status_code=201)
+async def extract_essences(ref: str, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
+    """文献から知識エッセンスをローカル専用の AI で抽出する（Jobs）。結果は未確認の推論として版付きで残る。"""
+    from app.jobs import service as jobs
+    from app.knowledge import essence
+    from app.patents import service as patents_service
+
+    doc = await asyncio.to_thread(_wrap, documents.get_document, ref)
+    if doc["ai_use"] == "prohibited":
+        raise HTTPException(status_code=422, detail="この文書は利用条件により AI に入力できません")
+    try:
+        await patents_service.resolve_local_target()
+    except patents_service.LocalAIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    essence_id = await asyncio.to_thread(_wrap, essence.start, ref)
+
+    async def run(job: jobs.Job) -> dict:
+        return await essence.run(job, ref, essence_id)
+
+    job = jobs.create("knowledge.essence", f"知識エッセンスの抽出: {doc['title']}"[:120], run,
+                      owner_user_id=user.id)
+    # 監査には id だけ（抽出させる文書の本文は書かない）
+    audit.record(db, "knowledge.essence", user=user, resource_type="knowledge", resource_id=ref, request=request,
+                 metadata={"job_id": job.id, "essence_id": essence_id})
+    return {"job_id": job.id, "essence_id": essence_id,
+            "essence_ref": f"{documents.parse_ref(ref)[0]}:{essence_id}"}
+
+
+@router.get("/documents/{ref}/essences")
+def list_essences(ref: str, user: User = VIEW):
+    """版ごとの一覧。各件に最新のレビューの状態と stale を付ける（承認しても「原文の事実」にはならない）。"""
+    from app.knowledge import essence
+
+    return {"essences": _wrap(essence.list_essences, ref), "kinds": essence.KINDS}
+
+
+@router.post("/essences/{essence_ref}/items/{index}/review")
+def review_essence_item(essence_ref: str, index: int, body: EssenceReviewBody, request: Request,
+                        user: User = Depends(EDIT), db=Depends(get_db)):
+    """1 件の人のレビュー（承認・却下・差し戻し）を追記する（消さない・書き換えない）。
+
+    抽出は「分野:番号」で指す。番号は分野ごとに振られるので、分野を付けないと別の分野の
+    同じ番号へ人の承認が誤着するのを防げない。
+    """
+    from app.knowledge import essence
+
+    out = _wrap(essence.review, essence_ref, index, body.decision, body.note, user.username)
+    # 監査には id と判断だけ（summary・引用の全文は書かない）
+    audit.record(db, "knowledge.essence_review", user=user, resource_type="knowledge",
+                 resource_id=str(essence_ref), request=request,
+                 metadata={"item_index": int(index), "decision": body.decision})
+    return out
+
+
 class PdfJobBody(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     title: str = Field(default="", max_length=300)

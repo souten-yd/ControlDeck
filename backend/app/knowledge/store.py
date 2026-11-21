@@ -255,6 +255,7 @@ def delete_collection(name: str) -> bool:
         _delete_chunk_rows(conn, ids)
         docs = [r[0] for r in conn.execute("SELECT id FROM documents WHERE collection_id=?", (ref.id,))]
         _delete_document_side_rows(conn, docs)
+        _delete_essence_rows(conn, docs)
         conn.execute("DELETE FROM documents WHERE collection_id=?", (ref.id,))
         conn.execute("DELETE FROM collections WHERE id=?", (ref.id,))
         conn.commit()
@@ -322,6 +323,38 @@ def _delete_document_side_rows(conn: sqlite3.Connection, doc_ids: list[int]) -> 
             conn.execute(f"DELETE FROM {table} WHERE doc_id IN ({marks})", part)
 
 
+def _delete_essence_rows(conn: sqlite3.Connection, doc_ids: list[int]) -> None:
+    """文書を消すときに知識エッセンス・レビュー・版の番号も消す（表がまだ無い分野では何もしない）。
+
+    知識エッセンスは app/knowledge/essence.py が後から足した表なので、開いたことの無い分野の
+    DB には表が無いことがある。そのときは消すものも無い。
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_essences'").fetchone() is None:
+        return
+    for start in range(0, len(doc_ids), 500):
+        part = [int(d) for d in doc_ids[start:start + 500]]
+        marks = ",".join("?" * len(part))
+        conn.execute(f"DELETE FROM knowledge_essence_reviews WHERE essence_id IN "
+                      f"(SELECT id FROM knowledge_essences WHERE doc_id IN ({marks}))", part)
+        conn.execute(f"DELETE FROM knowledge_essences WHERE doc_id IN ({marks})", part)
+        conn.execute(f"DELETE FROM knowledge_essence_epochs WHERE doc_id IN ({marks})", part)
+
+
+def _carry_essences(conn: sqlite3.Connection, old_doc_id: int, new_doc_id: int) -> None:
+    """置き換えた文献の知識エッセンス・レビュー・版の番号を新しい id へ付け直す（annotations と同じ考え）。
+
+    版が変わったので版の番号（epoch）を 1 進める。番号は置き換えのたびに単調に増えるだけで
+    減らないため、同じ文面へ戻しても前の版で付けた承認は戻らない（app/knowledge/essence.py の決まり）。
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_essences'").fetchone() is None:
+        return
+    conn.execute("UPDATE knowledge_essences SET doc_id=? WHERE doc_id=?", (new_doc_id, old_doc_id))
+    conn.execute("UPDATE knowledge_essence_epochs SET doc_id=?, epoch=epoch+1 WHERE doc_id=?",
+                 (new_doc_id, old_doc_id))
+    # 番号の行がまだ無い文書の最初の置き換えは 1 から
+    conn.execute("INSERT OR IGNORE INTO knowledge_essence_epochs(doc_id, epoch) VALUES(?, 1)", (new_doc_id,))
+
+
 @dataclass
 class NewChunk:
     text: str
@@ -358,11 +391,13 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
     try:
         conn.execute("BEGIN IMMEDIATE")
         carried: list = []
+        replaced_doc_id: int | None = None
         if replace_collection:
             ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE collection_id=?", (ref.id,))]
             _delete_chunk_rows(conn, ids)
             docs = [r[0] for r in conn.execute("SELECT id FROM documents WHERE collection_id=?", (ref.id,))]
             _delete_document_side_rows(conn, docs)
+            _delete_essence_rows(conn, docs)
             conn.execute("DELETE FROM documents WHERE collection_id=?", (ref.id,))
         if ext_id is not None:
             old = conn.execute("SELECT id, sha256 FROM documents WHERE collection_id=? AND ext_id=?",
@@ -378,6 +413,7 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
                 _delete_chunk_rows(conn, ids)
                 _delete_document_side_rows(conn, [int(old["id"])])
                 conn.execute("DELETE FROM documents WHERE id=?", (old["id"],))
+                replaced_doc_id = int(old["id"])
         doc_id = conn.execute(
             "INSERT INTO documents(collection_id, ext_id, title, source, url, sha256, sensitivity, basis, meta, "
             "chunk_count, created, updated, ai_use) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -391,6 +427,10 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
         for note in carried:
             conn.execute("INSERT INTO annotations(doc_id, kind, basis, review_status, content, source_revision, created) "
                          "VALUES(?,?,?,?,?,?,?)", (doc_id, *tuple(note)))
+        if replaced_doc_id is not None:
+            # 知識エッセンスも新しい版へ持ち越す。版の番号（epoch）を 1 進めるので、
+            # 前の版の承認は同じ文面へ戻っても戻らない
+            _carry_essences(conn, replaced_doc_id, int(doc_id))
         wrote_vectors = False
         for idx, chunk in enumerate(chunks):
             cid = conn.execute(
@@ -448,6 +488,7 @@ def delete_document(name: str, doc_id: int) -> bool:
         ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE doc_id=?", (doc_id,))]
         _delete_chunk_rows(conn, ids)
         _delete_document_side_rows(conn, [doc_id])
+        _delete_essence_rows(conn, [doc_id])
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         conn.commit()
     finally:
