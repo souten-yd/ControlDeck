@@ -527,3 +527,58 @@ def test_image_reading_is_judged_like_the_models_tab():
     assert gateway.instance_sees_images({"runtime": "radiance"})
     assert not gateway.instance_sees_images({"runtime": "maya-s", "vision": False})
     assert gateway.target_sees_images("http://example.invalid/v1", "m") == (None, "m")   # 外部の接続先は分からない
+
+
+def test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question(admin_client, monkeypatch, tmp_path):
+    """目的: 質問の答え待ちの回へ「途中で伝える」を送っても、止まったままにならない（利用者に理由を返す）。
+
+    根拠: 2026-11-21 実機。plan の OpenCode が question の道具で利用者へ質問して待っている最中に「途中で伝える」を
+    押すと 200 で受け付けられたが、伝えた文は質問の答えにならず、道具が終わらないので実行も進まず、
+    利用者が止めるまで固まった（本番の会話 57244187a2e64d90。回答の最後の道具が running の question）。
+    """
+    from app.integrations.opencode import chat_server
+
+    _fake_opencode(monkeypatch, tmp_path, [])
+    told: list[str] = []
+    release = {"go": False}
+
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+        await on_tool({"id": "call_q", "name": "question", "status": "running", "input": {"questions": []}, "output": ""})
+        while not release["go"]:
+            await asyncio.sleep(0.02)
+        return {"status": "succeeded", "error": ""}
+
+    async def active(srv, sid):
+        return True
+
+    async def steer(srv, sid, text):
+        told.append(text)
+
+    monkeypatch.setattr(chat_server, "run_turn", turn)
+    monkeypatch.setattr(chat_server, "session_is_active", active)
+    monkeypatch.setattr(chat_server, "steer_turn", steer)
+    conv_id = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    base = f"/api/v1/chat/conversations/{conv_id}"
+    answer = admin_client.post(f"{base}/send", headers=CSRF_HEADERS,
+                               json={"content": "計画して", "mode": "code", "model": "test", "code_project": "demo"}).json()
+    item = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
+                             json={"content": "ISOの件です", "mode": "code", "model": "test", "code_project": tmp_path.name}).json()["item"]
+    try:
+        for _ in range(100):
+            result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
+            if result.status_code == 409 and "質問" in result.json()["detail"]:
+                break
+            time.sleep(0.05)
+        assert result.status_code == 409 and "質問の答え" in result.json()["detail"] and told == []
+        assert [i["status"] for i in admin_client.get(f"{base}/queue").json()["items"]] == ["queued"]   # 消えない（やり直せる）
+    finally:
+        release["go"] = True
+    _wait_done(admin_client, conv_id, answer["assistant_message_id"])
+
+
+def test_the_chat_server_denies_the_question_tool():
+    """目的: AI アシスタントの OpenCode は question の道具を使えない（答える欄が無く、実行が止まるため。上の根拠）。"""
+    from app.integrations.opencode import provider
+
+    out = provider._apply_chat_server({"permissions": [], "plugins": []})
+    assert {"action": "question", "resource": "*", "effect": "deny"} in out["permissions"]

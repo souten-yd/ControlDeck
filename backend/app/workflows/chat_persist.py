@@ -1530,6 +1530,10 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 # 終わりかけの回へ送ると、次の実行の出力を画面で受け取れない
                 if not await chat_server.session_is_active(server, session_id):
                     raise chat_server.ChatServerError("この回はもう終わりました")
+                # 質問への答えを待っている最中は、伝えた文が質問の答えにならず、実行が先へ進まない
+                if any(t.get("name") == "question" and t.get("status") == "running" for t in tools):
+                    raise chat_server.ChatServerError(
+                        "OpenCode が質問の答えを待っています。回答を止めて、あらためて送ってください")
                 await chat_server.steer_turn(server, session_id, text)
                 timeline.append({"k": "n", "text": text})
                 job.log("steer", text=text)

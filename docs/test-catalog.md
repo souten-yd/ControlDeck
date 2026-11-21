@@ -1706,6 +1706,8 @@
 - `test_the_chosen_mode_is_kept_on_the_sent_message` — 別の端末や開き直しでも、機能の固定を送った発言から戻せる。
 - `test_changes_are_recorded_and_the_latest_turn_can_be_reverted` — 回答ごとの変更・差分・取り消し。取り消せるのは最新の回だけ。
 - `test_a_queued_request_can_be_told_to_the_running_turn` — 送信待ちを作業中の OpenCode へ伝えると、回答の並びに残り、送信待ちから消える。
+- `test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question` — 質問の答え待ちの回へ「途中で伝える」を送ると、止まったままにならず理由つきで断り、送信待ちは残る。
+- `test_the_chat_server_denies_the_question_tool` — AI アシスタントの OpenCode は question の道具を使えない（答える欄が無く実行が止まるため）。
 - `test_the_action_list_records_when_it_was_updated_and_the_request_asks_for_updates` — 本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
