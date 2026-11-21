@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-21 Strata が動かせない GGUF を登録の時点で断る
+
+- 本番で Uncensored の Q4_K_S を Strata に登録し、ロードが「a GGUF Strata cannot run」で 4 回失敗した。Strata が動かすのは ISTA-DASLab の GSQ-RCO・Unsloth の UD-*・Q8_0 だけ。
+  `strata models import --plan` と `launch --plan` は量子化を確かめない（「plausible」と出る）ので、ControlDeck が GGUF の先頭（general.file_type・general.quantized_by）を読んで断る。
+- 案内: ほかの量子化は llama.cpp で登録する。llama.cpp b12388 は qwen4exp に対応（本番で Q4_K_S を llama.cpp に登録し直し、12.9 tok/s。エキスパートの 32 層を CPU）。
+- 検証: `tests/test_strata_gateway.py` に 1 件、全体 1923 passed、本物のファイル 2 つで判定を確認。
+
 ## 2026-11-21 モデルの表示名
 
 - 利用者「モデルが同じ名前になるので分かりにくい。任意の名前に変えれるようにしたい」。Strata は系列名を表示名にしていたので、同じ系列のモデルが同じ名前になっていた。
