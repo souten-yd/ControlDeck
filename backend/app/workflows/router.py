@@ -453,6 +453,22 @@ class SecretBody(BaseModel):
     value: str = Field(min_length=1, max_length=4000)
 
 
+def upsert_secret(db: Session, name: str, value: str) -> None:
+    """シークレットを作るか置き換える（Workflow の画面と Settings の「API キー」が使う）。"""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
+        raise HTTPException(status_code=422, detail="名前は英字始まりの英数字と _ のみ（64 文字まで）")
+    if not value or len(value) > 4000:
+        raise HTTPException(status_code=422, detail="値は 1〜4000 文字です")
+    row = db.execute(select(WorkflowSecret).where(WorkflowSecret.name == name)).scalar_one_or_none()
+    if row is None:
+        row = WorkflowSecret(name=name, value_encrypted="")
+        db.add(row)
+    row.value_encrypted = encrypt_text(value)
+    db.commit()
+
+
 @router.put("/workflows-secrets/{name}")
 def put_secret(
     name: str,
@@ -461,16 +477,7 @@ def put_secret(
     user: User = Depends(require_permission("workflows.edit")),
     db: Session = Depends(get_db),
 ):
-    import re
-
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
-        raise HTTPException(status_code=422, detail="名前は英字始まりの英数字と _ のみ（64 文字まで）")
-    row = db.execute(select(WorkflowSecret).where(WorkflowSecret.name == name)).scalar_one_or_none()
-    if row is None:
-        row = WorkflowSecret(name=name, value_encrypted="")
-        db.add(row)
-    row.value_encrypted = encrypt_text(body.value)
-    db.commit()
+    upsert_secret(db, name, body.value)
     audit.record(db, "workflow.secret_set", user=user, resource_type="secret", resource_id=name, request=request)
     return {"name": name}
 

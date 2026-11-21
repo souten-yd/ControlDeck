@@ -61,6 +61,12 @@
 
 ## 7. 作業記録（新しい順に追記）
 
+- 2026-11-21 Claude: 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめてほしい。OpenRouter のキーも。今あるキーを全部移動、消さないように」。
+  Settings に「API キー」（`/settings/keys`、`backend/app/settings_keys.py`・`frontend/src/features/settings/KeysSettings.tsx`）。
+  キーの置き場（cloud.py・hf.py・sources.py・workflow_secrets 表）は**変えずに**読み書きをまとめた（今あるキーはそのまま出る・消していない）。値は返さない。
+  Patent の公報タブ・機能と拡張の検索と収集からは「API キー」へ移るリンクに。Models のクラウドと Workflow のシークレットの画面は使い方の都合で残し、案内を足した。
+  Hugging Face のトークンはこれまで画面が無かった（API だけ）→ ここで入れられる。テスト `test_settings_keys.py`（3）、E2E `settings-keys.spec.ts`（2）。
+
 - 2026-11-21 Claude: 利用者「適当に選んだサイト（Gigazine・特許の書誌・GitHub）で情報収集を試し、取得の精度と RAG の改良を含めて評価して」。
   本番の評価 `~/ControlDeck-評価/2026-11-21-実サイトの情報収集とRAG.md`（26 問）: 本文＋見出しで分けると検索の当たり 19→23、答え 20→23/26。
   改良: ① Web の取り込み（ナレッジ・Patent の URL）は見出しで分ける（`rag.add_document(strategy="markdown")`、コレクションの設定は変えない）。

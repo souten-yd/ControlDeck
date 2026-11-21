@@ -1,4 +1,5 @@
 /** /patents の「公報」: 特許の分野の公報・論文を探して開く。取り込みもここから。 */
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { knowledgeApi, RELATION_LABEL, type FoundDocument } from "../../api/knowledge";
@@ -7,7 +8,7 @@ import { EmptyState, IconButton, secondaryButtonClass } from "../../components/u
 import { IconSearch } from "../../components/icons";
 import { DocumentSheet } from "../knowledge/DocumentSheet";
 import { LiteratureSheet } from "./LiteratureSheet";
-import { FetchSheet, SourceKeysSheet } from "./Sources";
+import { FetchSheet } from "./Sources";
 import { errorText, input } from "./shared";
 
 export function PublicationsPanel({ importing, onImport, onImportClose }: { importing: boolean; onImport: () => void; onImportClose: () => void }) {
@@ -17,7 +18,6 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
   const [results, setResults] = useState<FoundDocument[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
-  const [keys, setKeys] = useState(false);
   const find = useMutation({
     mutationFn: () => knowledgeApi.find(query.trim(), "patents"),
     onSuccess: (r) => setResults(r.results),
@@ -35,8 +35,10 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
           {can("workflows.edit") && <button className={secondaryButtonClass} onClick={onImport}>公報・論文を取り込む</button>}
           {can("workflows.edit") && <button className={secondaryButtonClass} onClick={() => setFetching(true)}>公開データを取得</button>}
           {can("settings.manage") && (
-            <button className="col-span-2 min-h-11 rounded-xl px-3 text-sm text-accent-700 hover:bg-accent-600/10 dark:text-accent-300 sm:col-span-1"
-              onClick={() => setKeys(true)}>取得先の設定</button>
+            // キーは Settings の「API キー」にまとめた（2026-11-21 利用者「キーを設定の中にまとめて」）
+            <Link to="/settings/keys"
+              className="col-span-2 inline-flex min-h-11 items-center justify-center rounded-xl px-3 text-sm text-accent-700 hover:bg-accent-600/10 dark:text-accent-300 sm:col-span-1">
+              取得先のキー（Settings）</Link>
           )}
         </div>
       )}
@@ -62,7 +64,6 @@ export function PublicationsPanel({ importing, onImport, onImportClose }: { impo
       {open && <DocumentSheet docRef={open} onClose={() => setOpen(null)} />}
       {importing && <LiteratureSheet onClose={onImportClose} />}
       {fetching && <FetchSheet onClose={() => setFetching(false)} />}
-      {keys && <SourceKeysSheet onClose={() => setKeys(false)} />}
     </div>
   );
 }

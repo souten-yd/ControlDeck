@@ -247,11 +247,10 @@ test("Patent と Knowledge のボタンの動作（1280px）", async ({ page, co
     await expect(page.getByText(/特開2026-999999|見つかりません|ありません/).first()).toBeVisible({ timeout: 10_000 });
     return (await page.getByText("特開2026-999999 インバータ").count()) ? "取り込んだ公報が見つかった" : "見つからない";
   });
-  await check("Patent / 公報", "取得先の設定（シートを開く・保存は変更が無ければ押せない）", async () => {
-    await page.getByRole("button", { name: "取得先の設定" }).click();
-    const sheet = page.getByRole("dialog");
-    await expect(sheet.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-    await page.keyboard.press("Escape");
+  await check("Patent / 公報", "取得先のキー（Settings の API キーへ移る）", async () => {
+    await page.getByRole("link", { name: "取得先のキー（Settings）" }).click();
+    await expect(page).toHaveURL(/\/settings\/keys$/);
+    await page.goto("/patents?tab=docs");
   });
   await check("Patent / 公報", "公開データを取得（確認のチェックが要る・取得するは押さない）", async () => {
     await page.getByRole("button", { name: "公開データを取得" }).click();

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 191 ファイル、1705 テスト（目的の未記入 93 ファイル）
-- E2E: 94 spec、196 テスト
+- backend: 192 ファイル、1708 テスト（目的の未記入 93 ファイル）
+- E2E: 95 spec、197 テスト
 
 ## backend（backend/tests）
 
@@ -2214,6 +2214,14 @@
 - `test_secure_cookie_on_login`
 - `test_negative_timeout_rejected`
 
+### backend/tests/test_settings_keys.py
+
+目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で見る・入れる・消す。 目的: - クラウドの AI（OpenRouter など）・Hugging Face・特許の公開データ（EPO・USPTO・特許庁）・Workflow のシークレットが 1 つの一覧に出ること。 - **今あるキーは置き場を変えずにそのまま見える**（移すときに消さない）。値は返さず、設定済みか・末尾 4 文字だけ。 - ここで入れたキーは元の置き場に入り、元の機能（Models・Patent・Workflow）がそのまま使えること。空の値は「変えない」。 - 消すのは明示の DELETE だけ。管理の権限が要ること。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめてほしい。OpenRouter のキーも。 今あるキーを全部移動してほしいので、消さないように」。
+
+- `test_existing_keys_show_up_without_moving_or_exposing_them`
+- `test_saving_here_writes_to_the_original_store_and_blank_means_unchanged`
+- `test_delete_is_explicit`
+
 ### backend/tests/test_signal_origin.py
 
 目的: 停止の合図の送り主が記録に残ることを、実際に撃って確かめる。 2026-09-12、Control Deck 本体が 40 分止まった。journal に「Stopping」の行が無く systemd が止めたのではないことは分かったが、誰が撃ったのかはどこにも無かった。 後から画面の履歴を辿って、OpenCode が `kill <本体の PID>` を実行していたと分かった。 見張りは signal を block して受け取る。block したまま見張りが死ぬと二度と停止でき なくなるので、「記録が残ること」と同じ重みで「今までどおり止まること」を縛る。
@@ -3105,6 +3113,12 @@
 目的: **未記入**
 
 - runtime startup preferences can be selected and saved at ${width}px
+
+### frontend/e2e/settings-keys.spec.ts
+
+目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
+
+- Settings: API キー（${width}px）
 
 ### frontend/e2e/settings-search-tools.spec.ts
 

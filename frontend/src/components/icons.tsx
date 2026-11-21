@@ -413,3 +413,10 @@ export const IconBan = (p: SVGProps<SVGSVGElement>) => (
     <path d="m5.6 5.6 12.8 12.8" />
   </Icon>
 );
+
+export const IconKey = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="8" cy="15" r="4" />
+    <path d="m10.85 12.15 8.65-8.65M17 6l2 2M15 8l2 2" />
+  </Icon>
+);

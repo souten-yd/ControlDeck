@@ -323,7 +323,8 @@ function ProviderCard({ provider: p }: { provider: CloudProvider }) {
 
           <div className="text-xs">
             <div className="flex flex-wrap items-center justify-between gap-x-3">
-              <label htmlFor={`${panelId}-key`} className="font-medium">API キー</label>
+              <label htmlFor={`${panelId}-key`} className="font-medium">API キー
+                <span className="ml-1 font-normal text-zinc-500">（Settings の「API キー」でもまとめて管理できます）</span></label>
               {p.keys_url && (
                 <a href={p.keys_url} target="_blank" rel="noopener noreferrer"
                   className="inline-flex min-h-11 items-center text-accent-600 underline dark:text-accent-400">キーを取得<span aria-hidden className="ml-0.5">↗</span></a>
