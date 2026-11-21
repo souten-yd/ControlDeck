@@ -63,7 +63,8 @@ def test_podman_mounts_only_the_box_writable(repo, monkeypatch):
     argv = sandbox.podman_argv(box, ["true"])
     volumes = [argv[i + 1] for i, item in enumerate(argv) if item == "-v"]
     writable = [v for v in volumes if v.endswith(":rw")]
-    assert writable == [f"{box.path}:{box.path}:rw"]
+    # 書けるのは箱のフォルダと、その中の箱ごとの /tmp だけ
+    assert writable == [f"{box.path}:{box.path}:rw", f"{box.path / 'tmp'}:/tmp:rw"]
     assert "/usr:/usr:ro" in volumes and "/etc:/etc:ro" in volumes
     assert f"{repo / '.venv'}:{repo / '.venv'}:O" in volumes, "依存は overlay（箱の中で書いてもホストは変わらない）"
     assert not any("control-deck.db" in v or v.startswith(f"{sandbox._data_dir()}:") for v in volumes)
@@ -84,7 +85,7 @@ def test_opencode_plugins_visible_readonly_without_exposing_other_features(repo,
         path = features / name
         assert f"{path}:{path}:ro" in volumes
     assert not any("unrelated-addon" in volume for volume in volumes)
-    assert [v for v in volumes if v.endswith(":rw")] == [f"{box.path}:{box.path}:rw"]
+    assert [v for v in volumes if v.endswith(":rw")] == [f"{box.path}:{box.path}:rw", f"{box.path / 'tmp'}:/tmp:rw"]
 
 
 def test_github_config_only_when_allowed(repo, monkeypatch, tmp_path):
@@ -148,6 +149,16 @@ def test_dev_box_runs_in_its_pod_not_on_the_host_network(repo, monkeypatch):
     plain = sandbox.container_argv(["true"], workdir=repo, writable=[repo])
     assert plain[plain.index("--userns=keep-id") + 1:plain.index("--userns=keep-id") + 3] == ["--network", "host"]
     assert "--pod" not in plain
+
+
+def test_dev_box_has_its_own_tmp_that_goes_away_with_the_box(repo, monkeypatch):
+    """箱ごとの /tmp。空のルートの /tmp は全部の箱で共有され、テストの一時フォルダ（90GB の見かけの GGUF）が
+    溜まり続けて見かけ 372GB になった（2026-11-21）。箱のフォルダの中なので destroy で一緒に消える。"""
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    box = sandbox.create("tmp1", str(repo))
+    argv = sandbox.podman_argv(box, ["true"])
+    assert f"{box.path / 'tmp'}:/tmp:rw" in argv
+    assert (box.path / "tmp").is_dir() and ((box.path / "tmp").stat().st_mode & 0o777) == 0o700
 
 
 def _fake_podman(monkeypatch, label):

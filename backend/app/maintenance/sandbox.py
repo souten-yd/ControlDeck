@@ -484,9 +484,13 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
     if box.meta.get("github") and (gh / "hosts.yml").is_file():
         extra = ["-v", f"{gh}:/run/gh:ro"]
         environment["GH_CONFIG_DIR"] = "/run/gh"
+    # 箱ごとの /tmp（空のルートの /tmp は全部の箱で共有され、消す時が無いので溜まり続けた。2026-11-21）。
+    # 箱を消すと一緒に消える
+    tmp = box.path / "tmp"
+    tmp.mkdir(mode=0o700, exist_ok=True)
     argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
                           overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach,
-                          pod=pod, env_file=env_file)
+                          pod=pod, env_file=env_file, binds=[(tmp, Path("/tmp"))])
     if extra:
         index = argv.index("--rootfs")
         argv[index:index] = extra

@@ -96,13 +96,15 @@
 | # | 内容 | 影響 | 優先 | 状態 |
 |---|---|---|---|---|
 | 1 | AI アシスタントの OpenCode の「プロジェクトの箱」（`provider.py` が `container_argv` を pod 無しで使う）は今も `--network host`。箱の中から本番のゲートウェイへ鍵なしで届き、`/load` も呼べる | 開発用の箱と同じ穴。ただしこちらはゲートウェイを使うのが本来の用途 | 中 | 未着手。P1 の中継（許可のパスを絞る）をプロジェクトの箱にも使うかを決める |
-| 2 | 本番 data の `sandboxes/` に、過去の作業の箱が約 30 個残っている（`cite`・`diag`・`vp`〜`vp6` など）。OpenCode のプロジェクトの箱の一時フォルダ（`project-tmp` など）も同じ場所 | ディスクと見通し。古い箱は中継のポートを割り当て直す | 低 | 未着手。中身（未 push のコミット）を確かめてから片付ける。`sandbox list` に最終使用日と未 push の有無を出す |
+| 2 | （済み: 9 を参照）本番 data の `sandboxes/` に、過去の作業の箱が約 30 個残っている（`cite`・`diag`・`vp`〜`vp6` など）。OpenCode のプロジェクトの箱の一時フォルダ（`project-tmp` など）も同じ場所 | ディスクと見通し。古い箱は中継のポートを割り当て直す | 低 | 未着手。中身（未 push のコミット）を確かめてから片付ける。`sandbox list` に最終使用日と未 push の有無を出す |
 | 3 | `opencode_config` は `provider._config_payload` を通すので、鍵が未発行だと本番に鍵を新しく作る（設定ファイルには入れない） | 副作用だけ | 低 | 未着手 |
 | 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー（今回 2 件、2 回目は 0 件） | 判定が揺れる | 低 | 既知（メモ） |
 | 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 登録欄を用意（設定 → API キー →「開発」、`sandbox new --no-zen` / `zen <名前> on|off`、`opencode --model opencode/deepseek-v4.1-flash-free`）。利用者がキーを登録したら箱で使える（Console のアカウント作成と、無料の範囲だけのキーが要る） |
 | 6 | 中継のログに httpx の INFO（要求の URL）が 1 行ずつ重なる | 見た目だけ | 低 | 未着手 |
-| 7 | 本番の DB に管理者のアカウントが 13 個ある。ほとんどは過去の E2E・試験の使い捨て（`codex-*`・`e2e-*`・`mf-e2e`・`strata-acceptance-*`・`pb-analysis-test-*` など）。`sandbox new` は管理者が複数だと `--owner` を求める | 使い捨ての管理者が残るのは安全上よくない。E2E が本番に向いていた頃の名残 | 高 | 利用者の判断待ち（無効化か削除）。持ち主は `--owner souten` で指定して進める |
-| 8 | MCP の `lab_*` の道具は本番の ControlDeck の中にあるので、本番が更新されるまで箱から見えない（中継の絞り込みとトークンは実機で確認済み） | 実機の通し確認が本番の更新待ち | 中 | Release の後、本番の自動更新（10 分使われていないとき）を待って確かめる |
+| 7 | （済み: souten 以外の 12 個を無効化・セッション取り消し・監査あり、2026-11-21）本番の DB に管理者のアカウントが 13 個ある。ほとんどは過去の E2E・試験の使い捨て（`codex-*`・`e2e-*`・`mf-e2e`・`strata-acceptance-*`・`pb-analysis-test-*` など）。`sandbox new` は管理者が複数だと `--owner` を求める | 使い捨ての管理者が残るのは安全上よくない。E2E が本番に向いていた頃の名残 | 高 | 利用者の判断待ち（無効化か削除）。持ち主は `--owner souten` で指定して進める |
+| 8 | MCP の `lab_*` の道具は本番の ControlDeck の中にあるので、本番が更新されるまで箱から見えない | 実機の通し確認が本番の更新待ち | 中 | v0.116 で確認済み（箱から 7 道具・lab_projects が動く） |
+| 9 | `data/sandboxes` が見かけ 372GB（実際は約 3.4GB）。pytest の一時フォルダの 90GB の見かけの GGUF が、箱の共有 /tmp・プロジェクトの一時フォルダ・ホストの /tmp に溜まっていた | バックアップや容量の表示で巨大に見える | 高 | 直した（`tmp_path_retention_policy = "failed"`、箱ごとの /tmp）。古い箱 28 個も利用者の許可で消した（未 push の 2 件は `data/backups/sandbox-patches-20261121/`） |
+| 10 | 検証用インスタンス（`./deck.sh e2e`）でターミナルと携帯の E2E が 22 件落ちる（main でも同じ顔ぶれ） | 画面の変更の確認でターミナル系が見られない | 中 | 未着手。ターミナルの実体（tmux）が検証用インスタンスで動くか調べる |
 
 ## 未決事項
 

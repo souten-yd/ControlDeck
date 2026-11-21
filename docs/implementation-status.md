@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-21 テストの一時フォルダと箱の /tmp を溜めない
+
+- 利用者「data/sandboxes が 400GB くらいある。不要なら消して、増えないように」。実際の使用は約 3.4GB で、見かけ 372GB は pytest の一時フォルダ（`test_disk_streamed_moe_reservation` が作る 90GB の見かけの GGUF、`test_llama_large_vision_request` の 2GB）だった。pytest は最近 3 回分を残すので、箱の共有 `/tmp`（空のルートの `.rootfs/tmp`）・OpenCode のプロジェクトの一時フォルダ・ホストの `/tmp`（見かけ 93GB）に溜まっていた。中身を詰めないバックアップでは本当に書き出されうる。
+- 消した: 3 か所の `pytest-of-*`（見かけ 372GB → 2.1GB）。
+- 直した: `pyproject.toml` に `tmp_path_retention_policy = "failed"`（通ったテストの一時フォルダは残さない。backend 全体を流した後も 217KB）。開発用の箱は箱ごとの `/tmp`（`<箱>/tmp`、0700。箱を消すと一緒に消える）。
+- 検証: `tests/test_dev_sandbox.py`（+1、既存 2 件の「書けるのは箱だけ」に箱の中の /tmp を足した）、backend 全体 1958 passed。
+
 ## 2026-11-21 設定の「API キー」に OpenCode Zen（無料モデル）の登録欄
 
 - Zen の無料モデルは OpenCode の中からしか使えず他の道具は 403（ControlDeck のゲートウェイは通せない）。箱の OpenCode が opencode.ai へ直接繋ぐ。

@@ -737,6 +737,7 @@
 - `test_mirror_config_points_inside_the_box`
 - `test_opencode_cannot_stop_production_through_deck_sh`
 - `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
+- `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp（0700）。共有の /tmp にテストの一時フォルダが溜まり見かけ 372GB になった（2026-11-21）。destroy で一緒に消える。
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
