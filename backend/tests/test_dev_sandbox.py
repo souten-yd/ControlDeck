@@ -505,3 +505,12 @@ def test_opencode_config_gives_the_reviewer_another_model_and_ships_the_developm
     assert str(skill.parent) in config["skills"]
     external = json.loads(sandbox.opencode_config(box, model="opencode-go/glm-5.3", work_model="opencode-go/glm-5.3").read_text())
     assert external["agents"]["reviewer"]["model"] == "controldeck/auto"
+
+
+def test_box_keeps_npm_and_pip_offline(repo, monkeypatch):
+    """目的: 箱の中から npm・npx・pip が外へ取りに行かない。
+    根拠: 2026-11-22 実機、箱の OpenCode が `npx tsc` で npm からパッケージを取ってきた（外部からの取得の禁止に反する）。"""
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    box = sandbox.create("off1", str(repo))
+    argv = sandbox.podman_argv(box, ["true"])
+    assert "npm_config_offline=true" in argv and "PIP_NO_INDEX=1" in argv

@@ -487,6 +487,9 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
         "XDG_DATA_HOME": str(box.home / ".local/share"), "XDG_STATE_HOME": str(box.home / ".local/state"),
         "XDG_CACHE_HOME": str(box.home / ".cache"), "CONTROL_DECK_SANDBOX": box.name,
         "PLAYWRIGHT_BROWSERS_PATH": str(_data_dir() / "cache" / "ms-playwright"),
+        # 箱の中から npm・npx・pip が外へ取りに行かない（外部からの取得は利用者の了承が要る。2026-11-22 実機:
+        # 箱の OpenCode が `npx tsc` で npm からパッケージを取ってきた）。手元に無いものは失敗する
+        "npm_config_offline": "true", "PIP_NO_INDEX": "1",
         "PATH": tool_path(),
         **(env or {}),
     }

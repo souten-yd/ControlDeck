@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 205 ファイル、1862 テスト（目的の未記入 93 ファイル）
-- E2E: 101 spec、203 テスト
+- E2E: 102 spec、208 テスト
 
 ## backend（backend/tests）
 
@@ -768,6 +768,7 @@
 - `test_opencode_cannot_stop_production_through_deck_sh`
 - `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
 - `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp。空のルートの /tmp は全部の箱で共有され、テストの一時フォルダ（90GB の見かけの GGUF）が
+- `test_box_keeps_npm_and_pip_offline` — 箱の中から npm・npx・pip が外へ取りに行かない（2026-11-22 実機: 箱の OpenCode が npx で npm から取得した）。
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
@@ -3212,6 +3213,14 @@
 目的: iPhone: キーボードが出ても、触った入力欄が見える範囲に出る（AI アシスタント以外の画面でも）。 根拠: 2026-11-21 利用者「設定の API キーの入力欄をタップするとキーボードが上がって入力欄が消え、貼り付けられない」。 実機（iOS 18.7、設定の画面）: innerHeight 932 のまま、visual viewport だけ 517 に縮み、殻は 932 のままだった。 殻を見える範囲に合わせる useKeyboardViewportFit を AI アシスタントだけが呼んでいたため。 Chromium はキーボードで visual viewport だけを縮められないので、visualViewport を偽物にして iOS と同じ値を作る。 */
 
 - iPhone: キーボードで visual viewport が縮むと、設定の入力欄が見える範囲に出る
+
+### frontend/e2e/knowledge-essence.spec.ts
+
+目的: 知識エッセンス（K1b）: 文献の画面（DocumentSheet）の「知識エッセンス」の節。ローカル専用の AI が抜き出した知識（種類 8 つ・引用つき・AI の推論・未確認）を種類ごとのカードで見せ、承認・却下・差し戻し（メモは任意）でカードの状態が変わること。抽出の開始から Job の進み具合を経て一覧が読み直されること。stale の印（前の承認は効かない）・検めで捨てた件数・503（ローカルのモデルが無い）・422（利用条件）の理由・見るだけの利用者にボタンが無いこと。1280 と 320 で崩れずライト・ダークで撮影。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K1 の作り直し。backend は K1a として main 済み）。検証用インスタンスにはローカルのモデルも文献も無いので、API は page.route で差し替える（本物の LLM は呼ばない）。
+
+- Knowledge: 知識エッセンスを抽出して承認・却下・差し戻しで確かめる（${width}px）
+- Knowledge: 知識の抽出が始められないときは理由を出す（${width}px）
+- Knowledge: 見るだけの利用者に抽出もレビューのボタンが無い（1280px）
 
 ### frontend/e2e/knowledge.spec.ts
 
