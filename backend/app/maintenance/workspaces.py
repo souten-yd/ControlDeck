@@ -6,10 +6,18 @@ integrations/opencode/chat_server.py。
 
 - 作業場は箱の持ち主（meta の owner）だけが見える・使える・消せる。
 - 消すとき、未コミットの変更か、どのリモートにも無いコミットがあれば、確認の印（confirm）が無ければ断る。
+- 3 段目: 元からの差分の要約（changes）・関門の結果の保存（check）・取り込む（adopt）。取り込みは「関門が合格で、
+  その後に変更が無い」ときだけ。本体は GitHub へ PR まで（マージはしない）、CodeDEV は元のリポジトリへブランチとして取り込むだけ。
+- 脅威（2026-11-22 監査）: 箱の中の AI は box.repo/.git/config・フックを書き換えられる。ホストの git をそこで動かすと
+  core.fsmonitor・credential.helper・core.sshCommand・url.*.insteadOf などでホストの権限で実行される。対策: ホストでは
+  box.repo の中で git を一切動かさない。状態の確認・コミット・関門は箱の中の箱の git で行い（sandbox.probe / in_box）、
+  箱の結果はホストが管理する bare のリポジトリ（export.git）へ fetch で取り込んで、差分・tree の比較・push はそこから行う。
 """
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -45,7 +53,7 @@ def box_for_project(project: Path) -> Sandbox | None:
         return None
     if len(relative.parts) != 3 or relative.parts[1:] != ("work", "repo") or not sandbox.NAME.fullmatch(relative.parts[0]):
         return None
-    if not (sandbox.root() / relative.parts[0] / "sandbox.json").is_file():
+    if not sandbox.has_meta(sandbox.root() / relative.parts[0]):
         return None
     try:
         return sandbox.load(relative.parts[0])
@@ -56,10 +64,13 @@ def box_for_project(project: Path) -> Sandbox | None:
 def _boxes_of(username: str) -> list[Sandbox]:
     boxes = []
     for entry in sorted(sandbox.root().iterdir()):
-        if entry.is_dir() and sandbox.NAME.fullmatch(entry.name) and (entry / "sandbox.json").is_file():
-            meta = sandbox._read_meta(entry)
-            if username and meta.get("owner") == username:
-                boxes.append(sandbox.load(entry.name))
+        if entry.is_dir() and sandbox.NAME.fullmatch(entry.name) and sandbox.has_meta(entry):
+            try:
+                box = sandbox.load(entry.name)
+            except SandboxError:
+                continue          # 改ざんの恐れがある箱は一覧に出さない（使わせない）
+            if username and box.meta.get("owner") == username:
+                boxes.append(box)
     return boxes
 
 
@@ -74,23 +85,15 @@ def get(name: str, username: str) -> Sandbox:
     return box
 
 
-def unsaved(box: Sandbox) -> dict:
-    """未コミットの変更と、リモート追跡ブランチに無いコミットの数。調べられなければ「ある」とみなす（安全側）。"""
-    try:
-        dirty = bool(sandbox._git("status", "--porcelain", cwd=box.repo))
-        unpushed = len([line for line in sandbox._git("log", "--branches", "--not", "--remotes", "--format=%H",
-                                                      cwd=box.repo).splitlines() if line.strip()])
-    except SandboxError:
-        return {"dirty": True, "unpushed": 0, "unknown": True}
-    return {"dirty": dirty, "unpushed": unpushed, "unknown": False}
+def unsaved(box: Sandbox, *, fresh: bool = False) -> dict:
+    """未コミットの変更と、リモート追跡ブランチに無いコミットの数。箱の中で調べる。調べられなければ「ある」とみなす（安全側）。"""
+    state = sandbox.probe(box, fresh=fresh)
+    return {"dirty": bool(state["dirty"]), "unpushed": state["unpushed"], "unknown": bool(state.get("unknown"))}
 
 
 def summary(box: Sandbox) -> dict:
-    state = unsaved(box)
-    try:
-        branch = sandbox._git("rev-parse", "--abbrev-ref", "HEAD", cwd=box.repo)
-    except SandboxError:
-        branch = ""
+    probed = sandbox.probe(box)
+    state, branch = {"dirty": bool(probed["dirty"]), "unpushed": probed["unpushed"]}, probed["branch"]
     source = str(box.meta.get("workspace_source") or "")
     return {
         "name": box.name, "source": source or "box",
@@ -156,13 +159,269 @@ def create(username: str, source: str, name: str = "") -> dict:
     result = summary(box)
     if source.startswith(CODEDEV_PREFIX):
         # 作業場は git の履歴から作る。元のフォルダの未コミットの変更は入らない
-        result["source_dirty"] = bool(sandbox._git("status", "--porcelain", cwd=repo))
+        result["source_dirty"] = bool(sandbox._git("status", "--porcelain", cwd=repo))  # 元は利用者のもの（信用する）
     return result
 
 
 def delete(name: str, username: str, *, confirm: bool = False) -> None:
     box = get(name, username)
-    state = unsaved(box)
+    state = unsaved(box, fresh=True)
     if (state["dirty"] or state["unpushed"]) and not confirm:
         raise UnsavedChanges(name, state["dirty"], state["unpushed"])
     sandbox.destroy(name)
+    try:
+        _host_git("update-ref", "-d", ws_ref(name), cwd=export_repo())
+    except (SandboxError, OSError):
+        pass
+
+
+# ---------------------------------------------------------------- 3 段目: 結果・関門・取り込む
+
+MAX_COMMITS = 20
+GIT_TIMEOUT = 120
+GH_TIMEOUT = 120
+CHECK_TIMEOUT = 4000
+BRANCH_PREFIX = "ws/"
+
+
+class AdoptRefused(SandboxError):
+    """取り込めない（前提を満たさない）。メッセージは利用者に出す理由。"""
+
+
+def export_repo() -> Path:
+    """ホストが管理する bare のリポジトリ。設定はホストが書いたものだけ。箱の結果はここへ fetch で取り込む。"""
+    path = sandbox._data_dir() / "workspaces" / "export.git"
+    if not (path / "HEAD").is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _host_git("init", "--bare", "-q", str(path), cwd=path.parent)
+    return path
+
+
+def ws_ref(name: str) -> str:
+    return f"refs/ws/{name}/head"
+
+
+def _host_git(*args: str, cwd: Path, timeout: int = GIT_TIMEOUT) -> str:
+    """ホストの git。箱の作業ツリー（の中）では動かさない（箱の AI が書ける設定・フックで実行されるため）。"""
+    try:
+        inside = cwd.resolve().is_relative_to(sandbox.root().resolve())
+    except OSError:
+        inside = True
+    if inside:
+        raise SandboxError("箱の中ではホストの git を動かしません")
+    try:
+        result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxError(f"git {' '.join(args[:2])} がタイムアウトしました") from exc
+    if result.returncode != 0:
+        raise SandboxError(f"git {' '.join(args[:2])} に失敗しました: {result.stderr.strip()[:300]}")
+    return result.stdout.strip()
+
+
+def import_head(box: Sandbox) -> str:
+    """箱の HEAD（コミット済みの分）を export.git の refs/ws/<名前>/head へ取り込み、その sha を返す。
+
+    取り込みは受け取る側（export.git）の設定で動く。箱の設定は読まない（upload-pack の設定は git が信用しない）。
+    """
+    exp = export_repo()
+    _host_git("-c", "protocol.file.allow=always", "fetch", "--no-tags", "--quiet", str(box.repo),
+              f"+HEAD:{ws_ref(box.name)}", cwd=exp)
+    return _host_git("rev-parse", ws_ref(box.name), cwd=exp)
+
+
+def _update_meta(name: str, **fields) -> dict:
+    """meta を読み直して、指定の項目だけを書く（他の更新を上書きしない）。"""
+    path = sandbox.root() / name
+    meta = sandbox._read_meta(path)
+    meta.update(fields)
+    sandbox._save_meta(path, meta)
+    return meta
+
+
+def _diff_summary(box: Sandbox, head: str) -> dict:
+    """元（作った時の revision）から export.git の head までの差分。ファイルの中身は返さない。"""
+    base = str(box.meta.get("revision") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        raise SandboxError("この作業場には元の revision の記録がありません")
+    exp = export_repo()
+    files = []
+    for line in _host_git("diff", "--numstat", "-M", base, head, cwd=exp).splitlines():
+        added, removed, path = (line.split("\t", 2) + ["", "", ""])[:3]
+        files.append({"path": path, "added": int(added) if added.isdigit() else 0,
+                      "removed": int(removed) if removed.isdigit() else 0, "binary": added == "-", "untracked": False})
+    files.sort(key=lambda item: item["path"])
+    commits = []
+    for line in _host_git("log", f"-n{MAX_COMMITS}", "--format=%H%x1f%an%x1f%ct%x1f%s", f"{base}..{head}",
+                          cwd=exp).splitlines():
+        sha, author, when, subject = (line.split("\x1f") + ["", "", "", ""])[:4]
+        commits.append({"sha": sha[:10], "author": author, "at": float(when or 0), "subject": subject})
+    return {"base": base[:10], "head": head[:10], "files": files, "file_count": len(files),
+            "added": sum(f["added"] for f in files), "removed": sum(f["removed"] for f in files),
+            "commits": commits, "commit_count": int(_host_git("rev-list", "--count", f"{base}..{head}", cwd=exp) or 0)}
+
+
+def changes(box: Sandbox) -> dict:
+    """元からの差分の要約（コミット済みの分は export.git で、未コミットの有無は箱の中で調べる）。"""
+    state = sandbox.probe(box, fresh=True, with_tree=True)
+    if state.get("unknown"):
+        raise SandboxError("箱の中の状態を調べられませんでした。箱が動いているか確かめてください")
+    summary_ = _diff_summary(box, import_head(box))
+    summary_.update(dirty=bool(state["dirty"]), uncommitted=state["dirty"],
+                    check=check_state(box, state["tree"]), adopted=adopted_state(box))
+    return summary_
+
+
+def check_state(box: Sandbox, current_tree: str | None = None) -> dict | None:
+    """最後の関門の結果（無ければ None）。current_tree を渡すと、今の作業ツリーにまだ当てはまるか（stale）も返す。"""
+    saved = sandbox._read_meta(box.path).get("last_check")
+    if not isinstance(saved, dict):
+        return None
+    result = {key: saved.get(key) for key in ("passed", "items", "at")}
+    result["head"] = str(saved.get("head") or "")[:10]
+    result["stale"] = None if current_tree is None else (not saved.get("tree") or saved.get("tree") != current_tree)
+    return result
+
+
+def adopted_state(box: Sandbox) -> dict | None:
+    saved = sandbox._read_meta(box.path).get("adopted")
+    return saved if isinstance(saved, dict) else None
+
+
+def parse_report(text: str) -> list[dict]:
+    """dev_check の報告（「[合格] 名前: 内容」の行）を行ごとの合否にする。"""
+    items = []
+    for line in text.splitlines():
+        match = re.match(r"^\[(合格|不合格|未実施)\] (.+?): (.*)$", line)
+        if match:
+            items.append({"status": {"合格": "ok", "不合格": "ng", "未実施": "skip"}[match.group(1)],
+                          "name": match.group(2), "message": match.group(3)[:300]})
+    return items
+
+
+def run_check(name: str) -> dict:
+    """関門（dev_check）を作業場へ流し、結果を meta に保存する。重いので Job から呼ぶ（同期の関数）。
+
+    関門は箱の中で流す。理由: (1) ホストで流すと dev_check が box.repo の中でホストの git を動かす。(2) 箱の AI が書いた
+    テスト・コードがホストの権限で動く。箱の中なら隔離が保たれ、未コミットの変更も関門が見る。箱の中は元の venv が見える。
+    （箱の AI が dev_check 自体を書き換えて「合格」にしうるので、マージ前の関門は本番側で改めて通すこと。）
+    """
+    box = sandbox.load(name)
+    base = str(box.meta.get("revision") or "")
+    state = sandbox.probe(box, fresh=True, with_tree=True)
+    if state.get("unknown"):
+        raise SandboxError("箱の中の状態を調べられませんでした")
+    python = Path(str(box.meta.get("source") or "")) / ".venv" / "bin" / "python"
+    code, out, err = sandbox.in_box_result(
+        box, ["sh", "-c", 'cd backend && exec "$0" -m app.maintenance.dev_check --base "$1"', str(python), base],
+        timeout=CHECK_TIMEOUT)
+    items = parse_report(out)
+    if code in (0, 1) and items:
+        passed = code == 0
+    else:
+        passed = False
+        items = [{"status": "ng", "name": "関門", "message": (err.strip() or out.strip() or f"終了コード {code}")[-300:]}]
+    saved = {"passed": passed, "items": items, "at": time.time(), "head": state["head"], "tree": state["tree"]}
+    _update_meta(name, last_check=saved)
+    return saved
+
+
+def mark_check_started(name: str, job_id: str) -> None:
+    _update_meta(name, check_job=job_id)
+
+
+def _origin_slug(origin: str) -> str:
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+)/([\w.-]+?)(?:\.git)?/?", origin.strip())
+    if not match:
+        raise AdoptRefused("元の origin が GitHub ではないので、PR は作れません")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _trusted_origin() -> str:
+    """push 先。箱の meta（箱の AI が書ける）ではなく、ホストの ControlDeck 本体のリポジトリの origin から取る。"""
+    return _host_git("remote", "get-url", "origin", cwd=controldeck_repo())
+
+
+def _require_adoptable(box: Sandbox, commit_message: str) -> dict:
+    """取り込める状態か確かめる（必要なら箱の中でコミットする）。返すのは保存済みの関門の結果。"""
+    saved = sandbox._read_meta(box.path).get("last_check")
+    if not isinstance(saved, dict) or not saved.get("at"):
+        raise AdoptRefused("関門をまだ流していません。関門を流してください")
+    if not saved.get("passed"):
+        raise AdoptRefused("最後の関門が不合格です。直してから関門を流し直してください")
+    state = sandbox.probe(box, fresh=True, with_tree=True)
+    if state.get("unknown"):
+        raise SandboxError("箱の中の状態を調べられませんでした。箱が動いているか確かめてください")
+    if state["dirty"]:
+        if not commit_message.strip():
+            raise AdoptRefused("コミットされていない変更があります。OpenCode にコミットさせるか、コミットメッセージを付けて取り込んでください")
+        if saved.get("tree") != state["tree"]:
+            raise AdoptRefused("関門の後に変更されています。関門を流し直してください")
+        # コミットは箱の中の箱の git で（作者は箱の git の名前）。フックは動かさない
+        sandbox.in_box(box, ["sh", "-c", 'git add -A && git commit --no-verify -q -m "$1"', "sh", commit_message.strip()[:200]])
+    elif saved.get("head") != state["head"]:
+        raise AdoptRefused("関門の後に変更されています。関門を流し直してください")
+    return saved
+
+
+def _body_of(summary_: dict, name: str, saved: dict, username: str) -> str:
+    labels = {"ok": "合格", "ng": "不合格", "skip": "未実施"}
+    lines = ["AI アシスタントの開発の作業場から作りました。", "",
+             f"- 作業場: {name}（元: {summary_['base']} から {summary_['commit_count']} コミット）",
+             f"- 変更: {summary_['file_count']} ファイル（+{summary_['added']} / -{summary_['removed']}）",
+             f"- 利用者: {username}", "", "関門（./deck.sh dev-check）の結果:"]
+    for item in saved.get("items") or []:
+        lines.append(f"- [{labels.get(item['status'], item['status'])}] {item['name']}: {item['message']}")
+    lines += ["", "マージと Release は、関門を通してから行ってください（この PR は自動ではマージされません）。"]
+    return "\n".join(lines)
+
+
+def adopt(name: str, username: str, *, commit_message: str = "", title: str = "") -> dict:
+    """作業場の結果を取り込む。本体は GitHub に PR（マージしない）、CodeDEV は元のリポジトリへブランチとして。"""
+    box = get(name, username)
+    source = str(box.meta.get("workspace_source") or "")
+    if source != CONTROLDECK and not source.startswith(CODEDEV_PREFIX):
+        raise AdoptRefused("この作業場の元は取り込みに対応していません")
+    saved = _require_adoptable(box, commit_message)
+    head = import_head(box)
+    if _host_git("rev-parse", f"{head}^{{tree}}", cwd=export_repo()) != saved.get("tree"):
+        raise AdoptRefused("関門で確かめた内容と取り込む内容が違います。関門を流し直してください")
+    branch = f"{BRANCH_PREFIX}{name}"
+    exp = export_repo()
+    if source == CONTROLDECK:
+        origin = _trusted_origin()
+        slug = _origin_slug(origin)
+        if not shutil.which("gh"):
+            raise SandboxError("gh（GitHub の CLI）が見つかりません。ホストに gh を入れてログインしてください")
+        _gh("auth", "status")
+        _host_git("push", origin, f"{ws_ref(name)}:refs/heads/{branch}", cwd=exp, timeout=GH_TIMEOUT)
+        previous = adopted_state(box)
+        if previous and previous.get("pr_url"):
+            url = str(previous["pr_url"])
+        else:
+            summary_ = _diff_summary(box, head)
+            subject = commit_message.strip().splitlines()[0] if commit_message.strip() else (
+                _host_git("log", "-1", "--format=%s", head, cwd=exp) or f"作業場 {name} からの変更")
+            url = _gh("pr", "create", "-R", slug, "--base", "main", "--head", branch,
+                      "--title", (title.strip() or subject)[:120], "--body", _body_of(summary_, name, saved, username)
+                      ).splitlines()[-1].strip()
+        result = {"kind": "pr", "branch": branch, "pr_url": url, "slug": slug}
+    else:
+        repo = _codedev_repo(source[len(CODEDEV_PREFIX):])
+        _host_git("fetch", "--no-tags", "--quiet", str(exp), f"{ws_ref(name)}:refs/heads/{branch}", cwd=repo)
+        result = {"kind": "branch", "branch": branch, "pr_url": "", "project": source[len(CODEDEV_PREFIX):]}
+    result.update(at=time.time(), head=head[:10], by=username)
+    _update_meta(name, adopted=result)
+    return result
+
+
+def _gh(*args: str) -> str:
+    try:
+        result = subprocess.run(["gh", *args], cwd=export_repo().parent, capture_output=True, text=True,
+                                timeout=GH_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxError("gh がタイムアウトしました") from exc
+    if result.returncode != 0:
+        if args[:2] == ("auth", "status"):
+            raise SandboxError("gh が GitHub にログインしていません。ホストで gh auth login をしてください")
+        raise SandboxError(f"gh {' '.join(args[:2])} に失敗しました: {(result.stderr or result.stdout).strip()[:300]}")
+    return result.stdout.strip()

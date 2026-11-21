@@ -6,6 +6,10 @@
 箱の持ち主と MCP（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具を使わせる。誰の権限で動くかを持ち主
 （--owner、省くと管理者が 1 人ならその人）で決め、そのトークンは箱の外の中継だけが持つ（0600 の環境変数ファイル、
 argv・箱の opencode.json には入れない）。箱の bridge は中継を向く。
+
+箱の設定（meta）を箱の外へ置く目的と根拠（2026-11-22 監査）: 設定が箱の書ける box.path/sandbox.json にあると、箱の中の AI が
+overlays に ~/.ssh などを足して、次にホストが作る podman の引数で見せられる。設定は `<root>/.meta/<名前>.json`（0700・0600）へ置き、
+古い箱は検査を通した分だけ移し、load のたびに検査する（git_common_dir・overlays の 2 種類・ポートの範囲・owner の型）。
 """
 import json
 import subprocess
@@ -46,7 +50,7 @@ def test_create_clones_without_touching_the_source(repo):
     assert sandbox._git("rev-parse", "--abbrev-ref", "HEAD", cwd=box.repo) == "sandbox/work1"
     assert sandbox._git("remote", "get-url", "origin", cwd=box.repo) == "https://github.com/example/repo.git"
     assert "sandbox/work1" not in sandbox._git("branch", cwd=repo), "元のリポジトリにブランチを作らない"
-    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta = json.loads(sandbox._meta_path(box.name).read_text())
     assert meta["overlays"] == [[str(repo / ".venv"), str(repo / ".venv")]]
     with pytest.raises(sandbox.SandboxError):
         sandbox.create("work1", str(repo))
@@ -198,13 +202,13 @@ def test_ensure_pod_reuses_same_spec_and_recreates_on_change(repo, monkeypatch):
 
 def test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it(repo):
     box = sandbox.create("old1", str(repo))
-    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta = json.loads(sandbox._meta_path(box.name).read_text())
     meta.pop("gateway_port")
     meta.pop("allow_load")
-    (box.path / "sandbox.json").write_text(json.dumps(meta))
+    sandbox._meta_path(box.name).write_text(json.dumps(meta))
     loaded = sandbox.load("old1")
     assert loaded.gateway_port == 18900 and loaded.allow_load is False
-    assert json.loads((box.path / "sandbox.json").read_text())["gateway_port"] == 18900
+    assert json.loads(sandbox._meta_path(box.name).read_text())["gateway_port"] == 18900
 
 
 def test_opencode_config_has_no_production_key_and_points_at_the_relay(repo, monkeypatch):
@@ -282,7 +286,7 @@ def _users(monkeypatch, admins, others=()):
 def test_owner_is_the_only_admin_or_must_be_named(repo, monkeypatch):
     _users(monkeypatch, ["alice"], ["bob"])
     assert sandbox.create("own1", str(repo)).owner == "alice"
-    assert json.loads((sandbox._dir("own1") / "sandbox.json").read_text())["owner"] == "alice"
+    assert json.loads(sandbox._meta_path("own1").read_text())["owner"] == "alice"
     assert sandbox.create("own2", str(repo), owner="bob").owner == "bob"
     with pytest.raises(sandbox.SandboxError, match="carol"):
         sandbox.create("own3", str(repo), owner="carol")
@@ -298,16 +302,16 @@ def test_owner_is_the_only_admin_or_must_be_named(repo, monkeypatch):
 
 def test_old_box_without_owner_gets_one_by_the_same_rule_and_saves_it(repo, monkeypatch):
     box = sandbox.create("old2", str(repo))
-    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta = json.loads(sandbox._meta_path(box.name).read_text())
     meta.pop("owner")
-    (box.path / "sandbox.json").write_text(json.dumps(meta))
+    sandbox._meta_path(box.name).write_text(json.dumps(meta))
     _users(monkeypatch, ["alice", "dave"])
     loaded = sandbox.load("old2")  # 読むだけの操作（list・destroy）は持ち主が決まらなくても通る
     with pytest.raises(sandbox.SandboxError, match="--owner"):
         sandbox.box_owner(loaded)
     _users(monkeypatch, ["alice"])
     assert sandbox.box_owner(sandbox.load("old2")) == "alice"
-    assert json.loads((box.path / "sandbox.json").read_text())["owner"] == "alice"
+    assert json.loads(sandbox._meta_path(box.name).read_text())["owner"] == "alice"
 
 
 def test_relay_env_file_is_0600_outside_the_box_and_token_stays_out_of_argv(repo, monkeypatch):
@@ -429,6 +433,7 @@ def test_run_switches_model_on_limit_error_and_continues_the_session(zen_box, mo
     assert '"sessionID": "ses_1"' in out.out
     assert "opencode-go/glm-5.3 -> opencode/hy4-flash-free" in out.err
     assert sandbox.load("zen1").meta["last_model"] == "opencode/hy4-flash-free"
+    monkeypatch.setattr(sandbox, "probe", lambda box, **kw: {"branch": "", "dirty": 0, "unpushed": 0})  # 箱の中の git は動かさない
     assert sandbox.status(sandbox.load("zen1"))["last_model"] == "opencode/hy4-flash-free"
 
 
@@ -516,3 +521,68 @@ def test_box_keeps_npm_and_pip_offline(repo, monkeypatch):
     box = sandbox.create("off1", str(repo))
     argv = sandbox.podman_argv(box, ["true"])
     assert "npm_config_offline=true" in argv and "PIP_NO_INDEX=1" in argv
+
+
+# ---- meta は箱の外（.meta）。箱の中から書き換えて見せる場所を増やせない ----
+
+def _argv_text(box):
+    return " ".join(sandbox.podman_argv(box, ["true"]))
+
+
+def test_new_box_writes_meta_outside_the_box_with_private_modes(repo):
+    box = sandbox.create("meta1", str(repo))
+    meta_file = sandbox._meta_path("meta1")
+    assert meta_file.is_file() and not box.path.joinpath("sandbox.json").exists(), "新しい箱は最初から .meta へ"
+    assert not meta_file.resolve().is_relative_to(box.path.resolve()), "箱の pod が書ける box.path の外"
+    assert oct(meta_file.stat().st_mode & 0o777) == "0o600" and oct(meta_file.parent.stat().st_mode & 0o777) == "0o700"
+    assert str(sandbox.meta_dir()) not in _argv_text(box), "箱へはマウントしない"
+    box.meta["last_model"] = "x"
+    sandbox._save_meta(box.path, box.meta)
+    assert oct(meta_file.stat().st_mode & 0o777) == "0o600" and sandbox.load("meta1").meta["last_model"] == "x"
+
+
+def test_legacy_sandbox_json_is_migrated_once_after_inspection_and_extra_overlays_are_dropped(repo, tmp_path):
+    box = sandbox.create("leg1", str(repo))
+    forged = dict(box.meta)
+    forged["overlays"] = [*box.meta["overlays"], [str(tmp_path / "home" / ".ssh"), str(tmp_path / "home" / ".ssh")],
+                          str(tmp_path / "secret"), [str(tmp_path / "forbidden"), str(tmp_path / "forbidden")]]
+    forged["last_check"] = {"passed": True, "at": 1, "tree": "x"}          # 関門の合格の偽装は引き継がない
+    sandbox._meta_path("leg1").unlink()
+    (box.path / "sandbox.json").write_text(json.dumps(forged))
+    moved = sandbox.load("leg1")
+    assert moved.meta["overlays"] == box.meta["overlays"] and "last_check" not in moved.meta
+    text = _argv_text(moved)
+    assert ".ssh" not in text and "secret" not in text and "forbidden" not in text, "足した見せる場所は podman の引数に入らない"
+    assert sandbox._meta_path("leg1").is_file() and not (box.path / "sandbox.json").exists(), "移したら古い場所は消す"
+    # 箱の中からもう一度置かれても使わない（消す）
+    (box.path / "sandbox.json").write_text(json.dumps({**forged, "port": 22}))
+    assert sandbox.load("leg1").meta["port"] == box.meta["port"] and not (box.path / "sandbox.json").exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("git_common_dir", "/etc"), ("name", "other"), ("port", 22), ("gateway_port", 80), ("serve_port", True),
+    ("owner", ["root"]), ("source", "box"),
+])
+def test_tampered_legacy_meta_is_refused(repo, field, value):
+    box = sandbox.create("tam1", str(repo))
+    forged = dict(box.meta)
+    forged[field] = str(box.path / "work" / "repo") if value == "box" else value
+    sandbox._meta_path("tam1").unlink()
+    (box.path / "sandbox.json").write_text(json.dumps(forged))
+    with pytest.raises(sandbox.SandboxError, match="改ざんの恐れ"):
+        sandbox.load("tam1")
+    assert not sandbox._meta_path("tam1").exists(), "通らないものは移さない"
+
+
+def test_git_common_dir_of_a_stored_meta_is_checked_on_every_load(repo, tmp_path):
+    sandbox.create("gcd1", str(repo))
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=other, check=True, capture_output=True)
+    meta = json.loads(sandbox._meta_path("gcd1").read_text())
+    meta["git_common_dir"] = str(other / ".git")
+    sandbox._meta_path("gcd1").write_text(json.dumps(meta))
+    with pytest.raises(sandbox.SandboxError, match="git_common_dir"):
+        sandbox.load("gcd1")
+    sandbox.destroy("gcd1")      # 使えない箱でも消せる
+    assert not sandbox._dir("gcd1").exists() and not sandbox._meta_path("gcd1").exists()

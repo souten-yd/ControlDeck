@@ -2205,6 +2205,7 @@ export default function AssistantChat() {
             <WorkspaceBar
               value={codeProject}
               workspaces={workspaces ?? []}
+              busy={busy}
               projects={codeProjects?.projects ?? []}
               onCreated={(name) => setCodeProject(workspaceValue(name))}
               onDeleted={() => setCodeProject("__new__")}

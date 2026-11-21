@@ -190,6 +190,113 @@ def delete_workspace(
     return {"ok": True, "name": name}
 
 
+class AdoptBody(BaseModel):
+    confirm: bool = False
+    commit_message: str = Field(default="", max_length=200)
+    title: str = Field(default="", max_length=120)
+
+
+def _owned_box(name: str, user: User):
+    from app.maintenance import workspaces
+
+    try:
+        return workspaces.get(name, user.username)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+@router.get("/workspaces/{name}/changes")
+async def workspace_changes(name: str, user: User = Depends(require_permission("terminal.use"))):
+    """作業場の、元からの差分の要約（ファイル・増減・未コミット・コミット・関門の結果）。中身は返さない。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    box = _owned_box(name, user)
+    try:
+        return await asyncio.to_thread(workspaces.changes, box)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+def _check_payload(box) -> dict:
+    from app.maintenance import workspaces
+
+    job = jobs.get(str(box.meta.get("check_job") or ""))
+    running = bool(job and job.status in {"queued", "running"})
+    return {"check": workspaces.check_state(box), "running": running,
+            "job_id": job.id if running and job else None}
+
+
+@router.get("/workspaces/{name}/check")
+async def workspace_check_state(name: str, user: User = Depends(require_permission("terminal.use"))):
+    import asyncio
+
+    from app.maintenance import sandbox
+
+    box = _owned_box(name, user)
+    box = await asyncio.to_thread(sandbox.load, name)
+    return await asyncio.to_thread(_check_payload, box)
+
+
+@router.post("/workspaces/{name}/check", status_code=202)
+async def workspace_check(
+    name: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """関門（dev-check）を作業場へ流す。重いので Job にする。結果は作業場の meta に保存し、GET で読む。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    box = _owned_box(name, user)
+    current = _check_payload(box)
+    if current["running"]:
+        return {"job_id": current["job_id"], "already_running": True}
+
+    async def worker(job):
+        job.log("関門を流しています")
+        saved = await asyncio.to_thread(workspaces.run_check, name)
+        return {"passed": saved["passed"]}
+
+    job = jobs.create("opencode.workspace.check", f"作業場 {name} の関門", worker, owner_user_id=user.id)
+    workspaces.mark_check_started(name, job.id)
+    audit.record(db, "opencode.workspace.check", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id, "already_running": False}
+
+
+@router.post("/workspaces/{name}/adopt")
+async def workspace_adopt(
+    name: str, body: AdoptBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """作業場の結果を取り込む（確認の印が必須）。本体は GitHub に PR を作る（マージはしない・settings.manage が要る）。
+    CodeDEV のプロジェクトは元のリポジトリへ ws/<名前> のブランチとして取り込むだけ（外へは出さない）。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+    from app.security.deps import user_permissions
+
+    if not body.confirm:
+        raise HTTPException(status_code=422, detail="取り込むには確認（confirm）が必要です")
+    box = _owned_box(name, user)
+    source = str(box.meta.get("workspace_source") or "")
+    if source == workspaces.CONTROLDECK and "settings.manage" not in user_permissions(user):
+        raise HTTPException(status_code=403, detail="権限がありません: settings.manage")
+    try:
+        result = await asyncio.to_thread(workspaces.adopt, name, user.username,
+                                         commit_message=body.commit_message, title=body.title)
+    except workspaces.AdoptRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    audit.record(db, "opencode.workspace.adopt", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request,
+                 metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"]})
+    return result
+
+
 class SessionBody(BaseModel):
     project_path: str = Field(default="", max_length=4096)
     project_name: str = Field(default="", max_length=64)
