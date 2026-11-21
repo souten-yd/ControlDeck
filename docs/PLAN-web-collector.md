@@ -44,6 +44,9 @@ backend/app/web_collector/
   - **Web 本文抽出（Trafilatura）**: 種類 `python-lib`（専用 venv に版を固定して導入、更新で最新版）。
   - **robots.txt 解析（Protego）**: 同上（W3 で使う）。
   - 公開データの取得先（EPO・USPTO・JPO・OpenAlex）の**鍵の設定への入口**（いまは Patent →「公報」→「取得先の設定」にしかない）。
+- **SearXNG（Web 検索エンジン）**: 既存の `scripts/setup-searxng.sh` を導入・更新に使う（種類 `managed-script`）。
+  - **Web 収集用ブラウザ（Chromium headless shell）**: W2 で使う。本体の Playwright に合う版を機能の専用フォルダへ（種類 `playwright-browser`）。
+- 各分類の未導入の機能にチェックを付け、「選んだものを導入」で 1 つの Job でまとめて入れる（2026-11-21 利用者の指示）。
 - 各機能に「導入」「更新」（pip・npm の機能にも個別の更新ボタンを付ける。最新版の有無は PyPI / npm の情報で確かめる）。
 - 分類ごとに「まとめて導入」（未導入のものを 1 つの Job で順に入れる）。既存の「一括更新」はそのまま。
 

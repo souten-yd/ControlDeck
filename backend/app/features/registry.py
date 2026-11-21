@@ -115,6 +115,34 @@ FEATURES: dict[str, dict] = {
         "route_gated": False,
         "summary": "Web ページから本文・見出し・表・リンクを Markdown で取り出す。Deep Research・Workflow・特許の調査で使う。未導入なら従来の簡易な抽出",
     },
+    "web-robots": {
+        "name": "robots.txt 解析（Protego）",
+        "kind": "python-lib",
+        "packages": ["protego==0.7.0"],
+        "latest_packages": ["protego"],
+        "module": "protego",
+        "distribution": "protego",
+        "category": "search",
+        "route_gated": False,
+        "summary": "サイトの巡回で robots.txt（Google の仕様のワイルドカードを含む）を守る。巡回（準備中）で使う",
+    },
+    "web-browser": {
+        "name": "Web 収集用ブラウザ（Chromium）",
+        "kind": "playwright-browser",
+        "category": "search",
+        "route_gated": False,
+        "summary": "JavaScript が要るページを開く専用のブラウザ（約 100 MB）。いつもの Chrome とログイン・Cookie を共有しない。JS ページの取得（準備中）で使う",
+    },
+    "searxng": {
+        "name": "SearXNG（Web 検索エンジン）",
+        "kind": "managed-script",
+        "script": "scripts/setup-searxng.sh",
+        "install_dir": "~/.local/share/searxng",
+        "marker": "run.sh",
+        "category": "search",
+        "route_gated": False,
+        "summary": "このPCで動くメタ検索エンジン。Deep Research・Workflow の Web 検索が使い、検索の時だけ起動する。起動・停止は Apps",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -285,6 +313,14 @@ def _managed_executable(feature_id: str) -> Path:
         return root / "venv" / "bin" / spec["executable"]
     if spec["kind"] == "python-lib":
         return root / "venv" / "bin" / "python"
+    if spec["kind"] == "managed-script":
+        from app.features import search_kinds
+
+        return search_kinds.script_marker(spec)
+    if spec["kind"] == "playwright-browser":
+        from app.features import search_kinds
+
+        return search_kinds.browser_marker(root)
     if spec["kind"] in NPM_MODULE_KINDS:
         # プラグインと MCP サーバーは PATH 上の実行ファイルを持たない。導入済みの印は package.json。
         return root / "node_modules" / spec["module"] / "package.json"
@@ -349,6 +385,9 @@ def executable(feature_id: str) -> Path | None:
         # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() else None
+    if spec["kind"] in ("managed-script", "playwright-browser"):
+        managed = _managed_executable(feature_id)
+        return managed if managed.is_file() else None
     if spec["kind"] == "python-lib":
         # venv の python は symlink。resolve すると venv の外の python を指すので解決しない。
         managed = _managed_executable(feature_id)
@@ -467,6 +506,12 @@ def status(feature_id: str) -> dict:
             healthy = True
         except (OSError, json.JSONDecodeError):
             error = "プラグインの package.json を読めません"
+    elif binary is not None and spec["kind"] in ("managed-script", "playwright-browser"):
+        from app.features import search_kinds
+
+        version = (search_kinds.script_version(spec) if spec["kind"] == "managed-script"
+                   else search_kinds.browser_version(binary))
+        healthy = True
     elif binary is not None and spec["kind"] == "python-lib":
         version = _python_lib_version(spec, binary)
         healthy = bool(version)
@@ -487,7 +532,8 @@ def status(feature_id: str) -> dict:
     installed = binary is not None if spec["kind"] != "release-bundle" else installed
     toolchain = (
         True if spec["kind"] == "release-bundle"
-        else shutil.which("npm") if spec["kind"] in ("npm", *NPM_MODULE_KINDS) else shutil.which("python3")
+        else shutil.which("npm") if spec["kind"] in ("npm", *NPM_MODULE_KINDS)
+        else shutil.which("git") if spec["kind"] == "managed-script" else shutil.which("python3")
     )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
     enabled = (
@@ -606,6 +652,15 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "python-lib":
         return _pip_install(feature_id, spec["latest_packages"] if latest else spec["packages"])
+    if spec["kind"] in ("managed-script", "playwright-browser"):
+        from app.features import search_kinds
+
+        try:
+            if spec["kind"] == "managed-script":
+                return search_kinds.script_install(spec, latest=latest)
+            return search_kinds.browser_install(_feature_root(feature_id))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise FeatureError(f"{spec['name']}の導入に失敗しました: {exc}") from exc
     package = spec["package"]
     if spec["kind"] == "pip":
         return _pip_install(feature_id, package)
@@ -615,6 +670,12 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     if latest and spec.get("latest_package"):
         return _npm_install(feature_id, spec["latest_package"])
     return _npm_install(feature_id, f"{package}@latest" if latest else package)
+
+
+def _tail(result: subprocess.CompletedProcess[str]) -> str:
+    """失敗の理由（出力の最後の行）。利用者が直せるように短く添える。"""
+    lines = [line for line in (result.stderr or result.stdout or "").strip().splitlines() if line.strip()]
+    return f"（{lines[-1][-200:]}）" if lines else ""
 
 
 def install(feature_id: str) -> dict:
@@ -635,7 +696,7 @@ def install(feature_id: str) -> dict:
         return status(feature_id)
     result = _install_package(feature_id, latest=False)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
-        raise FeatureError(f"{name}の管理導入に失敗しました")
+        raise FeatureError(f"{name}の管理導入に失敗しました{_tail(result)}")
     _autoconfigure(feature_id)
     return status(feature_id)
 
@@ -675,7 +736,7 @@ def update(feature_id: str) -> dict:
         return {**status(feature_id), "previous_version": result["previous_version"] or previous}
     result = _install_package(feature_id, latest=True)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
-        raise FeatureError(f"{name}の更新に失敗しました")
+        raise FeatureError(f"{name}の更新に失敗しました{_tail(result)}")
     return {**status(feature_id), "previous_version": previous}
 
 
@@ -826,6 +887,9 @@ def uninstall(feature_id: str) -> dict:
         except release_bundle.ReleaseBundleError as exc:
             raise FeatureError(str(exc)) from exc
         return status(feature_id)
+    if FEATURES[feature_id]["kind"] == "managed-script":
+        # 導入先（例 ~/.local/share/searxng）と Apps の登録を巻き込むので、ここからは消さない
+        raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません（Apps から管理）")
     root = _feature_root(feature_id)
     if root.exists():
         # 管理prefixだけを削除。PATH上の外部OpenCodeと~/.config/~/.local/shareには触れない。

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 191 ファイル、1698 テスト（目的の未記入 93 ファイル）
+- backend: 191 ファイル、1702 テスト（目的の未記入 93 ファイル）
 - E2E: 94 spec、196 テスト
 
 ## backend（backend/tests）
@@ -953,6 +953,10 @@
 - `test_broken_library_asks_for_reinstall`
 - `test_update_check_compares_with_pypi`
 - `test_install_all_in_a_category_runs_one_job`
+- `test_search_category_lists_the_search_components` — 検索と収集に、検索エンジン（SearXNG）・本文抽出・robots.txt・JS ページ用のブラウザが並ぶ。
+- `test_searxng_is_managed_by_its_setup_script_and_not_uninstalled_here`
+- `test_browser_is_installed_into_the_feature_folder`
+- `test_install_only_the_checked_features`
 
 ### backend/tests/test_features.py
 

@@ -98,3 +98,77 @@ def test_install_all_in_a_category_runs_one_job(admin_client, monkeypatch):
     assert job["result"]["failed"][0]["id"] == "context7-mcp" and len(job["result"]["installed"]) == len(features) - 1
     assert admin_client.post("/api/v1/features/install-all-jobs", json={"category": "nope"},
                              headers=CSRF_HEADERS).status_code == 404
+
+
+def test_search_category_lists_the_search_components(monkeypatch, tmp_path):
+    """検索と収集に、検索エンジン（SearXNG）・本文抽出・robots.txt・JS ページ用のブラウザが並ぶ。
+    根拠: 2026-11-21 利用者「まとめて導入するのはこの検索機能に関する部分のこと。チェックを付けて一括導入でもいい」。"""
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path)
+    ids = {fid for fid in registry.KNOWN_FEATURES if registry.category(fid) == "search"}
+    assert ids == {"searxng", "web-extract", "web-robots", "web-browser"}
+    assert registry.FEATURES["web-robots"]["packages"] == ["protego==0.7.0"]
+
+
+def test_searxng_is_managed_by_its_setup_script_and_not_uninstalled_here(monkeypatch, tmp_path):
+    from app.features import search_kinds
+
+    home = tmp_path / "searxng"
+    monkeypatch.setitem(registry.FEATURES["searxng"], "install_dir", str(home))
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path)
+    assert not registry.status("searxng")["installed"]
+    calls = []
+
+    def fake_script(spec, *, latest):
+        calls.append(latest)
+        home.mkdir(exist_ok=True)
+        (home / "run.sh").write_text("#!/bin/sh\n")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(search_kinds, "script_install", fake_script)
+    assert registry.install("searxng")["installed"]
+    registry.update("searxng")
+    assert calls == [False, True]
+    import pytest
+
+    with pytest.raises(registry.FeatureError, match="Apps"):
+        registry.uninstall("searxng")
+    assert (home / "run.sh").exists()
+
+
+def test_browser_is_installed_into_the_feature_folder(monkeypatch, tmp_path):
+    from app.features import search_kinds
+
+    monkeypatch.setattr(registry, "data_dir", lambda: tmp_path)
+    seen = {}
+
+    def fake_browser(root):
+        seen["root"] = root
+        shell = search_kinds.browsers_dir(root) / "chromium_headless_shell-1234" / "chrome-linux" / "headless_shell"
+        shell.parent.mkdir(parents=True)
+        shell.write_text("")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(search_kinds, "browser_install", fake_browser)
+    state = registry.install("web-browser")
+    assert state["installed"] and state["version"] == "build 1234"
+    assert seen["root"] == registry._feature_root("web-browser")      # 利用者の Chrome やホームには入れない
+
+
+def test_install_only_the_checked_features(admin_client, monkeypatch):
+    installed = []
+    real_status = registry.status
+    monkeypatch.setattr(registry, "install", lambda fid: installed.append(fid) or {"id": fid})
+    monkeypatch.setattr(registry, "status", lambda fid: {**real_status(fid), "installed": fid == "searxng"})
+    r = admin_client.post("/api/v1/features/install-all-jobs",
+                          json={"category": "search", "feature_ids": ["web-extract", "web-robots"]}, headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    assert r.json()["features"] == ["web-extract", "web-robots"]
+    for _ in range(50):
+        job = admin_client.get(f"/api/v1/jobs/{r.json()['job_id']}").json()
+        if job["status"] not in ("queued", "running"):
+            break
+        asyncio.run(asyncio.sleep(0.05))
+    assert installed == ["web-extract", "web-robots"]
+    bad = admin_client.post("/api/v1/features/install-all-jobs", json={"category": "search", "feature_ids": ["opencode-v2"]},
+                            headers=CSRF_HEADERS)
+    assert bad.status_code == 422

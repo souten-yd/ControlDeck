@@ -101,9 +101,11 @@ async def auto_update_run(request: Request, user: User = Depends(require_permiss
 class BulkInstallBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: str = Field(min_length=1, max_length=40)
+    # 画面でチェックを付けたもの。空なら分類の中の未導入をすべて
+    feature_ids: list[str] = Field(default_factory=list, max_length=40)
 
 
-BULK_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp")
+BULK_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp", "managed-script", "playwright-browser")
 
 
 @router.post("/install-all-jobs", status_code=201)
@@ -113,9 +115,14 @@ async def install_all_job(body: BulkInstallBody, request: Request,
     依存（requires）のあるものは依存の後に入れる。1 件の失敗で残りを止めず、結果に残す。"""
     if body.category not in registry.CATEGORIES:
         raise HTTPException(status_code=404, detail="知らない分類です")
+    unknown = [fid for fid in body.feature_ids if fid not in registry.KNOWN_FEATURES
+               or registry.category(fid) != body.category]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"この分類に無い機能です: {', '.join(unknown)}")
+    wanted = set(body.feature_ids)
     targets = [fid for fid in sorted(registry.KNOWN_FEATURES)
                if registry.category(fid) == body.category and registry.FEATURES[fid]["kind"] in BULK_KINDS
-               and not registry.status(fid)["installed"]]
+               and (not wanted or fid in wanted) and not registry.status(fid)["installed"]]
     targets.sort(key=lambda fid: 1 if registry.FEATURES[fid].get("requires") in targets else 0)
     if not targets:
         raise HTTPException(status_code=422, detail="まとめて導入できる未導入の機能はありません")
