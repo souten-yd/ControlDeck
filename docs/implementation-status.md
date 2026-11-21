@@ -1,5 +1,35 @@
 # 実装状況
 
+## 2026-11-21 Patent に「調査」: 検索語の案（ローカル LLM）→ 外へ送る語の確認（P1 の最初の部分）
+
+- 案件の調査テーマ（1〜2000 文字、空なら請求項 1 の本文）から、ローカル専用のモデルで検索語の案を作る
+  （`backend/app/patents/survey.py`）。案は構成要素ごとの ja/en の語（1〜80 文字・前後の空白を取り重複を除き
+  各 20 個まで）・IPC（`^[A-H]\d{2}[A-Z] ?\d{1,4}/\d{1,6}$` に合うものだけ。捨てた数を記録）・各取得先の検索式
+  （EPO・USPTO・OpenAlex）。judge.py と同じ形: start → Jobs で LLM（`resolve_local_target`・
+  `_complete_with_host_admission` をそのまま使用）→ 出力を検めて保存 → 人の確認。読めない JSON・形違いは
+  失敗として記録。保存は judge と同じ専用 sqlite（patents shard の `patent_surveys` 表）。ローカルのモデルが
+  無ければ 503 で始まらない（記録も作らない）。
+- 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録と 8 文字以上重なっていたら
+  `risk: "unpublished"` を付ける（全体が含まれる場合に加え、8 文字以上の一部分が写されている場合も。
+  NFKC・小文字・空白・句読点の揺れは judge._flat で許容）。検索式は語を組み合わせたものなので同じ窓検査。
+  利用者が入力したテーマ自身は判定対象に含めない（指示書の文言が「請求項・ヒアリング」としているため。
+  テーマが空なら請求項 1 がテーマになるので、既定の流れでは検査対象に含まれる。テーマだけに書かれた
+  内容の語は、利用者の approved_public の確認が最終関門）。
+- 外へ送る語の確認: `approve` は利用者が選んだ語だけを確認済みとして保存。`approved_public` が無ければ断る
+  （watch.py と同じ文言）。risk の付いた語・案に無い語・まだ出来上がっていない（または失敗した）案は断る。API: `POST /patents/cases/{id}/surveys`（201、
+  job と survey の id）・`GET .../surveys`・`GET .../surveys/{sid}`・`POST .../surveys/{sid}/approve`。閲覧は
+  workflows.run、開始・確認は workflows.edit。監査には id・件数だけ（テーマ・語の本文は書かない）。
+- 組み込み: 案件を消したら案も消す（案件番号は使い回されるため。`store.py` の delete_case）。起動時に
+  queued/running の案を「中断」にする（`features/registry.py`。judge と同じ）。
+- 検証: `tests/test_patent_survey.py`（9。LLM は偽物・外部へは通信しない）: 正しい JSON の保存・読めない JSON と
+  形違いの失敗・語の長さ/重複/上限・IPC の検査・請求項とヒアリングに含まれる語や一部を写した語の risk・
+  approve の断り（確認無し・未完成・risk・案に無い語）と保存・API の流れと権限（viewer 403）・案件削除での
+  消去と再起動での中断。関連する `tests/test_patent*.py` と `tests/test_feature_boot_restore.py` は 45 件通過。
+  レビュー（reviewer 子エージェント）の major「語と検索式で risk 判定の感度が食い違う」は窓検査に統一して
+  直し、minor「未完成の案の approve」は status で断るように直した。
+  実機（ローカル LLM での本物の実行）は未確認。画面はまだ無い（P1 の後続: 取得・関連順・調査結果と一緒に作る）。
+  開発: 箱の OpenCode（GLM-5.3、Go プラン）が作り、Opus が監査して採用。同じ指示をローカル LLM（Qwen3.8 Flash-Next）にもやらせて比べた（`~/ControlDeck-評価/`）。
+
 ## 2026-11-21 箱の OpenCode のモデルの順番（使い切ったら次へ）
 
 - 利用者「GLM を使い切り、無料で高性能なものを順次」（Go プランのキーを Zen の欄に登録済み。箱から GLM-5.3・Zen の無料 2 つが答えるのを実機で確認）。
