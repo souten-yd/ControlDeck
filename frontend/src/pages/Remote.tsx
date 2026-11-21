@@ -5,6 +5,7 @@ import { useAuth, useToasts } from "../stores";
 import { BottomSheet, ConfirmDialog, EmptyState, IconButton, Skeleton } from "../components/ui";
 import { IconPlus, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
+import { useMeta } from "../api/hooks";
 
 const RemoteViewer = lazy(() => import("../features/remote/RemoteViewer"));
 
@@ -30,7 +31,24 @@ interface RemoteStatus {
 
 const PROTO_LABEL: Record<string, string> = { rdp: "RDP", vnc: "VNC", ssh: "SSH" };
 
+/** 設定でオフのとき（meta の enabled_features に "remote-desktop" が無い）は、画面の中身を出さない。 */
 export default function RemotePage() {
+  const { data: meta, isLoading } = useMeta();
+  if (isLoading) return <div className="p-6 text-sm text-zinc-400">読み込み中...</div>;
+  if (!(meta?.enabled_features ?? []).includes("remote-desktop")) {
+    return (
+      <div className="mx-auto max-w-3xl p-4 md:p-6">
+        <PageHeader title="Remote Desktop" />
+        <p role="status" data-remote-disabled className="rounded-xl border border-zinc-200 bg-white px-4 py-6 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+          リモートデスクトップは無効です（設定で有効にできます）
+        </p>
+      </div>
+    );
+  }
+  return <RemoteEnabledPage />;
+}
+
+function RemoteEnabledPage() {
   const can = useAuth((s) => s.can);
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);

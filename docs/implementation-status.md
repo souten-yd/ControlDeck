@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-21 リモートデスクトップの有効・無効（設定）
+
+- 利用者「リモートデスクトップは一旦停止する。設定に有効・無効のボタンを。オフになったら、通信そのものやサーバーの起動や、ホームのアイコンも消すように」。L2（特権の操作）。
+- 設定 `remote_desktop.enabled`（全体で 1 つ、既定は有効）。保存は `data/remote_desktop.json`、API は `GET/PUT /api/v1/settings/remote-desktop`（settings.manage だけ、監査 `remote_desktop.enable|disable`）。画面は 設定 →「機能と拡張」の先頭。
+- 強制は ControlDeck 側: `/api/v1/remote/*` と tunnel の WebSocket を、router の依存で 403（WebSocket は 4403）「リモートデスクトップは無効です（設定で有効にできます）」。オフにした瞬間に開いている中継も閉じる。`/api/v1/meta` の `enabled_features` から `remote-desktop` を外し、ナビ・「よく使う」・コマンドパレットの Remote を消す。`/remote` は無効の表示。
+- サーバー: 特権補助の `system-service` に `enable`・`disable` を追加。一覧には id `remote-desktop`（xrdp.service）と `remote-desktop-session`（xrdp-sesman.service）を組み込みで足した（actions: start・stop・enable・disable）。オフは stop+disable、オンは enable+start。
+- **補助の更新が要る**: 補助・一覧が古い間も設定の保存と ControlDeck 側の強制は効くが、xrdp は止まらない。画面に「補助の更新が要ります（sudo ./deck.sh service を 1 回）」を出す。流した後にもう一度切り替える。
+- 検証用インスタンス（E2E）は xrdp を操作しない。テスト: `test_remote_desktop_toggle.py`（7 件）、E2E `remote-desktop-toggle`（1280・320px）。
+
 ## 2026-11-21 AI アシスタント: 会話ごとの「この会話は秘密」（外部への調査・外部の AI を使わない。一方通行）（段 1）
 
 - 利用者「AI に利用を制限させるのではなく、根本的につながらないように」。続けて「途中から秘密の話をしたくなって押すことはよくある。一度押した会話の文脈には秘密が入っているので、解除して外部へ調査に出られてはいけない」。設計は Opus、実装は Sonnet。全体の設定ではなく**会話ごと・解除なし**。

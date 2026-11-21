@@ -23,6 +23,7 @@ import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 import { IconBell, IconChevronRight, IconChip, IconKey, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
 import { KeysSettings } from "../features/settings/KeysSettings";
+import { RemoteDesktopSettings } from "../features/settings/RemoteDesktopSettings";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -93,8 +94,8 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "experience", label: "操作性", summary: "フリックでメニュー・画面を消さない・題名で先頭へ",
     icon: IconMenu, keywords: ["フリック", "スワイプ", "メニュー", "ジェスチャー", "画面", "スリープ", "消灯", "読み上げ", "先頭", "スクロール", "便利"],
     allowed: () => true },
-  { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
-    icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "スキル", "manifest"],
+  { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、リモートデスクトップの有効・無効、拡張機能、推奨スキル",
+    icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "スキル", "manifest", "リモートデスクトップ", "RDP", "xrdp", "リモート"],
     allowed: (can) => can("settings.manage") },
   { id: "keys", label: "API キー", summary: "クラウドの AI（OpenRouter など）と特許の公開データ（EPO・USPTO・特許庁）のキー",
     icon: IconKey, keywords: ["キー", "API", "鍵", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "EPO", "USPTO", "特許庁", "JPO", "トークン", "パスワード"],
@@ -316,7 +317,7 @@ function FeaturesSection() {
         </button>
       ))}
     </div>
-    {tab === "features" && <AddonsSection />}
+    {tab === "features" && <><RemoteDesktopSettings /><AddonsSection /></>}
     {tab === "extensions" && <ExtensionsSection />}
     {tab === "skills" && <RecommendedSkills />}
   </>;
