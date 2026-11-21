@@ -44,17 +44,17 @@ for (const [label, width, height] of [["pc-1280", 1280, 800], ["mobile-320", 320
     await open(await create(false));
     await expect(pill).toHaveCount(0);
     await settings.click();
-    await shell.getByRole("button", { name: "この会話を秘密にする" }).click();
+    await shell.getByRole("button", { name: "この会話を秘密にする", exact: true }).click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("解除できません");
     await shot("1-confirm");
     await dialog.getByRole("button", { name: "キャンセル" }).click();
     await expect(pill).toHaveCount(0);
-    await shell.getByRole("button", { name: "この会話を秘密にする" }).click();
+    await shell.getByRole("button", { name: "この会話を秘密にする", exact: true }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "秘密にする" }).click();
     await expect(pill).toBeVisible();
     await expect(shell.getByText("秘密の会話", { exact: false }).first()).toBeVisible();
-    await expect(shell.getByRole("button", { name: "この会話を秘密にする" })).toHaveCount(0);   // 解除の操作も、押し直しも無い
+    await expect(shell.getByRole("button", { name: "この会話を秘密にする", exact: true })).toHaveCount(0);   // 解除の操作も、押し直しも無い
     await expect(shell.locator("[data-secret-conversation] input, [data-secret-conversation] button")).toHaveCount(0);
     expect(await noOverflow()).toBe(true);
     await shot("2-secret");
