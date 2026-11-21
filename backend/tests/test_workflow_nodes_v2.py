@@ -127,30 +127,17 @@ def test_loop_count_and_done_branch():
 
 
 def test_scrape_selector(monkeypatch):
-    import httpx
-
+    """web.scrape は Web 収集エンジンの共通の取得（fetch.collect）を使う。取得を差し替えてセレクタの抜き出しを確かめる。"""
+    from app.web_collector import fetch
     from app.workflows import nodes
 
     html = '<html><body><h1 class="t">タイトル</h1><a href="/x">link</a></body></html>'
 
-    class FakeResponse:
-        status_code = 200
-        text = html
+    async def fake_collect(url, **kwargs):
+        return {"status": "success", "http_status": 200, "html": html, "markdown": "# タイトル", "title": "タイトル",
+                "final_url": url, "error": ""}
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def get(self, url):
-            return FakeResponse()
-
-    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(fetch, "collect", fake_collect)
     out = run(nodes.node_scrape({"url": "http://x.test", "selector": "h1.t"}, {}))
     assert out["first"] == "タイトル"
     out2 = run(nodes.node_scrape({"url": "http://x.test", "selector": "a", "attribute": "href"}, {}))

@@ -1797,17 +1797,25 @@ def _extract_one(soup, selector: str, attr: str, multiple: bool) -> Any:
 
 
 async def node_scrape(config: dict, ctx: dict) -> dict:
+    """ページを取得して、セレクタで抜き出す（無ければ本文）。取得は Web 収集エンジンの共通の取得
+    （内部のアドレスへ届かない・リダイレクトを各段で検査）。以前は follow_redirects で内部へも届いた。"""
     from bs4 import BeautifulSoup
+
+    from app.web_collector import fetch
 
     url = render_template(str(config.get("url", "")), ctx)
     if not url.startswith(("http://", "https://")):
         raise NodeError(f"不正な URL: {url}")
     timeout = min(float(config.get("timeout", 30)), 120)
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ControlDeck/1.0"}) as client:
-            r = await client.get(url)
-    except httpx.HTTPError as e:
-        raise NodeError(f"取得失敗: {e}")
+    page = await fetch.collect(url, timeout=timeout, keep_html=True)
+    if page["status"] not in ("success", "empty"):
+        raise NodeError(f"取得失敗（{page['status']}）: {page['error'] or page['http_status']}")
+
+    class _Resp:  # 以前の httpx の応答の代わり（status_code と text）
+        status_code = page["http_status"]
+        text = page.get("html") or page["markdown"]
+
+    r = _Resp()
     soup = BeautifulSoup(r.text, "html.parser")
 
     # 複数抽出器（extractors）優先。無ければ単一 selector（後方互換）
@@ -1827,7 +1835,8 @@ async def node_scrape(config: dict, ctx: dict) -> dict:
     selector = str(config.get("selector", "")).strip()
     attr = str(config.get("attribute", "")).strip()
     if not selector:
-        return {"text": soup.get_text(" ", strip=True)[:20000], "status_code": r.status_code}
+        return {"text": soup.get_text(" ", strip=True)[:20000], "status_code": r.status_code,
+                "markdown": page["markdown"][:20000], "title": page["title"], "url": page["final_url"]}
     elements = soup.select(selector)
     results = [el.get(attr, "") if attr else el.get_text(" ", strip=True) for el in elements]
     return {"results": results, "count": len(results), "first": results[0] if results else "", "status_code": r.status_code}

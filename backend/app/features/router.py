@@ -98,6 +98,52 @@ async def auto_update_run(request: Request, user: User = Depends(require_permiss
     return {"job_id": job.id}
 
 
+class BulkInstallBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category: str = Field(min_length=1, max_length=40)
+
+
+BULK_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp")
+
+
+@router.post("/install-all-jobs", status_code=201)
+async def install_all_job(body: BulkInstallBody, request: Request,
+                          user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """分類の中の未導入の機能を、1 つの Job で順に導入する（npm・pip の機能だけ。GPU ランタイムなどは個別に）。
+    依存（requires）のあるものは依存の後に入れる。1 件の失敗で残りを止めず、結果に残す。"""
+    if body.category not in registry.CATEGORIES:
+        raise HTTPException(status_code=404, detail="知らない分類です")
+    targets = [fid for fid in sorted(registry.KNOWN_FEATURES)
+               if registry.category(fid) == body.category and registry.FEATURES[fid]["kind"] in BULK_KINDS
+               and not registry.status(fid)["installed"]]
+    targets.sort(key=lambda fid: 1 if registry.FEATURES[fid].get("requires") in targets else 0)
+    if not targets:
+        raise HTTPException(status_code=422, detail="まとめて導入できる未導入の機能はありません")
+
+    async def run(job: jobs.Job) -> dict:
+        from app.features import package_updates
+
+        done, failed = [], []
+        for index, fid in enumerate(targets):
+            job.set_progress(f"{registry.FEATURES[fid]['name']} を導入中（{index + 1}/{len(targets)}）", index, len(targets))
+            try:
+                await asyncio.to_thread(registry.install, fid)
+                done.append(fid)
+            except registry.FeatureError as exc:
+                failed.append({"id": fid, "error": str(exc)})
+            package_updates.forget(fid)
+        job.set_progress("完了", len(targets), len(targets))
+        if failed and not done:
+            raise RuntimeError("導入できませんでした: " + " / ".join(f"{f['id']}: {f['error']}" for f in failed))
+        return {"installed": done, "failed": failed}
+
+    job = jobs.create("feature.install_all", f"まとめて導入: {registry.CATEGORIES[body.category]}", run,
+                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "feature.install_all", user=user, resource_type="feature", resource_id=body.category,
+                 request=request, metadata={"job_id": job.id, "features": targets})
+    return {"job_id": job.id, "features": targets}
+
+
 @router.post("/{feature_id}/install-jobs", status_code=201)
 async def install_job(
     feature_id: str, request: Request, body: FeatureJobRequest,
@@ -167,6 +213,9 @@ async def update_job(
         message = "新しいrelease bundleをside-by-side検証中" if kind == "release-bundle" else "最新版を取得中"
         job.set_progress(message, 0, 1)
         state = await asyncio.to_thread(registry.update, feature_id)
+        from app.features import package_updates
+
+        package_updates.forget(feature_id)
         job.set_progress("完了", 1, 1)
         return state
 
@@ -182,7 +231,14 @@ async def release_status(feature_id: str, user: User = Depends(require_permissio
     """最新リリースと導入済みの差分。GitHub参照を含むため一覧とは別経路にする。"""
     if feature_id not in registry.KNOWN_FEATURES:
         raise HTTPException(status_code=404, detail="未知のアドオンです")
-    if registry.FEATURES[feature_id]["kind"] != "gpu-runtime":
+    from app.features import package_updates
+
+    kind = registry.FEATURES[feature_id]["kind"]
+    if kind in package_updates.PACKAGE_KINDS:
+        if not registry.status(feature_id)["managed"]:
+            raise HTTPException(status_code=422, detail="Control Deck が導入した機能だけを確認できます")
+        return await package_updates.release_status(feature_id)
+    if kind != "gpu-runtime":
         raise HTTPException(status_code=422, detail="このアドオンはリリース確認に対応していません")
     return await gpu_runtime.release_status(feature_id)
 
