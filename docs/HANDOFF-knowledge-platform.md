@@ -140,6 +140,11 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 
 ## 9. 作業記録（新しい順に追記）
 
+- 2026-11-21 Claude: 利用者「各ボタンなどの機能動作も確認して」。`frontend/e2e/button-sweep.spec.ts`（Patent・Knowledge のボタンを入力を入れて押し、結果まで確かめる。押した一覧は test-results/button-sweep.json）。
+  見つけて直した不具合 2 件: (1) 埋め込みのサーバーに届かないと資料の取り込みが丸ごと失敗していた → 本文と全文索引は残し、埋め込みは「作り直し」で後から（`rag.add_document` の embedded/embed_error）。
+  (2) 作り直しで一部が失敗しても Job が「成功」と出ていた → `rebuild.apply_job` が失敗の件数と理由を出して Job を失敗にする。
+  本番の画面での確認は Chrome 拡張がつながらず未実施（利用者が Chrome をつなぐと選択）。v0.106 の判定の本番評価は `~/ControlDeck-評価/2026-11-21-AIクレームチャートの判定.md`（近い公報 ○3△1・遠い論文 ×1△3、引用 7 件すべて原文にあり）。
+
 - 2026-11-21 Claude: R3-3 AI クレームチャートの判定。請求項 N × 1 件の文献を構成要件ごとに ○△×? で判定（ローカル専用・Jobs・`patent_charts`）。
   ○/△ は原文からの引用が必須で、NFKC・空白と句読点を落とした原文に引用が無ければ「?」に落とす（「…」の省略は前後の塊がそれぞれあれば可、6 文字未満は根拠にしない）。
   人が行ごとに判定を直す（human_verdict、直すと未確認へ戻る）・確認済み/不採用。請求項の版・原文の版（analysis.revision）が変わると stale。

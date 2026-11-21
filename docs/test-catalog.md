@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 189 ファイル、1681 テスト（目的の未記入 93 ファイル）
-- E2E: 92 spec、194 テスト
+- backend: 189 ファイル、1683 テスト（目的の未記入 93 ファイル）
+- E2E: 93 spec、195 テスト
 
 ## backend（backend/tests）
 
@@ -1158,6 +1158,8 @@
 - `test_old_patent_pdf_is_reingested_and_case_refs_follow`
 - `test_embedding_input_is_capped_for_the_embedding_server` — llama.cpp の埋め込みは 1 件 512 トークンまで。1200 文字の断片は HTTP 500 で断られた（2026-11-21 本番）。
 - `test_figure_reading_is_planned_but_left_to_the_server` — 図表の読み取りは画像モデル（GPU）を使うので、サーバーの外の CLI では行わず、画面からの作り直しに回す。
+- `test_ingest_keeps_text_when_the_embedding_server_is_down` — 埋め込みのサーバーに届かなくても、本文と全文索引は残し、作り直しの「埋め込み」に出す。
+- `test_rebuild_job_fails_visibly_when_some_documents_fail` — 作り直しの一部が失敗したら、Job を失敗にして件数と理由を出す（以前は「成功」と出て、失敗が結果の中に埋もれていた）。
 
 ### backend/tests/test_knowledge_storage.py
 
@@ -2835,6 +2837,12 @@
 - settings loads repeatedly without blanking
 - a throwing page shows a message instead of a blank screen
 - a feature turning off redirects instead of rebuilding the router
+
+### frontend/e2e/button-sweep.spec.ts
+
+目的: Patent と Knowledge のボタンを、入力を入れて押し、結果まで確かめる（検証用インスタンス・1280px）。 根拠: 2026-11-21 利用者「各ボタンなどの機能動作も確認して」。 検証用インスタンスにはローカルのモデル・埋め込みが無いので、AI のボタンは「押せない理由が出ること」までを確かめる （AI の実行結果は本番の評価 ~/ControlDeck-評価/ で確かめる）。外部へ送るボタン（取得する・いま取得）は押さない。 押したボタンと結果の一覧は test-results/button-sweep.json に書く。 */
+
+- Patent と Knowledge のボタンの動作（1280px）
 
 ### frontend/e2e/client-id.spec.ts
 

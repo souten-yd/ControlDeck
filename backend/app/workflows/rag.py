@@ -205,7 +205,16 @@ async def add_document(
     chunk_objs = chunkers.chunk(text, cfg)
     if not chunk_objs:
         raise RagError("入力テキストが空です")
-    embeddings = await _embed_batched([c.text for c in chunk_objs], cfg, api_key)
+    # 埋め込みのサーバーが止まっていても本文と全文索引は残す（全文検索は使える）。ベクトルは後で
+    # Knowledge →「資料の管理」→「作り直し」の「埋め込み」で付ける（rebuild.plan が欠けたベクトルを拾う）。
+    # 以前は接続できないだけで取り込みが丸ごと失敗していた（2026-11-21 ボタンの確認で発見）。
+    embed_error = ""
+    try:
+        embeddings: list = await _embed_batched([c.text for c in chunk_objs], cfg, api_key)
+    except (RagError, httpx.HTTPError, OSError) as exc:
+        embed_error = f"{type(exc).__name__}: {exc}"[:300]
+        logger.warning("埋め込みを付けずに取り込みます（後で作り直し）: %s", embed_error)
+        embeddings = [None] * len(chunk_objs)
     chunks = [store.NewChunk(text=c.text, parent=c.parent, vector=e) for c, e in zip(chunk_objs, embeddings)]
     try:
         result = await asyncio.to_thread(
@@ -217,6 +226,7 @@ async def add_document(
     return {
         "collection": collection, "doc_id": result["doc_id"], "source": source,
         "added_chunks": result["added_chunks"], "total_chunks": result["total_chunks"], "strategy": cfg["strategy"],
+        "embedded": not embed_error, "embed_error": embed_error,
     }
 
 
