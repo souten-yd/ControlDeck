@@ -1674,6 +1674,7 @@
 - `test_run_turn_streams_text_tools_and_permissions`
 - `test_run_turn_reports_failure_and_interrupts_when_cancelled`
 - `test_mode_file_and_idle_reaping`
+- `test_idle_reap_loop_stops_idle_servers_without_a_new_chat` — 使われていない会話サーバーを数分おきに止める。前は次の会話を始めたときだけで、17.5 時間使われていない箱が 21 時間動いていた（2026-11-21）。
 - `test_code_mode_records_tools_and_permissions_and_answers_them`
 - `test_permission_mode_api_saves_and_applies_to_running_servers`
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
