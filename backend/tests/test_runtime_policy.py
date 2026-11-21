@@ -18,6 +18,30 @@ def test_runtime_policy_roundtrip(tmp_path, monkeypatch):
     assert loaded.chat.timeout_seconds == 60
 
 
+def test_default_model_ref_is_dropped_from_policy(tmp_path, monkeypatch):
+    """RuntimePolicy から未使用の default_model_ref を消し、古い設定ファイルも読める。
+
+    目的: 既定モデルの決め方は selected_runtime + preferred_models +
+    gateway.resolve_instance のフォールバックに置き換わったので、
+    default_model_ref は書けても効かない状態にする。
+    根拠: HANDOVER-model-management-v2.md「既知のバグ」の 1 件
+    （default_model_ref は定義だけで参照ゼロ）。2026-11-22 に backend 全体を
+    grep して参照が無いことを確認し削除した。
+    """
+    import json
+
+    from app.models_mgmt import runtime_policy
+
+    monkeypatch.setattr(runtime_policy, "_path", lambda: tmp_path / "policy.json")
+    policy = runtime_policy.RuntimePolicy(selected_runtime="llama.cpp")
+    assert "default_model_ref" not in policy.model_dump()
+    # 旧 model-runtime-policy.json にキーが残っていても読み替え（pydantic が無視）できる
+    (tmp_path / "policy.json").write_text(json.dumps(
+        {**policy.model_dump(), "default_model_ref": "llama.cpp:qwen3.6-27b"}), encoding="utf-8")
+    loaded = runtime_policy.get_policy()
+    assert loaded == policy
+
+
 def test_apply_exclusive_llama_unloads_ollama(monkeypatch):
     from app.models_mgmt import llama, ollama, runtime_policy
 

@@ -373,8 +373,8 @@ def get_settings(user: User = Depends(require_permission("workflows.run"))):
 
 class SettingsBody(BaseModel):
     base_url: str | None = None
-    idle_unload_enabled: bool | None = None
-    idle_unload_minutes: int | None = Field(default=None, ge=1, le=1440)
+    # idle_unload_enabled / idle_unload_minutes は ⚙️共通設定（RuntimePolicy）側で持つ。
+    # ollama-settings.json 側のキーは効かないため、ここから書けるふりをしない。
     default_keep_alive: str | None = None
     default_model: str | None = None
     kv_cache_type: str | None = None
