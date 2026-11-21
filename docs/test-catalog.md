@@ -1229,6 +1229,26 @@
 - `test_assistant_tool_respects_the_consumer`
 - `test_knowledge_api_find_document_and_asset`
 
+### backend/tests/test_knowledge_essence.py
+
+目的: 知識エッセンス（K1a）: モデルの抽出を原文（版つき）と突き合わせて検めて保存し、未確認の推論のまま人のレビュー（追記だけ）と版の失効を守ること。 引用が原文の [start, end) に一字一句一致すること、位置が出せなければ引用がちょうど 1 回だけ現れるときに限って補うこと（2 回以上・0 回は捨てる）、basis=model_inference・review_status=unreviewed の固定、1 文献 12 件の上限と捨てた数の記録、同じ内容の再実行で行が増えないこと、読めない JSON の失敗記録、ai_use=prohibited の断り、レビューは消さず追記で最新が状態、版が変われば stale で承認が効かないこと（同じ文面へ戻っても戻らない。epoch の単調増加）、API の権限区分（workflows.run は閲覧・workflows.edit は開始とレビュー）。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」。docs/PLAN-knowledge-platform.md §10 R3-4「引用の偽造・版の変更・推論の事実化を防ぐテスト」。
+
+- `test_validate_keeps_exact_spans_and_drops_mismatched_positions`
+- `test_validate_fills_position_only_when_quote_is_unique`
+- `test_validate_rejects_revision_mismatch_and_drops_bad_shapes`
+- `test_validate_fixes_basis_and_review_status`
+- `test_start_runs_local_model_and_saves_validated_essence`
+- `test_same_content_rerun_does_not_add_a_row`
+- `test_unparsable_model_answer_is_recorded_as_failure`
+- `test_documents_ai_may_not_read_are_not_extracted`
+- `test_review_appends_only_and_latest_wins`
+- `test_stale_when_source_changes_and_approvals_do_not_return`
+- `test_api_extraction_and_review_flow`
+- `test_api_permissions_separate_view_and_edit`
+- `test_api_refuses_prohibited_documents_missing_documents_and_no_local_model`
+- `test_review_id_is_shard_qualified_and_never_attaches_across_shards` — 番号は分野ごとに振られる。分野つきで指す限り別の分野の同じ番号へ人の承認が誤着しない。
+- `test_run_keeps_sync_writes_off_the_event_loop` — run（async）の中の DB 書き込みは to_thread を通る（AGENTS.md 絶対ルール 9）。
+
 ### backend/tests/test_knowledge_r3.py
 
 目的: 統合後の再設計 R3-1: 文献ごとの AI 分析・審査基準と分類辞書の引用・MCP のナレッジ検索。 目的: - 文献の AI 分析はローカル専用のモデルだけで動き、未確認の推論として原文の版付きで残ること。原文が変わったら 分析を消さずに「stale（原文が変わった）」として持ち越し、古い承認を復活させないこと（統合の決まり 2）。 - 利用条件で AI に使えない文書（購入した規格など）は分析しないこと。 - 種類 law のコレクションを Patent の AI 支援が [基準n] で引き、種類 classification を分類候補として渡すこと （ResearchDataHub v0.2 にあった機能。v0.102 の移植で抜けていた）。 - MCP のナレッジ検索は相手を cloud とみなし、機密の資料を返さないこと（統合の決まり 3）。 根拠: 2026-11-21 利用者「各リポジトリの計画を ControlDeck 側に反映し、統合したときに整合性を持つように再検討して進める」。 docs/PLAN-knowledge-platform.md §10。

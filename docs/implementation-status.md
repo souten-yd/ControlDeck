@@ -1,5 +1,51 @@
 # 実装状況
 
+## 2026-11-21 知識エッセンス（K1a）: 文献からの根拠付き抽出と人のレビュー（backend のみ）
+
+- PatentBuddy Draft #29〜#33（K1a〜K2）を ControlDeck の決まりで作り直した。`backend/app/knowledge/essence.py`:
+  種類 8 つ（課題・原因・原理・作用機構・実装・効果・制約・応用）・1 文献 12 件まで。各件は kind・
+  summary（1〜400 字）・引用 quote（1〜1200 字）・引用の位置（原文の Unicode の start・end）。
+  モデルの答えは `validate`（純粋な関数）で検めてから保存: 引用が原文の [start, end) に一字一句
+  一致すること。位置が出せていない（無い・形が違う・範囲外）なら、引用が原文にちょうど 1 回だけ
+  現れるときに限って位置を補う（2 回以上・0 回は捨てる）。形違い・上限超過は件を捨てて捨てた数
+  （dropped）を行に記録。`basis=model_inference`・`review_status=unreviewed` は固定（提案が
+  source_fact/approved と主張しても上書きできない）。
+- 実行は analysis.py と同じ呼び方: ローカル専用（`local_only=True`・Jobs・`resolve_local_target`）。
+  全文がモデルの窓に入らなければ骨格だけ渡し、引用の照合は全文に対して行う。読めない JSON・
+  形違いは失敗として行に記録（extract 全体を失敗にする）。同じ文献・同じ版・同じ内容の再実行は
+  新しく書かない（内容の sha256 で既存の成功行と照合し、今回の予約行を消して前回の id を返す）。
+  ai_use=prohibited の文献は始める前に断り、実行側でも同じ門を通る。
+- 人のレビュー: 承認・却下・差し戻しは消さず追記だけ（連番）。最新のレビューがその件の状態。
+  stale（原文が変わった）抽出へのレビューは断る。版の失効: 文書を置き換えるたびに版の番号 epoch を
+  単調に +1 する（`store.py` の `add_document` で、annotations と同じようにエッセンス・レビューを
+  新しい文書 id へ持ち越す）。同じ文面へ戻っても番号は減らないので、前の承認は戻らない
+  （レビューの効きは「抽出が今の版」かつ「レビュー時の epoch が今と同じ」で判定）。
+  文書・コレクションを消したらエッセンス・レビュー・番号も消える（annotations と同じ。
+  番号が削除で 0 に戻る経路はあるが、レビューも一緒に消えるため旧承認が復活する抜け道は無い。
+  会話の分岐の copy_collection はエッセンスを写さない — 写し先は別の文書参照なので）。
+  起動時に queued/running のまま残った行を「中断」にする（judge/survey と同じ、`features/registry.py`）。
+- API（knowledge の router に追加。監査には id・判断だけを残し、文書の本文・summary・引用の全文は
+  書かない）: `POST /api/v1/knowledge/documents/{ref}/essences`（201。Job の id・essence の id・
+  「分野:番号」の essence_ref）・`GET /api/v1/knowledge/documents/{ref}/essences`（版ごとの一覧・
+  各件のレビューの状態・stale・種類の表示名・各行に分野）・
+  `POST /api/v1/knowledge/essences/{essence_ref}/items/{index}/review`。レビューの宛先は
+  「分野:番号」で指す（番号は分野ごとに振られるため。分野を付けないと別の分野の同じ番号へ
+  人の承認が誤着するのを防げない。reviewer から指摘されて修正）。閲覧は workflows.run、
+  開始・レビューは workflows.edit（analyze と同じ区分）。
+- 検証: `tests/test_knowledge_essence.py` 15 件（LLM は偽物・外部へは通信しない）: validate（位置の
+  一致・不一致・補い 1 回/2 回/0 回・版の不一致・上限・固定）、start/run（保存・同じ内容で増えない・
+  JSON 不通の失敗記録・prohibited の断り・**run の中の DB 書き込みは asyncio.to_thread を通して
+  event loop の外で行うこと**。reviewer から指摘されて修正）、review（追記だけ・最新が状態・版が
+  変わると stale で承認が効かない・同じ版へ戻っても戻らない・**分野をまたいで同じ番号があっても
+  承認が誤着しないこと**）、API の権限（workflows.run は見るだけ・edit が要る・viewer は全断り・
+  prohibited 422・ローカルのモデルが無ければ 503・無い文書は 404）。
+  実行環境: `cd backend && env -u CONTROL_DECK_CONFIG /data1tb/ControlDeck/app-strata/.venv/bin/python
+  -m pytest -q -p no:cacheprovider`（開発環境の指示により `./deck.sh test` は不使用。CI も不使用）。
+  回帰: `tests/test_knowledge*.py` 6 ファイルと `test_patent_judge.py`・`test_patent_survey.py`・
+  `test_patents.py`・`test_feature_boot_restore.py` を合わせて 85 件、すべて合格。
+- 画面（frontend）はこの段では作っていない（K1b）。実画面・本番での評価は未実施。
+  開発: 箱の OpenCode（GLM-5.3）が作り、Opus が監査して採用。新しい関門 `dev-check`（開発の作業場 1 段目）にもかけて合格。
+
 ## 2026-11-21 入力欄の秘密の会話の印をフラットなアイコンに
 
 - 利用者「入力欄の、周りがオレンジの鍵を、他のアイコンと同じフラットに」。絵文字（🔒）と琥珀色の枠の札をやめ、マイク・スピーカーと同じ枠の無いボタンに `IconLock`（線の色だけ琥珀色）。押すと設定のシートを開くのは今までどおり。

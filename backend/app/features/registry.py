@@ -840,6 +840,13 @@ def restore_enabled_services() -> None:
     except Exception:
         logger.exception("特許の AI 支援の中断の記録に失敗しました")
 
+    try:
+        from app.knowledge import essence as knowledge_essence
+
+        knowledge_essence.interrupt_unfinished()
+    except Exception:
+        logger.exception("知識エッセンスの中断の記録に失敗しました")
+
     for feature_id, spec in list(FEATURES.items()):
         if spec["kind"] != "release-bundle":
             continue
