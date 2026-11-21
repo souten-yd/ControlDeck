@@ -16,13 +16,13 @@ import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
-import { SourceKeysSheet } from "../features/patents/Sources";
 import { ExperienceSettings } from "../features/settings/ExperienceSettings";
 import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
-import { IconBell, IconChevronRight, IconChip, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
+import { IconBell, IconChevronRight, IconChip, IconKey, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
+import { KeysSettings } from "../features/settings/KeysSettings";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
 
@@ -69,7 +69,7 @@ export default function SettingsPage() {
   return <SettingsLayout />;
 }
 
-type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "gpu" | "hardware" | "system";
+type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "keys" | "gpu" | "hardware" | "system";
 type Can = (permission: string) => boolean;
 
 interface SettingsSectionDef {
@@ -95,6 +95,9 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     allowed: () => true },
   { id: "features", label: "機能と拡張", summary: "オプション機能の導入・更新、拡張機能、推奨スキル",
     icon: IconPlugin, keywords: ["オプション機能", "アドオン", "拡張機能", "導入", "アンインストール", "OpenCode", "Maya", "Strata", "llama.cpp", "MediaForge", "SonicForge", "スキル", "manifest"],
+    allowed: (can) => can("settings.manage") },
+  { id: "keys", label: "API キー", summary: "クラウドの AI（OpenRouter など）・特許の公開データ（EPO・USPTO・特許庁）・Hugging Face・Workflow のシークレット",
+    icon: IconKey, keywords: ["キー", "API", "鍵", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "EPO", "USPTO", "特許庁", "JPO", "Hugging Face", "トークン", "シークレット", "パスワード"],
     allowed: (can) => can("settings.manage") },
   { id: "gpu", label: "GPU 設定", summary: "発熱を抑えるクロック・電圧と、電力・静音",
     icon: IconChip, keywords: ["GPU", "クロック", "周波数", "電圧", "アンダーボルト", "電力", "静音", "VRAM", "R9700", "ホットスポット"],
@@ -213,6 +216,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
     case "appearance": return <><AppearanceSection /><MobileNavigationSettings /></>;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
+    case "keys": return <KeysSettings />;
     case "gpu": return <GpuSettings />;
     case "hardware": return <FanControlSettings />;
     case "notifications": return <AlertsSettings />;
@@ -1026,7 +1030,6 @@ function AddonsSection() {
   const qc = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobKind, setJobKind] = useState<"install" | "update" | "bulk">("install");
-  const [keysOpen, setKeysOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const toggleSelected = (id: string, on: boolean) => setSelected((prev) => {
     const next = new Set(prev);
@@ -1261,10 +1264,10 @@ function AddonsSection() {
               <div className="mb-2 flex items-center gap-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold">公開データの取得先（特許・論文）</p>
-                  <p className="text-xs text-zinc-500">EPO OPS・USPTO ODP・特許庁（JPO）の鍵やアカウント。Patent の「公報」からも開けます</p>
+                  <p className="text-xs text-zinc-500">EPO OPS・USPTO ODP・特許庁（JPO）のキーは Settings の「API キー」でまとめて設定します</p>
                 </div>
-                <button onClick={() => setKeysOpen(true)}
-                  className={`${btn} shrink-0 border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>取得先の設定</button>
+                <Link to="/settings/keys"
+                  className={`${btn} inline-flex shrink-0 items-center border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>API キーへ</Link>
               </div>
             )}
             <div className="space-y-2">
@@ -1354,7 +1357,6 @@ function AddonsSection() {
           Control Deckを再読み込みして反映しています…
         </p>
       )}
-      {keysOpen && <SourceKeysSheet onClose={() => setKeysOpen(false)} />}
       {uninstalling && (
         <ConfirmDialog
           title={`${(addons ?? []).find((a) => a.id === uninstalling)?.name ?? "オプション機能"} をアンインストールしますか？`}

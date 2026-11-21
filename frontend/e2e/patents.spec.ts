@@ -263,12 +263,10 @@ test("Patent: 公報が無いときの分析と公報の画面（1280px）", asy
   await expect(go).toBeEnabled();
   await page.keyboard.press("Escape");
 
-  // 鍵の設定: 値は出さず「未設定 / 設定済み」だけ
-  await page.getByRole("button", { name: "取得先の設定" }).click();
-  const keys = page.getByRole("dialog");
-  await expect(keys.getByLabel("EPO Consumer Key")).toHaveAttribute("type", "password");
-  await expect(keys.getByLabel("USPTO API キー")).toBeVisible();
-  await expect(keys.getByText("未設定").first()).toBeVisible();
+  // 鍵の設定は Settings の「API キー」にまとめた。公報のタブからはそこへ移る
+  await page.getByRole("link", { name: "取得先のキー（Settings）" }).click();
+  await expect(page).toHaveURL(/\/settings\/keys$/);
+  await expect(page.getByText("EPO OPS（世界の公報）")).toBeVisible();
   await page.screenshot({ path: "test-results/patents-source-keys-1280.png" });
 });
 

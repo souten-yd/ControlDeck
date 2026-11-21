@@ -31,15 +31,7 @@ for (const width of [1280, 320]) {
     await expect(page.getByRole("button", { name: "選んだものを導入（2）" })).toBeEnabled();
     await expect(installPicked.first()).toBeVisible();
 
-    await page.getByRole("button", { name: "取得先の設定" }).click();
-    const sheet = page.getByRole("dialog");
-    await expect(sheet.getByText("特許庁 特許情報取得 API", { exact: false })).toBeVisible();
-    await expect(sheet.getByText("トークン取得の URL（利用登録の後に特許庁から通知）")).toBeVisible();
-    await expect(sheet.getByRole("link", { name: "利用登録の案内（特許庁）" })).toBeVisible();
-    await expect(sheet.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-    await card.scrollIntoViewIfNeeded().catch(() => {});
-    await page.screenshot({ path: `test-results/settings-search-keys-${width}.png` });
-    await page.keyboard.press("Escape");
+    await expect(page.getByRole("link", { name: "API キーへ" })).toBeVisible();
     await card.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `test-results/settings-search-tools-${width}.png` });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
