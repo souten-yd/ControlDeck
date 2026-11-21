@@ -441,7 +441,9 @@ export default function AssistantChat() {
     queryKey: ["llm-endpoints"],
     queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean; selected_runtime?: string;
       /** 外部のフロンティアモデル（AI アシスタントからの送信を許可したときだけ並ぶ）。 */
-      external_models?: { id: string; name: string; provider: string }[] }[]>("/workflows/llm-endpoints"),
+      external_models?: { id: string; name: string; provider: string }[];
+      /** 利用者が付けたモデルの表示名（ゲートウェイでの名前 → 表示名）。 */
+      model_labels?: Record<string, string> }[]>("/workflows/llm-endpoints"),
     staleTime: 60_000,
     enabled: can("workflows.edit"),
   });
@@ -1678,7 +1680,8 @@ export default function AssistantChat() {
         base: ep.base_url, model: m, managed: !!ep.managed, external: !!external,
         // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
         label: external ? `外部｜${external.name}`
-          : m === "auto" ? "自動（Models で選んだランタイム）" : ep.managed ? m : `${m} — ${ep.base_url}`,
+          : m === "auto" ? "自動（Models で選んだランタイム）"
+          : ep.managed ? (ep.model_labels?.[m] ? `${ep.model_labels[m]}（${m}）` : m) : `${m} — ${ep.base_url}`,
       };
     })) ?? [];
   const localOptions = modelOptions.filter((o) => !o.external);

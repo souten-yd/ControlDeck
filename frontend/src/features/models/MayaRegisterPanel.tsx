@@ -2,6 +2,7 @@
  *
  * ダウンロードは利用者が大きさと保存先を確かめて押したときだけ行う（Maya の一覧の版に固定）。
  * 最初のモデル（GLM-5.3-Flash · Maya-S、alias maya-s）は従来どおり MayaSDetailSheet で扱う。 */
+import { DisplayNameField } from "./DisplayNameField";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -411,6 +412,7 @@ export function MayaModelSheet({ alias, title, update, onClose }: {
   };
   return <BottomSheet title={`${title} · 個別設定`} onClose={onClose} wide>
     <div className="space-y-3">
+      <DisplayNameField runtime="maya-s" alias={alias} />
       <SettingsGroup title="モデル">
         <p className="text-xs">ゲートウェイでの名前: <CopyText text={alias} /></p>
         <p className="text-[11px] text-zinc-500">起動・停止は一覧の「ロード」で行います。Maya のモデルは一度に 1 つだけ動きます（ほかの Maya のモデルは先に止まります）。</p>

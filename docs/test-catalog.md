@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 192 ファイル、1708 テスト（目的の未記入 93 ファイル）
+- backend: 193 ファイル、1710 テスト（目的の未記入 93 ファイル）
 - E2E: 95 spec、197 テスト
 
 ## backend（backend/tests）
@@ -1557,6 +1557,13 @@
 - `test_postgresql_offline_migrations_render_to_head_without_sqlite_statements`
 - `test_postgresql_migration_uses_advisory_lock`
 - `test_unversioned_nonempty_postgresql_schema_is_not_auto_stamped`
+
+### backend/tests/test_model_display_names.py
+
+目的: モデルの表示名。 目的: - 利用者が付けた名前を、モデルの一覧（Models）とモデルを選ぶ欄（AI アシスタント）に出すこと。空にすると既定へ戻ること。 - ゲートウェイでの名前（alias）は変えないこと（既定のモデル・会話・Workflow の設定が alias を覚えているため）。 - Strata の手元の GGUF の登録は、系列名ではなくファイルの名前と量子化を既定にすること（同じ系列のモデルが同じ名前にならない）。 根拠: 2026-11-21 利用者「モデルが同じ名前になるので分かりにくい。任意の名前に変えれるようにしたい」。
+
+- `test_names_are_saved_per_runtime_and_alias_and_blank_restores_default`
+- `test_strata_lists_file_names_and_custom_names`
 
 ### backend/tests/test_model_libraries.py
 
