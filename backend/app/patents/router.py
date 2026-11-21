@@ -256,6 +256,67 @@ def delete_chart(case_id: int, chart_id: int, user: User = Depends(EDIT)):
     _call(judge.delete, case_id, chart_id)
 
 
+class SurveyBody(BaseModel):
+    theme: str = Field(default="", max_length=2000)
+
+
+class SurveyApproveBody(BaseModel):
+    terms: list[str] = Field(default_factory=list, max_length=200)
+    approved_public: bool = False
+
+
+@router.get("/cases/{case_id}/surveys")
+def list_surveys(case_id: int, user: User = VIEW):
+    """調査の検索語の案（新しい順）。"""
+    from app.patents import survey
+
+    _call(pstore.get_case, case_id)
+    return {"surveys": survey.list_surveys(case_id)}
+
+
+@router.post("/cases/{case_id}/surveys", status_code=201)
+async def start_survey(case_id: int, body: SurveyBody, request: Request, user: User = Depends(EDIT),
+                       db=Depends(get_db)):
+    """調査テーマ（空なら請求項 1）から検索語の案をローカル LLM で作る（Jobs。案件の内容は外へ出さない）。"""
+    from app.jobs import service as jobs
+    from app.patents import survey
+
+    try:
+        await service.resolve_local_target()
+    except service.LocalAIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    survey_id = await asyncio.to_thread(_call, survey.start, case_id, body.theme)
+
+    async def run(job: jobs.Job) -> dict:
+        return await survey.run(job, case_id, survey_id)
+
+    job = jobs.create("patents.survey", "特許調査: 検索語の案", run, owner_user_id=user.id)
+    survey._update(survey_id, status="queued", job_id=job.id)
+    audit.record(db, "patents.survey", user=user, resource_type="patent_case", resource_id=str(case_id),
+                 request=request, metadata={"survey_id": survey_id, "job_id": job.id,
+                                            "theme_chars": len(body.theme.strip())})   # テーマの本文は残さない
+    return {"survey_id": survey_id, "job_id": job.id}
+
+
+@router.get("/cases/{case_id}/surveys/{survey_id}")
+def get_survey(case_id: int, survey_id: int, user: User = VIEW):
+    from app.patents import survey
+
+    return _call(survey.get, case_id, survey_id)
+
+
+@router.post("/cases/{case_id}/surveys/{survey_id}/approve")
+def approve_survey(case_id: int, survey_id: int, body: SurveyApproveBody, request: Request,
+                   user: User = Depends(EDIT), db=Depends(get_db)):
+    """外へ送る語を、利用者が選んだものだけ確認済みとして保存する。risk の付いた語は断る（値は監査に残さない）。"""
+    from app.patents import survey
+
+    out = _call(survey.approve, case_id, survey_id, body.terms, body.approved_public)
+    audit.record(db, "patents.survey_approve", user=user, resource_type="patent_case", resource_id=str(case_id),
+                 request=request, metadata={"survey_id": survey_id, "terms": len(out["approved"])})
+    return out
+
+
 @router.post("/cases/{case_id}/assists", status_code=201)
 async def start_assist(case_id: int, body: AssistBody, request: Request, user: User = Depends(EDIT),
                        db=Depends(get_db)):

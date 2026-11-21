@@ -203,6 +203,8 @@ def delete_case(case_id: int) -> None:
                 conn.execute(f"DELETE FROM {table} WHERE case_id=?", (int(case_id),))
         if "patent_charts" in names:
             conn.execute("DELETE FROM patent_charts WHERE case_id=?", (int(case_id),))
+        if "patent_surveys" in names:
+            conn.execute("DELETE FROM patent_surveys WHERE case_id=?", (int(case_id),))
         if "patent_notices" in names:
             conn.execute("DELETE FROM patent_notices WHERE key LIKE ?", (f"{int(case_id)}:%",))
         conn.execute("DELETE FROM patent_cases WHERE id=?", (int(case_id),))

@@ -1828,6 +1828,20 @@
 - `test_totp_enrollment_cannot_be_bypassed`
 - `test_another_user_cannot_list_or_delete_key`
 
+### backend/tests/test_patent_survey.py
+
+目的: 特許の調査（P1）の最初の部分。調査テーマから検索語の案をローカル専用のモデルで作り、答えを検めて保存し、未公開の内容（請求項・ヒアリングと 8 文字以上重なる語）に印を付け、外へ送る語は利用者の確認（approved_public）を経たものだけにする。
+
+- `test_valid_json_is_cleaned_saved_and_unpublished_terms_flagged`
+- `test_unparsable_or_wrong_shape_answers_fail_the_survey`
+- `test_theme_validation_and_claim1_fallback`
+- `test_partially_copied_terms_are_also_flagged`
+- `test_approve_needs_public_flag_refuses_risky_and_unknown_terms`
+- `test_survey_api_start_list_and_detail`
+- `test_survey_api_approve_flow`
+- `test_viewer_cannot_read_or_approve_surveys`
+- `test_deleting_a_case_removes_surveys_and_reboot_interrupts_running`
+
 ### backend/tests/test_patent_analytics.py
 
 目的: 特許の分析（書誌の読み取り・集計・類似マップ・案件に近い公報）。 目的: - 公報の 1 ページ目（INID コード）から出願人・IPC・日付・請求項の数を読み、読めないものは空のまま（推測で埋めない）。 2 段組みで (71) の名前が別の列に回っても出願人を拾い、「…株式会社内」（発明者の住所）は出願人にしない。 - 集計は書誌の読めた公報だけを数え、読めた件数（coverage）と偏りの注意を返す。 - 類似マップは埋め込みのある公報だけを 2 次元に置く。書誌は手で直せる（source=manual）。 根拠: 2026-11-21 利用者「特許の傾向・書誌・請求項・類似特許などをグラフ化して表示する機能はどうなっているか」。 ResearchDataHub v0.3 の集計と PatentBuddy の 10 種のグラフの試作は本体に入っていなかった（計画 §10）。

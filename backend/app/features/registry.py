@@ -834,6 +834,9 @@ def restore_enabled_services() -> None:
         from app.patents import judge as patent_judge
 
         patent_judge.interrupt_unfinished()
+        from app.patents import survey as patent_survey
+
+        patent_survey.interrupt_unfinished()
     except Exception:
         logger.exception("特許の AI 支援の中断の記録に失敗しました")
 
