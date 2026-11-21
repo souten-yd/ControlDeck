@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-21 開発の作業場 1 段目（関門 dev-check・開発のスキル・別モデルのレビュー役・目録の道具の修正）
+
+- 目的: 箱の OpenCode（ローカル LLM・GLM）が、Opus の監査に頼らず間違いの少ない開発を自分で進められるようにする。試験で Opus の監査が見つけた機械的な問題（目録の説明の消失・venv の作成と PyPI 取得・箱の git の作者が不定・子のレビュー役が気づかない）を道具で潰す。設計は Opus、実装は Sonnet。
+- `./deck.sh test-catalog`: 作り直しても既存の `docs/test-catalog.md` の「目的:」と「 — 説明」を、コードに説明が無いものについて名前で引き継ぐ（docstring があればそれが正。消えたテストの説明だけ消える）。venv を作らず PyPI へも行かない（`.venv` → `CONTROL_DECK_SOURCE_VENV` → 元のリポジトリの `.venv` の順に既存の Python を使う `existing_python`）。
+- `./deck.sh dev-check [--base <ref>] [--full]`（`app.maintenance.dev_check`）: base（既定は origin/main との merge-base）からの差分に対し、変えた module を import するテスト（`--full` で全体）、frontend の build（node_modules が無ければ「未実施」と明記し不合格にしない）、依存の差分、新しいテストの目的・根拠と目録、目録の説明が減っていないか、実装状況の更新、秘密の形（`diagnostics/report.py` の正規表現を再利用。例外は同じ行に `dev-check: allow`）、`shell=True`・`os.system`（AST）、Alembic の head が 1 本、を確かめる。合否は日本語で 1 行ずつ、終了コードは合格 0・不合格 1。
+- スキル `controldeck-development`（同梱）: 共通（手本探し・テスト・関門・報告の型）と ControlDeck 固有（読む順・守ること・完了の条件）。箱の `opencode_config` は導入の有無に関わらず箱の skills へ写す。
+- レビュー役のモデル: 作業がローカルなら順番の最初の外部（`opencode-go/glm-5.3` など。キー無し・`allow_zen` off ならローカルのまま）、作業が外部なら `controldeck/auto`（`sandbox.reviewer_model_for`）。`agents/reviewer.md` に「`./deck.sh dev-check` を流してその結果も見る」を追加。
+- 箱の作業ツリーの local の git に user.name「ControlDeck Sandbox (<箱の名前>)」・user.email「sandbox@controldeck.local」。
+- テスト: `test_dev_check.py`・`test_test_catalog_preserve.py`・`test_dev_sandbox.py`（4 件追加）。
+
 ## 2026-11-21 知識エッセンス（K1a）: 文献からの根拠付き抽出と人のレビュー（backend のみ）
 
 - PatentBuddy Draft #29〜#33（K1a〜K2）を ControlDeck の決まりで作り直した。`backend/app/knowledge/essence.py`:

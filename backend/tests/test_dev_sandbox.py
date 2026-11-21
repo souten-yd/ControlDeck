@@ -459,3 +459,49 @@ def test_limit_detection_uses_word_boundaries():
                  "tool edit failed: oldString not unique"):
         assert not sandbox.is_limit_error(err(miss)), miss
     assert not sandbox.is_limit_error({"type": "text", "part": {"text": "rate limit"}})
+
+
+def test_a_box_has_its_own_git_author_and_the_users_gitconfig_is_not_needed(repo):
+    """開発の作業場 1 段目: 箱の中にはコミットの作者が無く不定だった。作業ツリーの local の設定に固定の作者を入れる。"""
+    box = sandbox.create("who1", str(repo))
+    assert sandbox._git("config", "--local", "user.name", cwd=box.repo) == "ControlDeck Sandbox (who1)"
+    assert sandbox._git("config", "--local", "user.email", cwd=box.repo) == "sandbox@controldeck.local"
+
+
+def test_reviewer_model_differs_from_the_work_model(repo, monkeypatch):
+    """レビュー役は作業と別のモデルにする（同じモデルは同じ見落としをする）。ローカルの作業→最初の外部、外部の作業→ローカル。"""
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(zen, "get", lambda: "zen-key")
+    box = sandbox.create("rev1", str(repo))
+    assert sandbox.reviewer_model_for(box, "auto") == "opencode-go/glm-5.3"
+    assert sandbox.reviewer_model_for(box, "local") == "opencode-go/glm-5.3"
+    assert sandbox.reviewer_model_for(box, "controldeck/auto") == "opencode-go/glm-5.3"
+    assert sandbox.reviewer_model_for(box, "opencode-go/glm-5.3") == "controldeck/auto"
+    assert sandbox.reviewer_model_for(box, "opencode/hy4-flash-free") == "controldeck/auto"
+
+
+def test_reviewer_stays_local_when_no_external_is_allowed(repo, monkeypatch):
+    """allow_zen が off（またはキーが無い）なら外部は使わない。ローカルの作業のレビュー役は設定を変えない（None）。"""
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(zen, "get", lambda: "zen-key")
+    box = sandbox.create("rev2", str(repo), allow_zen=False)
+    assert sandbox.reviewer_model_for(box, "auto") is None
+    monkeypatch.setattr(zen, "get", lambda: "")
+    on = sandbox.create("rev3", str(repo))
+    assert sandbox.reviewer_model_for(on, "auto") is None
+
+
+def test_opencode_config_gives_the_reviewer_another_model_and_ships_the_development_skill(repo, monkeypatch):
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(zen, "get", lambda: "zen-key")
+    box = sandbox.create("rev4", str(repo))
+    config = json.loads(sandbox.opencode_config(box).read_text())
+    assert config["agents"]["reviewer"]["model"] == "opencode-go/glm-5.3"
+    skill = box.home / ".controldeck" / "skills" / "controldeck-development" / "SKILL.md"
+    assert skill.is_file()
+    assert str(skill.parent) in config["skills"]
+    external = json.loads(sandbox.opencode_config(box, model="opencode-go/glm-5.3", work_model="opencode-go/glm-5.3").read_text())
+    assert external["agents"]["reviewer"]["model"] == "controldeck/auto"

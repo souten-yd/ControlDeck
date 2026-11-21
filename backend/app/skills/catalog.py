@@ -68,6 +68,14 @@ BUNDLED = (
         license="MIT",
     ),
     SkillEntry(
+        id="controldeck-development",
+        name="開発の作業場",
+        summary="読む順・手本探し・守ること・完了の条件（./deck.sh dev-check）・報告の型。間違いの少ない開発の進め方。",
+        version="1.0.0",
+        source="bundled",
+        license="MIT",
+    ),
+    SkillEntry(
         id="controldeck-sound-effects",
         name="効果音制作",
         summary="音源・素材感・空間・長さを組み立ててから SonicForge へ渡す手順。",
