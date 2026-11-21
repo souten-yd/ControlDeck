@@ -4,6 +4,7 @@
  * モデルの取得・既存GGUFの読み込み・個別設定はModels画面に集約する。
  * 準備・保存ではモデルを起動しない。起動は一覧の「ロード」、または個別設定の
  * 「要求時に自動起動」「ControlDeck起動時に自動起動」による（llama.cpp と同じ）。 */
+import { DisplayNameField } from "./DisplayNameField";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -99,7 +100,7 @@ export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
     <BottomSheet title="GLM-5.3-Flash · Maya-S · 個別設定" onClose={onClose} wide>
-      {status ? <MayaSettingsForm status={status} mode="detail" onDone={onClose} />
+      {status ? <div className="space-y-3"><DisplayNameField runtime="maya-s" alias="maya-s" /><MayaSettingsForm status={status} mode="detail" onDone={onClose} /></div>
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
   );

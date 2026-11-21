@@ -6,6 +6,7 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from app.models_mgmt import display_names
 from app.models_mgmt import llama, local_llm, model_names, ollama, providers, strata_gateway
 
 
@@ -169,7 +170,8 @@ async def list_models(provider_id: str) -> list[dict]:
                     "base_url": config.get("base_url"), "unit": config.get("unit"),
                     "runtime_status": config.get("runtime_status"),
                     "vision_enabled": bool(config.get("mmproj_path")),
-                    "display_name": display or str(config["alias"]), "quantization": quant,
+                    "display_name": display_names.apply("llama.cpp", str(config["alias"]), display or str(config["alias"])),
+                    "quantization": quant,
                 },
             })
         return result
@@ -193,7 +195,7 @@ async def list_models(provider_id: str) -> list[dict]:
                 "loaded": item["loaded"],
                 "details": {"runtime": "maya-s", "backend": "HIP",
                             "port": item["port"], "base_url": item["base_url"],
-                            "display_name": str(item.get("display_name") or model),
+                            "display_name": display_names.apply("maya-s", item["alias"], str(item.get("display_name") or model)),
                             "quantization": quant or "Maya-S",
                             "vision_enabled": bool(item.get("vision")),
                             # エンジンの更新で、このモデルのファイルに新しい版が出た。
@@ -203,6 +205,13 @@ async def list_models(provider_id: str) -> list[dict]:
                             "folder": str(item.get("folder") or "")}}
         return [maya_row(item) for item in await asyncio.to_thread(maya_s.list_instances)]
     if provider["provider"] == "strata" and provider["managed"]:
+        def strata_name(item: dict) -> tuple[str, str]:
+            # 手元の GGUF を使う登録は、系列名ではなくファイルの名前と量子化を出す。系列名だと同じ系列のモデルが同じ名前になった
+            # （2026-11-21 利用者「モデルが同じ名前になるので分かりにくい」）
+            name, quant = model_names.from_file(item.get("model_path") or "") if item.get("model_path") else ("", "")
+            default = name or model_names.STRATA_FAMILIES.get(item["family"], item["family"])
+            return display_names.apply("strata", item["alias"], default), quant or str(item["model"]).upper()
+
         return [{
             "id": item["alias"],
             "name": f"Strata · {item['family']} / {item['model']}",
@@ -212,8 +221,8 @@ async def list_models(provider_id: str) -> list[dict]:
                 "runtime": "strata", "backend": "ROCm",
                 "port": item["port"], "base_url": item["base_url"],
                 "runtime_status": item["runtime_status"],
-                "display_name": model_names.STRATA_FAMILIES.get(item["family"], item["family"]),
-                "quantization": str(item["model"]).upper(), "context": item["context"],
+                "display_name": strata_name(item)[0],
+                "quantization": strata_name(item)[1], "context": item["context"],
                 "vision_enabled": item.get("vision", "on") != "off",
             },
         } for item in await asyncio.to_thread(strata_gateway.list_instances)]
@@ -235,7 +244,8 @@ async def list_models(provider_id: str) -> list[dict]:
                     "runtime": "radiance", "backend": "HIP",
                     "port": item["port"], "base_url": item["base_url"],
                     "runtime_status": item["runtime_status"], "context": item["context"],
-                    "path": item["model_path"], "display_name": display or item["alias"], "quantization": quant,
+                    "path": item["model_path"], "display_name": display_names.apply("radiance", item["alias"], display or item["alias"]),
+                    "quantization": quant,
                     # The published Qwen3.8-27B containers carry their vision tower.
                     "vision_enabled": True,
                 },

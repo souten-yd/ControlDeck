@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-21 モデルの表示名
+
+- 利用者「モデルが同じ名前になるので分かりにくい。任意の名前に変えれるようにしたい」。Strata は系列名を表示名にしていたので、同じ系列のモデルが同じ名前になっていた。
+- Models の各モデルの個別設定（llama.cpp・Strata・Radiance・Maya）に「表示名」。一覧と AI アシスタントのモデル選択に出る。空で既定に戻す。
+  ゲートウェイでの名前（alias）は変えない（既定のモデル・会話・Workflow・OpenCode の設定が alias を覚えているため）。置き場 `data_dir/model-display-names.json`。
+- Strata の手元の GGUF の登録は、既定の表示名をファイル名と量子化にした（系列名ではなく）。
+- 検証: `tests/test_model_display_names.py`（2）、全体 1922 passed、E2E model-display-name 1。
+
 ## 2026-11-21 Settings に「API キー」（外部のサービスのキーを 1 か所に）
 
 - 利用者「キーを設定の中にまとめてほしい。OpenRouter のキーも。今あるキーは消さないように」。

@@ -166,6 +166,26 @@ async def providers(user: User = Depends(require_permission("workflows.run"))):
     return await list_providers()
 
 
+class DisplayNameBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=200)
+
+
+@router.put("/display-names/{runtime}/{alias}")
+def put_display_name(runtime: str, alias: str, body: DisplayNameBody, request: Request,
+                     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db)):
+    """モデルの表示名を付ける（空で既定に戻す）。ゲートウェイでの名前（alias）は変えない。"""
+    from app.models_mgmt import display_names
+
+    try:
+        name = display_names.set_name(runtime, alias, body.name)
+    except display_names.DisplayNameError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "model.display_name", user=user, resource_type="model", resource_id=f"{runtime}:{alias}",
+                 request=request, metadata={"name": name})
+    return {"runtime": runtime, "alias": alias, "name": name}
+
+
 @router.get("/providers/{provider_id}/models")
 async def provider_models(provider_id: str, user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import provider_adapters

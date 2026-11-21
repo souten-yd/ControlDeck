@@ -44,8 +44,28 @@ async def llm_endpoints(user: User = Depends(require_permission("workflows.edit"
     """
     from app.models_mgmt.providers import list_providers
 
-    return await list_providers(include_unavailable=False, exclude_port=get_server_port(),
-                                include_gateway=True)
+    result = await list_providers(include_unavailable=False, exclude_port=get_server_port(), include_gateway=True)
+    # モデルを選ぶ欄に、利用者の付けた表示名を出す（値はゲートウェイでの名前のまま）
+    labels = await asyncio.to_thread(_model_labels)
+    for endpoint in result:
+        if endpoint.get("managed"):
+            endpoint["model_labels"] = {m: labels[m] for m in endpoint.get("models", []) if m in labels}
+    return result
+
+
+def _model_labels() -> dict[str, str]:
+    from app.models_mgmt import display_names, local_llm, model_names
+
+    out = {}
+    for item in local_llm.list_instances():
+        alias, runtime = str(item.get("alias") or ""), str(item.get("runtime") or "llama.cpp")
+        name = display_names.get(runtime, alias)
+        if not name and runtime == "strata" and item.get("model_path"):
+            base, quant = model_names.from_file(str(item["model_path"]))
+            name = " ".join(x for x in (base, quant) if x)
+        if name and name != alias:
+            out[alias] = name
+    return out
 
 
 def get_server_port() -> int:

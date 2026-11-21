@@ -1,5 +1,6 @@
 /** LLMモデル管理。runtime選択、取得/登録、ロード、モデル個別設定を一つの画面に統合する。
  * 取得・ローカル登録はサーバー側ジョブで実行され、ブラウザを閉じても継続する。 */
+import { DisplayNameField } from "../features/models/DisplayNameField";
 import { useEffect, useState } from "react";
 import { CTX_PRESETS, CopyText, FileName, LifecycleAlwaysOn, ModelStatusSummary, ThinkingDefaults, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "../features/models/formControls";
 import { Link, useSearchParams } from "react-router-dom";
@@ -1528,6 +1529,7 @@ function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => vo
   return (
     <BottomSheet title={`${alias} · 個別設定`} onClose={onClose} wide>
       {!instance ? <p className="text-xs text-zinc-400">読み込み中...</p> : (<>
+        <div className="mb-3"><DisplayNameField runtime="llama.cpp" alias={alias} /></div>
         <div className="mb-3"><ModelStatusSummary running={!!instance.loaded} rows={[
           ["ランタイム", `llama.cpp${st?.backend ? ` / ${BACKEND_LABEL[st.backend] ?? st.backend}` : ""}`],
           ["モデル", <FileName path={instance.model_path} />],
@@ -2287,6 +2289,7 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
   const item = data?.instances.find((model) => model.alias === alias);
   return <BottomSheet title={`${alias} · 個別設定`} onClose={onClose} wide>
     {item ? <div className="space-y-3">
+      <DisplayNameField runtime="strata" alias={alias} />
       <ModelStatusSummary running={!!item.loaded} lockedNote={item.loaded ? "稼働中は「起動と停止」と「思考」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
         ["ランタイム", "Strata"],
         ["モデル", item.model_path ? <FileName path={item.model_path} /> : `${item.family} / ${item.model}（初回ロード時に取得）`],

@@ -1,5 +1,6 @@
 /** Radiance（StillDeadcode/radiance）のモデル登録と個別設定。Strata / Maya-S と同じ並び:
  * 状態 → モデル → 基本 → 起動と停止 → 思考 → 性能 → 詳細。 */
+import { DisplayNameField } from "./DisplayNameField";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -178,6 +179,7 @@ export function RadianceDetailSheet({ alias, onClose }: { alias: string; onClose
   });
   return <BottomSheet title={`${alias} · 個別設定`} onClose={onClose} wide>
     {item ? <div className="space-y-3">
+      <DisplayNameField runtime="radiance" alias={alias} />
       <ModelStatusSummary running={!!item.loaded}
         lockedNote={item.loaded ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined}
         rows={[
