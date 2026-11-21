@@ -736,6 +736,22 @@
 - `test_destroy_stays_inside_the_sandbox_root`
 - `test_mirror_config_points_inside_the_box`
 - `test_opencode_cannot_stop_production_through_deck_sh`
+- `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
+- `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
+- `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
+- `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
+
+### backend/tests/test_sandbox_gateway.py
+
+目的: サンドボックスの LLM 中継。箱から本番のモデル切り替え（load）を鍵なしで呼べた（2026-11-21 実測）ので、許した呼び出しだけを通す。上流は MockTransport の偽物。
+
+- `test_only_allowed_calls_pass_and_load_needs_allow_load` — 許可外は 403、load は --allow-load のときだけ。
+- `test_headers_are_replaced_not_forwarded` — Authorization・Cookie を渡さず、決まった頭を付ける。
+- `test_body_over_32_mib_is_413`
+- `test_stream_chunks_arrive_separately` — SSE が分割のまま届く。
+- `test_concurrency_limit_returns_429_without_waiting`
+- `test_upstream_down_is_502_and_slot_is_released`
+- `test_cloud_models_are_refused_unless_allowed` — 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。外部のモデル（cloud:）への chat を既定で断り、上流へ送らない。
 
 ### backend/tests/test_diagnostics.py
 

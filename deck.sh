@@ -23,7 +23,7 @@
 #   ./deck.sh knowledge-storage ...  ナレッジの保存先・保存対象・バックアップ（status|add-target|place|backup|verify|restore-to|relocate|move-db）
 #   ./deck.sh approval ... L2 の承認を依頼する（request|list）。利用者はホーム画面で承認・却下
 #   ./deck.sh change-class 変更の危険度の区分（L0/L1/L2、docs/POLICY-autonomous-development.md）
-#   ./deck.sh sandbox ...  開発用の軽量サンドボックス（new|list|status|shell|exec|opencode|mirror-start|mirror-stop|destroy）
+#   ./deck.sh sandbox ...  開発用の軽量サンドボックス（new|list|status|shell|exec|opencode|mirror-start|mirror-stop|allow-load|destroy）。箱は pod の中で、本番へは LLM の中継だけ届く
 #   ./deck.sh searxng [update]    SearXNG を直接導入し管理アプリ登録（検索時に自動起動）
 #   ./deck.sh update-prepare    明示的なControlDeck本体更新の依存導入・UIビルド（内部用）
 #   ./deck.sh feature <status|install|update|enable|disable|uninstall> [feature-id]

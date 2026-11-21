@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-21 開発用サンドボックスにネットワークの境界（pod と LLM 中継）
+
+- 問題: 箱は `--network host` で、本番のゲートウェイが loopback＋`x-requested-with` なら鍵なしで通すため、箱の AI が本番のモデル切り替え（POST /api/v1/llm/v1/models/{m}/load）まで呼べた。opencode.json に本番の鍵も平文で書いていた。
+- 箱ごとに pod（`cd-sandbox-<名前>`、`pasta:-T,<gateway_port>`、公開はミラーのポートだけ）。箱からホストへ届くのは中継のポートだけ。プロジェクトの箱（OpenCode）は従来の host network のまま。
+- 中継 `app/maintenance/sandbox_gateway.py`（ホストの systemd ユーザー一時ユニット `cd-sandbox-<名前>-gateway`）: models 一覧・chat・（`allow-load` のとき）load だけ通し、頭は捨てて決まったものを付け直す。本文 32 MiB・同時 4。
+- opencode.json は中継を向き、鍵は入れない。`new --allow-load` / `allow-load <名前> on|off`。古い箱は load 時に gateway_port を割り当てて保存。
+- 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。中継は外部のモデル（`cloud:`）への chat を既定で断る（meta の `allow_cloud` で許す）。
+- 検証: `tests/test_dev_sandbox.py`（+4）、`tests/test_sandbox_gateway.py`（7）。backend 全体 1932 passed（1 回目に既知の全体実行フレーキー 2 件、2 回目 0 件）。
+- 実機（Opus、podman 4.9.3）: 箱から本番 8765 へ直接 000、中継のモデル一覧 200、load・他の API・cloud の chat は 403、インターネット 200。ローカル LLM の chat がストリームで返る（起動待ち込み 56 秒）。箱の OpenCode が中継越しに道具を使って答えた。opencode.json に鍵なし。pod と中継を止めても次の利用で起き直る。ミラーはホスト・箱の両方から 200。destroy で pod・コンテナ・ユニットが残らない。
+
 ## 2026-11-21 Strata が動かせない GGUF を登録の時点で断る
 
 - 本番で Uncensored の Q4_K_S を Strata に登録し、ロードが「a GGUF Strata cannot run」で 4 回失敗した。Strata が動かすのは ISTA-DASLab の GSQ-RCO・Unsloth の UD-*・Q8_0 だけ。

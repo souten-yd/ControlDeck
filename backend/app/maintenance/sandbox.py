@@ -15,6 +15,7 @@ gh の token は見えない（GitHub 連携を許したときだけ gh の設�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,8 @@ NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 MIRROR_PORT_BASE = 18800
 MIRROR_PORT_SPAN = 100
 CONTAINER_PREFIX = "cd-sandbox-"
+GATEWAY_PORT_BASE = 18900
+GATEWAY_PORT_SPAN = 100
 
 
 class SandboxError(RuntimeError):
@@ -80,16 +83,32 @@ class Sandbox:
     def port(self) -> int:
         return int(self.meta["port"])
 
+    @property
+    def gateway_port(self) -> int:
+        return int(self.meta["gateway_port"])
 
-def _free_port() -> int:
-    used = {int(_read_meta(p).get("port") or 0) for p in root().iterdir() if (p / "sandbox.json").is_file()}
-    for port in range(MIRROR_PORT_BASE, MIRROR_PORT_BASE + MIRROR_PORT_SPAN):
+    @property
+    def allow_load(self) -> bool:
+        return bool(self.meta.get("allow_load", False))
+
+
+def _pick_port(key: str, base: int, span: int, what: str) -> int:
+    used = {int(_read_meta(p).get(key) or 0) for p in root().iterdir() if (p / "sandbox.json").is_file()}
+    for port in range(base, base + span):
         if port in used:
             continue
         with socket.socket() as sock:
             if sock.connect_ex(("127.0.0.1", port)) != 0:
                 return port
-    raise SandboxError("ミラーに使えるポートがありません")
+    raise SandboxError(f"{what}に使えるポートがありません")
+
+
+def _free_port() -> int:
+    return _pick_port("port", MIRROR_PORT_BASE, MIRROR_PORT_SPAN, "ミラー")
+
+
+def _free_gateway_port() -> int:
+    return _pick_port("gateway_port", GATEWAY_PORT_BASE, GATEWAY_PORT_SPAN, "ゲートウェイの中継")
 
 
 def _read_meta(path: Path) -> dict:
@@ -104,10 +123,18 @@ def load(name: str) -> Sandbox:
     meta = _read_meta(path)
     if not meta:
         raise SandboxError(f"サンドボックス {name} はありません")
+    if not meta.get("gateway_port"):
+        # 中継の導入前に作った箱。割り当てて保存する（以後は同じポートを使う）。
+        meta["gateway_port"] = _free_gateway_port()
+        _save_meta(path, meta)
     return Sandbox(name, path, meta)
 
 
-def create(name: str, repo: str, ref: str = "", *, github: bool = False) -> Sandbox:
+def _save_meta(path: Path, meta: dict) -> None:
+    (path / "sandbox.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_load: bool = False) -> Sandbox:
     """作業ツリーを複製してサンドボックスを作る。数秒で終わる（オブジェクトは複製しない）。"""
     path = _dir(name)
     if path.exists():
@@ -133,7 +160,8 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False) -> Sand
             _git("remote", "set-url", "origin", origin, cwd=work)
         meta = {
             "name": name, "source": str(top), "git_common_dir": str(common), "revision": revision,
-            "origin": origin, "port": _free_port(), "github": bool(github), "created_at": time.time(),
+            "origin": origin, "port": _free_port(), "gateway_port": _free_gateway_port(),
+            "allow_load": bool(allow_load), "github": bool(github), "created_at": time.time(),
             # 依存はホストのものを overlay でつなぐ（箱の中で書いてもホストは変わらない）。
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
             "overlays": [
@@ -144,7 +172,7 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False) -> Sand
                 ) if source_path.exists()
             ],
         }
-        (path / "sandbox.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+        _save_meta(path, meta)
     except Exception:
         shutil.rmtree(path, ignore_errors=True)
         raise
@@ -191,16 +219,17 @@ def container_argv(command: list[str], *, workdir: Path, writable: list[Path], r
                    overlays: list[tuple[Path, Path]] = (), env: dict[str, str] | None = None,
                    interactive: bool = False, name: str = "", detach: bool = False,
                    env_file: Path | None = None, binds: list[tuple[Path, Path]] = (),
-                   hide: list[Path] = ()) -> list[str]:
+                   hide: list[Path] = (), pod: str = "") -> list[str]:
     """イメージを使わない箱の podman 引数。書けるのは writable だけ、他はホストを読み取り専用で見せる。
 
     サンドボックス（./deck.sh sandbox）と OpenCode のプロジェクトの箱が共有する。
+    pod を指定すると、その pod の中で動く（userns・network は pod 側で決まる）。未指定は従来どおり host network。
     """
     podman = shutil.which("podman")
     if not podman:
         raise SandboxError("podman が必要です")
-    argv = [podman, "run", "--rm", "--userns=keep-id", "--network", "host", "--shm-size=1g",
-            "--security-opt", "label=disable"]
+    isolation = ["--pod", pod] if pod else ["--userns=keep-id", "--network", "host"]
+    argv = [podman, "run", "--rm", *isolation, "--shm-size=1g", "--security-opt", "label=disable"]
     if interactive:
         argv += ["-it"]
     if detach:
@@ -238,8 +267,109 @@ def container_argv(command: list[str], *, workdir: Path, writable: list[Path], r
     return argv
 
 
+def pod_name(box: Sandbox) -> str:
+    return f"{CONTAINER_PREFIX}{box.name}"
+
+
+def _pod_spec(box: Sandbox) -> str:
+    spec = json.dumps({"gateway_port": box.gateway_port, "ports": [box.port]}, sort_keys=True)
+    return hashlib.sha256(spec.encode()).hexdigest()[:16]
+
+
+def ensure_pod(box: Sandbox) -> str:
+    """箱ごとの pod。pod の中は互いに 127.0.0.1 で届き、ホストへは中継のポート（-T）だけ届く。
+
+    設定（中継のポートと公開ポート）のハッシュを label に持ち、同じなら使い回し、違えば作り直す。
+    """
+    podman = shutil.which("podman") or "podman"
+    name, spec = pod_name(box), _pod_spec(box)
+    found = subprocess.run([podman, "pod", "inspect", "--format", '{{ index .Labels "controldeck.spec" }}', name],
+                           capture_output=True, text=True, timeout=30, check=False)
+    if found.returncode == 0 and found.stdout.strip() == spec:
+        return name
+    if found.returncode == 0:
+        subprocess.run([podman, "pod", "rm", "-f", name], capture_output=True, text=True, timeout=60, check=False)
+    made = subprocess.run(
+        [podman, "pod", "create", "--name", name, "--userns=keep-id",
+         "--network", f"pasta:-T,{box.gateway_port}", "-p", f"127.0.0.1:{box.port}:{box.port}",
+         "--label", f"controldeck.spec={spec}"],
+        capture_output=True, text=True, timeout=60, check=False)
+    if made.returncode != 0:
+        raise SandboxError(f"pod を作れませんでした: {made.stderr.strip()[:300]}")
+    return name
+
+
+def pod_remove(box: Sandbox) -> None:
+    podman = shutil.which("podman") or "podman"
+    subprocess.run([podman, "pod", "rm", "-f", pod_name(box)], capture_output=True, timeout=60, check=False)
+
+
+def gateway_unit(box: Sandbox) -> str:
+    return f"{CONTAINER_PREFIX}{box.name}-gateway"
+
+
+def _gateway_healthy(port: int) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
+            return response.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _upstream_url() -> str:
+    from app.config import get_config
+
+    return f"http://127.0.0.1:{int(get_config().server.port)}"
+
+
+def gateway_stop(box: Sandbox) -> None:
+    systemctl = shutil.which("systemctl") or "systemctl"
+    unit = f"{gateway_unit(box)}.service"
+    subprocess.run([systemctl, "--user", "stop", unit], capture_output=True, timeout=30, check=False)
+    subprocess.run([systemctl, "--user", "reset-failed", unit], capture_output=True, timeout=30, check=False)
+
+
+def ensure_gateway(box: Sandbox) -> None:
+    """箱の外（ホスト）で LLM ゲートウェイの中継を動かす。動いていて health が通れば使い回す。"""
+    if _gateway_healthy(box.gateway_port):
+        return
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        raise SandboxError("systemd-run が必要です（ゲートウェイの中継を起こせません）")
+    venv_python = Path(box.meta["source"]) / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        raise SandboxError("元のリポジトリに .venv がありません（./deck.sh を一度実行してください）")
+    gateway_stop(box)
+    backend = Path(__file__).resolve().parents[2]
+    command = [str(venv_python), "-m", "app.maintenance.sandbox_gateway", "--name", box.name,
+               "--port", str(box.gateway_port), "--upstream", _upstream_url()]
+    if box.allow_load:
+        command.append("--allow-load")
+    if box.meta.get("allow_cloud"):
+        # 既定は外部のモデルを断る（箱の OpenCode はローカル LLM だけ。2026-11-21 利用者）
+        command.append("--allow-cloud")
+    argv = [systemd_run, "--user", "--quiet", f"--unit={gateway_unit(box)}",
+            "--property=Type=exec", f"--property=WorkingDirectory={backend}",
+            "--property=NoNewPrivileges=yes", "--property=PrivateTmp=yes", "--property=ProtectSystem=strict",
+            "--property=ProtectHome=read-only", "--property=MemoryMax=512M", "--property=TasksMax=64",
+            "--property=UMask=0077", "--setenv=PYTHONDONTWRITEBYTECODE=1", *command]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    if result.returncode != 0:
+        raise SandboxError(f"ゲートウェイの中継を起こせませんでした: {(result.stderr or result.stdout).strip()[:300]}")
+    for _ in range(30):
+        if _gateway_healthy(box.gateway_port):
+            return
+        time.sleep(0.5)
+    raise SandboxError("ゲートウェイの中継が起動しませんでした（journalctl --user -u "
+                       f"{gateway_unit(box)} を見てください）")
+
+
 def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
                 detach: bool = False, env: dict[str, str] | None = None) -> list[str]:
+    pod = ensure_pod(box)
+    ensure_gateway(box)
     readonly = [Path(box.meta["git_common_dir"])]
     overlays = []
     for entry in box.meta.get("overlays") or []:
@@ -259,7 +389,8 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
         extra = ["-v", f"{gh}:/run/gh:ro"]
         environment["GH_CONFIG_DIR"] = "/run/gh"
     argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
-                          overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach)
+                          overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach,
+                          pod=pod)
     if extra:
         index = argv.index("--rootfs")
         argv[index:index] = extra
@@ -337,9 +468,10 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     """
     from app.integrations.opencode import provider
 
-    settings = provider.get_settings()
-    base_url = provider.gateway_base_url() if settings.get("use_gateway", True) else str(settings["base_url"])
+    # 箱が届くのはホストの中継だけ（本番のゲートウェイへ直には届かない）。鍵も箱へ渡さない。
+    base_url = f"http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1"
     payload = provider._config_payload(f"sandbox-{box.name}", base_url, model)
+    payload["provider"]["controldeck"]["options"]["apiKey"] = "sandbox"
     servers = dict(payload.get("mcp") or {})
     servers.pop("controldeck_addons", None)
     if servers:
@@ -377,7 +509,13 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     config_dir = box.home / ".config" / "opencode"
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "opencode.json"
-    path.write_text(json.dumps(provider._v2_payload(payload), ensure_ascii=False, indent=1), encoding="utf-8")
+    text = json.dumps(provider._v2_payload(payload), ensure_ascii=False, indent=1)
+    from app.models_mgmt import gateway
+
+    real_key = gateway.get_api_key()
+    if real_key and real_key in text:
+        raise SandboxError("本番のゲートウェイ鍵が箱の設定に入りました（書き出しを中止）")
+    path.write_text(text, encoding="utf-8")
     os.chmod(path, 0o600)
     return path
 
@@ -401,6 +539,8 @@ def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: 
 def destroy(name: str) -> None:
     box = load(name)
     mirror_stop(box)
+    gateway_stop(box)
+    pod_remove(box)
     target = box.path.resolve()
     if not target.is_relative_to(root()) or target == root():
         raise SandboxError("削除対象がサンドボックスの外です")
@@ -434,6 +574,10 @@ def main(argv: list[str]) -> int:
     new.add_argument("--repo", default=str(Path(__file__).resolve().parents[3]))
     new.add_argument("--ref", default="")
     new.add_argument("--github", action="store_true", help="この PC の gh の設定を読み取り専用で見せる")
+    new.add_argument("--allow-load", action="store_true", help="箱の AI にモデルの読み込み（切り替え）を許す")
+    toggle = sub.add_parser("allow-load", help="モデルの読み込みを許すかを切り替える")
+    toggle.add_argument("name")
+    toggle.add_argument("state", choices=["on", "off"])
     for command in ("shell", "destroy", "status", "mirror-start", "mirror-stop"):
         sub.add_parser(command).add_argument("name")
     run = sub.add_parser("exec", help="箱の中でコマンドを実行する")
@@ -448,8 +592,14 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "new":
-            box = create(args.name, args.repo, args.ref, github=args.github)
+            box = create(args.name, args.repo, args.ref, github=args.github, allow_load=args.allow_load)
             print(json.dumps(status(box), ensure_ascii=False, indent=1))
+        elif args.command == "allow-load":
+            box = load(args.name)
+            box.meta["allow_load"] = args.state == "on"
+            _save_meta(box.path, box.meta)
+            gateway_stop(box)  # 次に箱を使うとき、新しい設定で中継が起きる
+            print(f"{args.name}: モデルの読み込みを{'許可' if box.allow_load else '禁止'}にしました")
         elif args.command == "list":
             print(json.dumps(list_all(), ensure_ascii=False, indent=1))
         elif args.command == "status":

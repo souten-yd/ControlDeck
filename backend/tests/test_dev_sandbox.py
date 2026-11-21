@@ -1,4 +1,8 @@
-"""開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。"""
+"""開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。
+
+ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、
+モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。
+"""
 import json
 import subprocess
 
@@ -7,11 +11,18 @@ import pytest
 from app.maintenance import sandbox
 
 
+REAL_ENSURE_POD = sandbox.ensure_pod
+REAL_ENSURE_GATEWAY = sandbox.ensure_gateway
+
+
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setattr(sandbox, "_data_dir", lambda: data)
     monkeypatch.setattr(sandbox, "_free_port", lambda: 18800)
+    monkeypatch.setattr(sandbox, "_free_gateway_port", lambda: 18900)
+    monkeypatch.setattr(sandbox, "ensure_pod", lambda box: sandbox.pod_name(box))
+    monkeypatch.setattr(sandbox, "ensure_gateway", lambda box: None)
     source = tmp_path / "src"
     source.mkdir()
     run = lambda *a: subprocess.run(["git", *a], cwd=source, check=True, capture_output=True)  # noqa: E731
@@ -84,6 +95,8 @@ def test_github_config_only_when_allowed(repo, monkeypatch, tmp_path):
 
 def test_destroy_stays_inside_the_sandbox_root(repo, monkeypatch):
     monkeypatch.setattr(sandbox, "mirror_stop", lambda box: None)
+    monkeypatch.setattr(sandbox, "gateway_stop", lambda box: None)
+    monkeypatch.setattr(sandbox, "pod_remove", lambda box: None)
     box = sandbox.create("work4", str(repo))
     sandbox.destroy("work4")
     assert not box.path.exists() and repo.exists()
@@ -117,3 +130,69 @@ def test_opencode_cannot_stop_production_through_deck_sh():
     for allowed in ("./deck.sh test -q tests/x.py", "./deck.sh e2e a11y.spec.ts",
                     "./deck.sh sandbox list", "./deck.sh ext lint manifest.json"):
         assert verdict(allowed) == "allow", allowed
+
+
+def test_dev_box_runs_in_its_pod_not_on_the_host_network(repo, monkeypatch):
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    box = sandbox.create("net1", str(repo))
+    argv = sandbox.podman_argv(box, ["true"])
+    assert "host" not in argv and "--userns=keep-id" not in argv
+    assert argv[argv.index("--pod") + 1] == "cd-sandbox-net1"
+    # プロジェクトの箱（pod 無し）は従来のまま
+    plain = sandbox.container_argv(["true"], workdir=repo, writable=[repo])
+    assert plain[plain.index("--userns=keep-id") + 1:plain.index("--userns=keep-id") + 3] == ["--network", "host"]
+    assert "--pod" not in plain
+
+
+def _fake_podman(monkeypatch, label):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["pod", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0 if label[0] is not None else 1, label[0] or "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(sandbox.subprocess, "run", run)
+    return calls
+
+
+def test_ensure_pod_reuses_same_spec_and_recreates_on_change(repo, monkeypatch):
+    box = sandbox.create("net2", str(repo))
+    label = [None]
+    calls = _fake_podman(monkeypatch, label)
+    REAL_ENSURE_POD(box)
+    create = next(c for c in calls if c[1:3] == ["pod", "create"])
+    assert "pasta:-T,18900" in create and "127.0.0.1:18800:18800" in create
+    assert not any(c[1:3] == ["pod", "rm"] for c in calls), "無ければ rm しない"
+    label[0] = sandbox._pod_spec(box)
+    calls.clear()
+    REAL_ENSURE_POD(box)
+    assert [c[1:3] for c in calls] == [["pod", "inspect"]], "同じ設定なら作り直さない"
+    label[0] = "stale"
+    calls.clear()
+    REAL_ENSURE_POD(box)
+    kinds = [c[1:3] for c in calls]
+    assert kinds.index(["pod", "rm"]) < kinds.index(["pod", "create"])
+
+
+def test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it(repo):
+    box = sandbox.create("old1", str(repo))
+    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta.pop("gateway_port")
+    meta.pop("allow_load")
+    (box.path / "sandbox.json").write_text(json.dumps(meta))
+    loaded = sandbox.load("old1")
+    assert loaded.gateway_port == 18900 and loaded.allow_load is False
+    assert json.loads((box.path / "sandbox.json").read_text())["gateway_port"] == 18900
+
+
+def test_opencode_config_has_no_production_key_and_points_at_the_relay(repo, monkeypatch):
+    from app.models_mgmt import gateway
+
+    monkeypatch.setattr(gateway, "get_api_key", lambda create=False: "sk-production-secret-123")
+    box = sandbox.create("cfg1", str(repo))
+    text = sandbox.opencode_config(box).read_text()
+    assert "sk-production-secret-123" not in text
+    assert "http://127.0.0.1:18900/api/v1/llm/v1" in text

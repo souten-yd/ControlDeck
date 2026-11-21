@@ -14,7 +14,7 @@
 
 | 順 | 仕事 | 段 | 状態 | 文書 |
 |---|---|---|---|---|
-| 1 | **OpenCode で全ての開発（開発環境 第 2 段階）** | P1 安全（箱ごとの pod・中継） | 実装中 | `HANDOFF-opencode-dev-environment.md`、`PLAN-opencode-dev-environment.md` |
+| 1 | **OpenCode で全ての開発（開発環境 第 2 段階）** | P1 安全（箱ごとの pod・中継） | 完了 | `HANDOFF-opencode-dev-environment.md`、`PLAN-opencode-dev-environment.md` |
 | | | P2 Project Lab で確かめる・試す（MCP の実行の道具・箱の run・HMR の記録・評価・画面） | 未着手 | 同上 |
 | | | P3 ミラーが LLM を使える | 未着手 | 同上 |
 | | | P4 GPU の貸し出し | 未着手 | 同上 |
