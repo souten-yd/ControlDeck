@@ -3016,6 +3016,12 @@
 
 - secret conversation button, confirm and pill (${label})
 
+### frontend/e2e/assistant-secret-lock-topbar.spec.ts
+
+目的: 上の行の「auto」のボタンの右にある秘密の会話の鍵。新しい会話で開いた鍵→確認→OK で閉じた鍵・入力欄の 🔒、送ると confidential:true で作られる。既存の会話では API が呼ばれ閉じた鍵。キャンセルは何も変えない。閉じた鍵は説明だけで解除の操作が無い。320px で重ならずはみ出さない（ライト・ダーク）。 根拠: 2026-11-21 利用者「通信ロックは重要なので、分かりやすいところに置きたい」。
+
+- secret lock button in the top bar (${label}, ${scheme})
+
 ### frontend/e2e/assistant-opencode-progress.spec.ts
 
 目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。

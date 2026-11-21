@@ -98,6 +98,18 @@ export const IconChip = (p: SVGProps<SVGSVGElement>) => (
     <path d="M9 3v2M13 3v2M9 19v2M13 19v2M3 9h2M3 13h2M19 9h2M19 13h2" />
   </Icon>
 );
+export const IconLock = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 0 1 8 0v3M12 15v2" />
+  </Icon>
+);
+export const IconLockOpen = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 0 1 7.5-2M12 15v2" />
+  </Icon>
+);
 export const IconBook = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" />

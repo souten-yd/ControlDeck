@@ -13,7 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { useAuth, useToasts } from "../../stores";
-import { IconChip, IconConversation, IconMic, IconSparkle, IconSearch, IconSend, IconSpeaker, IconSpeakerOff, IconStop, IconTerminal } from "../../components/icons";
+import { IconChip, IconConversation, IconLock, IconLockOpen, IconMic, IconSparkle, IconSearch, IconSend, IconSpeaker, IconSpeakerOff, IconStop, IconTerminal } from "../../components/icons";
 import { SHELL_TOPBAR_CLASS, ShellMenuButton, useShell } from "../../layouts/shell";
 import { FilePicker } from "../../components/FilePicker";
 import { NODE_TYPES } from "./nodeTypes";
@@ -902,7 +902,8 @@ export default function AssistantChat() {
 
   const makeSecret = async () => {
     setConfirmSecret(false);
-    if (!convId) return;
+    // まだ作られていない新しい会話は、「秘密の会話として始める」と同じ状態にする（送るとき confidential:true で作る）
+    if (!convId) { setNewSecret(true); show("秘密の会話として始めます"); return; }
     try {
       await api(`/chat/conversations/${convId}/confidential`, { method: "POST" });
       setConfidential(true);
@@ -1901,6 +1902,20 @@ export default function AssistantChat() {
             <IconChip className="shrink-0 text-lg" />
             <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[10rem]">{model || "設定"}</span>
           </button>
+          <button
+            type="button"
+            data-secret-lock={confidential || (!convId && newSecret) ? "locked" : "open"}
+            onClick={() => (confidential ? show("この会話は秘密です。外部への調査と外部の AI を使いません。解除できません") : !convId && newSecret ? show("秘密の会話として始めます。送ると、外部への調査と外部の AI を使いません") : setConfirmSecret(true))}
+            aria-label={confidential || (!convId && newSecret) ? "秘密の会話（通信のロック中。解除できません）" : "この会話を秘密にする（通信のロック）"}
+            title={confidential || (!convId && newSecret) ? "秘密の会話（通信のロック中。解除できません）" : "この会話を秘密にする（通信のロック）"}
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl text-xl transition-colors ${
+              confidential || (!convId && newSecret)
+                ? "bg-amber-100 text-amber-700 hover:bg-amber-200/70 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25"
+                : "text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {confidential || (!convId && newSecret) ? <IconLock /> : <IconLockOpen />}
+          </button>
           {shell?.extras}
         </div>
         </div>
@@ -1974,10 +1989,11 @@ export default function AssistantChat() {
                 </div>
               ) : (
                 <label className="flex min-h-11 min-w-0 items-center gap-2">
-                  <input type="checkbox" checked={newSecret} onChange={(e) => setNewSecret(e.target.checked)} className="h-5 w-5 shrink-0" />
+                  {/* 一度入れたら外せない（鍵の確認で「解除できません」と伝えているため。2026-11-21） */}
+                  <input type="checkbox" checked={newSecret} disabled={newSecret} onChange={(e) => { if (e.target.checked) setNewSecret(true); }} className="h-5 w-5 shrink-0" />
                   <span className="min-w-0">
                     <span className="block text-sm font-medium text-zinc-800 dark:text-zinc-100">秘密の会話として始める</span>
-                    <span className="block text-zinc-500 dark:text-zinc-400">外部への調査と外部の AI を使いません（始めたあとは解除できません）。</span>
+                    <span className="block text-zinc-500 dark:text-zinc-400">{newSecret ? "ロックしました。外部への調査と外部の AI を使いません（解除できません）。" : "外部への調査と外部の AI を使いません（解除できません）。"}</span>
                   </span>
                 </label>
               )}
