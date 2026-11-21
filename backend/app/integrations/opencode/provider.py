@@ -830,7 +830,11 @@ CHAT_SERVER_ASK_ACTIONS = ("shell", "edit", "write", "webfetch", "execute")
 def _apply_chat_server(v2: dict) -> dict:
     """AI アシスタント用サーバーの設定に、ask の規則と権限プラグインを足す。"""
     asks = [{"action": action, "resource": "*", "effect": "ask"} for action in CHAT_SERVER_ASK_ACTIONS]
-    v2["permissions"] = [*asks, *(v2.get("permissions") or [])]
+    # question（利用者へ質問して答えを待つ道具）は禁止する。画面に答える欄が無く、答えが届かないまま
+    # 実行が止まる（2026-11-21 実機: 質問の最中に「途中で伝える」を押すと、伝えた文は質問の答えにならず
+    # 何も進まなくなった）。確認したいことは本文で聞かせる。deny は最後に置く（後に一致した規則が勝つ）
+    v2["permissions"] = [*asks, *(v2.get("permissions") or []),
+                         {"action": "question", "resource": "*", "effect": "deny"}]
     # アクションリスト（todowrite）。v2 では実験機能で既定は切（2026-11-18 利用者「いつ終わるのかわからん」）
     v2["experimental"] = {**(v2.get("experimental") or {}), "todo": True}
     plugins = [p for p in (v2.get("plugins") or []) if p != PERMISSION_PLUGIN.as_uri()]
