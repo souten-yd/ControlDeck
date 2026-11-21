@@ -17,7 +17,8 @@
 #   ./deck.sh disable-desktop     リモートデスクトップを無効化
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
-#   ./deck.sh test-catalog テストの目録 docs/test-catalog.md を作り直す（テストを足す前に重複を探す）
+#   ./deck.sh test-catalog テストの目録 docs/test-catalog.md を作り直す（手書きの説明は残る。venv は作らない）
+#   ./deck.sh dev-check [--base <ref>] [--full]  開発の関門（完了の前に。差分に応じた検査・合否は終了コード）
 #   ./deck.sh knowledge-migrate [--apply] 旧 RAG・ResearchDataHub のデータを統合ナレッジへ取り込む（既定は計画の表示だけ）
 #   ./deck.sh knowledge-rebuild [--apply] ナレッジの作り直し（AI の回答の区別・埋め込み・PDF の取り込み直し。既定は計画の表示）
 #   ./deck.sh knowledge-storage ...  ナレッジの保存先・保存対象・バックアップ（status|add-target|place|backup|verify|restore-to|relocate|move-db）
@@ -95,6 +96,29 @@ ensure_venv() {
     "$VENV/bin/pip" install --quiet -r "$req"
     echo "$current" > "$stamp"
   fi
+}
+
+# 既存の Python だけを探す（venv を作らず、PyPI へも取りに行かない）。開発の道具（test-catalog・dev-check）用。
+# 順番: この作業ツリーの .venv → CONTROL_DECK_SOURCE_VENV → 元のリポジトリ（git の共通ディレクトリの親）の .venv。
+existing_python() {
+  local candidate common
+  for candidate in "$VENV" "${CONTROL_DECK_SOURCE_VENV:-}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate/bin/python" ]; then
+      echo "$candidate/bin/python"; return 0
+    fi
+  done
+  common="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -n "$common" ] && [ -x "$(dirname "$common")/.venv/bin/python" ]; then
+    echo "$(dirname "$common")/.venv/bin/python"; return 0
+  fi
+  return 1
+}
+
+run_dev_tool() {
+  local py
+  py="$(existing_python)" || die "既存の Python 環境（.venv）が見つかりません。CONTROL_DECK_SOURCE_VENV に元のリポジトリの .venv を指定してください（この命令は venv を作らず PyPI へも取りに行きません）"
+  cd "$REPO_ROOT/backend"
+  exec "$py" -m "$@"
 }
 
 load_database_env() {
@@ -641,9 +665,14 @@ cmd_approval() {
 }
 
 cmd_test_catalog() {
-  check_root; check_python; ensure_venv
-  cd "$REPO_ROOT/backend"
-  exec "$VENV/bin/python" -m app.maintenance.test_catalog "$@"
+  check_root
+  run_dev_tool app.maintenance.test_catalog "$@"
+}
+
+# 開発の関門。作業の完了の前に流す（差分に応じた検査。合否は終了コード）。
+cmd_dev_check() {
+  check_root
+  run_dev_tool app.maintenance.dev_check "$@"
 }
 
 cmd_knowledge_migrate() {
@@ -883,6 +912,7 @@ case "${1:-start}" in
   e2e)     shift; cmd_e2e "$@" ;;
   sandbox) shift; cmd_sandbox "$@" ;;
   test-catalog) shift; cmd_test_catalog "$@" ;;
+  dev-check) shift; cmd_dev_check "$@" ;;
   knowledge-migrate) shift; cmd_knowledge_migrate "$@" ;;
   knowledge-storage) shift; cmd_knowledge_storage "$@" ;;
   knowledge-rebuild) shift; cmd_knowledge_rebuild "$@" ;;

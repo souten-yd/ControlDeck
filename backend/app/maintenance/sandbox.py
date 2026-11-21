@@ -230,6 +230,7 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
         work = path / "work" / "repo"
         _git("clone", "-q", "--shared", "--no-checkout", str(top), str(work))
         _git("checkout", "-q", "-B", f"sandbox/{name}", revision, cwd=work)
+        _set_git_identity(work, name)
         if origin:
             _git("remote", "set-url", "origin", origin, cwd=work)
         meta = {
@@ -570,7 +571,28 @@ def _health(port: int) -> bool:
         return False
 
 
-def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
+def reviewer_model_for(box: Sandbox, work_model: str) -> str | None:
+    """レビュー役のモデル。作業のモデルと違うものにする（同じモデルは同じ見落としをする）。
+
+    作業がローカルなら、順番の中の最初の外部（キーが無い・箱で allow_zen が off なら無い）。
+    作業が外部ならローカル。外部が使えなければ None（設定は変えず、ローカルのまま）。
+    """
+    work = normalize_model(work_model)
+    if "/" not in work or work.startswith("controldeck/"):
+        return next((m for m in model_chain(box) if not m.startswith("controldeck/")), None)
+    return LOCAL_MODEL
+
+
+def _set_git_identity(work: Path, name: str) -> None:
+    """作業ツリーの local の git の設定に作者を入れる（利用者の ~/.gitconfig は箱に見せないため）。"""
+    _git("config", "user.name", f"ControlDeck Sandbox ({name})", cwd=work)
+    _git("config", "user.email", "sandbox@controldeck.local", cwd=work)
+
+
+DEVELOPMENT_SKILL = "controldeck-development"
+
+
+def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "") -> Path:
     """箱の中の OpenCode の設定を作る。本番と同じ生成処理で作り、箱から見えないパスだけ写し替える。
 
     ControlDeck の MCP は、箱の中の bridge から中継経由で載せる（呼べる道具は中継が絞る）。
@@ -624,6 +646,19 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
             shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(source, target, symlinks=False)
             skills.append(str(target))
+    # 開発のスキルは、導入の有無に関わらず箱へ渡す（箱の OpenCode が開発の作法を必ず読めるように）。
+    from app.skills import catalog as skill_catalog
+
+    development = skill_catalog.bundled_source(DEVELOPMENT_SKILL)
+    if development.is_dir() and not any(Path(p).name == DEVELOPMENT_SKILL for p in skills):
+        target = copied / "skills" / DEVELOPMENT_SKILL
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(development, target, symlinks=False)
+        skills.append(str(target))
+    reviewer_model = reviewer_model_for(box, work_model or model)
+    reviewer = (payload.get("agent") or {}).get("reviewer")
+    if reviewer_model and isinstance(reviewer, dict):
+        reviewer["model"] = reviewer_model
     if skills:
         payload["skills"] = {"paths": skills}
     else:
@@ -744,7 +779,7 @@ def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: 
                   interactive: bool = True) -> list[str]:
     from app.features import registry
 
-    opencode_config(box, model="auto" if "/" in model else model)
+    opencode_config(box, model="auto" if "/" in model else model, work_model=model)
     binary = registry._managed_executable("opencode-v2")
     if not binary.exists():
         raise SandboxError("OpenCode v2 が導入されていません")

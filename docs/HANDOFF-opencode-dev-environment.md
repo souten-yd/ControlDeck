@@ -79,6 +79,7 @@
 | P1 | `opencode_config` から本番の鍵を外し、中継を向ける | 完了 | 本 PR |
 | P1 | 実機: 箱から本番へ直接届かない・許可外は 403・箱の OpenCode が中継越しに会話できる | 完了（`implementation-status.md` 2026-11-21） | 本 PR |
 | P1 | 箱の開発役のモデルは順番（`DEFAULT_MODEL_CHAIN`: Go の GLM-5.3 → Zen の無料 2 つ → ローカル LLM。`--run` は上限・残高切れ・レート制限で次へ、`models` で変更。根拠: 利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」） | 実装済み（実機の確認待ち） | 本 PR |
+| 開発の作業場 1 段目 | 関門 `./deck.sh dev-check`・開発のスキル `controldeck-development`・レビュー役を別のモデルに（作業がローカルなら最初の外部、外部ならローカル）・目録の道具が手書きの説明を残す／venv を作らない・箱の git の作者 | 実装・単体テスト済み（実機の箱でのレビュー役の動作は未確認） | 本 PR |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
@@ -107,6 +108,7 @@
 | 10 | 検証用インスタンス（`./deck.sh e2e`）でターミナルと携帯の E2E が 22 件落ちる（main でも同じ顔ぶれ） | 画面の変更の確認でターミナル系が見られない | 中 | 未着手。ターミナルの実体（tmux）が検証用インスタンスで動くか調べる |
 | 11 | AI アシスタントの OpenCode の会話サーバー（箱）が、使われなくなっても止まらない（次の会話を始めたときだけ止めていた） | host network・gh の設定が見える箱が何時間も残る | 高 | 直した（5 分おきの `idle_reap_loop`） |
 | 12 | 「この会話は秘密」（`confidential_at`）の段 2。AI アシスタントの OpenCode は「プロジェクト×利用者」で 1 つの箱（host network）を会話の間で共有しているので、箱の中の webfetch・curl・パッケージ取得は止まらない。段 1 は ControlDeck の中の取得・検索と外部の LLM だけで、秘密の会話の OpenCode は「次の版で対応します」と断っている | 秘密の会話では OpenCode を使えない | 高 | 未着手。秘密の会話は専用の `--network none` の箱へ移し、ゲートウェイと MCP へは Unix ソケットの中継だけにする。OpenCode の会話の記録（ディスク）から同じ session を続ける。MCP のトークンに秘密の印を入れる（課題 1 の中継の設計と合わせる） |
+| 13 | 箱の OpenCode の試験で Opus の監査が見つけた機械的な問題: (1) `test-catalog` を流すと目録の手書きの説明が消える (2) `./deck.sh test-catalog` が venv を作って PyPI へ取りに行く (3) 箱に git の利用者名が無い (4) 子のレビュー役は同じモデルで、これらに気づかなかった | Opus の監査が要る。外部取得の禁止に反する | 高 | 直した（開発の作業場 1 段目: 説明の引き継ぎ・既存 venv の利用・箱の git の作者・別モデルのレビュー役と `dev-check`）。実機の箱での通しは未確認 |
 
 ## 未決事項
 
@@ -136,5 +138,6 @@
 ## 作業記録
 
 - 2026-11-21（Opus）: P1 を Sonnet が実装、Opus が差分を読み「外部のモデルを既定で断る」を足し、テストと実機で確かめた。OpenCode Zen の無料モデルの条件を調べた（不具合と課題の 5）。
+- 2026-11-21（Sonnet、開発の作業場 1 段目）: `dev-check`・スキル `controldeck-development`・別モデルのレビュー役・目録の道具の修正・箱の git の作者を実装（設計は Opus）。自分の差分に `dev-check` を流して確かめた。
 - 2026-11-21（Opus）: ルール（Opus が司令塔）の確認。既存の箱・ミラー・ゲートウェイ・broker・Project Lab の調査（Haiku）と外部の調査（Sonnet）。pasta と pod を実機で確かめ、P1 の設計を決めた。P1 の実装を Sonnet に回した。全体計画 `ROADMAP.md` とこの引き継ぎを書いた。
 - 2026-11-21（Sonnet、P2a）: MCP に `control_deck.lab_*` 5 道具、中継に MCP の 2 パス（トークンは箱の外・許可の道具だけ）、箱の持ち主 `--owner` と環境変数ファイル、箱の bridge を実装。単体テストは通った。実機（箱の OpenCode から lab_run_start → preview の URL）は未確認。

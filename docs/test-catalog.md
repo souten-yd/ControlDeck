@@ -1,10 +1,10 @@
 # テストの目録
 
-`./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
+`./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 199 ファイル、1779 テスト（目的の未記入 93 ファイル）
-- E2E: 96 spec、198 テスト
+- backend: 205 ファイル、1862 テスト（目的の未記入 93 ファイル）
+- E2E: 101 spec、203 テスト
 
 ## backend（backend/tests）
 
@@ -626,19 +626,6 @@
 - `test_context_lengths_are_fetched_at_most_hourly`
 - `test_summary_endpoint_requires_settings_manage`
 
-### backend/tests/test_confidential_local_only.py
-
-目的: 発明の内容を外部の LLM へ出さない守り（ゲートウェイの層・Patent の流れ・埋め込みの宛先）。 目的: 「機密」の印（ヘッダ x-control-deck-confidential）がある要求は cloud: へ出ない（403）。Patent の流れの LLM 呼び出しはすべて local_only=True で cloud: を選べない。埋め込みの宛先はループバックだけ。 根拠: 2026-11-21 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に」。docs/PLAN-knowledge-platform.md §10.2。
-
-- `test_confidential_mark_blocks_cloud_even_when_the_caller_is_allowed`
-- `test_without_the_mark_cloud_works_as_before`
-- `test_confidential_mark_does_not_block_local_models`
-- `test_confidential_request_adds_the_mark_only_for_the_gateway`
-- `test_confidential_request_refuses_a_cloud_model_before_sending`
-- `test_every_patent_flow_llm_call_is_local_only`
-- `test_patent_package_has_no_other_llm_entrypoints`
-- `test_embedding_destination_must_be_loopback`
-
 ### backend/tests/test_code_research.py
 
 目的: OpenCode に渡す前に ControlDeck の調査で調べる（chat_persist._research_for_code）。 目的: 2026-11-18 利用者の依頼「『調べて OpenCode に渡す』をボタンを押さずに」。OpenCode の会話で「〜を調べて反映して」と 送ると、同じ 1 回の送信の中で調べ、出典つきの根拠を OpenCode への依頼に付ける。 - 調べた根拠は見出しを付けて返し、回答の meta は OpenCode のまま（道具の一覧は同じもの）。出典と調べた経過は残す - 量は上限まで（引き継ぎと合わせて OpenCode のコンテキストを超えない） - 調べられなくても OpenCode の作業は止めない（空を返し、meta を元に戻す）
@@ -668,6 +655,19 @@
 - `test_event_streams_are_left_alone_wherever_they_are`
 - `test_websocket_scopes_are_never_touched`
 - `test_the_addon_frame_actually_shrinks` — 実際に縮むこと。ここが効かないと携帯では待ち時間になる。
+
+### backend/tests/test_confidential_local_only.py
+
+目的: 発明の内容を外部の LLM へ出さない守り（ゲートウェイの層・Patent の流れ・埋め込みの宛先）。 目的: - 「機密」の印（ヘッダ x-control-deck-confidential）がある要求は、呼び出し元の許可（egress）があっても cloud: へ出ない（403）。ローカルは通り、印が無ければ従来どおり。 - Patent の流れ（案件の AI 支援・クレームチャート・調査の検索語・文献の分析・図の説明）の LLM 呼び出しは すべて local_only=True（= 機密扱い）で、cloud: を選べない。呼び出しを列挙して固定する。 - 埋め込みの宛先はループバックだけ（資料の本文を外部 URL へ送らない）。 根拠: 2026-11-21 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に。 Patent の特許フローに従ってやる場合は基本的にローカルでしか使えないように」。docs/PLAN-knowledge-platform.md §10.2。
+
+- `test_confidential_mark_blocks_cloud_even_when_the_caller_is_allowed`
+- `test_without_the_mark_cloud_works_as_before`
+- `test_confidential_mark_does_not_block_local_models` — ローカルのモデルは印があっても止めない（止まるのは cloud: だけ）。モデルが無ければ 404 系で、403 にならない。
+- `test_confidential_request_adds_the_mark_only_for_the_gateway`
+- `test_confidential_request_refuses_a_cloud_model_before_sending`
+- `test_every_patent_flow_llm_call_is_local_only`
+- `test_patent_package_has_no_other_llm_entrypoints` — patents/ の中の LLM 呼び出しは上の表にあるものだけ（新しい呼び出し口が黙って増えない）。
+- `test_embedding_destination_must_be_loopback`
 
 ### backend/tests/test_context_budget.py
 
@@ -737,9 +737,26 @@
 - `test_claim_check_flags_sentences_their_sources_do_not_support` — 引用先の本文に支えられていない文・出典に無い数値を見つける（2026-11-17: 引用は番号の形式しか見ていなかった）。
 - `test_synthesize_rewrites_weak_claims_once_and_keeps_the_better_report` — 弱い文があれば一度だけ直させ、弱い文が減ったときだけ採る。残りは末尾に並べる。
 
+### backend/tests/test_dev_check.py
+
+目的: 開発の関門 `./deck.sh dev-check`（app.maintenance.dev_check）の各検査。 目的: 検査ごとに「見つけるべきものを見つけ、問題の無い差分は通す」ことを確かめる（判定は文字列・辞書だけで決まる関数なので git・pytest・npm を呼ばずに確かめられる）。最後に、小さな git リポジトリで差分の収集と終了の判定を通しで確かめる。 根拠: 開発の作業場 1 段目（2026-11-21）。箱の OpenCode（ローカル LLM・GLM）が Opus の監査に頼らず開発するために、Opus の監査で 見つかった機械的な問題（目録の説明の消失・依存や venv の取得・状態記録の未更新・作者の不定）を、完了の前に自分で検出させる。 秘密や shell=True の見本は、この検査自身に引っかからないよう実行時に組み立てる。
+
+- `test_select_tests_picks_importers_of_changed_modules_and_new_tests`
+- `test_check_tests_fails_when_changed_code_has_no_test_and_when_pytest_fails`
+- `test_frontend_build_is_skipped_not_failed_without_node_modules`
+- `test_dependency_changes_are_rejected`
+- `test_new_tests_need_purpose_basis_and_a_catalog_entry`
+- `test_catalog_descriptions_may_not_shrink_but_removed_tests_are_fine`
+- `test_status_doc_must_be_updated_when_code_changes`
+- `test_secret_shapes_are_found_unless_marked_allowed`
+- `test_shell_true_and_os_system_are_found_only_in_real_calls_on_added_lines`
+- `test_alembic_needs_exactly_one_head`
+- `test_report_lists_failures_and_the_verdict`
+- `test_gather_diff_sees_changes_added_lines_and_untracked_files`
+
 ### backend/tests/test_dev_sandbox.py
 
-目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。
+目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。 箱の持ち主と MCP（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具を使わせる。誰の権限で動くかを持ち主 （--owner、省くと管理者が 1 人ならその人）で決め、そのトークンは箱の外の中継だけが持つ（0600 の環境変数ファイル、 argv・箱の opencode.json には入れない）。箱の bridge は中継を向く。
 
 - `test_create_clones_without_touching_the_source`
 - `test_names_are_validated`
@@ -750,69 +767,28 @@
 - `test_mirror_config_points_inside_the_box`
 - `test_opencode_cannot_stop_production_through_deck_sh`
 - `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
-- `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp（0700）。共有の /tmp にテストの一時フォルダが溜まり見かけ 372GB になった（2026-11-21）。destroy で一緒に消える。
-- `test_default_chain_skips_opencode_models_without_zen_key_or_when_box_disallows` — 箱の OpenCode のモデルの順番（GLM-5.3 → hy4-flash-free → deepseek-v4.1-flash-free → ローカル）。キー無し・allow_zen off で opencode* を飛ばす、meta の model_chain が優先、local は別名（利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」）。
-- `test_run_switches_model_on_limit_error_and_continues_the_session` — 上限の印で次のモデルへ、sessionID は --session で続け、last_model を保存。
-- `test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted` — 道具の失敗では切り替えない。尽きたら最後の終了コード。
-- `test_explicit_model_is_used_alone_and_local_is_an_alias` — --model 明示は 1 つだけ。local はローカル LLM。
-- `test_limit_detection_uses_word_boundaries` — 上限の印は語の区切りで見る（"rate" だけだと generate・accurate で誤って切り替わる）。
+- `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp。空のルートの /tmp は全部の箱で共有され、テストの一時フォルダ（90GB の見かけの GGUF）が
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
-- `test_zen_key_goes_to_opencode_only_through_a_private_env_file_outside_the_box` — Zen のキーは argv に出ず、0600・箱の外の --env-file で渡す。opencode.json に入らない。
-- `test_zen_key_is_not_given_when_the_box_disallows_it_or_for_shell_and_exec` — allow_zen off・shell・exec にはキーを渡さない。
+- `test_zen_key_goes_to_opencode_only_through_a_private_env_file_outside_the_box` — 目的: Zen のキーは argv に出さず（ps から見える）、0600 の --env-file で箱の外の一時ファイルから渡し、opencode.json に書かない。
+- `test_zen_key_is_not_given_when_the_box_disallows_it_or_for_shell_and_exec` — 目的: allow_zen が off の箱、および shell・exec（podman_argv を直接使う経路）にはキーを渡さない。
 - `test_new_box_allows_zen_by_default_and_no_zen_turns_it_off` — 既定は許可、--no-zen で off。
-- `test_opencode_model_keeps_provider_form_and_defaults_to_controldeck` — --model の provider/モデルはそのまま、無ければ controldeck/。
+- `test_opencode_model_keeps_provider_form_and_defaults_to_controldeck` — 目的: --model は provider/モデルの形ならそのまま、無ければ controldeck/ を付ける。
 - `test_owner_is_the_only_admin_or_must_be_named` — 箱の持ち主（MCP の権限）は、管理者が 1 人ならその人、複数・0 人なら --owner を求め、指定は有効な利用者だけ（P2a）。
 - `test_old_box_without_owner_gets_one_by_the_same_rule_and_saves_it` — 古い箱（owner 無し）は同じ規則で決めて保存。読むだけの操作は持ち主が決まらなくても通る。
 - `test_relay_env_file_is_0600_outside_the_box_and_token_stays_out_of_argv` — MCP のトークンは箱の外の 0600 の環境変数ファイルで中継へ渡し、argv に出さない。
 - `test_opencode_config_points_the_bridge_at_the_relay_without_the_mcp_token` — 箱の bridge は中継を向き、トークンは意味の無い値。結果のフォルダは箱の中。
 - `test_opencode_config_refuses_to_write_when_the_mcp_token_would_leak` — MCP のトークンが設定に入るなら書き出しを中止する。
-
-### backend/tests/test_offline_research.py
-
-目的: 会話ごとの「この会話は秘密」（一方通行）が付いた会話の中で、外部への調査（Web 検索・ページ取得・学術/特許/市場/GitHub・Deep Research）が通信の前に止まること、外部のモデルを選んでもローカルで答えること、OpenCode へ流さないこと、途中で押すと動いている生成が止まること。秘密でない会話・会話の外（特許の公報の取得・Workflow）は止めないこと。 根拠: 2026-11-21 利用者「根本的につながらないように」「途中から秘密にすることがある。一度押したら解除して外部へ出られてはいけない」。
-
-- `test_scope_only_blocks_inside_and_resets`
-- `test_egress_blocked_before_resolving_or_connecting`
-- `test_node_web_search_blocked_before_any_http`
-- `test_external_search_every_source_blocked_before_http`
-- `test_external_search_outside_scope_still_works`
-- `test_github_inspection_blocked`
-- `test_deep_research_uses_only_local_sources_in_secret_conversation`
-- `test_deep_research_default_sources_in_normal_conversation`
-- `test_confidential_is_one_way_audited_and_can_start_secret`
-- `test_fork_of_secret_conversation_stays_secret`
-- `test_search_endpoint_refuses_web_and_academic_for_secret_conversation`
-- `test_local_target_replaces_cloud_with_local_default_or_refuses`
-- `test_confidential_mark_only_when_request_supports_it`
-- `test_chat_auto_mode_web_search_tool_only_in_normal_conversation`
-- `test_chat_job_in_secret_conversation_runs_inside_scope`
-- `test_chat_web_mode_becomes_plain_chat_in_secret_conversation`
-- `test_send_in_secret_conversation_uses_local_model_and_refuses_opencode`
-- `test_pressing_midway_cancels_running_generation`
-
-### backend/tests/test_sandbox_gateway.py
-
-目的: サンドボックスの LLM 中継。箱から本番のモデル切り替え（load）を鍵なしで呼べた（2026-11-21 実測）ので、許した呼び出しだけを通す。上流は MockTransport の偽物。MCP（P2a）は、トークンを箱の外の中継だけが持ち、呼べる道具を許可の一覧に絞る。
-
-- `test_only_allowed_calls_pass_and_load_needs_allow_load` — 許可外は 403、load は --allow-load のときだけ。
-- `test_headers_are_replaced_not_forwarded` — Authorization・Cookie を渡さず、決まった頭を付ける。
-- `test_body_over_32_mib_is_413`
-- `test_stream_chunks_arrive_separately` — SSE が分割のまま届く。
-- `test_concurrency_limit_returns_429_without_waiting`
-- `test_upstream_down_is_502_and_slot_is_released`
-- `test_cloud_models_are_refused_unless_allowed` — 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。外部のモデル（cloud:）への chat を既定で断り、上流へ送らない。
-- `test_mcp_paths_need_the_relay_token_and_are_closed_without_it` — トークンの無い中継では MCP は閉じ、あっても tools・call 以外は 403。
-- `test_mcp_authorization_is_replaced_with_the_relays_token` — 箱から来た Authorization・Cookie は捨て、中継のトークンを付ける。
-- `test_mcp_call_outside_the_allowlist_is_403_and_never_reaches_upstream` — 許可外の道具・読めない本文は 403 で上流へ送らない。
-- `test_mcp_tools_listing_is_narrowed_and_renewed_token_is_not_passed_on` — /tools は許可の道具だけ。上流の更新トークンの頭を箱へ渡さない。
-- `test_mcp_upstream_errors_pass_through_and_token_stays_out_of_logs` — 上流の拒否はそのまま返し、トークンをログに出さない。
-- `test_relay_reads_the_token_from_the_environment_not_argv` — トークンは環境変数で受け、argv で受けない。
-- `test_dev_box_runs_in_its_pod_not_on_the_host_network`
-- `test_ensure_pod_reuses_same_spec_and_recreates_on_change`
-- `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it`
-- `test_opencode_config_has_no_production_key_and_points_at_the_relay`
+- `test_default_chain_skips_opencode_models_without_zen_key_or_when_box_disallows` — 目的: 既定の順番、キー無し・allow_zen off で opencode* を飛ばす、meta の model_chain が優先、local は別名。
+- `test_run_switches_model_on_limit_error_and_continues_the_session` — 目的: 上限の印（type=error＋limit 等）で次のモデルへ、取れた sessionID は --session で続け、last_model を保存する。
+- `test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted` — 目的: 道具の失敗では切り替えない。全部尽きたら最後の終了コードで終わる。
+- `test_explicit_model_is_used_alone_and_local_is_an_alias` — 目的: --model 明示は順番を使わず 1 つだけ。local はローカル LLM。
+- `test_limit_detection_uses_word_boundaries` — 目的: 上限の印は語の区切りで見る。"rate" だけで判定すると generate・accurate を含むふつうのエラーで
+- `test_a_box_has_its_own_git_author_and_the_users_gitconfig_is_not_needed` — 開発の作業場 1 段目: 箱の中にはコミットの作者が無く不定だった。作業ツリーの local の設定に固定の作者を入れる。
+- `test_reviewer_model_differs_from_the_work_model` — レビュー役は作業と別のモデルにする（同じモデルは同じ見落としをする）。ローカルの作業→最初の外部、外部の作業→ローカル。
+- `test_reviewer_stays_local_when_no_external_is_allowed` — allow_zen が off（またはキーが無い）なら外部は使わない。ローカルの作業のレビュー役は設定を変えない（None）。
+- `test_opencode_config_gives_the_reviewer_another_model_and_ships_the_development_skill`
 
 ### backend/tests/test_diagnostics.py
 
@@ -1231,7 +1207,7 @@
 
 ### backend/tests/test_knowledge_essence.py
 
-目的: 知識エッセンス（K1a）: モデルの抽出を原文（版つき）と突き合わせて検めて保存し、未確認の推論のまま人のレビュー（追記だけ）と版の失効を守ること。 引用が原文の [start, end) に一字一句一致すること、位置が出せなければ引用がちょうど 1 回だけ現れるときに限って補うこと（2 回以上・0 回は捨てる）、basis=model_inference・review_status=unreviewed の固定、1 文献 12 件の上限と捨てた数の記録、同じ内容の再実行で行が増えないこと、読めない JSON の失敗記録、ai_use=prohibited の断り、レビューは消さず追記で最新が状態、版が変われば stale で承認が効かないこと（同じ文面へ戻っても戻らない。epoch の単調増加）、API の権限区分（workflows.run は閲覧・workflows.edit は開始とレビュー）。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」。docs/PLAN-knowledge-platform.md §10 R3-4「引用の偽造・版の変更・推論の事実化を防ぐテスト」。
+目的: 知識エッセンス（K1a）: 文献から根拠付きの知識を抽出し、人のレビューで確かめる。 目的: - モデルの出力をそのまま信用しない。抽出（種類 8 つ・1 文献 12 件まで）は、引用が原文の [start, end) に一字一句そのまま一致することを検めてから版付きで保存すること。モデルが位置を 出せない場合は、引用が原文にちょうど 1 回だけ現れるときに限って位置を補うこと（2 回以上・ 0 回は捨てる）。形違い・上限超過は件を捨てて捨てた数を記録すること。 - AI の出力は `basis=model_inference`・`review_status=unreviewed` で固定され、承認しても 「原文の事実」にはならないこと（統合の決まり 1）。 - 人のレビュー（承認・却下・差し戻し）は消さず追記だけ。最新のレビューがその件の状態であること。 - 原文の版が変わったらエッセンスは stale として扱い、前の承認は効かないこと。同じ版へ 戻しても前の承認は戻らないこと（版ごとに数える番号 epoch を単調に増やす）。 - 利用条件で AI に使えない文書（購入した規格など）は抽出しないこと。LLM はローカル専用 （`local_only=True`）で、外部へは通信しないこと。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K1a〜K2 の作り直し。HANDOFF-knowledge-platform.md の K1 の行）。docs/PLAN-knowledge-platform.md §10 R3-4「引用の偽造・版の変更・推論の事実化を 防ぐテスト」。PatentBuddy Draft #29〜#33 を設計だけ流用し、保存先・認証・Job は ControlDeck の既存（analysis.py・survey.py・judge.py）を使い回す。
 
 - `test_validate_keeps_exact_spans_and_drops_mismatched_positions`
 - `test_validate_fills_position_only_when_quote_is_unique`
@@ -1246,8 +1222,8 @@
 - `test_api_extraction_and_review_flow`
 - `test_api_permissions_separate_view_and_edit`
 - `test_api_refuses_prohibited_documents_missing_documents_and_no_local_model`
-- `test_review_id_is_shard_qualified_and_never_attaches_across_shards` — 番号は分野ごとに振られる。分野つきで指す限り別の分野の同じ番号へ人の承認が誤着しない。
-- `test_run_keeps_sync_writes_off_the_event_loop` — run（async）の中の DB 書き込みは to_thread を通る（AGENTS.md 絶対ルール 9）。
+- `test_review_id_is_shard_qualified_and_never_attaches_across_shards` — 抽出の id は分野ごとに振られる。分野つき（patents:1 など）で指定しないと、
+- `test_run_keeps_sync_writes_off_the_event_loop` — run（async）の中の DB 書き込みは asyncio.to_thread を通すこと（AGENTS.md 絶対ルール 9。
 
 ### backend/tests/test_knowledge_r3.py
 
@@ -1300,7 +1276,7 @@
 
 ### backend/tests/test_lab_mcp_tools.py
 
-目的: ControlDeck の MCP の Project Lab の道具（control_deck.lab_*）。project_lab の既存の関数を呼ぶだけで動き、権限・監査・他人の run の不可視・ログの上限・preview の URL が router.py と同じ規則であること。根拠: 2026-11-21 利用者の決定（P2a）。
+目的: ControlDeck の MCP の Project Lab の道具（control_deck.lab_*）。 目的（何を守るか）: - 一覧・開始・状態・ログ・停止が、project_lab の既存の関数（runs・service）を呼ぶだけで動く。 - 権限は router.py と同じ（見る = project_lab.view、始める・止める = project_lab.run）。権限の無い道具は一覧にも出さず、呼んでも断る。 - 他人の run は見えない・止められない（管理者 = settings.manage は全員分）。無い run と区別しない。 - 開始・停止は監査に残る。ログは上限（最大 256 KB）で切る。 - web の run は preview の URL（鍵付きの相対パスと、ControlDeck の 127.0.0.1 の絶対 URL）を返す。 根拠: 2026-11-21 利用者の決定（HANDOFF-opencode-dev-environment.md の P2a）。OpenCode が Web・ソフトの動作確認に Project Lab を使えるようにする。project_lab の関数はモック（本物の systemd は呼ばない）。
 
 - `test_listing_shows_only_the_lab_tools_the_user_may_use` — 権限の無い道具は一覧に出ない。
 - `test_projects_lists_profiles_with_id_label_type`
@@ -1726,6 +1702,29 @@
 - `test_think_normalize_and_config` — think の正規化と個別設定の保存/クリア。
 - `test_native_base_helper`
 
+### backend/tests/test_offline_research.py
+
+目的: 秘密の会話（一方通行）の外部への調査・外部の LLM を、通信の直前・送信の前で止める。 目的: 会話ごとの「この会話は秘密」（解除できない）が付いた会話の中で、外部への調査（Web 検索・ページ取得・学術/特許/市場/GitHub・ Deep Research）が **通信の前に** ExternalResearchBlocked で止まること、外部のモデルを選んでいてもローカルで答えること、 OpenCode へは流さないこと、途中で押すと動いている生成が止まること。秘密でない会話・会話の外（特許の公報の取得・Workflow）は止めないこと。 根拠: 利用者の決定（2026-11-21）「AI に利用を制限させるのではなく、根本的につながらないようにする」「途中から秘密の話をしたくなって 押すことはよくある。一度押した会話の文脈には秘密が入っているので、解除して外部へ調査に出られてはいけない」。 httpx・ネットワークバックエンドは記録用に差し替え、実際の外部へは通信しない。
+
+- `test_scope_only_blocks_inside_and_resets`
+- `test_egress_blocked_before_resolving_or_connecting`
+- `test_node_web_search_blocked_before_any_http`
+- `test_external_search_every_source_blocked_before_http`
+- `test_external_search_outside_scope_still_works` — 特許の公報の取得など、会話の外は止めない。
+- `test_github_inspection_blocked`
+- `test_deep_research_uses_only_local_sources_in_secret_conversation`
+- `test_deep_research_default_sources_in_normal_conversation`
+- `test_confidential_is_one_way_audited_and_can_start_secret`
+- `test_fork_of_secret_conversation_stays_secret`
+- `test_search_endpoint_refuses_web_and_academic_for_secret_conversation`
+- `test_local_target_replaces_cloud_with_local_default_or_refuses`
+- `test_confidential_mark_only_when_request_supports_it`
+- `test_chat_auto_mode_web_search_tool_only_in_normal_conversation`
+- `test_chat_job_in_secret_conversation_runs_inside_scope` — 会話の実行の入口がスコープを立てる（中の外部への通信は通信の前に止まる）。抜けたら戻る。
+- `test_chat_web_mode_becomes_plain_chat_in_secret_conversation` — 明示の「Web」「学術」でも、秘密の会話は検索をせず普通の会話にして、止めていることを示す。
+- `test_send_in_secret_conversation_uses_local_model_and_refuses_opencode`
+- `test_pressing_midway_cancels_running_generation`
+
 ### backend/tests/test_opencode_chat_server.py
 
 目的: AI アシスタントの OpenCode（opencode serve の API）: 権限プラグイン・設定・1 回分の対話・許可の返答。
@@ -1739,7 +1738,7 @@
 - `test_run_turn_streams_text_tools_and_permissions`
 - `test_run_turn_reports_failure_and_interrupts_when_cancelled`
 - `test_mode_file_and_idle_reaping`
-- `test_idle_reap_loop_stops_idle_servers_without_a_new_chat` — 使われていない会話サーバーを数分おきに止める。前は次の会話を始めたときだけで、17.5 時間使われていない箱が 21 時間動いていた（2026-11-21）。
+- `test_idle_reap_loop_stops_idle_servers_without_a_new_chat` — 最後に使ったサーバーも止める。前は次の会話を始めたとき（ensure）にだけ止めていたので、
 - `test_code_mode_records_tools_and_permissions_and_answers_them`
 - `test_permission_mode_api_saves_and_applies_to_running_servers`
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
@@ -1762,8 +1761,6 @@
 - `test_the_chosen_mode_is_kept_on_the_sent_message` — 別の端末や開き直しでも、機能の固定を送った発言から戻せる。
 - `test_changes_are_recorded_and_the_latest_turn_can_be_reverted` — 回答ごとの変更・差分・取り消し。取り消せるのは最新の回だけ。
 - `test_a_queued_request_can_be_told_to_the_running_turn` — 送信待ちを作業中の OpenCode へ伝えると、回答の並びに残り、送信待ちから消える。
-- `test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question` — 質問の答え待ちの回へ「途中で伝える」を送ると、止まったままにならず理由つきで断り、送信待ちは残る。
-- `test_the_chat_server_denies_the_question_tool` — AI アシスタントの OpenCode は question の道具を使えない（答える欄が無く実行が止まるため）。
 - `test_the_action_list_records_when_it_was_updated_and_the_request_asks_for_updates` — 本番: 91 回の操作の間 todowrite が 1 回だけで、1 番目が作業中のままに見えた。
 - `test_timeline_offsets_use_the_browsers_character_positions` — 絵文字の前後で本文の位置がずれない（画面は UTF-16 で切り出す）。
 - `test_an_empty_project_continues_in_the_conversations_last_project`
@@ -1777,6 +1774,8 @@
 - `test_chat_after_opencode_is_told_it_has_no_tools_and_tool_text_is_reported` — OpenCode の後のチャットには道具が無いと伝える。文字だけの呼び出しは自己診断で分かる（2026-11-18 本番）。
 - `test_attached_images_are_given_to_opencode_when_its_model_reads_images` — AI アシスタントで添付した画像を、OpenCode の発言に data: の URI で付ける（OpenCode が画像を読めるモデルへ渡す）。
 - `test_image_reading_is_judged_like_the_models_tab` — 画像を読めるかは Models の表示と同じ: llama.cpp は mmproj、Strata は vision が off でない、Radiance は常に、Maya は vision。
+- `test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question` — 目的: 質問の答え待ちの回へ「途中で伝える」を送っても、止まったままにならない（利用者に理由を返す）。
+- `test_the_chat_server_denies_the_question_tool` — 目的: AI アシスタントの OpenCode は question の道具を使えない（答える欄が無く、実行が止まるため。上の根拠）。
 
 ### backend/tests/test_opencode_dev_tools.py
 
@@ -1886,20 +1885,6 @@
 - `test_totp_enrollment_cannot_be_bypassed`
 - `test_another_user_cannot_list_or_delete_key`
 
-### backend/tests/test_patent_survey.py
-
-目的: 特許の調査（P1）の最初の部分。調査テーマから検索語の案をローカル専用のモデルで作り、答えを検めて保存し、未公開の内容（請求項・ヒアリングと 8 文字以上重なる語）に印を付け、外へ送る語は利用者の確認（approved_public）を経たものだけにする。
-
-- `test_valid_json_is_cleaned_saved_and_unpublished_terms_flagged`
-- `test_unparsable_or_wrong_shape_answers_fail_the_survey`
-- `test_theme_validation_and_claim1_fallback`
-- `test_partially_copied_terms_are_also_flagged`
-- `test_approve_needs_public_flag_refuses_risky_and_unknown_terms`
-- `test_survey_api_start_list_and_detail`
-- `test_survey_api_approve_flow`
-- `test_viewer_cannot_read_or_approve_surveys`
-- `test_deleting_a_case_removes_surveys_and_reboot_interrupts_running`
-
 ### backend/tests/test_patent_analytics.py
 
 目的: 特許の分析（書誌の読み取り・集計・類似マップ・案件に近い公報）。 目的: - 公報の 1 ページ目（INID コード）から出願人・IPC・日付・請求項の数を読み、読めないものは空のまま（推測で埋めない）。 2 段組みで (71) の名前が別の列に回っても出願人を拾い、「…株式会社内」（発明者の住所）は出願人にしない。 - 集計は書誌の読めた公報だけを数え、読めた件数（coverage）と偏りの注意を返す。 - 類似マップは埋め込みのある公報だけを 2 次元に置く。書誌は手で直せる（source=manual）。 根拠: 2026-11-21 利用者「特許の傾向・書誌・請求項・類似特許などをグラフ化して表示する機能はどうなっているか」。 ResearchDataHub v0.3 の集計と PatentBuddy の 10 種のグラフの試作は本体に入っていなかった（計画 §10）。
@@ -1918,6 +1903,20 @@
 - `test_unparsable_answer_fails_the_chart_without_inventing_rows`
 - `test_human_review_and_stale_when_claims_or_document_change`
 - `test_api_refuses_without_local_model_and_for_documents_ai_may_not_read`
+
+### backend/tests/test_patent_survey.py
+
+目的: 特許の調査（P1）の最初の部分: 調査テーマ → 検索語の案 → 外へ送る語の確認。 目的: - 案件と調査テーマ（空なら請求項 1）から、ローカル専用のモデルで検索語の案（構成要素ごとの ja/en・IPC・ 各取得先の検索式）を JSON で作り、judge と同じ専用 sqlite に保存すること。 - モデルの答えをそのまま信用しないこと: 読めない JSON・形違いは失敗として記録する。語は 1〜80 文字で 前後の空白を取り、重複を除き、1 構成要素につき各 20 個まで。IPC は ^[A-H]\d{2}[A-Z] ?\d{1,4}/\d{1,6}$ に 合うものだけ（合わないものは捨てて、捨てた数を記録）。 - 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録の文章と 8 文字以上重なっていたら （一部分が写されている場合も）risk を付け、外へ送る語の確認（approve）で選べないこと。 確認（approved_public）の無い保存は断ること。 - 権限の無い利用者は API を使えないこと。案件を消したら案も消えること（案件番号は使い回される）。 根拠: docs/PLAN-web-collector.md P1「テーマ/文言 → 検索語の案（ローカル LLM）→ 外へ送る語の確認」、 同 §6「外へ出す検索語・URL は、未公開の発明の内容を含まないことを利用者が確かめたものだけ」。 2026-11-21 の作業指示（trial/instruction.md）。手本は judge.py（start → Job でローカル LLM → 出力を検めて 保存 → 人の確認）と watch.py（approved_public の決まり）で、同じ観点の既存テストは docs/test-catalog.md で 確認した（test_patent_judge.py は判定の引用検査、test_patent_watch.py は取得語の確認。本件は案の作成と 語ごとの risk 検出で、重複しない新しい観点）。
+
+- `test_valid_json_is_cleaned_saved_and_unpublished_terms_flagged`
+- `test_unparsable_or_wrong_shape_answers_fail_the_survey`
+- `test_theme_validation_and_claim1_fallback`
+- `test_partially_copied_terms_are_also_flagged` — 語が請求項の一部を 8 文字以上写していても（全体としては含まれなくても）risk が付くこと。
+- `test_approve_needs_public_flag_refuses_risky_and_unknown_terms`
+- `test_survey_api_start_list_and_detail`
+- `test_survey_api_approve_flow`
+- `test_viewer_cannot_read_or_approve_surveys`
+- `test_deleting_a_case_removes_surveys_and_reboot_interrupts_running`
 
 ### backend/tests/test_patent_watch.py
 
@@ -2193,18 +2192,6 @@
 - `test_prerelease_cannot_replace_stable_release`
 - `test_unorderable_changed_version_fails_closed`
 
-### backend/tests/test_remote_desktop_toggle.py
-
-目的: リモートデスクトップの有効・無効の切り替え（設定、ControlDeck 側の強制、特権補助の enable/disable）を守る。
-
-- `test_default_is_enabled_and_meta_lists_it` — 既定は有効。meta の enabled_features に remote-desktop が出る。
-- `test_disable_stops_server_blocks_api_and_hides_feature_then_enable_restores` — オフで xrdp を stop+disable、リモートの API・WebSocket は 403、meta から消える。オンで戻る。
-- `test_old_helper_or_catalog_saves_setting_and_reports_update_needed` — 補助・一覧が古いときは設定を保存し「補助の更新が要ります」を返す。本物の失敗は隠さない。
-- `test_permission_and_audit` — 不正な入力の拒否、監査（enable/disable）、未認証の拒否。
-- `test_builtin_catalog_defines_both_xrdp_units` — `./deck.sh service` が書く一覧に xrdp と sesman が入る。
-- `test_helper_accepts_enable_disable_and_rejects_unknown` — 補助が enable/disable を受け付け、一覧に無い id・不正な action を断る（subprocess はモック）。
-- `test_isolated_instance_never_touches_the_machine_service` — 検証用インスタンスは機械の xrdp を操作しない。
-
 ### backend/tests/test_remote_desktop.py
 
 目的: **未記入**
@@ -2218,6 +2205,18 @@
 - `test_connection_crud_api`
 - `test_endpoint_available_reports_open_and_closed_tcp_ports`
 - `test_remote_requires_permission`
+
+### backend/tests/test_remote_desktop_toggle.py
+
+目的: リモートデスクトップの有効・無効の切り替え（設定、ControlDeck 側の強制、特権補助の enable/disable）を守る。 目的: - 設定 remote_desktop.enabled は settings.manage だけが変えられ、監査に残り、既定は有効（今までどおり）。 - オフのとき、ControlDeck のリモートの API と WebSocket は断られ、/api/v1/meta の enabled_features から "remote-desktop" が消える（ナビ・ホームのアイコン・/remote の画面はこれで出し分ける）。オンで戻る。 - オフ/オンで xrdp 本体と sesman に stop+disable / enable+start を補助経由で送る。補助や一覧が古いときは 設定は保存し、「補助の更新が要ります」を結果に返す（失敗を隠さない）。 - 補助（helper）の system-service が enable/disable を受け付け、一覧に無い id・不正な action を断る。 subprocess はモックで、本物の xrdp は止めない。 根拠: 利用者の依頼（2026-11-21）「リモートデスクトップは一旦停止する。設定に有効・無効のボタンを。オフになったら 通信・サーバーの起動・ホームのアイコンも消す」。特権の操作に関わる（L2）ので、強制の場所ごとに固定する。
+
+- `test_default_is_enabled_and_meta_lists_it` — 既定は有効。meta の enabled_features に remote-desktop が出る。
+- `test_disable_stops_server_blocks_api_and_hides_feature_then_enable_restores` — オフで xrdp を stop+disable、リモートの API・WebSocket は 403、meta から消える。オンで戻る。
+- `test_old_helper_or_catalog_saves_setting_and_reports_update_needed` — 補助・一覧が古いときは設定を保存し「補助の更新が要ります」を返す。本物の失敗は隠さない。
+- `test_permission_and_audit` — 不正な入力の拒否、監査（enable/disable）、未認証の拒否。
+- `test_builtin_catalog_defines_both_xrdp_units` — `./deck.sh service` が書く一覧に xrdp と sesman が入る。
+- `test_helper_accepts_enable_disable_and_rejects_unknown` — 補助が enable/disable を受け付け、一覧に無い id・不正な action を断る（subprocess はモック）。
+- `test_isolated_instance_never_touches_the_machine_service` — 検証用インスタンスは機械の xrdp を操作しない。
 
 ### backend/tests/test_resource_api.py
 
@@ -2386,7 +2385,7 @@
 
 ### backend/tests/test_sandbox_gateway.py
 
-目的: サンドボックスの LLM 中継（app.maintenance.sandbox_gateway）。 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。 上流は httpx.MockTransport の偽物。
+目的: サンドボックスの LLM 中継（app.maintenance.sandbox_gateway）。 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。 上流は httpx.MockTransport の偽物。 MCP の中継（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具（Project Lab の実行など）を使わせたいが、 箱へ MCP のトークンは置けない。トークンは箱の外の中継だけが持ち、箱から来た Authorization は捨てて付け替える。 呼べる道具は許可の一覧だけに絞り、一覧（/tools）も同じ範囲にする。
 
 - `test_only_allowed_calls_pass_and_load_needs_allow_load`
 - `test_headers_are_replaced_not_forwarded`
@@ -2395,6 +2394,12 @@
 - `test_concurrency_limit_returns_429_without_waiting`
 - `test_upstream_down_is_502_and_slot_is_released`
 - `test_cloud_models_are_refused_unless_allowed` — 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。外部のモデルへの chat は既定で断り、上流へ送らない。
+- `test_mcp_paths_need_the_relay_token_and_are_closed_without_it`
+- `test_mcp_authorization_is_replaced_with_the_relays_token`
+- `test_mcp_call_outside_the_allowlist_is_403_and_never_reaches_upstream`
+- `test_mcp_tools_listing_is_narrowed_and_renewed_token_is_not_passed_on`
+- `test_mcp_upstream_errors_pass_through_and_token_stays_out_of_logs`
+- `test_relay_reads_the_token_from_the_environment_not_argv`
 
 ### backend/tests/test_searxng_helper.py
 
@@ -2425,7 +2430,7 @@
 - `test_existing_keys_show_up_without_moving_or_exposing_them`
 - `test_saving_here_writes_to_the_original_store_and_blank_means_unchanged`
 - `test_delete_is_explicit`
-- `test_opencode_zen_key_is_listed_saved_and_deleted_without_exposing_it` — 「開発」の組に Zen の項目。保存・削除でき、値は返さず末尾 4 文字だけ。
+- `test_opencode_zen_key_is_listed_saved_and_deleted_without_exposing_it` — 目的: 「開発」の組に OpenCode Zen の項目が出て、保存・削除でき、値は返さず末尾 4 文字だけ。
 
 ### backend/tests/test_signal_origin.py
 
@@ -2624,6 +2629,14 @@
 - `test_every_new_test_file_states_its_purpose`
 - `test_legacy_list_only_shrinks` — 目的を書いた（または消した）ファイルは一覧から外す。一覧に残ったままだと、次に未記入へ戻っても気づけない。
 - `test_catalog_renders`
+
+### backend/tests/test_test_catalog_preserve.py
+
+目的: テストの目録の作り直しが、手書きの説明を消さないこと。 目的: `./deck.sh test-catalog`（app.maintenance.test_catalog）で作り直しても、既存の docs/test-catalog.md にある 「目的:」の行と「 — 説明」のうち、コードの docstring に無いものが名前で突き合わせて引き継がれること。docstring があれば そちらが正。消えたテストの説明だけが消える。 根拠: 開発の作業場 1 段目（2026-11-21）の試験で、箱の OpenCode が目録を作り直したら手書きの説明が消えた。
+
+- `test_parse_reads_purpose_and_descriptions_by_name`
+- `test_merge_fills_only_what_the_code_leaves_empty`
+- `test_render_with_existing_text_keeps_every_description_in_the_real_catalog` — 実物の目録で、作り直しても「 — 」の付いた行が 1 つも減らない（docstring の無いものは引き継ぐ）。
 
 ### backend/tests/test_totp.py
 
@@ -3032,15 +3045,9 @@
 
 ### frontend/e2e/assistant-offline-research.spec.ts
 
-目的: 「この会話は秘密」のボタン・確認（解除できないと書く）・入力欄の印（PC 1280・モバイル 320）。押すと印が出て、横にはみ出さず、再読み込み後も残り、解除の操作がどこにも無いこと。新しい会話を秘密で始める切り替え。 根拠: 2026-11-21 利用者「途中から秘密の話をしたくなって押すことはよくある。解除して外部へ調査に出られてはいけない」。
+目的: 目的: AI アシスタントの「この会話は秘密」（会話ごと・一方通行）のボタン・確認・印を守る（PC 1280・モバイル 320）。 押す前に確認が出る（解除できないと書く）→ 押すと入力欄に印が出る・横にはみ出さない・再読み込み後も残る・ 解除の操作がどこにも無い。新しい会話を「秘密で始める」切り替えもある。 根拠: 2026-11-21 利用者「途中から秘密の話をしたくなって押すことはよくある。一度押した会話の文脈には秘密が入っているので、 解除して外部へ調査に出られてはいけない」。撮影: E2E_SHOT_DIR（無ければ playwright の出力先）。
 
 - secret conversation button, confirm and pill (${label})
-
-### frontend/e2e/assistant-secret-lock-topbar.spec.ts
-
-目的: 上の行の「auto」のボタンの右にある秘密の会話の鍵。新しい会話で開いた鍵→確認→OK で閉じた鍵・入力欄の 🔒、送ると confidential:true で作られる。既存の会話では API が呼ばれ閉じた鍵。キャンセルは何も変えない。閉じた鍵は説明だけで解除の操作が無い。320px で重ならずはみ出さない（ライト・ダーク）。 根拠: 2026-11-21 利用者「通信ロックは重要なので、分かりやすいところに置きたい」。
-
-- secret lock button in the top bar (${label}, ${scheme})
 
 ### frontend/e2e/assistant-opencode-progress.spec.ts
 
@@ -3071,6 +3078,12 @@
 
 - requests sent during a run wait, can be edited, removed and restored, then arrive (${width}px)
 - voice input shows a waveform, keeps listening through silence and types each phrase (${width}px)
+
+### frontend/e2e/assistant-secret-lock-topbar.spec.ts
+
+目的: 目的: AI アシスタントの上の行（「auto」のボタンの右）にある「秘密の会話」の鍵のボタンを守る。 新しい会話で押す→確認→OK で閉じた鍵・入力欄の 🔒・送ると confidential:true で作られる／既存の会話で押すと API が呼ばれ閉じた鍵／ キャンセルは何も変えない／閉じた鍵は説明だけで解除の操作が出ない／320px で上の行の要素が重ならずはみ出さない（ライト・ダーク）。 根拠: 2026-11-21 利用者「Web 検索などの通信ロックは重要なので、分かりやすいところに置きたい。右上の『auto』の右側に、鍵が開いているマークを」。 撮影: E2E_SHOT_DIR（無ければ playwright の出力先）。
+
+- secret lock button in the top bar (${label}, ${scheme})
 
 ### frontend/e2e/assistant-voice-modes.spec.ts
 
@@ -3193,6 +3206,12 @@
 目的: 目的: 設定の「GPU 設定」で、周波数と電圧を別々に指定でき、試験設定は入力欄を埋めるだけで「適用」を押すまで書かないこと。 設定値と実測を分けて見られ、Models の共通設定から電力・静音が移り、移動ボタンが消えていること。 根拠: 2026-11-18 利用者「電力制限 210 W のままホットスポット温度を下げたい」。API は模擬する（実機へ書かない）。
 
 - GPU settings apply only on request (${width}px)
+
+### frontend/e2e/ios-keyboard-field.spec.ts
+
+目的: iPhone: キーボードが出ても、触った入力欄が見える範囲に出る（AI アシスタント以外の画面でも）。 根拠: 2026-11-21 利用者「設定の API キーの入力欄をタップするとキーボードが上がって入力欄が消え、貼り付けられない」。 実機（iOS 18.7、設定の画面）: innerHeight 932 のまま、visual viewport だけ 517 に縮み、殻は 932 のままだった。 殻を見える範囲に合わせる useKeyboardViewportFit を AI アシスタントだけが呼んでいたため。 Chromium はキーボードで visual viewport だけを縮められないので、visualViewport を偽物にして iOS と同じ値を作る。 */
+
+- iPhone: キーボードで visual viewport が縮むと、設定の入力欄が見える範囲に出る
 
 ### frontend/e2e/knowledge.spec.ts
 
@@ -3326,17 +3345,17 @@
 
 - an audio artifact gets a player wide enough to press
 
-### frontend/e2e/remote-desktop-toggle.spec.ts
-
-目的: 設定のリモートデスクトップの切り替えで、ナビの「Remote」が消え、/remote に無効の表示が出て、オンで戻ること（1280・320px）。
-
-- remote desktop toggle hides and restores the feature at ${viewport.width}px
-
 ### frontend/e2e/release-bundle-settings.spec.ts
 
 目的: **未記入**
 
 - manages an installed release bundle and generates through its Add-on
+
+### frontend/e2e/remote-desktop-toggle.spec.ts
+
+目的: 目的: 設定のリモートデスクトップの切り替えで、ナビの「Remote」が消え、/remote に無効の表示が出て、 オンで戻ること（PC 幅 1280 と 320px）。画面の撮影も残す。 根拠: 利用者の依頼（2026-11-21）「リモートデスクトップは一旦停止する。設定に有効・無効のボタンを。 オフになったらホームのアイコンも消す」。検証用インスタンスは xrdp を操作しない（toggle.py の isolated）。
+
+- remote desktop toggle hides and restores the feature at ${viewport.width}px
 
 ### frontend/e2e/resource-load-profile-ui.spec.ts
 
