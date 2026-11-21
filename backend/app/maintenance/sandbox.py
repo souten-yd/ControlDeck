@@ -40,6 +40,52 @@ class SandboxError(RuntimeError):
     pass
 
 
+def _users_with_permission(permission: str, *, name: str = "") -> list[str]:
+    """有効で、その権限を持つ利用者名（name を渡したらその人だけ）。DB を読む。"""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import User
+    from app.security.deps import user_permissions
+
+    with SessionLocal() as db:
+        query = select(User).where(User.is_active.is_(True))
+        if name:
+            query = query.where(User.username == name)
+        return sorted(u.username for u in db.execute(query).scalars().all()
+                      if permission in user_permissions(u))
+
+
+def resolve_owner(requested: str = "") -> str:
+    """箱の持ち主（MCP のトークンが動く利用者）。指定が無ければ有効な管理者が 1 人のときだけその人。
+
+    持ち主は箱の AI が ControlDeck の道具（Project Lab の実行など）を呼ぶときの権限になる。
+    """
+    if requested:
+        if not _users_with_permission("workflows.run", name=requested):
+            raise SandboxError(f"持ち主 {requested} は、有効で workflows.run を持つ利用者ではありません")
+        return requested
+    admins = _users_with_permission("settings.manage")
+    if len(admins) == 1:
+        return admins[0]
+    if not admins:
+        raise SandboxError("有効な管理者がいません。--owner <ユーザー名> で持ち主を指定してください")
+    raise SandboxError(f"管理者が複数います（{', '.join(admins)}）。--owner <ユーザー名> で持ち主を指定してください")
+
+
+def _owner_user_id(username: str) -> int:
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import User
+
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == username, User.is_active.is_(True))).scalar_one_or_none()
+        if user is None:
+            raise SandboxError(f"持ち主 {username} が見つかりません（無効になっていないか確かめてください）")
+        return int(user.id)
+
+
 def _data_dir() -> Path:
     from app.config import data_dir
 
@@ -86,6 +132,10 @@ class Sandbox:
     @property
     def gateway_port(self) -> int:
         return int(self.meta["gateway_port"])
+
+    @property
+    def owner(self) -> str:
+        return str(self.meta.get("owner") or "")
 
     @property
     def allow_load(self) -> bool:
@@ -138,12 +188,21 @@ def _save_meta(path: Path, meta: dict) -> None:
     (path / "sandbox.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+def box_owner(box: Sandbox) -> str:
+    """持ち主。古い箱（owner 無し）は resolve_owner の規則で決めて保存する。"""
+    if not box.owner:
+        box.meta["owner"] = resolve_owner()
+        _save_meta(box.path, box.meta)
+    return box.owner
+
+
 def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_load: bool = False,
-           allow_zen: bool = True) -> Sandbox:
+           allow_zen: bool = True, owner: str = "") -> Sandbox:
     """作業ツリーを複製してサンドボックスを作る。数秒で終わる（オブジェクトは複製しない）。"""
     path = _dir(name)
     if path.exists():
         raise SandboxError(f"サンドボックス {name} は既にあります（作り直すなら destroy してから）")
+    owner = resolve_owner(owner)
     source = Path(repo).expanduser().resolve()
     top = Path(_git("rev-parse", "--show-toplevel", cwd=source))
     common = Path(_git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=top))
@@ -166,7 +225,7 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
         meta = {
             "name": name, "source": str(top), "git_common_dir": str(common), "revision": revision,
             "origin": origin, "port": _free_port(), "gateway_port": _free_gateway_port(),
-            "allow_load": bool(allow_load), "allow_zen": bool(allow_zen), "github": bool(github), "created_at": time.time(),
+            "allow_load": bool(allow_load), "allow_zen": bool(allow_zen), "owner": owner, "github": bool(github), "created_at": time.time(),
             # 依存はホストのものを overlay でつなぐ（箱の中で書いてもホストは変わらない）。
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
             "overlays": [
@@ -318,7 +377,8 @@ def _gateway_healthy(port: int) -> bool:
 
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
-            return response.status == 200
+            # MCP のトークンを持たない古い中継は動いていても作り直す（箱から道具が呼べない）
+            return response.status == 200 and bool(json.loads(response.read()).get("mcp"))
     except Exception:  # noqa: BLE001
         return False
 
@@ -327,6 +387,35 @@ def _upstream_url() -> str:
     from app.config import get_config
 
     return f"http://127.0.0.1:{int(get_config().server.port)}"
+
+
+def relay_env_file(box: Sandbox) -> Path:
+    """中継へ MCP のトークンを渡す環境変数ファイル。箱のフォルダの外（箱からは見えない）。"""
+    return root() / ".relay" / f"{box.name}.env"
+
+
+def _write_relay_env(box: Sandbox) -> Path:
+    """箱の持ち主として動く MCP のトークンを作り、0600 のファイルへ書く（argv・ログには出さない）。"""
+    from app.addons.agent_mcp import issue_opencode_token
+    from app.maintenance.sandbox_gateway import MCP_TOKEN_ENV
+
+    token = issue_opencode_token(_owner_user_id(box_owner(box)), f"sandbox-{box.name}")
+    path = relay_env_file(box)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(f"{MCP_TOKEN_ENV}={token}\n")
+    os.chmod(path, 0o600)
+    return path
+
+
+def _relay_token(box: Sandbox) -> str:
+    try:
+        _, _, value = relay_env_file(box).read_text(encoding="utf-8").strip().partition("=")
+        return value
+    except OSError:
+        return ""
 
 
 def gateway_stop(box: Sandbox) -> None:
@@ -347,6 +436,7 @@ def ensure_gateway(box: Sandbox) -> None:
     if not venv_python.exists():
         raise SandboxError("元のリポジトリに .venv がありません（./deck.sh を一度実行してください）")
     gateway_stop(box)
+    env_file = _write_relay_env(box)
     backend = Path(__file__).resolve().parents[2]
     command = [str(venv_python), "-m", "app.maintenance.sandbox_gateway", "--name", box.name,
                "--port", str(box.gateway_port), "--upstream", _upstream_url()]
@@ -359,7 +449,8 @@ def ensure_gateway(box: Sandbox) -> None:
             "--property=Type=exec", f"--property=WorkingDirectory={backend}",
             "--property=NoNewPrivileges=yes", "--property=PrivateTmp=yes", "--property=ProtectSystem=strict",
             "--property=ProtectHome=read-only", "--property=MemoryMax=512M", "--property=TasksMax=64",
-            "--property=UMask=0077", "--setenv=PYTHONDONTWRITEBYTECODE=1", *command]
+            "--property=UMask=0077", f"--property=EnvironmentFile={env_file}",
+            "--setenv=PYTHONDONTWRITEBYTECODE=1", *command]
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
     if result.returncode != 0:
         raise SandboxError(f"ゲートウェイの中継を起こせませんでした: {(result.stderr or result.stdout).strip()[:300]}")
@@ -468,8 +559,8 @@ def _health(port: int) -> bool:
 def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     """箱の中の OpenCode の設定を作る。本番と同じ生成処理で作り、箱から見えないパスだけ写し替える。
 
-    Add-on の MCP bridge は載せない（本番の Add-on を箱から動かさない）。UI 検証の画面写真は
-    箱の中へ撮る。指示ファイルとスキルは箱の中へ写す（本番の data は箱から見えない）。
+    ControlDeck の MCP は、箱の中の bridge から中継経由で載せる（呼べる道具は中継が絞る）。
+    トークンは中継だけが持つので、ここには入らない。UI 検証の画面写真は箱の中へ撮る。指示ファイルとスキルは箱の中へ写す（本番の data は箱から見えない）。
     """
     from app.integrations.opencode import provider
 
@@ -479,10 +570,24 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     payload["provider"]["controldeck"]["options"]["apiKey"] = "sandbox"
     servers = dict(payload.get("mcp") or {})
     servers.pop("controldeck_addons", None)
-    if servers:
-        payload["mcp"] = servers
-    else:
-        payload.pop("mcp", None)
+    copied = box.home / ".controldeck"
+    copied.mkdir(parents=True, exist_ok=True)
+    bridge = copied / "addon_mcp_bridge.py"
+    shutil.copyfile(Path(provider.__file__).with_name("addon_mcp_bridge.py"), bridge)
+    from app.addons.agent_mcp import MCP_CLIENT_TIMEOUT_MS
+
+    results = copied / "mcp-results"
+    results.mkdir(exist_ok=True)
+    servers["controldeck_addons"] = {
+        "type": "local", "command": ["/usr/bin/python3", str(bridge)], "enabled": True,
+        "timeout": MCP_CLIENT_TIMEOUT_MS,
+        "environment": {
+            "CONTROL_DECK_ADDON_MCP_URL": f"http://127.0.0.1:{box.gateway_port}/api/v1/addons/agent-mcp",
+            "CONTROL_DECK_ADDON_MCP_TOKEN": "sandbox",  # 意味の無い値。本物は中継が付ける
+            "CONTROL_DECK_ADDON_MCP_RESULT_DIR": str(results),
+        },
+    }
+    payload["mcp"] = servers
     shots = box.path / "ui-verify"
     shots.mkdir(exist_ok=True)
     browser = (payload.get("mcp") or {}).get(provider.UI_VERIFY_SERVER)
@@ -490,8 +595,6 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
         command = list(browser["command"])
         command[command.index("--output-dir") + 1] = str(shots)
         browser["command"] = command
-    copied = box.home / ".controldeck"
-    copied.mkdir(parents=True, exist_ok=True)
     instructions = []
     for item in payload.get("instructions") or []:
         source = Path(item)
@@ -520,6 +623,9 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     real_key = gateway.get_api_key()
     if real_key and real_key in text:
         raise SandboxError("本番のゲートウェイ鍵が箱の設定に入りました（書き出しを中止）")
+    relay_token = _relay_token(box)
+    if relay_token and relay_token in text:
+        raise SandboxError("MCP のトークンが箱の設定に入りました（書き出しを中止）")
     path.write_text(text, encoding="utf-8")
     os.chmod(path, 0o600)
     return path
@@ -584,6 +690,7 @@ def destroy(name: str) -> None:
     target = box.path.resolve()
     if not target.is_relative_to(root()) or target == root():
         raise SandboxError("削除対象がサンドボックスの外です")
+    relay_env_file(box).unlink(missing_ok=True)
     shutil.rmtree(target)
 
 
@@ -614,6 +721,7 @@ def main(argv: list[str]) -> int:
     new.add_argument("--repo", default=str(Path(__file__).resolve().parents[3]))
     new.add_argument("--ref", default="")
     new.add_argument("--github", action="store_true", help="この PC の gh の設定を読み取り専用で見せる")
+    new.add_argument("--owner", default="", help="箱の AI が ControlDeck の道具を使うときの利用者（省くと管理者が 1 人ならその人）")
     new.add_argument("--allow-load", action="store_true", help="箱の AI にモデルの読み込み（切り替え）を許す")
     new.add_argument("--no-zen", action="store_true", help="OpenCode Zen のキーを箱の OpenCode へ渡さない")
     zen_toggle = sub.add_parser("zen", help="OpenCode Zen のキーを箱の OpenCode へ渡すかを切り替える")
@@ -638,7 +746,7 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "new":
             box = create(args.name, args.repo, args.ref, github=args.github, allow_load=args.allow_load,
-                         allow_zen=not args.no_zen)
+                         allow_zen=not args.no_zen, owner=args.owner)
             print(json.dumps(status(box), ensure_ascii=False, indent=1))
         elif args.command == "allow-load":
             box = load(args.name)

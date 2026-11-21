@@ -3,8 +3,13 @@
 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。
 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。
 上流は httpx.MockTransport の偽物。
+
+MCP の中継（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具（Project Lab の実行など）を使わせたいが、
+箱へ MCP のトークンは置けない。トークンは箱の外の中継だけが持ち、箱から来た Authorization は捨てて付け替える。
+呼べる道具は許可の一覧だけに絞り、一覧（/tools）も同じ範囲にする。
 """
 import asyncio
+import json
 
 import httpx
 
@@ -182,3 +187,107 @@ def test_cloud_models_are_refused_unless_allowed():
 
     run(go())
     assert len(seen) == 3 and all(b"cloud:openrouter/deepseek" not in body for body in seen)
+
+
+MCP = gw.MCP_API
+TOKEN = "relay-owned-token.sig"
+
+
+def _mcp_client(handler):
+    return _client(handler, mcp_token=TOKEN)
+
+
+def test_mcp_paths_need_the_relay_token_and_are_closed_without_it():
+    async def go():
+        async with _client(_ok) as c:  # トークンを持たない中継では MCP は閉じている
+            assert (await c.get(f"{MCP}/tools")).status_code == 403
+            assert (await c.post(f"{MCP}/call", json={"name": "control_deck.report"})).status_code == 403
+            assert (await c.get("/healthz")).json()["mcp"] is False
+        async with _mcp_client(_ok) as c:
+            assert (await c.get("/healthz")).json()["mcp"] is True
+            assert (await c.get(f"{MCP}/tools")).status_code == 200
+            for method, path in [("POST", f"{MCP}/tools"), ("GET", f"{MCP}/call"), ("GET", f"{MCP}/other")]:
+                assert (await c.request(method, path)).status_code == 403, (method, path)
+
+    run(go())
+
+
+def test_mcp_authorization_is_replaced_with_the_relays_token():
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.headers))
+        return _resp(chunks=[b'{"tools": []}'], headers={"content-type": "application/json"})
+
+    async def go():
+        async with _mcp_client(handler) as c:
+            await c.get(f"{MCP}/tools", headers={"Authorization": "Bearer from-the-box", "Cookie": "s=1"})
+            await c.post(f"{MCP}/call", json={"name": "control_deck.lab_projects", "arguments": {}},
+                         headers={"Authorization": "Bearer from-the-box"})
+
+    run(go())
+    assert len(seen) == 2
+    for headers in seen:
+        assert headers["authorization"] == f"Bearer {TOKEN}"
+        assert "cookie" not in headers
+        assert headers["x-requested-with"] == "ControlDeck" and headers["x-control-deck-sandbox"] == "box1"
+
+
+def test_mcp_call_outside_the_allowlist_is_403_and_never_reaches_upstream():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return _resp(chunks=[b"{}"])
+
+    async def go():
+        async with _mcp_client(handler) as c:
+            for body in ({"name": "control_deck.diagnostics"}, {"name": "control_deck.knowledge_search"},
+                         {"name": "media.scene.create"}, {"name": "control_deck.project_output_grant"},
+                         {"name": 5}, {}, [1]):
+                assert (await c.post(f"{MCP}/call", json=body)).status_code == 403, body
+            assert (await c.post(f"{MCP}/call", content=b"not json")).status_code == 403
+            for name in sorted(gw.MCP_ALLOWED_TOOLS):
+                assert (await c.post(f"{MCP}/call", json={"name": name, "arguments": {}})).status_code == 200, name
+
+    run(go())
+    assert len(seen) == len(gw.MCP_ALLOWED_TOOLS)
+
+
+def test_mcp_tools_listing_is_narrowed_and_renewed_token_is_not_passed_on():
+    listed = {"tools": [{"name": "control_deck.lab_run_start"}, {"name": "control_deck.diagnostics"},
+                        {"name": "media.scene.create"}, {"name": "control_deck.report"}]}
+
+    def handler(request):
+        return _resp(chunks=[json.dumps(listed).encode()], headers={
+            "content-type": "application/json", "X-Control-Deck-MCP-Token": "renewed-token"})
+
+    async def go():
+        async with _mcp_client(handler) as c:
+            r = await c.get(f"{MCP}/tools")
+            assert r.status_code == 200
+            assert [t["name"] for t in r.json()["tools"]] == ["control_deck.lab_run_start", "control_deck.report"]
+            assert "x-control-deck-mcp-token" not in r.headers and "renewed-token" not in r.text
+
+    run(go())
+
+
+def test_mcp_upstream_errors_pass_through_and_token_stays_out_of_logs(caplog):
+    def handler(request):
+        return _resp(404, chunks=[b'{"detail": "Project run not found"}'], headers={"content-type": "application/json"})
+
+    async def go():
+        async with _mcp_client(handler) as c:
+            r = await c.post(f"{MCP}/call", json={"name": "control_deck.lab_run_status", "arguments": {"run_id": 1}})
+            assert r.status_code == 404 and "not found" in r.text
+
+    with caplog.at_level("DEBUG"):
+        run(go())
+    assert TOKEN not in caplog.text
+
+
+def test_relay_reads_the_token_from_the_environment_not_argv(monkeypatch):
+    import inspect
+
+    assert gw.MCP_TOKEN_ENV == "CONTROL_DECK_SANDBOX_MCP_TOKEN"
+    assert "--mcp-token" not in inspect.getsource(gw.main), "トークンは argv で受けない（ps から見える）"

@@ -2,6 +2,10 @@
 
 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、
 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。
+
+箱の持ち主と MCP（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具を使わせる。誰の権限で動くかを持ち主
+（--owner、省くと管理者が 1 人ならその人）で決め、そのトークンは箱の外の中継だけが持つ（0600 の環境変数ファイル、
+argv・箱の opencode.json には入れない）。箱の bridge は中継を向く。
 """
 import json
 import subprocess
@@ -23,6 +27,8 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_free_gateway_port", lambda: 18900)
     monkeypatch.setattr(sandbox, "ensure_pod", lambda box: sandbox.pod_name(box))
     monkeypatch.setattr(sandbox, "ensure_gateway", lambda box: None)
+    monkeypatch.setattr(sandbox, "_users_with_permission",
+                        lambda permission, name="": [name or "admin1"] if permission != "none" else [])
     source = tmp_path / "src"
     source.mkdir()
     run = lambda *a: subprocess.run(["git", *a], cwd=source, check=True, capture_output=True)  # noqa: E731
@@ -252,3 +258,96 @@ def test_opencode_model_keeps_provider_form_and_defaults_to_controldeck(zen_box)
     argv = sandbox.opencode_argv(zen_box, message="hi", model="opencode/deepseek-v4.1-flash-free", interactive=False)
     assert argv[argv.index("--model") + 1] == "opencode/deepseek-v4.1-flash-free"
     sandbox.remove_env_file(argv)
+def _users(monkeypatch, admins, others=()):
+    def fake(permission, name=""):
+        pool = admins if permission == "settings.manage" else [*admins, *others]
+        return [u for u in pool if not name or u == name]
+
+    monkeypatch.setattr(sandbox, "_users_with_permission", fake)
+
+
+def test_owner_is_the_only_admin_or_must_be_named(repo, monkeypatch):
+    _users(monkeypatch, ["alice"], ["bob"])
+    assert sandbox.create("own1", str(repo)).owner == "alice"
+    assert json.loads((sandbox._dir("own1") / "sandbox.json").read_text())["owner"] == "alice"
+    assert sandbox.create("own2", str(repo), owner="bob").owner == "bob"
+    with pytest.raises(sandbox.SandboxError, match="carol"):
+        sandbox.create("own3", str(repo), owner="carol")
+    _users(monkeypatch, ["alice", "dave"])
+    with pytest.raises(sandbox.SandboxError, match="--owner"):
+        sandbox.create("own4", str(repo))
+    assert not sandbox._dir("own4").exists(), "決められなければ箱を作らない"
+    assert sandbox.create("own5", str(repo), owner="dave").owner == "dave"
+    _users(monkeypatch, [])
+    with pytest.raises(sandbox.SandboxError, match="管理者がいません"):
+        sandbox.create("own6", str(repo))
+
+
+def test_old_box_without_owner_gets_one_by_the_same_rule_and_saves_it(repo, monkeypatch):
+    box = sandbox.create("old2", str(repo))
+    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta.pop("owner")
+    (box.path / "sandbox.json").write_text(json.dumps(meta))
+    _users(monkeypatch, ["alice", "dave"])
+    loaded = sandbox.load("old2")  # 読むだけの操作（list・destroy）は持ち主が決まらなくても通る
+    with pytest.raises(sandbox.SandboxError, match="--owner"):
+        sandbox.box_owner(loaded)
+    _users(monkeypatch, ["alice"])
+    assert sandbox.box_owner(sandbox.load("old2")) == "alice"
+    assert json.loads((box.path / "sandbox.json").read_text())["owner"] == "alice"
+
+
+def test_relay_env_file_is_0600_outside_the_box_and_token_stays_out_of_argv(repo, monkeypatch):
+    import stat
+
+    from app.addons import agent_mcp
+
+    box = sandbox.create("env1", str(repo))
+    monkeypatch.setattr(sandbox, "_owner_user_id", lambda username: 7)
+    monkeypatch.setattr(agent_mcp, "issue_opencode_token", lambda uid, cid, **kw: f"tok-{uid}-{cid}")
+    calls = []
+    # 起動前は動いていない、systemd-run を呼んだ後は動いている
+    monkeypatch.setattr(sandbox, "_gateway_healthy",
+                        lambda port: any(c[0].endswith("systemd-run") for c in calls))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", run)
+    monkeypatch.setattr(sandbox.time, "sleep", lambda s: None)
+    REAL_ENSURE_GATEWAY(box)
+    path = sandbox.relay_env_file(box)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600 and stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert not path.resolve().is_relative_to(box.path), "箱のフォルダの外（箱からは見えない）"
+    assert path.read_text() == "CONTROL_DECK_SANDBOX_MCP_TOKEN=tok-7-sandbox-env1\n"
+    start = next(c for c in calls if c[0].endswith("systemd-run"))
+    assert f"--property=EnvironmentFile={path}" in start
+    assert not any("tok-7" in part for part in start), "トークンは argv に出さない"
+
+
+def test_opencode_config_points_the_bridge_at_the_relay_without_the_mcp_token(repo, monkeypatch):
+    box = sandbox.create("cfg2", str(repo))
+    (box.path.parent / ".relay").mkdir(exist_ok=True)
+    sandbox.relay_env_file(box).write_text("CONTROL_DECK_SANDBOX_MCP_TOKEN=relay-secret-token\n")
+    text = sandbox.opencode_config(box).read_text()
+    assert "relay-secret-token" not in text
+    config = json.loads(text)["mcp"]["servers"]["controldeck_addons"]
+    assert config["environment"]["CONTROL_DECK_ADDON_MCP_URL"] == "http://127.0.0.1:18900/api/v1/addons/agent-mcp"
+    assert config["environment"]["CONTROL_DECK_ADDON_MCP_TOKEN"] == "sandbox"
+    bridge = box.home / ".controldeck" / "addon_mcp_bridge.py"
+    assert config["command"] == ["/usr/bin/python3", str(bridge)] and bridge.is_file()
+    assert config["environment"]["CONTROL_DECK_ADDON_MCP_RESULT_DIR"].startswith(str(box.path)), "結果のフォルダは箱の中"
+    assert str(box.path) in str(bridge)
+
+
+def test_opencode_config_refuses_to_write_when_the_mcp_token_would_leak(repo, monkeypatch):
+    box = sandbox.create("cfg3", str(repo))
+    (box.path.parent / ".relay").mkdir(exist_ok=True)
+    sandbox.relay_env_file(box).write_text("CONTROL_DECK_SANDBOX_MCP_TOKEN=sandbox\n")  # 偽の漏れ: 設定にある値と同じ
+    with pytest.raises(sandbox.SandboxError, match="MCP のトークン"):
+        sandbox.opencode_config(box)
+    assert not (box.home / ".config" / "opencode" / "opencode.json").exists()
