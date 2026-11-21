@@ -100,6 +100,7 @@ OpenCode 画面で、次の 3 つを簡単に選べ、結果が目で分かる�
 | 第 1 段階 D（E2E） | 実装済み（`./deck.sh e2e`、axe 12 件合格） | #380 |
 | 第 2 段階 | 完了（精密調査 #382、Context7 #383。どちらも実機確認） | #382, #383 |
 | 開発用サンドボックス | 第 1 段階完了（`./deck.sh sandbox`。ミラー・箱の中の OpenCode・本番 deck.sh の禁止） | #385 |
+| 開発用サンドボックス 第 2 段階 | 計画（2026-11-21）。P1 安全（pod と中継）を実装中 | 本 PR |
 | 第 3 段階 | 完了（reviewer 子エージェント＋ast-grep。実機で呼び出し側の取りこぼしを critical で検出） | #383 |
 | AI アシスタントで OpenCode をフル機能（2026-11-17、利用者の依頼）段階 1 | `opencode serve` の API へ切替。道具のカード・許可の確認（今回だけ/常に/拒否）・停止・権限モード（Auto 既定 / 確認、タップと Shift+Tab）。段階 2: ローカル LLM による許可の判断・5 つのモード・`/` コマンド・実行中の追加の指示。段階 3: 子エージェント・計画・セッション一覧・スクショの共有 | 本 PR |
 | 作業の種類 → 自動レビュー（2026-11-16、利用者の依頼） | 「作業の種類」の選択を撤去。代わりに session の指示 `auto-review.md`（既定オン）で、コードを変えたら完了前に reviewer、行き詰まったら advisor()。レビュー・相談・開発担当に外部モデルも可 | 本 PR |
@@ -166,4 +167,48 @@ GitHub のプレリリースまで出す。正式 Release への格上げと本�
 - `shell` / `exec` / `opencode [--run 指示]`（箱の中の OpenCode。設定は本番と同じ生成処理、Add-on の bridge は載せない、UI 検証の写真は箱の中）/ `mirror-start`（`CONTROL_DECK_ISOLATED=1`、ポート 18800〜、使い捨て管理者）/ `mirror-stop` / `status` / `list` / `destroy`。
 - 箱から見えないもの: 本番の data（DB・秘密鍵・ログ）、gh の token（`--github` のときだけ読み取り専用で見せる）。箱の中の AI 自身に確かめさせて、見えないことを確認した。
 - OpenCode から本番を止める `deck.sh`（引数なし・start・service・stop・restore・update-prepare など）を禁止した。`test`・`e2e`・`ext lint`・`sandbox` は使える。
-- 確かめられないもの: systemd のサービス・ファン・GPU ランタイムの起動停止など、ホストそのものが要る機能。
+- 確かめられないもの: systemd のサービス・ファン・GPU ランタイムの起動停止など、ホストそのものが要る機能。GPU ランタイムは第 2 段階（下の節）で、GPU の貸し出しとホストの API による評価で確かめられるようにする。ファンは対象外。
+
+## 開発用サンドボックス 第 2 段階: ホストの資源で確かめる（2026-11-21 計画）
+
+利用者の依頼（2026-11-21）: Claude や Codex を使わなくても、ローカル LLM と OpenRouter で ControlDeck の拡張・改善や新しいソフトを開発できるようにする。箱（リポジトリの写し）で開発し、ホストの GPU・モデル・LLM ランタイムと ControlDeck の API で評価し、できたものを更新で本体へ入れる。作業中の画面は利用者も触って確かめ、その操作と気づきを記録して改善に使う。
+
+### 方式の評価（利用者案と外部の方式を同じ基準で比べた）
+
+| 方式 | GPU | 本番への影響 | 判断 |
+|---|---|---|---|
+| 利用者案: 箱にホストの GPU・モデル（読み取り）を渡し、ランタイムは箱で開発、ホストの API で評価 | 使える | ROCm に VRAM の分割（MIG 相当）は無い。箱が取りすぎると本番の LLM が OOM | **採用。GPU の貸し出しと組み合わせる** |
+| GPU を渡さず本番 API 経由だけで評価 | 使えない | 最も安全 | **ふだんの既定** |
+| 本番から GPU を期限付きで借りる | 借りている間 | 本番の LLM を降ろしてから貸す | **採用。** Add-on の貸し出し（broker、#375）を使い回す |
+| VM（VFIO）・Firecracker・gVisor・Docker Sandboxes | 不可、または GPU 1 枚を丸ごと取られる | ― | 見送り（gVisor の GPU は NVIDIA だけ、Docker Sandboxes の Linux GPU は未対応） |
+| Incus・Dev Containers | podman と同等 | ― | 今の箱を上回る点が無い |
+| 偽の GPU・systemd で試す | ― | ― | 状態遷移のテストにだけ使う。速さ・VRAM は実機でしか分からない |
+
+### 実機で確かめた事実（podman 4.9.3）
+
+- 今の箱は `--network host`。ゲートウェイは loopback＋`x-requested-with` なら鍵なしで通すので、**箱の AI から本番のモデル切り替え（`/load`）まで呼べた。** OpenCode の設定には本番のゲートウェイ鍵が平文で入っていた。
+- `--network pasta`（既定）: 箱からホストへは届かない（127.0.0.1・LAN の IP とも）。インターネットには出られる。
+- `pasta:--map-gw`: ホストへ届くが、本番からは送り元 127.0.0.1 に見え、鍵なしで通る。使わない。
+- `podman pod create --network pasta:-T,<ポート> -p 127.0.0.1:<ポート>:<ポート>`: pod の中は互いに届き、ホストへは `-T` で許したポートだけ、ホストからは `-p` のポートだけ見える。uid は 1000 のまま。
+
+### 段階
+
+| 段 | 内容 | 使い回すもの | 担当 |
+|---|---|---|---|
+| P1 安全 | 箱ごとの pod（pasta）。ホストへの口は箱ごとの中継 1 つだけ。中継は箱の外で動き、許したパス（モデル一覧・chat・許可した箱だけ `/load`）だけを本番へ渡す。鍵や Cookie は箱に置かない | `sandbox.py` の `container_argv`、`webview.py` のストリーム中継の書き方 | 設計 Opus、実装 Sonnet |
+| P2 Project Lab で確かめる・試す | (a) ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）を足し、中継を通して箱にも見せる。(b) 箱の作業ツリーを Project Lab の run として開く（podman の `--cgroups=split` で preview のポート確認が通るかを実機で）。(c) Vite のプラグイン（`apply: 'serve'`）で、HMR の接続に独自イベントを流す: 利用者の操作・入力（値は伏せる）・画面の移り変わり・エラー・「気づき」を `import.meta.hot.send` で送り、プロジェクトの中の `.controldeck/feedback/*.jsonl` に書く。AI の修正は HMR で状態を保ったまま利用者の画面へ届き、`server.ws.send` で「ここを直しました」と知らせる。利用者の `vite.config` は変えず、元の設定を読み込む包みの設定を `vite --config` で渡す。(d) 実行の結果・ログ・成果物の差分・撮影・気づきを `control_deck.report` で評価として Project Lab に出す（`llmEvaluation` は今は未実装）。(e) 記録中の表示・気づきボタン・評価の画面 | `runs.py`、`webview.py`（鍵付き入口・WS 中継 #494）、`ScrapeViewer.tsx` の要素選び、`agent_mcp.py`、`ui-verifier` | (a)〜(d) 設計 Opus・実装 Sonnet、(e) Fable（利用者の許可待ち） |
+| P3 ミラーが LLM を使える | 箱のミラーの LLM 要求を、P1 の中継を通してホストのゲートウェイへ転送する | `gateway.py` の外部 API への送信 | 実装 Sonnet |
+| P4 GPU の貸し出し | `sandbox gpu <名前> acquire/release`。broker に持ち主の種類 `sandbox:<名前>` で借り、本番の LLM が降りてから `/dev/kfd`・`/dev/dri`・モデルのフォルダ（読み取り）を渡す。期限が切れたら箱の GPU コンテナを止めて返す。GPU のリセットは箱からさせない | `resources/router.py`、`resource_provider.py` の貸し出し、Radiance の `--device` の渡し方 | 設計 Opus、実装 Sonnet |
+| P5 ホストの API で評価 | 箱のランタイムを本番のゲートウェイに一時の名前 `dev:<箱>/<モデル>` で登録し、本番の側から叩いて評価。結果は `~/ControlDeck-評価/` | `runtime_provider.py` の OpenAI 互換の汎用部分、`resolve_instance` | 実装 Sonnet、評価 Opus |
+| P6 試運転 | この環境で、ローカル LLM か OpenRouter に小さな拡張を 1 つ作らせ、PR から Release まで通す | ― | 指示と監査 Opus |
+
+### 利用者の許可（2026-11-21）
+
+- この段階が終わるまで、確認のために本番のモデルを止めてよい。
+- GPU を箱へ貸している間、開発役の AI を OpenRouter に切り替えてよい（残高 3 ドルの範囲。データ方針は deny のまま）。
+
+### 守ること
+
+- 記録は利用者がオンにしたときだけ。記録中は画面に出す。入力の値は既定で伏せ、パスワードは残さない。記録は手元に置く（AI が外部のモデルで読むときは、呼び出し元ごとの外部送信の許可に従う）。
+- 開発中のページは偽の記録を送れる。記録は「ページから届いたもの」として扱い、大きさに上限を付ける。
+- Vite 以外・静的なサイトには HMR が無い。必要になったら、中継で記録のスクリプトを差し込む形を後から足す。

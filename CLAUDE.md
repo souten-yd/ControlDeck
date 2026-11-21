@@ -4,8 +4,10 @@
 
 ## いま進んでいる仕事
 
-**OpenCode v2 を ControlDeck の開発環境にする**（UI 検証・精密調査・コードレビュー）。
-計画・評価・段階・進捗は `docs/PLAN-opencode-dev-environment.md` が正。続きを始める前に必ず読み、終えたら「進捗」の表を更新する。
+**全体の順番は `docs/ROADMAP.md`（2026-11-21）。最初に読む。** 下の仕事の優先順位・依存・利用者の判断待ちはそこにまとめてある。
+
+**最優先: OpenCode で全ての開発ができるようにする**（開発用サンドボックス 第 2 段階。ローカル LLM と OpenRouter で ControlDeck 本体も開発し、ホストの GPU・API と Project Lab で確かめる）。
+**まず `docs/HANDOFF-opencode-dev-environment.md` を読む。** 計画・方式の評価は `docs/PLAN-opencode-dev-environment.md`（第 1 段階の UI 検証・精密調査・コードレビューもここ）。
 
 **統合ナレッジ基盤と Patent 画面**（PatentBuddy・ResearchDataHub を ControlDeck へ統合。一般・特許・規格の分野別 DB、横断検索、PDF 解析。特許の業務は `backend/app/patents/` と `/patents`。PatentBuddy Add-on は 2026-11-21 に撤去）。
 **まず `docs/HANDOFF-knowledge-platform.md`（引き継ぎ・現状・作業一覧）を読む。** 計画・棚卸し・段階・データ回収とリポジトリを閉じる手順は `docs/PLAN-knowledge-platform.md`。進捗が動いたら両方を更新する（`AGENTS.md`「引き継ぎ資料の決まり」）。
@@ -15,10 +17,11 @@
 ## 読む順
 
 1. `AGENTS.md`
-2. `docs/PLAN-opencode-dev-environment.md`
-3. `docs/design-opencode-feature.md`（v2 の設定の形、ゲートウェイ、MCP、圧縮）
-4. `docs/implementation-status.md`（新しい順。最新の数件）
-5. コード: `backend/app/features/registry.py`（オプション機能）、`backend/app/integrations/opencode/provider.py`（session の設定生成）、`backend/app/addons/agent_mcp.py`（ControlDeck の MCP）、`backend/app/skills/`（スキル）
+2. `docs/ROADMAP.md` と、いまの仕事の `docs/HANDOFF-*.md`
+3. `docs/PLAN-opencode-dev-environment.md`
+4. `docs/design-opencode-feature.md`（v2 の設定の形、ゲートウェイ、MCP、圧縮）
+5. `docs/implementation-status.md`（新しい順。最新の数件）
+6. コード: `backend/app/features/registry.py`（オプション機能）、`backend/app/integrations/opencode/provider.py`（session の設定生成）、`backend/app/addons/agent_mcp.py`（ControlDeck の MCP）、`backend/app/skills/`（スキル）
 
 ## 現行構成（2026-11-15）
 
@@ -44,11 +47,11 @@ AI 機能・RAG・画面の評価は原則として本番（実モデル・実�
 
 `docs/POLICY-autonomous-development.md`。L0・L1 は統括（Claude）が関門を通して自動で進め、L2 だけ利用者の承認を得る。区分は `./deck.sh change-class`。
 
-**ControlDeck 本体のマージと正式 Release は、L2 を含めて毎回尋ねない**（2026-11-21 利用者合意、同文書「常設の承認」）。関門を通したらマージ → Release まで進め、何を変えたか・L2 に当たる点・未検証の点を事後に報告する。本番のモデルの停止・再起動、本番データの変更、外部からの取得などは、これまでどおり了承を得る。
+**ControlDeck 本体のマージと正式 Release は、L2 を含めて毎回尋ねない**（2026-11-21 利用者合意、同文書「常設の承認」）。関門を通したらマージ → Release まで進め、何を変えたか・L2 に当たる点・未検証の点を事後に報告する。本番データの変更、外部からの取得などは、これまでどおり了承を得る。**本番のモデルの停止・再起動は、2026-11-21 の利用者の許可により、いつでも尋ねずに行ってよい**（`docs/ROADMAP.md`「利用者の判断・許可」）。
 
 ## 開発の進め方（2026-11-15 から）
 
-AI に開発させるときは `./deck.sh sandbox new <名前> --repo <リポジトリ>` で箱を作り、箱の中の OpenCode（`./deck.sh sandbox opencode <名前> [--run 指示]`）とミラー（`mirror-start`）で直して確かめる。本番の ControlDeck は止めない。公開はプレリリースまで、正式化と本番への適用は利用者。
+AI に開発させるときは `./deck.sh sandbox new <名前> --repo <リポジトリ>` で箱を作り、箱の中の OpenCode（`./deck.sh sandbox opencode <名前> [--run 指示]`）とミラー（`mirror-start`）で直して確かめる。本番の ControlDeck は止めない。第 2 段階（2026-11-21〜）で、箱からホストへの口を中継 1 つに絞り、Project Lab・GPU の貸し出し・ホストの API で確かめられるようにしている（`docs/HANDOFF-opencode-dev-environment.md`）。
 
 ## 実機で確かめるとき
 
