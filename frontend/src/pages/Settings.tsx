@@ -694,7 +694,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "python-lib" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
+  kind: "npm" | "pip" | "python-lib" | "managed-script" | "playwright-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -738,6 +738,8 @@ interface ReleaseStatus {
 
 /** pip・npm で入れる機能（PyPI / npm の最新版と比べて「更新あり」を出せる）。 */
 const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
+/** チェックを付けてまとめて導入できる種類（GPU ランタイム・アプリは個別に）。 */
+const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script", "playwright-browser"];
 
 /** GPUランタイム・pip・npm の機能の更新有無。GitHub・PyPI・npm を見るので一覧とは別クエリ・低頻度にする。 */
 function useReleaseStatus(addons: AddonState[] | undefined) {
@@ -1025,6 +1027,12 @@ function AddonsSection() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobKind, setJobKind] = useState<"install" | "update" | "bulk">("install");
   const [keysOpen, setKeysOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const toggleSelected = (id: string, on: boolean) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (on) next.add(id); else next.delete(id);
+    return next;
+  });
   // Which card the running job belongs to: only that card shows progress.
   const [jobAddon, setJobAddon] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
@@ -1135,9 +1143,10 @@ function AddonsSection() {
       show(e instanceof Error ? e.message : "更新開始に失敗しました", "error");
     }
   };
-  const installAll = async (category: string) => {
+  const installAll = async (category: string, featureIds: string[]) => {
     try {
-      const r = await api<{ job_id: string }>("/features/install-all-jobs", { method: "POST", json: { category } });
+      const r = await api<{ job_id: string }>("/features/install-all-jobs", { method: "POST", json: { category, feature_ids: featureIds } });
+      setSelected((prev) => new Set([...prev].filter((id) => !featureIds.includes(id))));
       setJobKind("bulk");
       setJobAddon(`category:${category}`);
       setJobId(r.job_id);
@@ -1208,7 +1217,9 @@ function AddonsSection() {
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "ja")),
     key,
   ]);
-  const bulkable = (items: AddonState[]) => items.filter((a) => !a.installed && a.available && PACKAGE_KINDS.includes(a.kind));
+  const bulkable = (items: AddonState[]) => items.filter((a) => !a.installed && a.available && BULK_KINDS.includes(a.kind)
+    && a.requires_installed !== false);
+  const canPick = (addon: AddonState) => !addon.installed && addon.available && BULK_KINDS.includes(addon.kind);
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="sr-only">オプション機能</h2>
@@ -1218,16 +1229,26 @@ function AddonsSection() {
         {groups.filter(([, , items]) => items.length > 0).map(([title, description, items, key]) => (
           <div key={title}>
             <div className="flex flex-wrap items-center gap-x-2">
-              <h3 className="flex flex-1 flex-wrap items-baseline gap-x-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+              <h3 className="flex min-w-[12rem] flex-1 flex-wrap items-baseline gap-x-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
                 {title}
                 <span className="num font-normal text-zinc-400">利用中 {items.filter((a) => a.enabled).length} / {items.length}</span>
               </h3>
-              {bulkable(items).length > 1 && (
-                <button onClick={() => void installAll(key)} disabled={busy}
-                  className="min-h-9 rounded-lg px-2.5 text-xs font-medium text-accent-700 hover:bg-accent-600/10 disabled:opacity-40 dark:text-accent-300">
-                  {jobAddon === `category:${key}` && jobId ? "まとめて導入中…" : `まとめて導入（${bulkable(items).length}）`}
-                </button>
-              )}
+              {bulkable(items).length > 0 && (() => {
+                const picks = bulkable(items).filter((a) => selected.has(a.id)).map((a) => a.id);
+                const all = bulkable(items).length === picks.length;
+                return (
+                  <span className="ml-auto flex items-center gap-1">
+                    <button onClick={() => bulkable(items).forEach((a) => toggleSelected(a.id, !all))} disabled={busy}
+                      className="min-h-9 rounded-lg px-2 text-xs text-zinc-500 hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800">
+                      {all ? "選択を外す" : "すべて選ぶ"}
+                    </button>
+                    <button onClick={() => void installAll(key, picks)} disabled={busy || picks.length === 0}
+                      className="min-h-9 rounded-lg bg-accent-600 px-2.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+                      {jobAddon === `category:${key}` && jobId ? "導入中…" : `選んだものを導入（${picks.length}）`}
+                    </button>
+                  </span>
+                );
+              })()}
             </div>
             <p className="mb-2 text-[11px] text-zinc-400">{description}</p>
             {jobAddon === `category:${key}` && jobId && (
@@ -1249,6 +1270,11 @@ function AddonsSection() {
                 return (
                   <div id={`feature-${addon.id}`} key={addon.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
                     <div className="flex items-center gap-3">
+                      {canPick(addon) && (
+                        <input type="checkbox" className="h-5 w-5 shrink-0 accent-accent-600" checked={selected.has(addon.id)}
+                          disabled={busy || addon.requires_installed === false} aria-label={`${addon.name} を選ぶ`}
+                          onChange={(e) => toggleSelected(addon.id, e.target.checked)} />
+                      )}
                       <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${addon.installed && addon.error ? "bg-red-500" : addon.enabled ? "bg-emerald-500" : addon.installed ? "bg-zinc-300 dark:bg-zinc-600" : "bg-zinc-200 dark:bg-zinc-700"}`}
                         title={addon.enabled ? "有効" : addon.installed ? "導入済み（無効）" : "未導入"} />
                       <div className="min-w-0 flex-1">
@@ -1287,7 +1313,9 @@ function AddonsSection() {
                             )}
                             {addon.managed && !hasUpdate && addon.kind !== "speech-engine" && (
                               <button onClick={() => void update(addon)} disabled={busy}
-                                title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : ["pip", "python-lib"].includes(addon.kind) ? "PyPI の最新版へ更新します" : "npmの最新版へ更新します"}
+                                title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : ["pip", "python-lib"].includes(addon.kind) ? "PyPI の最新版へ更新します"
+                                  : addon.kind === "managed-script" ? "配布元の最新のソースへ更新します"
+                                  : addon.kind === "playwright-browser" ? "ControlDeck の Playwright に合う版を入れ直します" : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
                                 {mine(addon) && jobKind === "update" ? "更新中…" : "更新"}
                               </button>
@@ -1297,7 +1325,7 @@ function AddonsSection() {
                                 className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
                             )}
                             {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
-                            {addon.id !== "llama-cpp" && (
+                            {addon.id !== "llama-cpp" && addon.kind !== "managed-script" && (
                               <button onClick={() => setUninstalling(addon.id)} disabled={busy}
                                 className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>アンインストール</button>
                             )}

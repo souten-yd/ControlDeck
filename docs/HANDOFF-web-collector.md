@@ -20,7 +20,7 @@
 - `extract.py` と `worker.py`: 機能「Web 本文抽出（Trafilatura）」の専用 venv（`data/features/web-extract/venv`）の Python で worker を 1 つ使い回す（`-I`、RLIMIT_AS 1.5 GiB、1 件 30 秒）。無ければ BeautifulSoup（見出し・段落の区切りを残す）。
   **精度寄り（favor_precision）は見出しを落とすので使わない**（ja.wikipedia「特許」で見出し 0 件、標準は 19 件）。`[編集]` の行は取り除く。
 - 共通化: Deep Research `_page_text`、Workflow `web.scrape`（`text` は従来どおり全文、`markdown`・`title` を追加）、`knowledge/sources.py::http_get`（urllib → egress）。
-- 機能と拡張: 種類 `python-lib`（`packages` 固定・`latest_packages` で更新・import できるかで導入済み判定）、分類 `search`「検索と収集」、
+- 機能と拡張（検索と収集）: SearXNG・Web 本文抽出・robots.txt 解析・Web 収集用ブラウザ。チェックを付けて「選んだものを導入」。種類 `python-lib`（`packages` 固定・`latest_packages` で更新・import できるかで導入済み判定）、分類 `search`「検索と収集」、
   `features/package_updates.py`（PyPI / npm の最新版と比べて「更新あり」、30 分覚える）、`POST /features/install-all-jobs {category}`（まとめて導入）、
   検索と収集の中に「公開データの取得先」の入口（`SourceKeysSheet`）。
 - JPO: `sources.py::jpo`（トークン取得の URL は `https://ip-data.jpo.go.jp/` に限る、password → refresh_token、`app_progress/{10桁}`）。**応答の JSON の形は未確認**（題名・出願人は `_first_key` で名前を探して拾う）。登録後に実際の応答で確かめて直す。
@@ -60,6 +60,12 @@
 - EPO OPS・USPTO ODP の鍵（無料の登録）。
 
 ## 7. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: 利用者「まとめて導入するのはこの検索機能に関する部分のこと。チェックを付けて、付けたものを一括導入でもいい」。
+  「検索と収集」に SearXNG（種類 `managed-script`、既存の `scripts/setup-searxng.sh` を導入・更新に使う。機能と拡張からはアンインストールさせない）・
+  robots.txt 解析（Protego 0.7.0、python-lib）・Web 収集用ブラウザ（種類 `playwright-browser`、本体の Playwright で `chromium-headless-shell` を
+  `data/features/web-browser/browsers` へ）を追加。各分類の未導入にチェック、「すべて選ぶ」「選んだものを導入（n）」（`install-all-jobs` の `feature_ids`）。
+  `features/search_kinds.py`。失敗の理由（出力の最後の行）を導入・更新のエラーに添える。テスト 4 件追加、E2E settings-search-tools 更新。
 
 - 2026-11-21 Claude: v0.108 を本番に適用し、利用者の了承で「Web 本文抽出（Trafilatura）」を本番に導入（2.3.1、`data/features/web-extract` 49 MB）。
   本番の評価 `~/ControlDeck-評価/2026-11-21-検索基盤W1の取得と本文抽出.md`: 実サイト 10 件 success、内部アドレス 2 件は拒否、見出し・表を Markdown で保持。

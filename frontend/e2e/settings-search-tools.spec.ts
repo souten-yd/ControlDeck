@@ -15,7 +15,18 @@ for (const width of [1280, 320]) {
     const card = page.locator("#feature-web-extract");
     await expect(card.getByText("Web 本文抽出（Trafilatura）")).toBeVisible();
     await expect(card.getByRole("button", { name: "導入", exact: true })).toBeEnabled();
-    await expect(page.getByRole("button", { name: /まとめて導入（\d+）/ }).first()).toBeVisible();
+    // 検索の部品にチェックを付けて、選んだものだけまとめて導入できる（押すと PyPI から取るので押さない）
+    for (const name of ["robots.txt 解析（Protego）", "Web 収集用ブラウザ（Chromium）", "Web 本文抽出（Trafilatura）"]) {
+      await expect(page.getByLabel(`${name} を選ぶ`)).toBeVisible();
+    }
+    await expect(page.locator("#feature-searxng").getByText("SearXNG（Web 検索エンジン）")).toBeVisible();
+    const installPicked = page.getByRole("button", { name: /選んだものを導入（\d+）/ });
+    const searchInstall = page.getByRole("button", { name: "選んだものを導入（0）" });
+    await expect(searchInstall.first()).toBeDisabled();
+    await page.getByLabel("Web 本文抽出（Trafilatura） を選ぶ").check();
+    await page.getByLabel("robots.txt 解析（Protego） を選ぶ").check();
+    await expect(page.getByRole("button", { name: "選んだものを導入（2）" })).toBeEnabled();
+    await expect(installPicked.first()).toBeVisible();
 
     await page.getByRole("button", { name: "取得先の設定" }).click();
     const sheet = page.getByRole("dialog");
