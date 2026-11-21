@@ -503,12 +503,10 @@ async def add_literature(body: LiteratureBody, request: Request, user: User = De
         text, source = body.text, body.title
         if body.url:
             job.set_progress("URLを取得中", 0, 3)
-            from bs4 import BeautifulSoup
-
             from app.workflows import scrape_tools as st
 
-            html, _, final = await st.fetch(body.url)
-            text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+            # 本文だけ（メニュー・フッターを除く、見出し・表は Markdown）。取得は Web 収集エンジンの安全な取得
+            text, _title, final = await st.fetch_document(body.url)
             source = source or final
         elif body.path:
             job.set_progress("ファイルを読み込み中", 0, 3)
@@ -519,7 +517,8 @@ async def add_literature(body: LiteratureBody, request: Request, user: User = De
         if not text.strip():
             raise rag.RagError("取り込むテキストがありません")
         job.set_progress("分割・埋め込み中", 1, 3)
-        out = await rag.add_document(LITERATURE_COLLECTION, text, source or "document")
+        out = await rag.add_document(LITERATURE_COLLECTION, text, source or "document",
+                                     strategy="markdown" if body.url else None)
         if body.public:
             await asyncio.to_thread(_mark_public, out["doc_id"])
         job.set_progress("完了", 3, 3)

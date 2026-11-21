@@ -26,6 +26,75 @@ PDF_MAX_PAGES = 80
 UA = "Mozilla/5.0 (X11; Linux x86_64) ControlDeck-WebCollector/1.0"
 _CAPTCHA = re.compile(r"captcha|cf-chl-|challenge-platform|are you a robot|ロボットではありません|hcaptcha|recaptcha", re.I)
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([A-Za-z0-9_\-]+)""", re.I)
+_META = re.compile(r"""<meta\s+[^>]*?(?:name|property)\s*=\s*["']([^"']+)["'][^>]*?content\s*=\s*["']([^"']*)["']""", re.I)
+# 書誌のメタデータ（Highwire Press の citation_*・Dublin Core の DC.*・Open Graph）。Google Patents・Google Scholar に載る論文・
+# J-STAGE・arXiv などが持つ。本文に出ない出願人・発明者・著者・DOI がここにある（2026-11-21 本番の評価: Google Patents の
+# 出願人・発明者は本文に無く、meta の DC.contributor にだけあった）。
+_BIBLIO_KEYS = {
+    "citation_title": "題名", "dc.title": "題名", "citation_patent_publication_number": "公開番号",
+    "citation_patent_application_number": "出願番号", "citation_patent_number": "特許番号", "citation_author": "著者",
+    "dc.contributor": "出願人・発明者", "citation_publisher": "発行者", "citation_journal_title": "掲載誌",
+    "citation_publication_date": "発行日", "citation_date": "日付", "dc.date": "日付", "citation_doi": "DOI",
+    "citation_pdf_url": "PDF", "dc.type": "種類", "article:published_time": "公開日時", "og:site_name": "サイト",
+}
+
+
+def biblio(html: str) -> dict[str, list[str]]:
+    """head の meta から書誌を拾う（同じ名前は出た順に並べ、重複を除く）。"""
+    import html as htmllib
+
+    out: dict[str, list[str]] = {}
+    for name, content in _META.findall(html[:300000]):
+        label = _BIBLIO_KEYS.get(name.strip().casefold())
+        value = " ".join(htmllib.unescape(content).split())[:300]
+        if label and value and value not in out.setdefault(label, []):
+            out[label].append(value)
+    # 種別記号の付いた番号（US6285999B1）は meta に無く <title> にある。質問は種別記号付きで書かれやすいので足す
+    if "patent" in [v.casefold() for v in out.get("種類", [])]:
+        title_tag = re.search(r"<title[^>]*>([^<]{0,300})", html[:300000], re.I)
+        for number in _PATENT_NO.findall(title_tag.group(1) if title_tag else ""):
+            if number not in out.setdefault("公開番号", []):
+                out["公開番号"].insert(0, number)
+    # DC.contributor は発明者と出願人（権利者）が混ざる。法人の印で分ける（2026-11-21 本番の評価: 「出願人は？」に答えられなかった）
+    mixed = out.pop("出願人・発明者", [])
+    if mixed:
+        orgs = [v for v in mixed if _ORG.search(v)]
+        people = [v for v in mixed if v not in orgs]
+        if orgs:
+            out["出願人・権利者（法人）"] = orgs
+        if people:
+            out["発明者・著者"] = people
+    return {k: v[:30] for k, v in out.items() if v}
+
+
+_PATENT_NO = re.compile(r"\b([A-Z]{2}\d{4,12}[A-Z]\d?)\b")
+_ORG = re.compile(r"株式会社|有限会社|合同会社|大学|研究所|機構|法人|\b(?:Inc|Corp|Corporation|Co|Ltd|LLC|GmbH|AG|SA|BV|NV|"
+                  r"PLC|KK|Limited|University|Universit[aäé]t?|Institute|Foundation|Laboratories|Labs|Company)\b\.?", re.I)
+
+
+def biblio_block(data: dict[str, list[str]]) -> str:
+    """書誌を本文の先頭に置く Markdown（RAG で出願人・日付も見つかるように）。"""
+    if not data:
+        return ""
+    lines = []
+    for label, values in data.items():
+        if label == "PDF":
+            continue
+        if label in ("公開番号", "出願番号", "特許番号"):
+            # meta は "US:6285999" "JP:2026116114:A" の形。質問は "US6285999B1" "特開2026-116114" と書くので、詰めた形も並べる
+            values = [*values, *[v.replace(":", "").replace("/", "").replace(",", "") for v in values]]
+        lines.append(f"- {label}: {'、'.join(dict.fromkeys(values))}")
+    if not lines:
+        return ""
+    # 見出しに番号と題名を入れる。見出しは分けた断片の先頭（パンくず）に付くので、「US6285999B1 の出願人は？」のように
+    # 番号で聞かれたとき、ほかの文献の書誌より上に来る（2026-11-21 本番の評価で、番号の無い見出しだと別の文献の書誌が先に出た）
+    number = next((v.replace(":", "").replace("/", "").replace(",", "") for key in ("公開番号", "特許番号", "出願番号")
+                   for v in data.get(key, [])), "")
+    title = (data.get("題名") or [""])[0]
+    name = " ".join(x for x in (number, title[:80]) if x)
+    return f"## 書誌（{name}）\n\n" + "\n".join(lines) if name else "## 書誌（ページのメタデータ）\n\n" + "\n".join(lines)
+
+
 _CANONICAL = re.compile(r"""<link[^>]+rel=["']?canonical["']?[^>]*href=["']([^"']+)["']""", re.I)
 
 
@@ -36,7 +105,7 @@ def _now() -> str:
 def _page(url: str, status: str, **fields) -> dict:
     base = {"url": url, "final_url": url, "canonical_url": "", "status": status, "fetch_method": "http",
             "http_status": 0, "title": "", "content_type": "", "markdown": "", "language": "", "links": [],
-            "metadata": {}, "content_sha256": "", "fetched_at": _now(), "warnings": [], "extractor": "", "error": ""}
+            "metadata": {}, "biblio": {}, "content_sha256": "", "fetched_at": _now(), "warnings": [], "extractor": "", "error": ""}
     base.update(fields)
     return base
 
@@ -145,7 +214,7 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                  canonical_url=urljoin(current, canonical.group(1)) if canonical else "",
                  title=result.get("title", ""), markdown=result["markdown"][:limit_chars],
                  language=result.get("metadata", {}).get("language", ""), links=result.get("links", []),
-                 metadata=result.get("metadata", {}), warnings=result.get("warnings", []),
+                 metadata=result.get("metadata", {}), biblio=biblio(html), warnings=result.get("warnings", []),
                  extractor=result.get("extractor", ""))
     if keep_html:
         page["html"] = html

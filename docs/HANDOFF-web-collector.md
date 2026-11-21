@@ -9,7 +9,7 @@
 |---|---|---|
 | 調査・計画・引き継ぎ資料 | ☑ | W1 の PR に同梱 |
 | W1 共通の取得・抽出・SSRF・機能と拡張・JPO | ☑ v0.108 で本番に適用・評価済み | #504 |
-| W2 ブラウザ（中継プロキシ） | ☐ | — |
+| W2 ブラウザ（中継プロキシ） | ☐（ブラウザはこの PC の Chrome を使うと決定） | — |
 | W3 巡回 | ☐ | — |
 | P1 Patent の調査 | ☐ | — |
 
@@ -60,6 +60,20 @@
 - EPO OPS・USPTO ODP の鍵（無料の登録）。
 
 ## 7. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: 利用者「適当に選んだサイト（Gigazine・特許の書誌・GitHub）で情報収集を試し、取得の精度と RAG の改良を含めて評価して」。
+  本番の評価 `~/ControlDeck-評価/2026-11-21-実サイトの情報収集とRAG.md`（26 問）: 本文＋見出しで分けると検索の当たり 19→23、答え 20→23/26。
+  改良: ① Web の取り込み（ナレッジ・Patent の URL）は見出しで分ける（`rag.add_document(strategy="markdown")`、コレクションの設定は変えない）。
+  ② ページの書誌の meta（citation_*・DC.*・og）を `fetch.biblio` で拾い、`biblio_block` を本文の先頭に置く（見出しに番号と題名、発明者と法人を分ける、番号は詰めた形と <title> の種別記号付きも）。
+  特許の出願人・発明者の 6 問で答え 0→5/6。Google Patents の米国のページは 39〜54 万字で表が大半（公報は公式 API・PDF のほうが確実）。
+
+- 2026-11-21 Claude: 利用者「Chrome を Playwright などで使っているので二重になっていないか。導入時に Chrome も入れる気がする、その関係も」。調べた結果:
+  この PC には ① Google Chrome 155（apt、Playwright MCP＝OpenCode の UI 検証が `--executable-path` で使う）、② `data/cache/ms-playwright` の
+  Chromium 1228・headless shell 1228・WebKit・ffmpeg（約 940 MB、画面の E2E＝@playwright/test 1.61 用。開発だけ）がある。
+  前の版で足した「Web 収集用ブラウザ」は本体の Playwright 1.62 用の headless shell 1234（約 260 MB）を**3 つ目として**入れるものだったので取りやめ、
+  **この PC の Chrome を一時プロファイルで使う**（`web_collector/browser.py`、機能は種類 `system-browser`：導入・更新・削除のボタンなし）。
+  ついでに分かった不具合: Workflow の「ブラウザ操作」は Playwright の既定（build 1234 の Chromium）を探して**起動できていなかった** → Chrome で起動・開く URL を egress で検査。
+  さらに、ナレッジ・Patent の URL 取り込みと Workflow のページ解析（`scrape_tools.fetch`）も検査なしで内部へ届き、ページ全体の文字を取り込んでいた → 共通の取得と本文（`fetch_document`）へ。
 
 - 2026-11-21 Claude: 利用者「まとめて導入するのはこの検索機能に関する部分のこと。チェックを付けて、付けたものを一括導入でもいい」。
   「検索と収集」に SearXNG（種類 `managed-script`、既存の `scripts/setup-searxng.sh` を導入・更新に使う。機能と拡張からはアンインストールさせない）・

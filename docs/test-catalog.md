@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 191 ファイル、1702 テスト（目的の未記入 93 ファイル）
+- backend: 191 ファイル、1705 テスト（目的の未記入 93 ファイル）
 - E2E: 94 spec、196 テスト
 
 ## backend（backend/tests）
@@ -955,7 +955,7 @@
 - `test_install_all_in_a_category_runs_one_job`
 - `test_search_category_lists_the_search_components` — 検索と収集に、検索エンジン（SearXNG）・本文抽出・robots.txt・JS ページ用のブラウザが並ぶ。
 - `test_searxng_is_managed_by_its_setup_script_and_not_uninstalled_here`
-- `test_browser_is_installed_into_the_feature_folder`
+- `test_browser_is_this_pcs_chrome_and_nothing_is_downloaded` — Web 収集のブラウザは、この PC の Chrome を使う（Playwright 用の Chromium を別に入れない）。
 - `test_install_only_the_checked_features`
 
 ### backend/tests/test_features.py
@@ -2476,6 +2476,9 @@
 - `test_japanese_legacy_encodings_are_decoded`
 - `test_deep_research_and_workflow_scrape_share_the_guarded_fetch`
 - `test_trafilatura_worker_extracts_markdown_in_a_separate_process` — 本物の Trafilatura を専用 venv の子プロセスで動かす。表・見出しを Markdown で残し、メニュー・フッターを落とす。
+- `test_knowledge_and_patent_url_import_use_the_body_not_the_whole_page` — ナレッジ・Patent の URL 取り込みと Workflow のページ解析（scrape_tools）も共通の安全な取得を使い、
+- `test_bibliographic_meta_tags_are_kept_for_patents_and_papers` — Google Patents・論文のページは出願人・発明者・DOI を本文ではなく meta（DC.* / citation_*）に持つ。拾って本文の先頭に置く。
+- `test_web_documents_are_split_by_headings_without_changing_the_collection` — Web から取り込む文書は見出しで分ける（2026-11-21 本番の評価で検索の当たり 19→23/26）。コレクションの設定は変えない。
 
 ### backend/tests/test_web_push.py
 

@@ -16,9 +16,12 @@ for (const width of [1280, 320]) {
     await expect(card.getByText("Web 本文抽出（Trafilatura）")).toBeVisible();
     await expect(card.getByRole("button", { name: "導入", exact: true })).toBeEnabled();
     // 検索の部品にチェックを付けて、選んだものだけまとめて導入できる（押すと PyPI から取るので押さない）
-    for (const name of ["robots.txt 解析（Protego）", "Web 収集用ブラウザ（Chromium）", "Web 本文抽出（Trafilatura）"]) {
+    for (const name of ["robots.txt 解析（Protego）", "Web 本文抽出（Trafilatura）"]) {
       await expect(page.getByLabel(`${name} を選ぶ`)).toBeVisible();
     }
+    // ブラウザはこの PC の Chrome を使う（別に入れない。チェックも導入ボタンも無い）
+    await expect(page.locator("#feature-web-browser").getByText("Web 収集のブラウザ（この PC の Chrome）")).toBeVisible();
+    await expect(page.locator("#feature-web-browser").getByRole("button", { name: "導入", exact: true })).toHaveCount(0);
     await expect(page.locator("#feature-searxng").getByText("SearXNG（Web 検索エンジン）")).toBeVisible();
     const installPicked = page.getByRole("button", { name: /選んだものを導入（\d+）/ });
     const searchInstall = page.getByRole("button", { name: "選んだものを導入（0）" });

@@ -192,6 +192,7 @@ async def _embed_batched(texts: list[str], cfg: dict, api_key: str) -> list[np.n
 async def add_document(
     collection: str, text: str, source: str, api_key: str = "",
     config_override: dict | None = None, reset: bool = False, basis: str = "source_fact",
+    strategy: str | None = None,
 ) -> dict:
     """文書を取り込む。コレクション設定のチャンク戦略で分割し、埋め込み+全文索引に登録する。
 
@@ -202,7 +203,9 @@ async def add_document(
         cfg.update({k: v for k, v in config_override.items() if k in DEFAULT_CONFIG})
     if ref is None or config_override:
         await asyncio.to_thread(set_config, collection, cfg)
-    chunk_objs = chunkers.chunk(text, cfg)
+    # strategy: この文書だけの分け方（コレクションの設定は変えない）。Web の取り込みは見出しで分ける
+    # （2026-11-21 本番の評価: 見出しで分けると検索の当たり 19→23/26、答えの正解 20→23/26）
+    chunk_objs = chunkers.chunk(text, {**cfg, "strategy": strategy} if strategy in chunkers.STRATEGIES else cfg)
     if not chunk_objs:
         raise RagError("入力テキストが空です")
     # 埋め込みのサーバーが止まっていても本文と全文索引は残す（全文検索は使える）。ベクトルは後で

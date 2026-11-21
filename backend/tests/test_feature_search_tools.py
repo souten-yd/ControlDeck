@@ -135,23 +135,28 @@ def test_searxng_is_managed_by_its_setup_script_and_not_uninstalled_here(monkeyp
     assert (home / "run.sh").exists()
 
 
-def test_browser_is_installed_into_the_feature_folder(monkeypatch, tmp_path):
-    from app.features import search_kinds
+def test_browser_is_this_pcs_chrome_and_nothing_is_downloaded(monkeypatch, tmp_path):
+    """Web 収集のブラウザは、この PC の Chrome を使う（Playwright 用の Chromium を別に入れない）。
+    根拠: 2026-11-21 利用者「Chrome を Playwright などで使っているので二重になっていないか確認して」。"""
+    import pytest
+
+    from app.web_collector import browser
 
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path)
-    seen = {}
-
-    def fake_browser(root):
-        seen["root"] = root
-        shell = search_kinds.browsers_dir(root) / "chromium_headless_shell-1234" / "chrome-linux" / "headless_shell"
-        shell.parent.mkdir(parents=True)
-        shell.write_text("")
-        return subprocess.CompletedProcess([], 0, "", "")
-
-    monkeypatch.setattr(search_kinds, "browser_install", fake_browser)
-    state = registry.install("web-browser")
-    assert state["installed"] and state["version"] == "build 1234"
-    assert seen["root"] == registry._feature_root("web-browser")      # 利用者の Chrome やホームには入れない
+    chrome = tmp_path / "google-chrome"
+    chrome.write_text("")
+    monkeypatch.setattr(browser, "system_chrome", lambda: str(chrome))
+    monkeypatch.setattr(browser, "chrome_version", lambda: "Google Chrome 155.0")
+    state = registry.status("web-browser")
+    assert state["installed"] and state["enabled"] and state["version"] == "Google Chrome 155.0"
+    assert not state["managed"]                                       # 更新・削除のボタンを出さない
+    with pytest.raises(registry.FeatureError, match="OS のパッケージ"):
+        registry.install("web-browser")
+    with pytest.raises(registry.FeatureError):
+        registry.uninstall("web-browser")
+    assert not (tmp_path / "features" / "web-browser").exists()       # 何もダウンロードしない
+    monkeypatch.setattr(browser, "system_chrome", lambda: "")
+    assert not registry.status("web-browser")["installed"]
 
 
 def test_install_only_the_checked_features(admin_client, monkeypatch):
