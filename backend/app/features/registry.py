@@ -127,11 +127,11 @@ FEATURES: dict[str, dict] = {
         "summary": "サイトの巡回で robots.txt（Google の仕様のワイルドカードを含む）を守る。巡回（準備中）で使う",
     },
     "web-browser": {
-        "name": "Web 収集用ブラウザ（Chromium）",
-        "kind": "playwright-browser",
+        "name": "Web 収集のブラウザ（この PC の Chrome）",
+        "kind": "system-browser",
         "category": "search",
         "route_gated": False,
-        "summary": "JavaScript が要るページを開く専用のブラウザ（約 100 MB）。いつもの Chrome とログイン・Cookie を共有しない。JS ページの取得（準備中）で使う",
+        "summary": "JavaScript が要るページを、この PC の Google Chrome で開く（別のブラウザは入れない）。毎回まっさらの一時プロファイルで、いつものログイン・Cookie は使わない",
     },
     "searxng": {
         "name": "SearXNG（Web 検索エンジン）",
@@ -317,10 +317,10 @@ def _managed_executable(feature_id: str) -> Path:
         from app.features import search_kinds
 
         return search_kinds.script_marker(spec)
-    if spec["kind"] == "playwright-browser":
-        from app.features import search_kinds
+    if spec["kind"] == "system-browser":
+        from app.web_collector import browser
 
-        return search_kinds.browser_marker(root)
+        return Path(browser.system_chrome() or "/nonexistent/google-chrome")
     if spec["kind"] in NPM_MODULE_KINDS:
         # プラグインと MCP サーバーは PATH 上の実行ファイルを持たない。導入済みの印は package.json。
         return root / "node_modules" / spec["module"] / "package.json"
@@ -385,7 +385,7 @@ def executable(feature_id: str) -> Path | None:
         # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() else None
-    if spec["kind"] in ("managed-script", "playwright-browser"):
+    if spec["kind"] in ("managed-script", "system-browser"):
         managed = _managed_executable(feature_id)
         return managed if managed.is_file() else None
     if spec["kind"] == "python-lib":
@@ -479,7 +479,8 @@ def status(feature_id: str) -> dict:
         return _speech_engine_status(feature_id, spec)
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
-    managed = _managed_executable(feature_id).is_file()
+    # この PC の Chrome は ControlDeck の管理ではない（更新・削除のボタンを出さない）
+    managed = _managed_executable(feature_id).is_file() and spec["kind"] != "system-browser"
     version = ""
     healthy = False
     error = ""
@@ -506,12 +507,18 @@ def status(feature_id: str) -> dict:
             healthy = True
         except (OSError, json.JSONDecodeError):
             error = "プラグインの package.json を読めません"
-    elif binary is not None and spec["kind"] in ("managed-script", "playwright-browser"):
+    elif binary is not None and spec["kind"] == "managed-script":
         from app.features import search_kinds
 
-        version = (search_kinds.script_version(spec) if spec["kind"] == "managed-script"
-                   else search_kinds.browser_version(binary))
+        version = search_kinds.script_version(spec)
         healthy = True
+    elif binary is not None and spec["kind"] == "system-browser":
+        from app.web_collector import browser
+
+        version = browser.chrome_version()
+        healthy = bool(version)
+        if not healthy:
+            error = "Chrome の版を確かめられません"
     elif binary is not None and spec["kind"] == "python-lib":
         version = _python_lib_version(spec, binary)
         healthy = bool(version)
@@ -652,13 +659,13 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "python-lib":
         return _pip_install(feature_id, spec["latest_packages"] if latest else spec["packages"])
-    if spec["kind"] in ("managed-script", "playwright-browser"):
+    if spec["kind"] == "system-browser":
+        raise FeatureError("この PC の Chrome を使います（ControlDeck からは入れません。OS のパッケージで導入・更新してください）")
+    if spec["kind"] == "managed-script":
         from app.features import search_kinds
 
         try:
-            if spec["kind"] == "managed-script":
-                return search_kinds.script_install(spec, latest=latest)
-            return search_kinds.browser_install(_feature_root(feature_id))
+            return search_kinds.script_install(spec, latest=latest)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise FeatureError(f"{spec['name']}の導入に失敗しました: {exc}") from exc
     package = spec["package"]
@@ -887,6 +894,8 @@ def uninstall(feature_id: str) -> dict:
         except release_bundle.ReleaseBundleError as exc:
             raise FeatureError(str(exc)) from exc
         return status(feature_id)
+    if FEATURES[feature_id]["kind"] == "system-browser":
+        raise FeatureError("この PC の Chrome は ControlDeck からは消しません")
     if FEATURES[feature_id]["kind"] == "managed-script":
         # 導入先（例 ~/.local/share/searxng）と Apps の登録を巻き込むので、ここからは消さない
         raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません（Apps から管理）")

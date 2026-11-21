@@ -694,7 +694,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "python-lib" | "managed-script" | "playwright-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
+  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -739,7 +739,7 @@ interface ReleaseStatus {
 /** pip・npm で入れる機能（PyPI / npm の最新版と比べて「更新あり」を出せる）。 */
 const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
 /** チェックを付けてまとめて導入できる種類（GPU ランタイム・アプリは個別に）。 */
-const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script", "playwright-browser"];
+const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script"];
 
 /** GPUランタイム・pip・npm の機能の更新有無。GitHub・PyPI・npm を見るので一覧とは別クエリ・低頻度にする。 */
 function useReleaseStatus(addons: AddonState[] | undefined) {
@@ -1180,6 +1180,9 @@ function AddonsSection() {
       : addon.kind === "pip" || addon.kind === "python-lib" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
   /** その時に必要な操作だけを1つ前に出す。残りは「詳細」に入れる。 */
   const primary = (addon: AddonState) => {
+    if (addon.kind === "system-browser") {
+      return addon.installed ? null : <span className="text-xs text-zinc-500">Chrome が見つかりません</span>;
+    }
     if (!addon.installed) {
       return <button onClick={() => void install(addon)} disabled={!addon.available || busy || addon.requires_installed === false}
         title={addon.requires_installed === false ? `先に ${requiresName(addon)} を導入してください` : undefined}
@@ -1315,7 +1318,7 @@ function AddonsSection() {
                               <button onClick={() => void update(addon)} disabled={busy}
                                 title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : ["pip", "python-lib"].includes(addon.kind) ? "PyPI の最新版へ更新します"
                                   : addon.kind === "managed-script" ? "配布元の最新のソースへ更新します"
-                                  : addon.kind === "playwright-browser" ? "ControlDeck の Playwright に合う版を入れ直します" : "npmの最新版へ更新します"}
+                                  : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
                                 {mine(addon) && jobKind === "update" ? "更新中…" : "更新"}
                               </button>
@@ -1325,7 +1328,7 @@ function AddonsSection() {
                                 className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
                             )}
                             {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
-                            {addon.id !== "llama-cpp" && addon.kind !== "managed-script" && (
+                            {addon.id !== "llama-cpp" && addon.kind !== "managed-script" && addon.kind !== "system-browser" && (
                               <button onClick={() => setUninstalling(addon.id)} disabled={busy}
                                 className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>アンインストール</button>
                             )}

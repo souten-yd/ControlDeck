@@ -105,7 +105,7 @@ class BulkInstallBody(BaseModel):
     feature_ids: list[str] = Field(default_factory=list, max_length=40)
 
 
-BULK_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp", "managed-script", "playwright-browser")
+BULK_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp", "managed-script")
 
 
 @router.post("/install-all-jobs", status_code=201)

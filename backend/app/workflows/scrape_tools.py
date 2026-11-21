@@ -20,14 +20,34 @@ class ScrapeError(Exception):
 
 
 async def fetch(url: str, timeout: float = 20.0) -> tuple[str, int, str]:
+    """HTML を取得する（Workflow のページ解析など）。取得は Web 収集エンジンの共通の取得
+    （内部のアドレスへ届かない・リダイレクトを各段で検査）。以前は follow_redirects で内部へも届いた。"""
+    page = await _collect(url, timeout)
+    return page.get("html") or page["markdown"], page["http_status"], page["final_url"]
+
+
+async def fetch_document(url: str, timeout: float = 30.0) -> tuple[str, str, str]:
+    """資料として取り込む本文（Markdown）・題名・最終 URL。ナレッジ・Patent の URL 取り込みが使う。
+    以前はページ全体の文字（メニュー・フッターを含む）を取り込んでいた。"""
+    page = await _collect(url, timeout)
+    if page["status"] != "success":
+        raise ScrapeError(f"本文を取り出せませんでした（{page['status']}）")
+    text = page["markdown"]
+    if page["title"] and not text.lstrip().startswith("#"):
+        text = f"# {page['title']}\n\n{text}"
+    return text, page["title"], page["final_url"]
+
+
+async def _collect(url: str, timeout: float) -> dict:
+    from app.web_collector import fetch as web_fetch
+
     if not url.startswith(("http://", "https://")):
         raise ScrapeError("URL は http:// または https:// で始めてください")
-    try:
-        async with httpx.AsyncClient(timeout=min(timeout, 60), follow_redirects=True, headers={"User-Agent": UA}) as client:
-            r = await client.get(url)
-    except httpx.HTTPError as e:
-        raise ScrapeError(f"取得に失敗しました: {e}")
-    return r.text, r.status_code, str(r.url)
+    page = await web_fetch.collect(url, timeout=min(timeout, 60), keep_html=True)
+    if page["status"] in ("security_rejected", "timeout", "too_large", "captcha") or (
+            page["status"] == "http_error" and not page["http_status"]):
+        raise ScrapeError(f"取得に失敗しました（{page['status']}）: {page['error']}")
+    return page
 
 
 def _css_selector(el) -> str:

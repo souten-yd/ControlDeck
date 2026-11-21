@@ -144,12 +144,9 @@ async def add_document(
         from app.workflows import scrape_tools as st
 
         try:
-            html, _, final = await st.fetch(body.url)
+            text, _title, final = await st.fetch_document(body.url)
         except st.ScrapeError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        from bs4 import BeautifulSoup
-
-        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
         source = source or final
     elif body.path:
         from app.files.service import FileAccessError, read_text
@@ -189,12 +186,10 @@ async def ingest_job(
         text, source = body.text, body.source
         if body.url:
             job.set_progress("URLを取得中", 0, 3)
-            from bs4 import BeautifulSoup
-
             from app.workflows import scrape_tools as st
 
-            html, _, final = await st.fetch(body.url)
-            text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+            # 本文だけ（メニュー・フッターを除く、見出し・表は Markdown）。取得は Web 収集エンジンの安全な取得
+            text, _title, final = await st.fetch_document(body.url)
             source = source or final
         elif body.path:
             job.set_progress("ファイルを読み込み中", 0, 3)

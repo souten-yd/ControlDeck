@@ -183,3 +183,21 @@ def test_trafilatura_worker_extracts_markdown_in_a_separate_process(monkeypatch)
     assert first["title"].startswith("ゲート駆動の損失") and first["links"][0]["url"] == "https://example.com/next"
     assert "短い" in second["markdown"]
     assert "窒化ガリウム" in third["markdown"]
+
+
+def test_knowledge_and_patent_url_import_use_the_body_not_the_whole_page(server, monkeypatch):
+    """ナレッジ・Patent の URL 取り込みと Workflow のページ解析（scrape_tools）も共通の安全な取得を使い、
+    取り込む文字はページ全体ではなく本文（メニュー・フッターを除く）にする。以前は内部のアドレスにも届き、全体の文字を入れていた。"""
+    from app.workflows import scrape_tools as st
+
+    with pytest.raises(st.ScrapeError):
+        asyncio.run(st.fetch("http://169.254.169.254/latest/meta-data/"))
+    _Handler.routes = {"/a": (200, {"Content-Type": "text/html; charset=utf-8"}, ARTICLE.encode())}
+    policy = _policy(server, site_test=["127.0.0.1"])
+    monkeypatch.setattr(egress, "DEFAULT_POLICY", policy)
+    monkeypatch.setattr(extract, "worker_python", lambda: None)
+    text, title, final = asyncio.run(st.fetch_document(f"http://site.test:{server}/a"))
+    assert "窒化ガリウム" in text and "メニュー" not in text and "著作権" not in text
+    assert title == "ゲート駆動の損失" and final.endswith("/a")
+    html, status, _ = asyncio.run(st.fetch(f"http://site.test:{server}/a"))
+    assert status == 200 and "<nav>" in html                           # ページ解析には HTML 全体を返す

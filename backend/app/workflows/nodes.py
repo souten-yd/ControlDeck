@@ -2323,10 +2323,21 @@ async def node_browser(config: dict, ctx: dict) -> dict:
     action = config.get("action", "content")
     selector = str(config.get("selector", "")).strip()
     timeout = min(float(config.get("timeout", 60)), 180) * 1000
+    from urllib.parse import urlsplit
+
+    from app.web_collector import browser as web_browser
+    from app.web_collector import egress
+
+    parts = urlsplit(url)
+    try:
+        await egress.resolve_public(parts.hostname or "", parts.port or (443 if parts.scheme == "https" else 80))
+    except egress.EgressRejected as e:
+        raise NodeError(f"ブラウザで開けない URL です: {e}")
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await (await browser.new_context()).new_page()
+            # この PC の Chrome を一時プロファイルで（Playwright の既定は別の Chromium を要し、入っていなかった）
+            browser = await web_browser.launch(p)
+            page = await (await browser.new_context(service_workers="block")).new_page()
             await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
             output: dict = {"url": url, "title": await page.title()}
             if action == "screenshot":
