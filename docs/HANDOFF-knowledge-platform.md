@@ -118,10 +118,31 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 | R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
 | R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☑ backend（`knowledge/sources.py`・`patents/watch.py`）と画面（案件の「ウォッチ」、公報タブの「公開データを取得」「取得先の設定」）。EPO・USPTO の鍵は利用者が登録 |
 | R3-3 | AI クレームチャートの判定（`patents/judge.py`・`ClaimJudge.tsx`。○△×?、引用の実在確認で ? に落とす、人の行ごとの修正と確認済み、請求項・原文の版で stale） | ☑ 実装（本番での評価は `~/ControlDeck-評価/`） |
-| R3-4 | 知識エッセンス（抽出・レビュー） | ☐ |
-| R3-5 | 知識マップ・横断比較・Idea Canvas | ☐ |
+| R3-4 | 知識エッセンス（抽出・レビュー）。PatentBuddy の K1a〜K2（#29〜#33）を作り直す。段 K1 | ☐ |
+| R3-5 | 知識マップ・横断比較・Idea Canvas。PatentBuddy の K3〜K5・3 段の画面（#34〜#38、#23 の関係の保存）を作り直す。段 K2〜K5 | ☐ |
 | R3-6 | 集計・一括取り込み/書き出し・保存先の画面・PDF の精度 | ◐ 集計（特許の分析）を前倒し: 書誌の読み取り（1 ページ目の OCR）・`/api/v1/patents/analytics`・類似マップ・案件に近い公報・書誌の手直し。画面は R3-UI |
 | R3-UI | Patent を ControlDeck のページとして作り直す・分析のダッシュボード | ☑ `/patents`（案件・分析・公報）、`/patents/:id`（左に節、右に次の期限・次にやること）。Fable が作成し Claude が確認 |
+
+
+### PatentBuddy の未反映の内容の反映（2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」）
+
+PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた（書き込みなし。PR とブランチは残っていて参照できる）。
+#10（AI クレームチャート）・#24（公報の取得）は ControlDeck に実装済み（R3-3・R3-2）。残りを次の順で **作り直す**（PB の PR をそのままマージしない）。
+
+**持ち込まないもの**: PB 独自の認証（qlk_・qle_ のトークン、Unix ソケットの scope）、RDH の SQLite（document_analyses）を保存先にすること、Add-on の Host 改変（addon_host・addon_jobs・generation_contract の複製）、PC 側の vector_cache（2GiB）、素の JavaScript の画面、ソース文字列の grep で済ませるテスト。
+**合わせるもの**: ControlDeck の権限（RBAC）と監査、ナレッジの保存先（knowledge のストア。文献の分析 R3-1 の隣）、検索の入口は `knowledge/documents.search_documents` 1 つ（計画 §10.2 の 5）、3 層（原文・知識・アイデア）、`basis=model_inference`・`review_status=unreviewed` の固定、引用は原文の版（revision）と Unicode の位置で持ち、版が変われば stale、人の判断は追記だけ（epoch は単調増加）、React の部品・`docs/ui-ux-guidelines.md`、挙動を確かめるテスト（目的と根拠）。
+**LLM**: 抽出・比較・Idea Canvas の AI は **ローカル専用**（`local_only=True` と機密の印。2026-11-21 利用者「Patent の特許フローはローカルでしか使えないように」）。Idea Canvas は利用者の発明そのもの。
+
+| 段 | 内容（PB の PR） | ControlDeck での作り方 | 状態 |
+|---|---|---|---|
+| K1 | 知識エッセンス: 抽出の契約（8 種: 課題・原因・原理・作用機構・実装・効果・制約・応用、1 文献 12 件まで、引用 1200 字まで）・ローカル AI での生成・検めて保存（引用が原文のその位置に 1 回だけあること、版の一致）・人のレビュー（承認・却下・差し戻し、追記だけ、版が変われば stale で旧承認は戻らない）・文献の画面のカード（#29〜#33） | `knowledge/essence.py`（契約と検め）・Job でローカル AI（`knowledge/analysis.py` の呼び方を使い回す）・ナレッジのストアに表を足す・API は `/api/v1/knowledge/documents/{id}/essences`（見る・始める・レビュー）・文献の画面（DocumentSheet）にカードとレビューの操作 | ☐ |
+| K2 | 承認済みのエッセンスの横断検索と、別文献 2〜3 件の比較（#36） | 検索は `search_documents` を通し、承認済みのエッセンスだけを返す（版と引用を再照合）。比較は並べて見せるだけ（AI の判断を足さない） | ☐ |
+| K3 | 知識マップ（1〜2 hop、読み取りだけ）と技術仮説のリンク（承認済みの知識の間に `basis=inferred` で明示登録 → 別の操作で承認）。#23 の関係の保存（根拠つきのノード・エッジ、版で stale）を最小限（#34・#35・#23） | ナレッジのストアに関係の表（R2-3 の書誌の関係と同じ置き場に寄せる）。上限（ノード 61・エッジ 60）と打ち切りの表示 | ☐ |
+| K4 | Idea Canvas: 利用者が自分の言葉で発明の仮説を書き、根拠（承認済みのエッセンス 0〜3 件）を固定して版で保存。AI は作らない・保存しない・出願しない（#37） | ローカル専用。保存時に根拠の版と承認を再照合。アイデアから特許の案件を作る導線 | ☐ |
+| K5 | 資料 → 知識 → アイデアの 3 段の画面（PC 2 列・iPhone 1 列、引用元へ行って戻る）（#38） | Patent / Knowledge の React の画面として作り直す | ☐ |
+| K6 | 容量の表示・図の候補の位置・PNG/WebP の圧縮（#40 の一部）。Knowledge Atlas（#39）は K3 の後で要否を決める | R3-6 にまとめる。公報の取得（EPO・USPTO）は ControlDeck の `knowledge/sources.py` を使い、PB の取得は持ち込まない | ☐ |
+
+**進め方**: 段ごとに PR。実装は開発用の箱の OpenCode（`docs/HANDOFF-opencode-dev-environment.md`。モデルの順番は GLM-5.3 → 無料の高性能 → ローカル）に任せ、Claude（Opus）が指示書・監査・実機の確認・マージを持つ。箱に渡すのは PatentBuddy と ControlDeck のコードだけで、利用者の発明の内容（案件のデータ）は渡さない。PB の diff は `gh pr diff <番号> -R souten-yd/PatentBuddy` で読む。
 
 ## 7. 未決事項（利用者に確認すること）
 
@@ -129,14 +150,14 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 - 公式経路の公開公報を承認なしで cloud LLM に渡してよいか（いまは機密扱い、手動で公開にできる）。
 - 規格の組織契約・書面許諾の有無（あれば規格の本文を AI に使える）。
 - Pillow（WebP 保存）・Docling（レイアウト解析）の導入（外部からの取得）。
-- PatentBuddy・ResearchDataHub リポジトリを閉じる時期（`PLAN-knowledge-platform.md` §6）。
+- PatentBuddy・ResearchDataHub リポジトリを閉じる時期（`PLAN-knowledge-platform.md` §6）。PatentBuddy の Draft PR は 2026-11-21 に閉じた（利用者の指示。書き込みなし）。リポジトリの Archive は反映（K1〜K6）が済んでから。
 
 ## 8. 外部の状態
 
 - `qnaplibrary.service`（RDH v0.5.10）がこの PC で稼働中。中身は ControlDeck へ取り込み・照合済み。**最終的に削除する**（利用者合意 2026-11-21）。手順: 停止・無効化（データは残す）→ リポジトリを Archive → データとアプリを削除。削除の前に利用者に確認する。QNAP 上の QnapLibrary に実データがあるかは未確認。
 - `cdapp-feature-patent-buddy.service` は v0.102 で停止・撤去済み。
 - `/data1tb/ResearchDataHub-standards-license`: RDH 側に書いた規格判定のローカルブランチ（未 push）。ControlDeck へ移したので不要。
-- GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40）、souten-yd/ResearchDataHub。閉じる手順は計画 §6。
+- GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた。ブランチは残す）、souten-yd/ResearchDataHub。Archive は反映の後。
 
 ## 9. 作業記録（新しい順に追記）
 
