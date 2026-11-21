@@ -517,7 +517,8 @@ async def add_literature(body: LiteratureBody, request: Request, user: User = De
         if not text.strip():
             raise rag.RagError("取り込むテキストがありません")
         job.set_progress("分割・埋め込み中", 1, 3)
-        out = await rag.add_document(LITERATURE_COLLECTION, text, source or "document")
+        out = await rag.add_document(LITERATURE_COLLECTION, text, source or "document",
+                                     strategy="markdown" if body.url else None)
         if body.public:
             await asyncio.to_thread(_mark_public, out["doc_id"])
         job.set_progress("完了", 3, 3)

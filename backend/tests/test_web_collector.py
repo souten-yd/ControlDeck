@@ -201,3 +201,40 @@ def test_knowledge_and_patent_url_import_use_the_body_not_the_whole_page(server,
     assert title == "ゲート駆動の損失" and final.endswith("/a")
     html, status, _ = asyncio.run(st.fetch(f"http://site.test:{server}/a"))
     assert status == 200 and "<nav>" in html                           # ページ解析には HTML 全体を返す
+
+
+def test_bibliographic_meta_tags_are_kept_for_patents_and_papers():
+    """Google Patents・論文のページは出願人・発明者・DOI を本文ではなく meta（DC.* / citation_*）に持つ。拾って本文の先頭に置く。
+    根拠: 2026-11-21 本番の評価（特開2026-116114 の Google Patents で、出願人・発明者が本文に無く meta にだけあった）。"""
+    html = ('<html><head><meta name="DC.type" content="patent"><meta name="DC.title" content="半導体装置 ">'
+            '<meta name="citation_patent_application_number" content="JP:2025100480A">'
+            '<meta name="citation_patent_publication_number" content="JP:2026116114:A">'
+            '<meta name="DC.date" content="2025-06-16"><meta name="DC.date" content="2026-07-09">'
+            '<meta name="DC.contributor" content="一貴 島田"><meta name="DC.contributor" content="Renesas Electronics Corp">'
+            '<meta property="og:site_name" content="Google Patents"></head><body><p>本文</p></body></html>')
+    data = fetch.biblio(html)
+    assert data["出願人・権利者（法人）"] == ["Renesas Electronics Corp"] and data["発明者・著者"] == ["一貴 島田"]
+    assert data["日付"] == ["2025-06-16", "2026-07-09"] and data["公開番号"] == ["JP:2026116114:A"]
+    block = fetch.biblio_block(data)
+    assert block.startswith("## 書誌（JP2026116114A 半導体装置）") and "出願人・権利者（法人）: Renesas Electronics Corp" in block
+    assert "JP2026116114A" in block and "JP2025100480A" in block            # 詰めた番号でも見つかる
+    us = fetch.biblio('<title>US6285999B1 - Method for node ranking - Google Patents</title><meta name="DC.type" content="patent">'
+                      '<meta name="DC.contributor" content="Lawrence Page"><meta name="DC.contributor" content="Leland Stanford Junior University">')
+    assert us["出願人・権利者（法人）"] == ["Leland Stanford Junior University"] and us["発明者・著者"] == ["Lawrence Page"]
+    assert us["公開番号"] == ["US6285999B1"] and fetch.biblio_block(us).startswith("## 書誌（US6285999B1")
+
+
+def test_web_documents_are_split_by_headings_without_changing_the_collection(monkeypatch):
+    """Web から取り込む文書は見出しで分ける（2026-11-21 本番の評価で検索の当たり 19→23/26）。コレクションの設定は変えない。"""
+    from app.workflows import rag
+
+    async def fake_embed(texts, *a, **k):
+        import numpy as np
+        return [np.ones(3, dtype=np.float32) for _ in texts]
+
+    monkeypatch.setattr(rag, "embed", fake_embed)
+    text = "# 題\n\n## 方法\n\nゲート抵抗を小さくする。\n\n## 効果\n\n損失が減る。"
+    asyncio.run(rag.add_document("web-md-test", text, "https://example.com/a", strategy="markdown"))
+    rows = rag.chunk_rows("web-md-test")
+    assert any(r["text"].startswith("[題 > 効果]") for r in rows)
+    assert rag.get_config("web-md-test")["strategy"] == "recursive"

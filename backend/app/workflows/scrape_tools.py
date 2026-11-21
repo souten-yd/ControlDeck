@@ -32,8 +32,13 @@ async def fetch_document(url: str, timeout: float = 30.0) -> tuple[str, str, str
     page = await _collect(url, timeout)
     if page["status"] != "success":
         raise ScrapeError(f"本文を取り出せませんでした（{page['status']}）")
+    from app.web_collector import fetch as web_fetch
+
     text = page["markdown"]
-    if page["title"] and not text.lstrip().startswith("#"):
+    block = web_fetch.biblio_block(page.get("biblio") or {})
+    if block:
+        text = f"{block}\n\n{text}"
+    if page["title"] and not text.lstrip().startswith("# "):
         text = f"# {page['title']}\n\n{text}"
     return text, page["title"], page["final_url"]
 

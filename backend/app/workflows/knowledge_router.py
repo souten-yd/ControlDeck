@@ -20,7 +20,7 @@ class CollectionCreate(BaseModel):
     kind: str = Field(default="general", pattern="^(general|law|classification)$")
 
 
-async def _ingest(name: str, text: str, source: str, api_key: str, reset: bool) -> dict:
+async def _ingest(name: str, text: str, source: str, api_key: str, reset: bool, strategy: str | None = None) -> dict:
     """コレクションの種類に合わせて取り込む（分類辞書は行ごと）。"""
     import asyncio
 
@@ -29,7 +29,7 @@ async def _ingest(name: str, text: str, source: str, api_key: str, reset: bool) 
     ref = await asyncio.to_thread(kstore.find_collection, name)
     if ref is not None and ref.kind == "classification":
         return await ingest.ingest_classification(name, text, source=source)
-    return await rag.add_document(name, text, source or "document", api_key=api_key, reset=reset)
+    return await rag.add_document(name, text, source or "document", api_key=api_key, reset=reset, strategy=strategy)
 
 
 class ConfigPatch(BaseModel):
@@ -159,7 +159,7 @@ async def add_document(
     if not text.strip():
         raise HTTPException(status_code=422, detail="取り込むテキストがありません")
     try:
-        out = await _ingest(name, text, source, body.api_key, body.reset)
+        out = await _ingest(name, text, source, body.api_key, body.reset, "markdown" if body.url else None)
     except rag.RagError as e:
         raise HTTPException(status_code=422, detail=str(e))
     audit.record(db, "knowledge.add_doc", user=user, resource_type="knowledge", resource_id=name, request=request, metadata={"source": source})
@@ -200,7 +200,7 @@ async def ingest_job(
         if not text.strip():
             raise rag.RagError("取り込むテキストがありません")
         job.set_progress("チャンク分割・埋め込み中", 1, 3)
-        out = await _ingest(name, text, source, body.api_key, body.reset)
+        out = await _ingest(name, text, source, body.api_key, body.reset, "markdown" if body.url else None)
         job.set_progress("完了", 3, 3)
         return out
 
