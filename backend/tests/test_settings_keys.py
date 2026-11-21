@@ -30,7 +30,7 @@ def test_existing_keys_show_up_without_moving_or_exposing_them(admin_client):
 
     body = admin_client.get(API).json()
     keys = _by_id(body)
-    assert {"ai", "patent"} == {g["id"] for g in body["groups"]}
+    assert {"ai", "patent", "dev"} == {g["id"] for g in body["groups"]}
     assert not any(k["id"] == "hf" or k["id"].startswith("secret:") for k in body["keys"])
     assert keys["cloud:openrouter"]["configured"] and keys["cloud:openrouter"]["hint"] == "••••1234"
     assert keys["source:epo"]["configured"] and not keys["source:uspto"]["configured"]
@@ -65,3 +65,25 @@ def test_delete_is_explicit(admin_client):
     sources.set_keys({"uspto_key": "uspto-to-delete"})
     assert admin_client.delete(f"{API}/source:uspto", headers=CSRF_HEADERS).status_code == 200
     assert sources._secret("uspto_key") == ""
+
+
+def test_opencode_zen_key_is_listed_saved_and_deleted_without_exposing_it(admin_client):
+    """目的: 「開発」の組に OpenCode Zen の項目が出て、保存・削除でき、値は返さず末尾 4 文字だけ。
+    根拠: 2026-11-21 Zen の無料モデルは OpenCode の中からしか使えず、箱の OpenCode へ直接キーを渡す（HANDOFF 不具合と課題 5）。"""
+    from app.integrations.opencode import zen
+
+    body = admin_client.get(API).json()
+    assert "dev" in {g["id"] for g in body["groups"]}
+    item = _by_id(body)["dev:opencode-zen"]
+    assert item["group"] == "dev" and not item["configured"] and item["signup"] == "https://opencode.ai/zen"
+    secret = "zen-secret-value-wxyz"
+    r = admin_client.put(f"{API}/dev:opencode-zen", json={"values": {"api_key": secret}}, headers=CSRF_HEADERS)
+    assert r.status_code == 200, r.text
+    item = _by_id(r.json())["dev:opencode-zen"]
+    assert item["configured"] and item["hint"] == "••••wxyz" and secret not in str(r.json())
+    assert zen.get() == secret and secret not in zen._path().read_text()
+    assert admin_client.put(f"{API}/dev:opencode-zen", json={"values": {"x": "y"}}, headers=CSRF_HEADERS).status_code == 422
+    assert admin_client.put(f"{API}/dev:opencode-zen", json={"values": {"api_key": "a b"}}, headers=CSRF_HEADERS).status_code == 422
+    assert admin_client.put(f"{API}/dev:other", json={"values": {"api_key": "x"}}, headers=CSRF_HEADERS).status_code == 404
+    r = admin_client.delete(f"{API}/dev:opencode-zen", headers=CSRF_HEADERS)
+    assert r.status_code == 200 and not _by_id(r.json())["dev:opencode-zen"]["configured"] and zen.get() == ""

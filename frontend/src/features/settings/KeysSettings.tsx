@@ -74,7 +74,7 @@ function KeyCard({ item }: { item: KeyItem }) {
             </span>
             {item.enabled === false && item.configured && <span className="text-[11px] font-normal text-zinc-500">（使う設定はオフ）</span>}
           </p>
-          <p className="line-clamp-2 text-xs text-zinc-500">{item.note}</p>
+          <p className="text-xs text-zinc-500">{item.note}</p>
         </div>
         <button onClick={() => setOpen(!open)} aria-expanded={open}
           className={`${btn} shrink-0 border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>

@@ -99,7 +99,7 @@
 | 2 | 本番 data の `sandboxes/` に、過去の作業の箱が約 30 個残っている（`cite`・`diag`・`vp`〜`vp6` など）。OpenCode のプロジェクトの箱の一時フォルダ（`project-tmp` など）も同じ場所 | ディスクと見通し。古い箱は中継のポートを割り当て直す | 低 | 未着手。中身（未 push のコミット）を確かめてから片付ける。`sandbox list` に最終使用日と未 push の有無を出す |
 | 3 | `opencode_config` は `provider._config_payload` を通すので、鍵が未発行だと本番に鍵を新しく作る（設定ファイルには入れない） | 副作用だけ | 低 | 未着手 |
 | 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー（今回 2 件、2 回目は 0 件） | 判定が揺れる | 低 | 既知（メモ） |
-| 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 利用者の判断待ち（Console のアカウント作成と、無料の範囲だけのキーを箱へ渡してよいか） |
+| 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 登録欄を用意（設定 → API キー →「開発」、`sandbox new --no-zen` / `zen <名前> on|off`、`opencode --model opencode/deepseek-v4.1-flash-free`）。利用者がキーを登録したら箱で使える（Console のアカウント作成と、無料の範囲だけのキーが要る） |
 | 6 | 中継のログに httpx の INFO（要求の URL）が 1 行ずつ重なる | 見た目だけ | 低 | 未着手 |
 
 ## 未決事項

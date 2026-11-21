@@ -196,3 +196,59 @@ def test_opencode_config_has_no_production_key_and_points_at_the_relay(repo, mon
     text = sandbox.opencode_config(box).read_text()
     assert "sk-production-secret-123" not in text
     assert "http://127.0.0.1:18900/api/v1/llm/v1" in text
+
+
+ZEN_KEY = "zen-secret-key-abcd"
+
+
+@pytest.fixture
+def zen_box(repo, monkeypatch, tmp_path):
+    """Zen のキーが保存済みで、opencode の実行ファイルがある箱。"""
+    from app.features import registry
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(zen, "get", lambda: ZEN_KEY)
+    binary = tmp_path / "opencode"
+    binary.write_text("")
+    monkeypatch.setattr(registry, "_managed_executable", lambda name: binary)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    return sandbox.create("zen1", str(repo))
+
+
+def test_zen_key_goes_to_opencode_only_through_a_private_env_file_outside_the_box(zen_box):
+    """目的: Zen のキーは argv に出さず（ps から見える）、0600 の --env-file で箱の外の一時ファイルから渡し、opencode.json に書かない。
+    根拠: 2026-11-21 Zen の無料モデルは箱の OpenCode が opencode.ai へ直接繋ぐ。秘密は argv・設定ファイルに置かない決まり。"""
+    argv = sandbox.opencode_argv(zen_box, message="hi", interactive=False)
+    assert ZEN_KEY not in " ".join(argv) and "OPENCODE_API_KEY" not in " ".join(argv)
+    path = sandbox.Path(argv[argv.index("--env-file") + 1])
+    assert path.read_text() == f"OPENCODE_API_KEY={ZEN_KEY}\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not path.resolve().is_relative_to(zen_box.path)
+    assert ZEN_KEY not in (zen_box.home / ".config" / "opencode" / "opencode.json").read_text()
+    sandbox.remove_env_file(argv)
+    assert not path.exists()
+
+
+def test_zen_key_is_not_given_when_the_box_disallows_it_or_for_shell_and_exec(zen_box):
+    """目的: allow_zen が off の箱、および shell・exec（podman_argv を直接使う経路）にはキーを渡さない。"""
+    argv = sandbox.podman_argv(zen_box, ["true"])
+    assert "--env-file" not in argv and ZEN_KEY not in " ".join(argv)
+    zen_box.meta["allow_zen"] = False
+    assert not zen_box.allow_zen
+    argv = sandbox.opencode_argv(zen_box, message="hi", interactive=False)
+    assert "--env-file" not in argv
+
+
+def test_new_box_allows_zen_by_default_and_no_zen_turns_it_off(repo):
+    assert sandbox.create("zen2", str(repo)).allow_zen is True
+    assert sandbox.create("zen3", str(repo), allow_zen=False).allow_zen is False
+
+
+def test_opencode_model_keeps_provider_form_and_defaults_to_controldeck(zen_box):
+    """目的: --model は provider/モデルの形ならそのまま、無ければ controldeck/ を付ける。"""
+    assert sandbox.opencode_model("auto") == "controldeck/auto"
+    assert sandbox.opencode_model("opencode/deepseek-v4.1-flash-free") == "opencode/deepseek-v4.1-flash-free"
+    argv = sandbox.opencode_argv(zen_box, message="hi", model="opencode/deepseek-v4.1-flash-free", interactive=False)
+    assert argv[argv.index("--model") + 1] == "opencode/deepseek-v4.1-flash-free"
+    sandbox.remove_env_file(argv)
