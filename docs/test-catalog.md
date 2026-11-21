@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 207 ファイル、1889 テスト（目的の未記入 93 ファイル）
-- E2E: 104 spec、210 テスト
+- backend: 208 ファイル、1903 テスト（目的の未記入 93 ファイル）
+- E2E: 105 spec、212 テスト
 
 ## backend（backend/tests）
 
@@ -756,7 +756,7 @@
 
 ### backend/tests/test_dev_sandbox.py
 
-目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。 箱の持ち主と MCP（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具を使わせる。誰の権限で動くかを持ち主 （--owner、省くと管理者が 1 人ならその人）で決め、そのトークンは箱の外の中継だけが持つ（0600 の環境変数ファイル、 argv・箱の opencode.json には入れない）。箱の bridge は中継を向く。
+目的: 開発用の軽量サンドボックス（./deck.sh sandbox）。podman は呼ばず、引数と後始末を確かめる。 ネットワークの境界（pod・中継）の目的と根拠: 箱は host network で本番のゲートウェイへ鍵なしで届き、 モデルの切り替え（POST .../models/{m}/load）まで呼べた。箱は pod に入れ、届くのは中継だけにする。 箱の持ち主と MCP（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具を使わせる。誰の権限で動くかを持ち主 （--owner、省くと管理者が 1 人ならその人）で決め、そのトークンは箱の外の中継だけが持つ（0600 の環境変数ファイル、 argv・箱の opencode.json には入れない）。箱の bridge は中継を向く。 箱の設定（meta）を箱の外へ置く目的と根拠（2026-11-22 監査）: 設定が箱の書ける box.path/sandbox.json にあると、箱の中の AI が overlays に ~/.ssh などを足して、次にホストが作る podman の引数で見せられる。設定は `<root>/.meta/<名前>.json`（0700・0600）へ置き、 古い箱は検査を通した分だけ移し、load のたびに検査する（git_common_dir・overlays の 2 種類・ポートの範囲・owner の型）。
 
 - `test_create_clones_without_touching_the_source`
 - `test_names_are_validated`
@@ -790,6 +790,25 @@
 - `test_reviewer_stays_local_when_no_external_is_allowed` — allow_zen が off（またはキーが無い）なら外部は使わない。ローカルの作業のレビュー役は設定を変えない（None）。
 - `test_opencode_config_gives_the_reviewer_another_model_and_ships_the_development_skill`
 - `test_box_keeps_npm_and_pip_offline` — 目的: 箱の中から npm・npx・pip が外へ取りに行かない。
+- `test_new_box_writes_meta_outside_the_box_with_private_modes`
+- `test_legacy_sandbox_json_is_migrated_once_after_inspection_and_extra_overlays_are_dropped`
+- `test_tampered_legacy_meta_is_refused`
+- `test_git_common_dir_of_a_stored_meta_is_checked_on_every_load`
+
+### backend/tests/test_dev_workspace_adopt.py
+
+目的: 開発の作業場 3 段目（結果の要約・関門・取り込む）。 目的: 作業場の結果（元からの差分）が要約でき、関門が保存され、「関門が合格で、その後に変更が無い」ときだけ取り込めること。 本体は GitHub に PR（push と gh pr create はホスト側・箱の中からではない。マージはしない）、CodeDEV は元のリポジトリへブランチとして 取り込むだけで元の作業中のブランチは変えない。本体の取り込みは settings.manage。差分の中身は監査へ残さない。 箱の中の AI が書ける .git/config・フック（fsmonitor・credential.helper・sshCommand・insteadOf など）が、ホストの処理 （一覧・状態・差分・関門・取り込み・削除）で動かない（ホストの git は box.repo の中で動かさず、export.git へ取り込んで比べる）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目。外部への push と権限に関わる L2）。 git は本物（一時のリポジトリ）、箱の中の実行・push・gh はモック（関門の結果は差し替え）。
+
+- `test_changes_summarizes_files_commits_and_uncommitted`
+- `test_check_is_saved_with_items_and_goes_stale_after_a_change`
+- `test_adopt_refuses_without_check_failed_check_changes_after_and_uncommitted`
+- `test_adopt_controldeck_pushes_from_export_repo_and_opens_pr_without_merging`
+- `test_adopt_can_commit_uncommitted_changes_in_the_box_that_the_check_covered`
+- `test_adopt_needs_gh_and_a_github_origin`
+- `test_adopt_codedev_fetches_a_branch_from_export_and_leaves_the_source_branch_alone`
+- `test_hostile_box_git_config_never_runs_on_the_host` — 箱の中の AI が .git/config に仕込んだ実行（fsmonitor・credential.helper・sshCommand・フック）が、ホスト側の
+- `test_api_check_job_changes_and_adopt_with_audit_and_permissions`
+- `test_api_controldeck_adopt_needs_settings_manage`
 
 ### backend/tests/test_dev_workspaces.py
 
@@ -3064,6 +3083,13 @@
 目的: 会話のコードブロックの右上のコピーボタンが、コード全体（``` の行を除く）をクリップボードへ写し、「コピーしました」を出すこと。押せる範囲が 44px 程度で、横スクロールしても動かず、コードに重ならないこと。 根拠: 2026-11-21 利用者「コードブロックの右上ぐらいにコピーボタンを付けて、押すと全体がコピーできるように」。
 
 - code block copy button copies the whole code (${width}px)
+
+### frontend/e2e/assistant-dev-workspace-result.spec.ts
+
+目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
+
+- workspace result card: check then adopt creates a PR (${width}px)
+- workspace result card: failed check lists the failure and blocks adopt (dark, 320px)
 
 ### frontend/e2e/assistant-dev-workspace.spec.ts
 

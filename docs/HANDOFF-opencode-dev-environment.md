@@ -81,6 +81,7 @@
 | P1 | 箱の開発役のモデルは順番（`DEFAULT_MODEL_CHAIN`: Go の GLM-5.3 → Zen の無料 2 つ → ローカル LLM。`--run` は上限・残高切れ・レート制限で次へ、`models` で変更。根拠: 利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」） | 実装済み（実機の確認待ち） | 本 PR |
 | 開発の作業場 1 段目 | 関門 `./deck.sh dev-check`・開発のスキル `controldeck-development`・レビュー役を別のモデルに（作業がローカルなら最初の外部、外部ならローカル）・目録の道具が手書きの説明を残す／venv を作らない・箱の git の作者 | 実装・単体テスト済み（実機の箱でのレビュー役の動作は未確認） | 本 PR |
 | 開発の作業場 2 段目 | AI アシスタントの OpenCode の会話から作業場（箱）を選ぶ・作る・消す。箱の中で `opencode serve`（serve_port・pod の公開）・作業場の API・画面・持ち主の確認 | 実装・単体テスト・E2E 済み（実機の箱での会話は未確認。秘密の会話の network none は段 2 の別作業） | 本 PR |
+| 開発の作業場 3 段目 | 作業場の結果のカード（差分の要約・関門を Job で・取り込む）。本体は GitHub に PR（マージしない・settings.manage）、CodeDEV は元のリポジトリへ ws/<名前> のブランチ | 実装・単体テスト・E2E 済み（実機の push・gh・箱の中の関門は未確認）。安全: ホストでは box.repo の中で git を動かさない（箱の中で調べ、export.git へ fetch して比べる・push する）。設定（meta）は箱の外 `<sandboxes>/.meta/` へ移し、古い箱は検査して移す | 本 PR |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
@@ -111,6 +112,7 @@
 | 11 | AI アシスタントの OpenCode の会話サーバー（箱）が、使われなくなっても止まらない（次の会話を始めたときだけ止めていた） | host network・gh の設定が見える箱が何時間も残る | 高 | 直した（5 分おきの `idle_reap_loop`） |
 | 12 | 「この会話は秘密」（`confidential_at`）の段 2。AI アシスタントの OpenCode は「プロジェクト×利用者」で 1 つの箱（host network）を会話の間で共有しているので、箱の中の webfetch・curl・パッケージ取得は止まらない。段 1 は ControlDeck の中の取得・検索と外部の LLM だけで、秘密の会話の OpenCode は「次の版で対応します」と断っている | 秘密の会話では OpenCode を使えない | 高 | 未着手。秘密の会話は専用の `--network none` の箱へ移し、ゲートウェイと MCP へは Unix ソケットの中継だけにする。OpenCode の会話の記録（ディスク）から同じ session を続ける。MCP のトークンに秘密の印を入れる（課題 1 の中継の設計と合わせる） |
 | 13 | 箱の OpenCode の試験で Opus の監査が見つけた機械的な問題: (1) `test-catalog` を流すと目録の手書きの説明が消える (2) `./deck.sh test-catalog` が venv を作って PyPI へ取りに行く (3) 箱に git の利用者名が無い (4) 子のレビュー役は同じモデルで、これらに気づかなかった | Opus の監査が要る。外部取得の禁止に反する | 高 | 直した（開発の作業場 1 段目: 説明の引き継ぎ・既存 venv の利用・箱の git の作者・別モデルのレビュー役と `dev-check`）。実機の箱での通しは未確認 |
+| 14 | 箱の設定 `sandbox.json`（source・git_common_dir・overlays・ポート・owner・origin）が箱の書ける `box.path` の中にあり、箱の AI が overlays に `~/.ssh` などを足すと、次にホストが作る podman の引数で見せられた。ホストの git を box.repo の中で動かすと `.git/config`（fsmonitor・credential.helper・sshCommand・insteadOf）・フックもホストの権限で動く（2026-11-22 の監査） | 箱の隔離を破れる。L2・安全 | 最高 | 直した（開発の作業場 3 段目の同じ PR）: meta は箱の外 `<sandboxes>/.meta/<名前>.json`（0700・0600）、古い箱は検査して移す、load のたびに検査（git_common_dir・overlays は 2 種類だけ・ポート範囲・型）。ホストでは box.repo の中で git を動かさず、箱の中で調べ、export.git へ fetch して比べる・push する。実機の podman での通しは未確認 |
 
 ## 未決事項
 

@@ -6,6 +6,8 @@
 設計は 2026-11-21 の指示書（段 1 は #532）。podman・systemd は呼ばず（モック）、git は本物を使う。
 """
 import json
+import os
+import shutil
 import subprocess
 
 import pytest
@@ -15,6 +17,8 @@ from app.maintenance import sandbox, workspaces
 from tests.conftest import CSRF_HEADERS
 
 REAL_ENSURE_POD = sandbox.ensure_pod
+# 箱の中の関門（dev_check）の結果の差し替え口: (終了コード, 標準出力, 標準エラー)
+BOX_CHECK = {"result": (0, "[合格] テスト: 3 件\n[未実施] 依存: なし\n\n合格", "")}
 FAKE_KEY = "production-" + "gateway-key-" + "value"
 
 
@@ -44,6 +48,23 @@ def repo(tmp_path, monkeypatch):
     run("remote", "add", "origin", "https://github.com/example/repo.git")
     run("update-ref", "refs/remotes/origin/main", "HEAD")
     monkeypatch.setattr(workspaces, "controldeck_repo", lambda: source)
+    # 箱の中の実行の代役: 本当は pod の中のコンテナで動く。ここでは同じ作業ツリーで git を動かすが、箱の隔離の代わりに
+    # fsmonitor・フックを打ち消す（箱の中なら箱の AI の設定が動いてもホストには届かない）。ホスト側の処理が
+    # box.repo の中でホストの git を動かしていないことは、各テストが _host_git の呼び出しで確かめる
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "git").write_text(f'#!/bin/sh\nexec {shutil.which("git")} -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"\n')
+    (fakebin / "git").chmod(0o755)
+    BOX_CHECK["result"] = (0, "[合格] テスト: 3 件\n[未実施] 依存: なし\n\n合格", "")
+
+    def in_box_result(box, command, *, timeout=120, env=None):
+        if "app.maintenance.dev_check" in " ".join(command):
+            return BOX_CHECK["result"]
+        done = subprocess.run(command, cwd=box.repo, capture_output=True, text=True, timeout=60, check=False,
+                              env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}"})
+        return done.returncode, done.stdout, done.stderr
+
+    monkeypatch.setattr(sandbox, "in_box_result", in_box_result)
     return source
 
 
@@ -52,12 +73,12 @@ def repo(tmp_path, monkeypatch):
 def test_new_box_gets_a_serve_port_and_old_box_gets_one_on_load(repo):
     box = workspaces_create_box()
     assert box.serve_port == 19000
-    meta = json.loads((box.path / "sandbox.json").read_text())
+    meta = json.loads(sandbox._meta_path(box.name).read_text())
     meta.pop("serve_port")
-    (box.path / "sandbox.json").write_text(json.dumps(meta))
+    sandbox._meta_path(box.name).write_text(json.dumps(meta))
     loaded = sandbox.load(box.name)
     assert loaded.serve_port == 19001
-    assert json.loads((box.path / "sandbox.json").read_text())["serve_port"] == 19001, "保存して以後は同じポート"
+    assert json.loads(sandbox._meta_path(box.name).read_text())["serve_port"] == 19001, "保存して以後は同じポート"
 
 
 def workspaces_create_box(name="ws1"):
@@ -339,6 +360,6 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 3
+    assert len(routes) == 7  # 一覧・作る・消す + 3 段目の changes・check（GET/POST）・adopt
     for route in routes.values():
         assert "terminal.use" in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path

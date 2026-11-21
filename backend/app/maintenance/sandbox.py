@@ -164,7 +164,13 @@ class Sandbox:
 
 
 def _pick_port(key: str, base: int, span: int, what: str) -> int:
-    used = {int(_read_meta(p).get(key) or 0) for p in root().iterdir() if (p / "sandbox.json").is_file()}
+    used = set()
+    for entry in root().iterdir():
+        if NAME.fullmatch(entry.name) and has_meta(entry):
+            try:
+                used.add(int((_read_meta(entry) or _raw_legacy_meta(entry)).get(key) or 0))
+            except (TypeError, ValueError):
+                continue
     for port in range(base, base + span):
         if port in used:
             continue
@@ -186,17 +192,142 @@ def _free_serve_port() -> int:
     return _pick_port("serve_port", SERVE_PORT_BASE, SERVE_PORT_SPAN, "会話サーバー")
 
 
-def _read_meta(path: Path) -> dict:
+# ---- meta（箱の設定）----
+#
+# 箱の pod は box.path を書ける。meta（source・git_common_dir・overlays・ポート・owner・origin）をそこへ置くと、箱の中の
+# AI が書き換えて、次にホストが作る podman の引数（overlays のマウント）で ~/.ssh などを見せられる（2026-11-22 監査）。
+# meta は箱の外 `<root>/.meta/<名前>.json`（ディレクトリ 0700・ファイル 0600。.relay と同じ考え）へ置く。古い箱
+# （box.path/sandbox.json）は load のときに一度だけ、検査を通した分だけ移す。load のたびに検査もする。
+
+META_DIRNAME = ".meta"
+TAMPERED = "この箱の設定は改ざんの恐れがあるので使えません（作り直してください）"
+# 古い箱から移すときに信用して引き継ぐ項目（これ以外、関門の結果・取り込みの記録・調べた状態などは捨てる）
+_MIGRATE_KEYS = ("name", "source", "git_common_dir", "revision", "origin", "port", "gateway_port", "serve_port",
+                 "allow_load", "allow_zen", "owner", "github", "created_at", "overlays", "workspace_source",
+                 "last_model", "last_used", "model_chain")
+
+
+def meta_dir() -> Path:
+    path = root() / META_DIRNAME
+    path.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _meta_path(name: str) -> Path:
+    return meta_dir() / f"{name}.json"
+
+
+def has_meta(path: Path) -> bool:
+    """箱のフォルダに設定があるか（新しい場所、または移す前の古い場所）。"""
+    return (root() / META_DIRNAME / f"{path.name}.json").is_file() or (path / "sandbox.json").is_file()
+
+
+def _raw_legacy_meta(path: Path) -> dict:
     try:
-        return json.loads((path / "sandbox.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads((path / "sandbox.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
-def load(name: str) -> Sandbox:
+def _read_meta(path: Path) -> dict:
+    """新しい場所の設定だけを読む（古い場所は load が検査して移す）。"""
+    try:
+        data = json.loads(_meta_path(path.name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_meta(path: Path, meta: dict) -> None:
+    target = _meta_path(path.name)
+    tmp = target.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(meta, ensure_ascii=False, indent=1))
+    os.replace(tmp, target)
+
+
+def overlay_pairs(top: Path, work: Path) -> list[list[str]]:
+    """箱へ見せる依存（読み取り専用）の、許す組の全部。作る時も読む時もこの規則だけを使う。
+    .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。"""
+    return [[str(top / ".venv"), str(top / ".venv")],
+            [str(top / "frontend" / "node_modules"), str(work / "frontend" / "node_modules")]]
+
+
+def _tampered(reason: str) -> SandboxError:
+    return SandboxError(f"{TAMPERED}（{reason}）")
+
+
+def _validated(name: str, path: Path, meta: dict, *, strict: bool = True) -> dict:
+    """設定を検査して、許す形だけにした写しを返す。通らなければ「改ざんの恐れ」で断る。strict=False は消す用（元のリポジトリは見ない）。"""
+    meta = dict(meta)
+    if meta.get("name") != name:
+        raise _tampered("名前が箱と違います")
+    for key, base, span in (("port", MIRROR_PORT_BASE, MIRROR_PORT_SPAN), ("gateway_port", GATEWAY_PORT_BASE, GATEWAY_PORT_SPAN),
+                            ("serve_port", SERVE_PORT_BASE, SERVE_PORT_SPAN)):
+        value = meta.get(key)
+        if value in (None, 0) and key != "port":
+            meta.pop(key, None)       # 古い箱。load が割り当てる
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or not base <= value < base + span:
+            raise _tampered(f"{key} が範囲外です")
+    for key in ("owner", "origin", "revision", "workspace_source", "last_model"):
+        if key in meta and not isinstance(meta[key], str):
+            raise _tampered(f"{key} が文字列ではありません")
+    if "model_chain" in meta and not (isinstance(meta["model_chain"], list) and all(isinstance(x, str) for x in meta["model_chain"])):
+        raise _tampered("model_chain が正しくありません")
+    source = Path(str(meta.get("source") or "")).expanduser()
+    if not strict:
+        meta["overlays"] = []
+        return meta
+    try:
+        resolved = source.resolve()
+    except OSError as exc:
+        raise _tampered("source を解決できません") from exc
+    if not meta.get("source") or resolved.is_relative_to(root()):
+        raise _tampered("source が箱の中を指しています")
+    try:
+        top = Path(_git("rev-parse", "--show-toplevel", cwd=resolved)).resolve()
+        common = Path(_git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=top)).resolve()
+    except (SandboxError, OSError) as exc:
+        raise _tampered("元のリポジトリを確かめられません") from exc
+    if top != resolved or Path(str(meta.get("git_common_dir") or "")).resolve() != common:
+        raise _tampered("git_common_dir が元のリポジトリと違います")
+    allowed = overlay_pairs(top, path / "work" / "repo")
+    kept = []
+    for item in meta.get("overlays") if isinstance(meta.get("overlays"), list) else []:
+        if isinstance(item, str):
+            pair = [item, item]
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            pair = [str(item[0]), str(item[1])]
+        else:
+            continue
+        if pair in allowed and pair not in kept:     # 許す 2 種類（.venv・node_modules）以外の組は捨てる
+            kept.append(pair)
+    meta["overlays"] = kept
+    return meta
+
+
+def _migrate_legacy(name: str, path: Path) -> dict:
+    """古い場所（box.path/sandbox.json）の設定を、検査を通った分だけ新しい場所へ移す。中身は信用しない。"""
+    raw = _raw_legacy_meta(path)
+    meta = _validated(name, path, {k: raw[k] for k in _MIGRATE_KEYS if k in raw})
+    _save_meta(path, meta)
+    (path / "sandbox.json").unlink(missing_ok=True)
+    return meta
+
+
+def load(name: str, *, verify: bool = True) -> Sandbox:
     path = _dir(name)
     meta = _read_meta(path)
-    if not meta:
+    if meta:
+        (path / "sandbox.json").unlink(missing_ok=True)      # 箱の中から置かれた古い形のファイルは使わない
+        meta = _validated(name, path, meta, strict=verify)
+    elif (path / "sandbox.json").is_file():
+        meta = _migrate_legacy(name, path)
+    else:
         raise SandboxError(f"サンドボックス {name} はありません")
     if not meta.get("gateway_port"):
         # 中継の導入前に作った箱。割り当てて保存する（以後は同じポートを使う）。
@@ -208,10 +339,6 @@ def load(name: str) -> Sandbox:
         meta["serve_port"] = _free_serve_port()
         _save_meta(path, meta)
     return Sandbox(name, path, meta)
-
-
-def _save_meta(path: Path, meta: dict) -> None:
-    (path / "sandbox.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def box_owner(box: Sandbox) -> str:
@@ -256,17 +383,12 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
             "allow_load": bool(allow_load), "allow_zen": bool(allow_zen), "owner": owner, "github": bool(github), "created_at": time.time(),
             # 依存はホストのものを overlay でつなぐ（箱の中で書いてもホストは変わらない）。
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
-            "overlays": [
-                [str(source_path), str(target)]
-                for source_path, target in (
-                    (top / ".venv", top / ".venv"),
-                    (top / "frontend" / "node_modules", work / "frontend" / "node_modules"),
-                ) if source_path.exists()
-            ],
+            "overlays": [pair for pair in overlay_pairs(top, work) if Path(pair[0]).exists()],
         }
         _save_meta(path, meta)
     except Exception:
         shutil.rmtree(path, ignore_errors=True)
+        _meta_path(name).unlink(missing_ok=True)
         raise
     return load(name)
 
@@ -851,7 +973,7 @@ def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: 
 
 
 def destroy(name: str) -> None:
-    box = load(name)
+    box = load(name, verify=False)
     mirror_stop(box)
     gateway_stop(box)
     pod_remove(box)
@@ -860,16 +982,81 @@ def destroy(name: str) -> None:
         raise SandboxError("削除対象がサンドボックスの外です")
     relay_env_file(box).unlink(missing_ok=True)
     shutil.rmtree(target)
+    _meta_path(name).unlink(missing_ok=True)
+
+
+# ---- 箱の中で箱の git を動かす（ホストでは box.repo の中で git を動かさない）----
+#
+# 箱の中の AI は box.repo/.git/config とフックを書き換えられる。ホストの git をそこで動かすと、core.fsmonitor・
+# credential.helper・core.sshCommand・url.*.insteadOf などで、ホストの権限で箱の中のスクリプトが動く（2026-11-22 監査）。
+# 状態の確認（ブランチ・未コミット・未 push・tree）は箱の中の git に調べさせ、結果の文字だけを受け取る。
+
+PROBE_TTL = 30
+_PROBE_SCRIPT = r"""
+b=$(git rev-parse --abbrev-ref HEAD) || exit 3
+h=$(git rev-parse HEAD) || exit 3
+s=$(git status --porcelain) || exit 3
+u=$(git log --branches --not --remotes --format=%H) || exit 3
+echo "branch=$b"; echo "head=$h"
+echo "dirty=$(printf %s "$s" | grep -c .)"
+echo "unpushed=$(printf %s "$u" | grep -c .)"
+"""
+_PROBE_TREE = r"""
+export GIT_INDEX_FILE="/tmp/ws-probe-index.$$"
+git add -A >/dev/null || exit 3
+t=$(git write-tree) || exit 3
+rm -f "$GIT_INDEX_FILE"
+echo "tree=$t"
+"""
+
+
+def in_box_result(box: Sandbox, command: list[str], *, timeout: int = 120,
+                  env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    """箱（pod の中の使い捨てコンテナ）の作業ツリーで command を動かす。(終了コード, 標準出力, 標準エラー)。"""
+    argv = podman_argv(box, command, env=env)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxError(f"箱の中の処理がタイムアウトしました（{timeout} 秒）") from exc
+    return result.returncode, result.stdout, result.stderr
+
+
+def in_box(box: Sandbox, command: list[str], *, timeout: int = 120) -> str:
+    code, out, err = in_box_result(box, command, timeout=timeout)
+    if code != 0:
+        raise SandboxError(f"箱の中の {command[0]} に失敗しました: {err.strip()[:300]}")
+    return out
+
+
+def probe(box: Sandbox, *, fresh: bool = False, with_tree: bool = False) -> dict:
+    """箱の中で調べた状態 {branch, head, dirty(件数), unpushed, tree?, unknown, at}。
+
+    一覧で毎回箱を起こさないよう、PROBE_TTL 秒は meta に覚えた結果を返す（fresh なら必ず調べ直す）。
+    調べられなければ unknown=True・dirty=1（安全側。覚えない）。
+    """
+    saved = _read_meta(box.path).get("probe")
+    if (not fresh and isinstance(saved, dict) and time.time() - float(saved.get("at") or 0) < PROBE_TTL
+            and (not with_tree or "tree" in saved)):
+        return saved
+    try:
+        out = in_box(box, ["sh", "-c", _PROBE_SCRIPT + (_PROBE_TREE if with_tree else "")], timeout=120)
+    except SandboxError:
+        return {"branch": "", "head": "", "dirty": 1, "unpushed": 0, "unknown": True, "at": time.time()}
+    values = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    result = {"branch": values.get("branch", ""), "head": values.get("head", ""),
+              "dirty": int(values.get("dirty", "1") or 0), "unpushed": int(values.get("unpushed", "0") or 0),
+              "unknown": False, "at": time.time()}
+    if with_tree:
+        result["tree"] = values.get("tree", "")
+    meta = _read_meta(box.path)
+    meta["probe"] = result
+    _save_meta(box.path, meta)
+    return result
 
 
 def status(box: Sandbox) -> dict:
-    branch = ""
-    try:
-        branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=box.repo)
-        dirty = bool(_git("status", "--porcelain", cwd=box.repo))
-    except SandboxError:
-        dirty = False
-    return {"name": box.name, "source": box.meta["source"], "branch": branch, "dirty": dirty,
+    state = probe(box)
+    return {"name": box.name, "source": box.meta["source"], "branch": state["branch"], "dirty": bool(state["dirty"]),
             "mirror": f"http://127.0.0.1:{box.port}" if _health(box.port) else "停止中",
             "github": box.meta.get("github", False), "path": str(box.path),
             "model_chain": model_chain(box), "last_model": box.meta.get("last_model", "")}
@@ -877,7 +1064,7 @@ def status(box: Sandbox) -> dict:
 
 def list_all() -> list[dict]:
     return [status(load(p.name)) for p in sorted(root().iterdir())
-            if p.is_dir() and NAME.fullmatch(p.name) and (p / "sandbox.json").is_file()]
+            if p.is_dir() and NAME.fullmatch(p.name) and has_meta(p)]
 
 
 def main(argv: list[str]) -> int:
