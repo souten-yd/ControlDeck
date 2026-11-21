@@ -8,7 +8,7 @@
 | 段階 | 状態 | PR |
 |---|---|---|
 | 調査・計画・引き継ぎ資料 | ☑ | W1 の PR に同梱 |
-| W1 共通の取得・抽出・SSRF・機能と拡張・JPO | ☑ 実装（本番への適用と評価は作業記録を見る） | W1 の PR |
+| W1 共通の取得・抽出・SSRF・機能と拡張・JPO | ☑ v0.108 で本番に適用・評価済み | #504 |
 | W2 ブラウザ（中継プロキシ） | ☐ | — |
 | W3 巡回 | ☐ | — |
 | P1 Patent の調査 | ☐ | — |
@@ -24,6 +24,12 @@
   `features/package_updates.py`（PyPI / npm の最新版と比べて「更新あり」、30 分覚える）、`POST /features/install-all-jobs {category}`（まとめて導入）、
   検索と収集の中に「公開データの取得先」の入口（`SourceKeysSheet`）。
 - JPO: `sources.py::jpo`（トークン取得の URL は `https://ip-data.jpo.go.jp/` に限る、password → refresh_token、`app_progress/{10桁}`）。**応答の JSON の形は未確認**（題名・出願人は `_first_key` で名前を探して拾う）。登録後に実際の応答で確かめて直す。
+
+### W2 で最初にやること（W1 の本番評価から）
+
+- JavaScript が無いと本文が出ないページ（例: openalex.org は「needs JavaScript」の案内だけ、254 字）を判定してブラウザへ切り替える。判定の材料: 本文の短さ・`noscript` の案内・SPA の根要素（`#root`/`#app`/`#__next`）・初期 JSON（`__NEXT_DATA__` など）。
+- 公開データ API の直接利用（data_api）: GitHub の README は Trafilatura が見出しを拾えない → `api.github.com/repos/{owner}/{repo}/readme`（raw）を使う。同じ考えで Wikipedia は REST API（`/api/rest_v1/page/html/`）も候補。
+- ブラウザの安全策は `research-web-collector.md` §4（中継プロキシ・`--proxy-bypass-list=<-loopback>`・WebRTC・Service Worker の block・使い捨てのプロファイル）。`egress.open_guarded` を中継の接続に使う。
 
 ## 3. まず読むコード
 
@@ -54,6 +60,10 @@
 - EPO OPS・USPTO ODP の鍵（無料の登録）。
 
 ## 7. 作業記録（新しい順に追記）
+
+- 2026-11-21 Claude: v0.108 を本番に適用し、利用者の了承で「Web 本文抽出（Trafilatura）」を本番に導入（2.3.1、`data/features/web-extract` 49 MB）。
+  本番の評価 `~/ControlDeck-評価/2026-11-21-検索基盤W1の取得と本文抽出.md`: 実サイト 10 件 success、内部アドレス 2 件は拒否、見出し・表を Markdown で保持。
+  弱点（W2 で扱う）: JS が要るページ（OpenAlex）、GitHub の README の見出し。
 
 - 2026-11-21 Claude: W1 を実装。egress（解決した IP に接続）・fetch・extract（Trafilatura の worker）・共通化（Deep Research・web.scrape・公開データの取得）・
   機能と拡張（検索と収集・python-lib・更新ありの確認・まとめて導入・取得先の入口）・JPO。テスト `test_web_collector.py`（10、本物の Trafilatura 1 件は環境変数で）・
