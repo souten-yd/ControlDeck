@@ -2,7 +2,9 @@
  *
  * AssistantChat から遅延読み込みする（ライブラリと KaTeX の CSS はアシスタント画面でだけ読む）。
  * 生の HTML は描かない（react-markdown の既定。回答に紛れた <script> などは文字のまま）。 */
-import { memo } from "react";
+import { Children, isValidElement, memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { IconCheck, IconCopy } from "../../components/icons";
+import { writeClipboard } from "../../lib/clipboard";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -27,6 +29,49 @@ export function normalizeMath(text: string): string {
         .replace(/(?<![$\\])\$(?=\d)/g, "\\$");
     })
     .join("");
+}
+
+/** React の子から文字だけを集める（コードブロックの中身全体。言語の印の ``` 行は含まない）。 */
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return Children.toArray(node.props.children).map(nodeText).join("");
+  return "";
+}
+
+/** ``` のコードブロック。上に細い帯を置き、右端にコピーボタン（見た目は小さく、押せる範囲は 44px）。
+ * ボタンは横にずらす pre の外にあるので、長いコードを横へ動かしても右上に留まり、文字にも重ならない。 */
+function CodeBlock({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    // 末尾の改行 1 つは markdown の仕組みで付くだけなので落とす。
+    const ok = await writeClipboard(nodeText(children).replace(/\n$/, ""));
+    setState(ok ? "done" : "failed");
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), 1800);
+  };
+  return (
+    <div className="my-2 max-w-full overflow-hidden rounded-lg bg-zinc-900 text-zinc-100 dark:bg-black/40">
+      <div className="flex h-7 items-center justify-end px-1.5">
+        <span role="status" aria-live="polite" className={`mr-1 text-[11px] ${state === "failed" ? "text-red-300" : "text-emerald-300"}`}>
+          {state === "done" ? "コピーしました" : state === "failed" ? "コピーできませんでした" : ""}
+        </span>
+        <button
+          type="button"
+          aria-label="コードをコピー"
+          onClick={() => void copy()}
+          className="relative flex h-7 w-8 items-center justify-center rounded text-zinc-300 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-400 before:absolute before:-inset-x-1 before:-inset-y-2 before:content-['']"
+        >
+          {state === "done" ? <IconCheck className="h-[15px] w-[15px]" /> : <IconCopy className="h-[15px] w-[15px]" />}
+        </button>
+      </div>
+      {/* ブロックの中の code にはインラインコードの見た目を当てない（言語指定なしの ``` が読めなくなる）。 */}
+      <pre className="max-w-full overflow-x-auto px-2.5 pb-2.5 text-[12px] leading-snug [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">{children}</pre>
+    </div>
+  );
 }
 
 const components: Components = {
@@ -59,10 +104,7 @@ const components: Components = {
   td: ({ children, style }) => (
     <td style={style} className="min-w-[5rem] border-b border-zinc-100 px-2 py-1.5 align-top dark:border-zinc-800">{children}</td>
   ),
-  pre: ({ children }) => (
-    // ブロックの中の code にはインラインコードの見た目を当てない（言語指定なしの ``` が読めなくなる）。
-    <pre className="my-2 max-w-full overflow-x-auto rounded-lg bg-zinc-900 p-2.5 text-[12px] leading-snug text-zinc-100 dark:bg-black/40 [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">{children}</pre>
-  ),
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ className, children }) => {
     // ``` のブロックは pre の中（言語の className が付く）。それ以外はインライン。
     if (className) return <code className={`${className} font-mono`}>{children}</code>;

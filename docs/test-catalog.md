@@ -2941,6 +2941,12 @@
 - history rows swipe right to archive and left to delete, with undo
 - standalone iPhone: with the status bar outside the page the bottom safe area stays
 
+### frontend/e2e/assistant-code-copy.spec.ts
+
+目的: 会話のコードブロックの右上のコピーボタンが、コード全体（``` の行を除く）をクリップボードへ写し、「コピーしました」を出すこと。押せる範囲が 44px 程度で、横スクロールしても動かず、コードに重ならないこと。 根拠: 2026-11-21 利用者「コードブロックの右上ぐらいにコピーボタンを付けて、押すと全体がコピーできるように」。
+
+- code block copy button copies the whole code (${width}px)
+
 ### frontend/e2e/assistant-message-actions.spec.ts
 
 目的: **未記入**

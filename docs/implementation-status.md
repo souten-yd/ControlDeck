@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-21 会話のコードブロックにコピーボタン
+
+- 利用者「コードブロックの右上ぐらいにコピーボタンを付けて、押すと全体がコピーできるように」。`frontend/src/features/workflows/MarkdownMessage.tsx` の `pre` を `CodeBlock` に置き換え、上の細い帯の右端にコピーボタン（`aria-label` 「コードをコピー」、見た目 32×28px・押せる範囲 44px 程度）。ボタンは横にずらす `pre` の外にあるので、横スクロールしても右上に留まり文字に重ならない。押すとアイコンがチェックと「コピーしました」に約 1.8 秒変わる。コピーする中身はコード全体（``` の行は含まない・末尾の改行 1 つは落とす）。既存の `lib/clipboard.ts` の `writeClipboard`（http では textarea + execCommand）を使い回し、アイコンは `components/icons.tsx` に `IconCopy`・`IconCheck` を追加。生成中のコードブロックでも押せる。MarkdownMessage を使うほかの画面（ナレッジ・Patent）にも付く。
+- 検証: `npm run build`、E2E `assistant-code-copy`（新規 2 件・1280px／320px、クリップボードの中身・押せる範囲・横スクロールで動かないこと）、`assistant-message-actions` が成功。ライト/ダークを `frontend/test-results/code-copy-*.png` に撮影。
+
 ## 2026-11-21 AI アシスタント（OpenCode）: 「途中で伝える」で固まる不具合
 
 - 原因: plan の OpenCode が `question`（利用者へ質問して答えを待つ道具）を呼んで待っている最中に「途中で伝える」を
