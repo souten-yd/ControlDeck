@@ -81,7 +81,7 @@
 | P1 | 箱の開発役のモデル: ローカル LLM だけ（利用者 2026-11-21）。OpenCode Zen の無料モデルは「不具合と課題」の 5 を参照 | 方針決定 | — |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
-| P2c | Vite のプラグイン（`apply: 'serve'`、`transformIndexHtml` で記録のスクリプト、`import.meta.hot.send` / `server.ws.on` で記録、`server.ws.send` で知らせ、`vite:error` を記録）。包みの設定を `vite --config` で渡す。記録は `.controldeck/feedback/*.jsonl` | 未着手 | — |
+| P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
 | P2d | 実行の結果・ログ・成果物の差分・撮影・気づきを `control_deck.report` で評価として出す | 未着手 | — |
 | P2e | 記録中の表示・気づきボタン（スマホは長押しで要素を選ぶ）・評価の画面（Opus と Sonnet） | 未着手 | — |
 | P3 | ミラーの LLM 要求を中継経由でホストへ | 未着手 | — |
@@ -111,7 +111,7 @@
 
 - P1: 中継に `/load` を既定で許すか。今は `--allow-load` を付けた箱だけ（chat は要求に応じて自動でモデルを載せるので、開発役は困らない）。
 - P2b: 箱の開発サーバーを Project Lab の run にしたとき、`web_preview_ready`（ユニットのプロセスがポートを使っているか）が podman のコンテナでも通るか。通らなければ、確認の仕方を箱の run 用に足す。
-- P2c: Vite の公式文書（v8）の API が、ControlDeck の画面の Vite 5.4 でも同じに動くか（最初のテストで確かめる）。`base` を接頭辞にしたときの HMR の接続先（`server.hmr.path`）の合成の仕方は文書に無いので、実機で WebSocket の URL を見る。
+- P2c: 実機で確かめること: unit の中の見張り役の起動（PYTHONPATH・python の場所）、restart で preview が繋がり直して reload が届くか、Vite を native で動かしたときの記録、iOS Safari で戻ったときの読み込み直し、C++ の cmake build + ctest（build は 1 つの argv だけ。configure は最初に一度手で）、node_modules の多い tree の inotify の上限。
 - P4: 借りる時間の上限・VRAM の上限の既定。
 
 ## 外部の状態

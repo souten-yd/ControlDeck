@@ -74,7 +74,16 @@ class ProjectLabError(ValueError):
     pass
 
 
-DEFAULT_SETTINGS = {"allow_external_preview": False}
+RUN_MEMORY_MAX_MB_RANGE = (512, 16384)
+DEFAULT_SETTINGS = {"allow_external_preview": False, "run_memory_max_mb": 2048}
+
+
+def _clamp_memory_mb(value: Any) -> int:
+    """範囲外・壊れた値は既定へ倒す（実行のMemoryMaxに使うので、極端な値を通さない）。"""
+    low, high = RUN_MEMORY_MAX_MB_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return DEFAULT_SETTINGS["run_memory_max_mb"]
+    return value
 
 
 def _settings_path() -> Path:
@@ -90,6 +99,7 @@ def get_settings() -> dict[str, Any]:
         raw = json.loads(_settings_path().read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             settings["allow_external_preview"] = bool(raw.get("allow_external_preview"))
+            settings["run_memory_max_mb"] = _clamp_memory_mb(raw.get("run_memory_max_mb", DEFAULT_SETTINGS["run_memory_max_mb"]))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         pass
     return settings
@@ -99,6 +109,11 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     if "allow_external_preview" in patch:
         settings["allow_external_preview"] = bool(patch["allow_external_preview"])
+    if "run_memory_max_mb" in patch:
+        value = patch["run_memory_max_mb"]
+        if _clamp_memory_mb(value) != value:
+            raise ProjectLabError("run_memory_max_mbは512〜16384の整数で指定してください")
+        settings["run_memory_max_mb"] = value
     path = _settings_path()
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -217,6 +232,7 @@ def _manifest_out(manifest: ProjectManifest | None) -> dict[str, Any] | None:
             "command": profile.command, "cwd": profile.cwd,
             "environmentNames": sorted(profile.environment), "secretRefs": profile.secret_refs,
             "artifacts": profile.artifacts,
+            "watch": profile.watch.model_dump() if profile.watch else None,
         } for profile in manifest.profiles],
     }
 

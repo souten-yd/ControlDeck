@@ -4,7 +4,62 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _validate_argv(value: list[str], *, what: str) -> list[str]:
+    """argv配列の検証（commandとwatch.buildで共通）。shell文字列・秘密の直書きを断る。"""
+    if any(not item or len(item) > 1024 or "\x00" in item for item in value):
+        raise ValueError(f"{what}は空要素を含まないargv配列で指定してください")
+    if value:
+        executable = value[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        option = value[1].lower() if len(value) > 1 else ""
+        if (executable in {"sh", "bash", "zsh", "fish"} and option in {"-c", "-lc"}) or (
+            executable in {"cmd", "cmd.exe"} and option in {"/c", "/k"}
+        ) or (executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"} and option in {"-command", "-c"}):
+            raise ValueError("shell文字列の実行は禁止です。実行fileと引数を直接argvへ指定してください")
+        secret_arg = re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]")
+        if any(secret_arg.search(item) for item in value):
+            raise ValueError(f"秘密値を{what}へ直書きせずsecret_refsを使用してください")
+    return value
+
+
+def _validate_relative_globs(value: list[str]) -> list[str]:
+    for item in value:
+        normalized = item.replace("\\", "/")
+        if not item or len(item) > 512 or "\x00" in item or item.startswith(("/", "~")) \
+                or ".." in normalized.split("/"):
+            raise ValueError("globはproject内の相対patternで指定してください（..・絶対pathは不可）")
+    return value
+
+
+class ProjectWatch(BaseModel):
+    """見張りモード（ライブ確認）。保存のたびに build → 実行し直す。
+
+    pathsとignoreはproject直下からの相対glob。`/`を含まないpatternは、どの深さのファイル名にも当たる。
+    `.controldeck/`・`.git/`・`node_modules/`・`__pycache__/`・`build/` は設定にかかわらず見張らない。
+    mode: restart=ビルドしてからcommandを起動し直す（Webサーバー）、rerun=ビルドしてからcommandを
+    最後まで流し直す（スクリプト・テスト・C++）、native=見張らない（Viteなどアプリ自身が反映する）。
+    省略したmodeはwebならrestart、それ以外はrerun。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(default_factory=lambda: ["**/*"], max_length=32)
+    ignore: list[str] = Field(default_factory=list, max_length=64)
+    build: list[str] = Field(default_factory=list, max_length=64)
+    mode: Literal["restart", "rerun", "native"] | None = None
+    debounce_ms: int = Field(default=400, ge=100, le=5000)
+
+    @field_validator("paths", "ignore")
+    @classmethod
+    def validate_globs(cls, value: list[str]) -> list[str]:
+        return _validate_relative_globs(value)
+
+    @field_validator("build")
+    @classmethod
+    def validate_build(cls, value: list[str]) -> list[str]:
+        return _validate_argv(value, what="build")
 
 
 class ProjectProfile(BaseModel):
@@ -19,22 +74,21 @@ class ProjectProfile(BaseModel):
     secret_refs: list[str] = Field(default_factory=list, max_length=32)
     artifacts: list[str] = Field(default_factory=list, max_length=64)
 
+    watch: ProjectWatch | None = None
+
     @field_validator("command")
     @classmethod
     def validate_command(cls, value: list[str]) -> list[str]:
-        if any(not item or len(item) > 1024 or "\x00" in item for item in value):
-            raise ValueError("commandは空要素を含まないargv配列で指定してください")
-        if value:
-            executable = value[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-            option = value[1].lower() if len(value) > 1 else ""
-            if (executable in {"sh", "bash", "zsh", "fish"} and option in {"-c", "-lc"}) or (
-                executable in {"cmd", "cmd.exe"} and option in {"/c", "/k"}
-            ) or (executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"} and option in {"-command", "-c"}):
-                raise ValueError("shell文字列の実行は禁止です。実行fileと引数を直接argvへ指定してください")
-            secret_arg = re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]")
-            if any(secret_arg.search(item) for item in value):
-                raise ValueError("秘密値をcommandへ直書きせずsecret_refsを使用してください")
-        return value
+        return _validate_argv(value, what="command")
+
+    @model_validator(mode="after")
+    def validate_watch(self) -> "ProjectProfile":
+        if self.watch is not None:
+            if self.type not in {"cli", "test", "web"}:
+                raise ValueError("watchはcli / test / web profileだけに指定できます")
+            if self.watch.mode is None:
+                self.watch.mode = "restart" if self.type == "web" else "rerun"
+        return self
 
     @field_validator("cwd")
     @classmethod
@@ -93,6 +147,7 @@ class ProjectLabSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allow_external_preview: bool | None = None
+    run_memory_max_mb: int | None = Field(default=None, ge=512, le=16384)
 
 
 class ProjectFileRunCreate(BaseModel):

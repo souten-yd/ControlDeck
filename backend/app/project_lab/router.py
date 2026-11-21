@@ -127,7 +127,8 @@ def update_project_lab_settings(
     settings = service.save_settings(body.model_dump(exclude_none=True))
     audit.record(
         db, "project_lab.settings", user=user, resource_type="project_lab", resource_id="settings",
-        request=request, metadata={"allow_external_preview": settings["allow_external_preview"]},
+        request=request, metadata={"allow_external_preview": settings["allow_external_preview"],
+                  "run_memory_max_mb": settings["run_memory_max_mb"]},
     )
     return settings
 
