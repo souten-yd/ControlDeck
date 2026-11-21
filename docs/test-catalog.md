@@ -769,6 +769,29 @@
 - `test_opencode_config_points_the_bridge_at_the_relay_without_the_mcp_token` — 箱の bridge は中継を向き、トークンは意味の無い値。結果のフォルダは箱の中。
 - `test_opencode_config_refuses_to_write_when_the_mcp_token_would_leak` — MCP のトークンが設定に入るなら書き出しを中止する。
 
+### backend/tests/test_offline_research.py
+
+目的: 会話ごとの「この会話は秘密」（一方通行）が付いた会話の中で、外部への調査（Web 検索・ページ取得・学術/特許/市場/GitHub・Deep Research）が通信の前に止まること、外部のモデルを選んでもローカルで答えること、OpenCode へ流さないこと、途中で押すと動いている生成が止まること。秘密でない会話・会話の外（特許の公報の取得・Workflow）は止めないこと。 根拠: 2026-11-21 利用者「根本的につながらないように」「途中から秘密にすることがある。一度押したら解除して外部へ出られてはいけない」。
+
+- `test_scope_only_blocks_inside_and_resets`
+- `test_egress_blocked_before_resolving_or_connecting`
+- `test_node_web_search_blocked_before_any_http`
+- `test_external_search_every_source_blocked_before_http`
+- `test_external_search_outside_scope_still_works`
+- `test_github_inspection_blocked`
+- `test_deep_research_uses_only_local_sources_in_secret_conversation`
+- `test_deep_research_default_sources_in_normal_conversation`
+- `test_confidential_is_one_way_audited_and_can_start_secret`
+- `test_fork_of_secret_conversation_stays_secret`
+- `test_search_endpoint_refuses_web_and_academic_for_secret_conversation`
+- `test_local_target_replaces_cloud_with_local_default_or_refuses`
+- `test_confidential_mark_only_when_request_supports_it`
+- `test_chat_auto_mode_web_search_tool_only_in_normal_conversation`
+- `test_chat_job_in_secret_conversation_runs_inside_scope`
+- `test_chat_web_mode_becomes_plain_chat_in_secret_conversation`
+- `test_send_in_secret_conversation_uses_local_model_and_refuses_opencode`
+- `test_pressing_midway_cancels_running_generation`
+
 ### backend/tests/test_sandbox_gateway.py
 
 目的: サンドボックスの LLM 中継。箱から本番のモデル切り替え（load）を鍵なしで呼べた（2026-11-21 実測）ので、許した呼び出しだけを通す。上流は MockTransport の偽物。MCP（P2a）は、トークンを箱の外の中継だけが持ち、呼べる道具を許可の一覧に絞る。
@@ -2974,6 +2997,12 @@
 
 - assistant input stays flush in standalone iPhone viewports
 - shows compact conversation references and inserts one into the prompt
+
+### frontend/e2e/assistant-offline-research.spec.ts
+
+目的: 「この会話は秘密」のボタン・確認（解除できないと書く）・入力欄の印（PC 1280・モバイル 320）。押すと印が出て、横にはみ出さず、再読み込み後も残り、解除の操作がどこにも無いこと。新しい会話を秘密で始める切り替え。 根拠: 2026-11-21 利用者「途中から秘密の話をしたくなって押すことはよくある。解除して外部へ調査に出られてはいけない」。
+
+- secret conversation button, confirm and pill (${label})
 
 ### frontend/e2e/assistant-opencode-progress.spec.ts
 

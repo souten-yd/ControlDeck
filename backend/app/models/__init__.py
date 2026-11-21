@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -160,6 +160,9 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     # アーカイブした時刻（一覧から外すが消さない）。None ならふつうの会話
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 「この会話は秘密」を付けた時刻。None でなければ秘密の会話で、**解除できない**（文脈に秘密が入っているため）。
+    # 外部への調査と外部の LLM を使わない（security/offline.py）。API に解除の口は無く、下の listener も外す更新を拒む。
+    confidential_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChatMessage(Base):
@@ -855,3 +858,11 @@ class PasskeyChallenge(Base):
     user_handle: Mapped[str] = mapped_column(String(128), default="")
     name: Mapped[str] = mapped_column(String(80), default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+@event.listens_for(Conversation, "before_update")
+def _confidential_is_one_way(mapper, connection, target) -> None:  # noqa: ARG001
+    """秘密の印は外せない。どの経路（API・将来の変更）からでも、付いた印を消す更新は通さない。"""
+    history = inspect(target).attrs.confidential_at.history
+    if history.deleted and history.deleted[0] is not None and (not history.added or history.added[0] is None):
+        raise ValueError("秘密の会話の印は解除できません")

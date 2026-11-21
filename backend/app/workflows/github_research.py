@@ -102,6 +102,12 @@ async def inspect_repository(
     owner: str, repo: str, query: str, *, max_files: int = 12,
 ) -> dict:
     """公開repositoryのmetadata/tree/主要ファイルを有限回のread requestで収集する。"""
+    from app.security.offline import ExternalResearchBlocked, ensure_external_allowed
+
+    try:
+        ensure_external_allowed("GitHub")   # オフライン調査（アシスタントの調査の中だけ）。通信の前に止める
+    except ExternalResearchBlocked as exc:
+        return {"sources": [], "errors": [str(exc)]}
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",

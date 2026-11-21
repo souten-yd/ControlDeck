@@ -154,7 +154,7 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 
 ## 8. 外部の状態
 
-- `qnaplibrary.service`（RDH v0.5.10）がこの PC で稼働中。中身は ControlDeck へ取り込み・照合済み。**最終的に削除する**（利用者合意 2026-11-21）。手順: 停止・無効化（データは残す）→ リポジトリを Archive → データとアプリを削除。削除の前に利用者に確認する。QNAP 上の QnapLibrary に実データがあるかは未確認。
+- `qnaplibrary.service`（RDH v0.5.10、**利用者のサービス**（`systemctl --user`）。システムのサービスではない）は 2026-11-21 に利用者の指示で停止・自動起動を無効にした（ポート 17871 も閉じた。データ `/data1tb/ResearchDataHub/data` は残す）。それまでこの PC で稼働していた。中身は ControlDeck へ取り込み・照合済み。**最終的に削除する**（利用者合意 2026-11-21）。手順: 停止・無効化（データは残す）→ リポジトリを Archive → データとアプリを削除。削除の前に利用者に確認する。QNAP 上の QnapLibrary に実データがあるかは未確認。
 - `cdapp-feature-patent-buddy.service` は v0.102 で停止・撤去済み。
 - `/data1tb/ResearchDataHub-standards-license`: RDH 側に書いた規格判定のローカルブランチ（未 push）。ControlDeck へ移したので不要。
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた。ブランチは残す）、souten-yd/ResearchDataHub。Archive は反映の後。
