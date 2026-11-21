@@ -123,15 +123,75 @@ class ConversationOut(BaseModel):
 
 def _conv_out(c: Conversation) -> dict:
     return {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat() if c.updated_at else "",
-            "archived": c.archived_at is not None}
+            "archived": c.archived_at is not None, "confidential": c.confidential_at is not None}
+
+
+class ConversationCreate(BaseModel):
+    # True なら最初から秘密の会話（外部への調査・外部の LLM を使わない。解除できない）
+    confidential: bool = False
 
 
 @router.post("/conversations", status_code=201)
-def create_conversation(user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
-    conv = Conversation(id=_new_id(), owner_user_id=user.id)
+def create_conversation(
+    request: Request, body: ConversationCreate | None = None,
+    user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
+):
+    secret = bool(body and body.confidential)
+    conv = Conversation(id=_new_id(), owner_user_id=user.id, confidential_at=utcnow() if secret else None)
     db.add(conv)
     db.commit()
+    if secret:
+        audit.record(db, "chat.conversation.confidential", user=user, resource_type="conversation",
+                     resource_id=conv.id, request=request, metadata={"at": "create"})
     return _conv_out(conv)
+
+
+class ConfidentialBody(BaseModel):
+    confidential: bool = True
+
+
+CONFIDENTIAL_NOTICE = ("この会話を秘密にしました。動いていた生成を止めました。以後、この会話では外部への調査と外部の AI を使いません"
+                       "（解除できません）。")
+
+
+@router.post("/conversations/{conv_id}/confidential")
+async def make_conversation_confidential(
+    conv_id: str, request: Request, body: ConfidentialBody | None = None,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """この会話を秘密にする（一方通行。解除する口は無い）。途中で押してもよく、動いている生成は止める。
+    秘密にした会話の文脈には秘密が入っているので、あとから外部へ調査に出られないようにするため。"""
+    if body is not None and not body.confidential:
+        raise HTTPException(status_code=409, detail="秘密の会話は解除できません")
+
+    def mark() -> tuple[dict, list[str], bool]:
+        with SessionLocal() as db:
+            conv = _owned_conversation(db, conv_id, user)
+            if conv.confidential_at is not None:
+                return _conv_out(conv), [], False   # すでに秘密（何も変えない）
+            conv.confidential_at = utcnow()
+            db.commit()
+            jobs_running = [m.job_id for m in _ordered_messages(db, conv_id)
+                            if m.role == "assistant" and m.status == "generating" and m.job_id]
+            return _conv_out(conv), jobs_running, True
+
+    out, running, changed = await asyncio.to_thread(mark)
+    if not changed:
+        return out
+    # 今動いている生成（会話の Job・OpenCode の回）を止める。Job の取り消しで OpenCode の回は interrupt される
+    for job_id in running:
+        await jobs.cancel_and_wait(job_id)
+
+    def announce() -> None:
+        with SessionLocal() as db:
+            db.add(ChatMessage(id=_new_id(), conversation_id=conv_id, role="assistant", status="completed",
+                               content=CONFIDENTIAL_NOTICE, meta_json=json.dumps({"mode": "confidential_notice"})))
+            db.commit()
+            audit.record(db, "chat.conversation.confidential", user=user, resource_type="conversation",
+                         resource_id=conv_id, request=request, metadata={"at": "midway", "stopped_jobs": len(running)})
+
+    await asyncio.to_thread(announce)
+    return out
 
 
 @router.get("/conversations")
@@ -233,7 +293,7 @@ def fork_conversation(
     picked = messages[: index + 1 if body.include else index]
     if any(_still_generating(m) for m in picked):
         raise HTTPException(status_code=409, detail="生成中のメッセージは分岐できません")
-    target = Conversation(id=_new_id(), owner_user_id=user.id,
+    target = Conversation(id=_new_id(), owner_user_id=user.id, confidential_at=source.confidential_at,   # 秘密は分岐先にも
                           title=f"分岐: {source.title}"[:200] if source.title else "分岐した会話")
     db.add(target)
     db.flush()
@@ -985,10 +1045,7 @@ async def route_message(
 
     道具を使えるモデルでは、曖昧な依頼を LLM で判定しない（送信ごとに 1〜1.5 秒かかっていた）。対話として送り、
     Web 検索・資料の検索はモデルが要ると判断したときに道具で行う（2026-11-20 利用者「Claude と同じ方法で」）。"""
-    from app.workflows import chat_tools
-    from app.workflows.assistant_planner import AssistantPlan, decide, rule_plan
-
-    from app.models_mgmt.runtime_provider import provider_for_base_url, resolve_target
+    from app.workflows.assistant_planner import AssistantPlan
 
     def brief() -> str:
         if not body.conversation_id:
@@ -1000,6 +1057,34 @@ async def route_message(
         finally:
             db.close()
         return _document_brief(body.conversation_id) if allowed else ""
+
+    def is_secret() -> bool:
+        if not body.conversation_id:
+            return False
+        with SessionLocal() as _db:
+            _conv = _db.get(Conversation, body.conversation_id)
+            return _conv is not None and _conv.owner_user_id in (None, user.id) and _conv.confidential_at is not None
+
+    secret = await asyncio.to_thread(is_secret)
+    if secret:
+        # 秘密の会話: 判定の LLM もローカルで。OpenCode へは回さない（plan が code なら対話にする）
+        from app.security import offline
+
+        try:
+            body.base_url, body.model = offline.local_target(body.base_url, body.model)
+        except offline.LocalModelUnavailable as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        plan = await _route_plan(body, brief, user)
+        if plan.get("mode") == "code":
+            plan = AssistantPlan(mode="chat", reason="秘密の会話は OpenCode へ任せません", decided_by="rule").model_dump()
+        return plan
+    return await _route_plan(body, brief, user)
+
+
+async def _route_plan(body: RouteBody, brief, user) -> dict:
+    from app.workflows import chat_tools
+    from app.workflows.assistant_planner import AssistantPlan, decide, rule_plan
+    from app.models_mgmt.runtime_provider import provider_for_base_url, resolve_target
 
     base_url, model = resolve_target(body.base_url, body.model)
     if getattr(provider_for_base_url(base_url), "tools_verified", False) and chat_tools.supported(base_url, model):
@@ -1252,10 +1337,30 @@ async def _materials_without_tools(messages: list[dict], material_tool: dict | N
 
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         history: list[dict], params: dict) -> dict:
+    """会話の 1 回の実行。秘密の会話なら、中の外部への通信は通信の直前で止まる（security/offline.py）。"""
+    from app.security.offline import confidential_scope
+
+    secret = await asyncio.to_thread(_is_confidential_conv, conv_id)
+    with confidential_scope(secret):
+        return await _run_chat_job_impl(job, assistant_id, conv_id, history, params)
+
+
+def _is_confidential_conv(conv_id: str) -> bool:
+    with SessionLocal() as db:
+        conv = db.get(Conversation, conv_id)
+        return conv is not None and conv.confidential_at is not None
+
+
+async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
+                             history: list[dict], params: dict) -> dict:
     """サーバー側で検索/生成し、assistant メッセージへ部分出力を保存する（全モード対応）。"""
     base_url = params["base_url"]
     model = params["model"]
     mode = params.get("mode", "chat")
+    from app.security import offline as _offline
+
+    if mode == "code" and _offline.in_confidential_scope():
+        raise RuntimeError(_offline.OPENCODE_REFUSAL)   # 秘密の会話は OpenCode へ流さない（送信時にも断る）
     thinking_mode = str(params.get("thinking") or "")
     max_output_tokens = int(params["max_output_tokens"])
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, ToolsUnsupported, provider_for_base_url
@@ -1615,6 +1720,17 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         buf["meta"] = {"mode": mode, "plan": plan.model_dump(), "progress": []}
         job.log("plan", plan=plan.model_dump())
 
+    # 秘密の会話: Web・学術の検索モードは普通の会話にし、Deep は外部の情報源なし（ローカルのコード・資料だけ）で動かす。
+    # 通信そのものは、この下のどの経路でも通信の直前（security/offline.py）で止まる。ここは AI に外を見せない補助。
+    from app.security import offline as _offline
+
+    if _offline.external_research_blocked():
+        if mode in ("web", "academic", "research"):
+            mode = "chat"
+        if mode in ("chat", "deep"):
+            buf["meta"] = {**(buf.get("meta") or {}), "confidential": True}
+            job.log("progress", phase="offline", label=_offline.NOTICE, iteration=0, details={})
+
     # ---- 検索モード: サーバー側で検索し履歴を組み立てる ----
     if mode in ("web", "academic", "deep", "research"):
         try:
@@ -1753,6 +1869,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                 max_tokens=max_output_tokens, thinking=think, reasoning_effort=think_spec.reasoning_effort,
                 disable_thinking=think is False, keep_alive=_keep_alive(),
                 tools=tool_defs if with_tools and tool_defs else None,
+                **_offline.confidential_request_kwargs(),
             )
         # 生成統計（フェーズ / tok/s / コンテキスト使用量）。1チャンク≒1トークンとして
         # 直近4秒窓で速度を算出し、usage chunk到着時に実測値へ置き換える。
@@ -1783,7 +1900,8 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         images_ok = not [a for a in (params.get("attachments") or []) if _ATTACHMENT_ID_RE.fullmatch(str(a))] \
             or not await asyncio.to_thread(opencode_image_problem)
         code_target = (await asyncio.to_thread(_opencode_hand_off_target, conv_id, params)
-                       if web_tool and images_ok and not params.get("voice_style") else None)
+                       if web_tool and images_ok and not params.get("voice_style")
+                       and not _offline.external_research_blocked() else None)   # 秘密の会話は OpenCode へ任せない
         hand_off: dict | None = None
 
         async def web_search(query: str) -> list[tuple[dict, dict]]:
@@ -1814,7 +1932,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         while True:
             tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
                 [chat_tools.TOOL_SEARCH_KNOWLEDGE] if knowledge_tool is not None else []) + (
-                [chat_tools.TOOL_WEB_SEARCH] if web_tool else []) + (
+                [chat_tools.TOOL_WEB_SEARCH] if web_tool and not _offline.external_research_blocked() else []) + (
                 [chat_tools.TOOL_HAND_OFF_OPENCODE] if code_target is not None and web_tool else [])
             with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
             last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
@@ -1851,7 +1969,7 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                                             for c in calls]})
             for call in calls:
                 query = str(chat_tools.arguments_of(call).get("query") or "")[:80]
-                if call["name"] == chat_tools.WEB_SEARCH and web_tool:
+                if call["name"] == chat_tools.WEB_SEARCH and web_tool and not _offline.external_research_blocked():
                     job.log("stats", phase="retrieve", detail=f"Web を検索しています: {query}", tok_per_sec=0,
                             gen_tokens=0, prompt_tokens=None, context_max=None)
                     from app.models_mgmt import context_budget
@@ -2042,8 +2160,11 @@ async def _research_for_code(job: jobs.Job, buf: dict, conv_id: str, query: str,
     OpenCode のモデルを追い出す。レビュー指摘 2026-11-18）。量は limit_chars まで。
     失敗しても OpenCode の作業は止めない（調べた結果なしで続ける）。
     """
+    from app.security.offline import external_research_blocked
     from app.workflows.assistant_planner import decide
 
+    if external_research_blocked():
+        return ""   # オフライン調査: 調べずに OpenCode へ渡す
     code_meta = dict(buf.get("meta") or {})
     try:
         job.log("progress", phase="code_research", label="OpenCode に渡す前に調べています", iteration=0, details={})
@@ -2333,6 +2454,16 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
     allowed_modes = {"auto", "chat", "web", "academic", "deep", "research", "code"}
     if body.mode not in allowed_modes:
         raise HTTPException(status_code=422, detail="未対応のチャットモードです")
+    if conv.confidential_at is not None:
+        # 秘密の会話: OpenCode（ネットワークありの箱）へは流さない。外部のモデルを選んでいてもローカルで答える
+        from app.security import offline
+
+        if body.mode == "code":
+            raise HTTPException(status_code=409, detail=offline.OPENCODE_REFUSAL)
+        try:
+            body.base_url, body.model = offline.local_target(body.base_url, body.model)
+        except offline.LocalModelUnavailable as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     if body.mode == "code" and conv_id in _reverting:
         raise HTTPException(status_code=409, detail="変更を取り消しています。終わってから送ってください")
     if body.mode == "code" and db.query(ChatMessage).filter(

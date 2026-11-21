@@ -17,6 +17,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from app.security.offline import ExternalResearchBlocked
 from app.web_collector import egress, extract
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -181,6 +182,8 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
             else:
                 return _page(url, "http_error", final_url=current, error="リダイレクトが多すぎます")
     except egress.EgressRejected as exc:
+        return _page(url, "security_rejected", final_url=current, error=str(exc))
+    except ExternalResearchBlocked as exc:  # オフライン調査（取得の前に止まった）
         return _page(url, "security_rejected", final_url=current, error=str(exc))
     except httpx.TimeoutException:
         return _page(url, "timeout", final_url=current, error=f"{timeout} 秒で応答がありません")

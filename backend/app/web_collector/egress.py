@@ -58,6 +58,9 @@ def is_public(address: str) -> bool:
 
 async def resolve_public(host: str, port: int, policy: Policy = DEFAULT_POLICY) -> list[str]:
     """名前を解決し、**すべて**が公開のアドレスなら返す。1 つでも内部なら拒否（混ぜて返す DNS への備え）。"""
+    from app.security.offline import ensure_external_allowed
+
+    ensure_external_allowed(f"接続 {host}:{port}")  # オフライン調査（アシスタントの調査の中だけ）。名前解決の前に止める
     if port not in policy.ports:
         raise EgressRejected(f"ポート {port} への接続は許可していません")
     host = host.strip("[]")

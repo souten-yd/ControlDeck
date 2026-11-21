@@ -137,7 +137,7 @@ interface PersistMsg {
   error?: string;
   meta?: { changes?: CodeChange[]; reverted?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
-    tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode };
+    tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode; confidential?: boolean };
 }
 
 interface Msg {
@@ -155,6 +155,8 @@ interface Msg {
   todos?: OpenCodeTodo[];
   /** 回答した機能（"code" = OpenCode）。保存した発言から */
   answeredBy?: string;
+  /** オフライン調査（外部へ調査しない）で答えた。外部の検索・取得はしていない */
+  confidentialAnswer?: boolean;
   /** OpenCode のエージェント（plan は計画だけ。何も変えない） */
   agent?: "build" | "plan";
   /** 自動の会話から、LLM の判断で OpenCode に任せた作業（2026-11-20 利用者「自動でも適切に OpenCode へ。すぐ移る」） */
@@ -212,6 +214,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     reverted: m.meta?.reverted,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
+    confidentialAnswer: m.meta?.confidential,
     agent: m.meta?.agent,
     autoHandoff: m.meta?.auto_handoff?.task,
     timeline: m.meta?.timeline,
@@ -333,6 +336,10 @@ export default function AssistantChat() {
     queryFn: () => api<{ policy: { assistant_name: string } }>("/models/runtime-environment"),
   });
   const assistantName = runtimeEnvironment?.policy.assistant_name || "AIアシスタント";
+  // 「この会話は秘密」（会話ごと・一方通行）。押した会話は外部への調査と外部の AI を使わない。解除の操作は無い
+  const [confidential, setConfidential] = useState(false);
+  const [newSecret, setNewSecret] = useState(false);   // 新しい会話を、最初から秘密で始める
+  const [confirmSecret, setConfirmSecret] = useState(false);
   const { data: appMeta } = useMeta();
   const opencodeAvailable = !!appMeta?.enabled_features?.includes("opencode-v2") && can("terminal.use");
   // 覚えていた機能が今は使えない（OpenCode を無効にした・権限が無い）ときは、選択を消さずに自動で動かす
@@ -371,8 +378,9 @@ export default function AssistantChat() {
         if (!id) {
           return; // 空の下書きは送信されるまでDBへ登録しない
         }
-        const data = await api<{ messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
+        const data = await api<{ conversation?: { confidential?: boolean }; messages: PersistMsg[] }>(`/chat/conversations/${id}/messages`);
         if (cancelled) return;
+        setConfidential(!!data.conversation?.confidential);
         const fetchedAt = performance.now();
         const restored = data.messages.map((m) => restoreMessage(id, m));
         if (restored.length > 0) setMessages(restored);
@@ -396,6 +404,7 @@ export default function AssistantChat() {
         // 会話が消えていたら作り直す
         localStorage.removeItem(LS_CONV);
         setConvId("");
+        setConfidential(false);
       }
     })();
     return () => {
@@ -599,6 +608,7 @@ export default function AssistantChat() {
             return { ...m, permissions: list.some((p) => p.id === item.id)
               ? list.map((p) => (p.id === item.id ? { ...p, ...item } : p)) : [...list, item] };
           });
+          else if (d.type === "progress" && d.phase === "offline") patchMsg((m) => ({ ...m, confidentialAnswer: true }));
           else if (d.type === "progress") patchMsg((m) => ({
             ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration, details: d.details }],
           }));
@@ -696,6 +706,7 @@ export default function AssistantChat() {
     localStorage.setItem(LS_CONV, id);
     setAttachments([]); // 別の会話の添付を持ち越さない
     setConvId(id);
+    setConfidential(!!data.conversation.confidential);
     setConversationTitle(data.conversation.title);
     setMessages(restored);
     restoreCodeProject(data.messages, id);
@@ -723,6 +734,7 @@ export default function AssistantChat() {
     wsRef.current?.close();
     localStorage.removeItem(LS_CONV);
     setConvId("");
+        setConfidential(false);
     setConversationTitle(NEW_CHAT_TITLE);
     setMessages([]);
     setAttachments([]); // 前の会話の添付を持ち越さない
@@ -757,6 +769,7 @@ export default function AssistantChat() {
         wsRef.current?.close();
         localStorage.removeItem(LS_CONV);
         setConvId("");
+        setConfidential(false);
         setConversationTitle(NEW_CHAT_TITLE);
         setMessages([]);
         setAttachments([]); // 消した会話の添付を持ち越さない
@@ -782,6 +795,7 @@ export default function AssistantChat() {
     wsRef.current?.close();
     localStorage.removeItem(LS_CONV);
     setConvId("");
+        setConfidential(false);
     setConversationTitle(NEW_CHAT_TITLE);
     setMessages([]);
     setAttachments([]);
@@ -886,14 +900,34 @@ export default function AssistantChat() {
     }
   };
 
+  const makeSecret = async () => {
+    setConfirmSecret(false);
+    if (!convId) return;
+    try {
+      await api(`/chat/conversations/${convId}/confidential`, { method: "POST" });
+      setConfidential(true);
+      wsRef.current?.close();
+      // 止めた生成と「秘密にしました」の一言を読み直す
+      const data = await api<{ conversation: ConversationSummary; messages: PersistMsg[] }>(`/chat/conversations/${convId}/messages`);
+      setMessages(data.messages.map((message) => restoreMessage(convId, message)));
+      setBusy(false);
+      qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      show("この会話を秘密にしました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "秘密にできませんでした", "error");
+    }
+  };
+
   const convIdRef = useRef(convId);
   convIdRef.current = convId;
   const ensureConversation = async (): Promise<string> => {
     if (convIdRef.current) return convIdRef.current;
-    const c = await api<{ id: string }>("/chat/conversations", { method: "POST" });
+    const c = await api<{ id: string }>("/chat/conversations", { method: "POST", json: { confidential: newSecret } });
     localStorage.setItem(LS_CONV, c.id);
     convIdRef.current = c.id;
     setConvId(c.id);
+    setConfidential(newSecret);
+    setNewSecret(false);
     qc.invalidateQueries({ queryKey: ["chat-conversations"] });
     return c.id;
   };
@@ -1793,6 +1827,16 @@ export default function AssistantChat() {
       <HistorySheet open={historyOpen} onClose={() => setHistoryOpen(false)}>
         <ConversationHistory {...historyProps} header={<HistoryHeader action={<HistoryCloseButton onClose={() => setHistoryOpen(false)} />} />} />
       </HistorySheet>
+      {confirmSecret && (
+        <ConfirmDialog
+          title="この会話を秘密にする"
+          message="解除できません。この会話では外部への調査と外部の AI を使いません。いま動いている生成は止めます。"
+          confirmLabel="秘密にする"
+          danger={false}
+          onConfirm={() => void makeSecret()}
+          onClose={() => setConfirmSecret(false)}
+        />
+      )}
       {deletingConversation && (
         <ConfirmDialog
           title="会話を削除"
@@ -1914,6 +1958,30 @@ export default function AssistantChat() {
                 {VOICE_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
               </select>
             </label>
+            <div data-secret-conversation className="min-w-0 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs leading-relaxed dark:border-zinc-700 dark:bg-zinc-900 sm:col-span-2">
+              {confidential ? (
+                <p className="text-zinc-600 dark:text-zinc-300">
+                  <span className="font-medium text-zinc-800 dark:text-zinc-100">🔒 秘密の会話</span>
+                  　この会話では外部への調査と外部の AI を使いません（解除できません）。
+                </p>
+              ) : convId ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setConfirmSecret(true)}
+                    className="min-h-11 rounded-lg border border-zinc-300 px-3 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800">
+                    この会話を秘密にする
+                  </button>
+                  <span className="min-w-0 flex-1 text-zinc-500 dark:text-zinc-400">押すと、外部への調査と外部の AI を使わなくなります。</span>
+                </div>
+              ) : (
+                <label className="flex min-h-11 min-w-0 items-center gap-2">
+                  <input type="checkbox" checked={newSecret} onChange={(e) => setNewSecret(e.target.checked)} className="h-5 w-5 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-zinc-800 dark:text-zinc-100">秘密の会話として始める</span>
+                    <span className="block text-zinc-500 dark:text-zinc-400">外部への調査と外部の AI を使いません（始めたあとは解除できません）。</span>
+                  </span>
+                </label>
+              )}
+            </div>
             {effectiveMode === "deep" && (
               <div className="space-y-2 sm:col-span-2">
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -2237,6 +2305,11 @@ export default function AssistantChat() {
                     label={modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}
                     title={`機能: ${modeOptions.find((o) => o.id === modeChoice)?.label ?? currentMode.label}（タップで自動に戻す）`} kind="mode"
                     onClick={() => { if (returnChoiceRef.current) finishOneShot(); else chooseMode("auto"); }} />
+                )}
+                {(confidential || (!convId && newSecret)) && (
+                  <ComposerPill icon="🔒" label="秘密の会話" tone="amber"
+                    title="秘密の会話: 外部への調査と外部の AI を使いません（タップで設定を開く）" kind="secret"
+                    onClick={() => setShowSettings(true)} />
                 )}
                 {planActive ? (
                   <ComposerPill icon="📋" label="プラン" tone="plan"
@@ -2624,6 +2697,11 @@ function MessageBubble({
         {msg.autoHandoff !== undefined && (
           <p data-auto-handoff className="inline-flex max-w-full items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold leading-5 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-200">
             <span aria-hidden>🛠️</span><span className="truncate">自動で OpenCode に任せました{msg.autoHandoff ? `：${msg.autoHandoff}` : ""}</span>
+          </p>
+        )}
+        {msg.confidentialAnswer && (
+          <p data-secret-notice role="status" className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            🔒 外部への調査は止めています（秘密の会話）
           </p>
         )}
         {msg.agent === "plan" && (

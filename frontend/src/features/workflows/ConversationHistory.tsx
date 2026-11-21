@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconCompose, IconSearch, IconX } from "../../components/icons";
 
-export interface ConversationSummary { id: string; title: string; updated_at: string; archived?: boolean }
+export interface ConversationSummary { id: string; title: string; updated_at: string; archived?: boolean; confidential?: boolean }
 
 export const HISTORY_GROUPS = ["今日", "昨日", "過去7日間", "それ以前"] as const;
 export type HistoryGroup = (typeof HISTORY_GROUPS)[number];

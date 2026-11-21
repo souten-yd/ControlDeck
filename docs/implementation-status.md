@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-21 AI アシスタント: 会話ごとの「この会話は秘密」（外部への調査・外部の AI を使わない。一方通行）（段 1）
+
+- 利用者「AI に利用を制限させるのではなく、根本的につながらないように」。続けて「途中から秘密の話をしたくなって押すことはよくある。一度押した会話の文脈には秘密が入っているので、解除して外部へ調査に出られてはいけない」。設計は Opus、実装は Sonnet。全体の設定ではなく**会話ごと・解除なし**。
+- 印: `conversations.confidential_at`（Alembic `b5e1c7a93d20`）。`POST /chat/conversations/{id}/confidential`（一方通行。`confidential:false` は 409。PATCH に外す欄は無く、ORM の `before_update` も付いた印を消す更新を拒む）、`POST /chat/conversations` は `{confidential:true}` で最初から秘密。監査 `chat.conversation.confidential`（`at: create|midway`・止めた Job 数）。分岐した会話も秘密を引き継ぐ。途中で押すと、動いている生成の Job を取り消し（OpenCode の回もこの取り消しで interrupt される）、会話に「秘密にしました」の一言を残す。
+- 強制の本体は通信の直前 `app/security/offline.py`（`ensure_external_allowed` → `ExternalResearchBlocked`）: `web_collector/egress.resolve_public`、`workflows/nodes.node_web_search`（SearXNG の起動も止める）、`workflows/external_search._client`（学術・特許・市場の全 API）、`workflows/github_research.inspect_repository`。止めるのは contextvar `confidential_scope()` の中だけ。入口は `chat_persist._run_chat_job`（会話の実行。DB の印を 1 回見る）と `chat_router.chat_search`（`conversation_id` つき）。特許の公報の取得・Workflow・自動更新などはスコープの外なので止まらない。
+- 外部の LLM: 秘密の会話は送信時（`_start_send`・`/chat/route`）に `local_target` で、`cloud:` や外部の endpoint をローカルの既定のモデルへ替える（無ければ 409「ローカルのモデルが使えないため答えられません」。外部へ流さない）。`RuntimeChatRequest` に `confidential` の欄があるとき（gateway の変更）だけ、`x-control-deck-confidential` が付く（`confidential_request_kwargs`）。
+- 補助: 自動の会話は web_search の道具を出さない。明示の Web・学術・調査モードは普通の会話にして断り書き。Deep Research は rag・local_code だけでレポート冒頭に断り書き。OpenCode へは任せない（送信は 409「秘密の会話の OpenCode は次の版で対応します」、自動の引き継ぎもしない）。
+- 画面: AI 設定のシートに「この会話を秘密にする」（確認つき）、新しい会話では「秘密の会話として始める」、秘密の会話には入力欄に 🔒 の札。解除の操作は無い。
+- 未対応（段 2）: OpenCode の箱（host network・プロジェクト×利用者で会話の間共有）。`docs/HANDOFF-opencode-dev-environment.md` の課題 12。
+- 検証: `backend/tests/test_offline_research.py`（19 件）、E2E `assistant-offline-research`（1280・320。撮影は `~/ControlDeck-評価/2026-11-21-秘密の会話-画面/`）。
+
 ## 2026-11-21 発明の内容を外部の LLM へ出さない守り（ゲートウェイの層・Patent の流れ・埋め込み）
 
 - 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に」「Patent の特許フローに

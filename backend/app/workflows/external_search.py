@@ -20,10 +20,18 @@ class SearchError(Exception):
     pass
 
 
+def _client(**kwargs) -> httpx.AsyncClient:
+    """外部の学術・特許・市場 API へ出る唯一のクライアント。オフライン調査がオンなら通信の前に止める。"""
+    from app.security.offline import ensure_external_allowed
+
+    ensure_external_allowed("学術・特許・市場の検索")
+    return httpx.AsyncClient(**kwargs)
+
+
 async def arxiv(query: str, limit: int) -> list[dict]:
     params = {"search_query": f"all:{query}", "start": "0", "max_results": str(limit),
               "sortBy": "relevance", "sortOrder": "descending"}
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with _client(timeout=30, follow_redirects=True) as client:
         r = await client.get("https://export.arxiv.org/api/query", params=params)
     ns = {"a": "http://www.w3.org/2005/Atom"}
     root = ET.fromstring(r.text)
@@ -41,7 +49,7 @@ async def arxiv(query: str, limit: int) -> list[dict]:
 
 
 async def crossref(query: str, limit: int) -> list[dict]:
-    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=30, headers={"User-Agent": UA}) as client:
         r = await client.get("https://api.crossref.org/works", params={"query": query, "rows": str(limit)})
     if r.status_code >= 400:
         raise SearchError(f"Crossref エラー {r.status_code}")
@@ -68,7 +76,7 @@ async def patent(query: str, limit: int, api_key: str) -> list[dict]:
         "f": ["patent_id", "patent_title", "patent_abstract", "patent_date", "assignees.assignee_organization"],
         "o": {"size": limit},
     }
-    async with httpx.AsyncClient(timeout=30, headers={"X-Api-Key": api_key, "User-Agent": UA}) as client:
+    async with _client(timeout=30, headers={"X-Api-Key": api_key, "User-Agent": UA}) as client:
         r = await client.post("https://search.patentsview.org/api/v1/patent/", content=_json.dumps(body))
     if r.status_code >= 400:
         raise SearchError(f"PatentsView エラー {r.status_code}: {r.text[:150]}")
@@ -87,7 +95,7 @@ async def patent(query: str, limit: int, api_key: str) -> list[dict]:
 
 async def openalex(query: str, limit: int) -> list[dict]:
     """OpenAlex（2.5億件超・全分野・キー不要）。"""
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=25, headers={"User-Agent": UA}) as client:
         r = await client.get("https://api.openalex.org/works", params={"search": query, "per-page": limit, "mailto": "research@example.com"})
     if r.status_code >= 400:
         raise SearchError(f"OpenAlex エラー {r.status_code}")
@@ -112,7 +120,7 @@ async def openalex(query: str, limit: int) -> list[dict]:
 
 async def semanticscholar(query: str, limit: int) -> list[dict]:
     """Semantic Scholar（キー不要・レート制限あり）。"""
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=25, headers={"User-Agent": UA}) as client:
         r = await client.get("https://api.semanticscholar.org/graph/v1/paper/search",
                              params={"query": query, "limit": limit, "fields": "title,abstract,url,year,authors,citationCount,openAccessPdf"})
     if r.status_code == 429:
@@ -134,7 +142,7 @@ async def semanticscholar(query: str, limit: int) -> list[dict]:
 
 async def europepmc(query: str, limit: int) -> list[dict]:
     """Europe PMC（生医学・ライフサイエンス中心・キー不要）。"""
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=25, headers={"User-Agent": UA}) as client:
         r = await client.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
                              params={"query": query, "format": "json", "pageSize": limit})
     if r.status_code >= 400:
@@ -155,7 +163,7 @@ async def doaj(query: str, limit: int) -> list[dict]:
     """DOAJ（オープンアクセス学術誌・キー不要）。"""
     from urllib.parse import quote
 
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=25, headers={"User-Agent": UA}) as client:
         r = await client.get(f"https://doaj.org/api/search/articles/{quote(query)}", params={"pageSize": limit})
     if r.status_code >= 400:
         raise SearchError(f"DOAJ エラー {r.status_code}")
@@ -175,7 +183,7 @@ async def doaj(query: str, limit: int) -> list[dict]:
 
 async def dblp(query: str, limit: int) -> list[dict]:
     """DBLP（計算機科学の書誌・キー不要）。"""
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=25, headers={"User-Agent": UA}) as client:
         r = await client.get("https://dblp.org/search/publ/api", params={"q": query, "format": "json", "h": limit})
     if r.status_code >= 400:
         raise SearchError(f"DBLP エラー {r.status_code}")
@@ -198,7 +206,7 @@ async def dblp(query: str, limit: int) -> list[dict]:
 
 async def market(query: str, limit: int) -> list[dict]:
     """SEC EDGAR 全文検索（企業の開示文書＝市場/競合調査に有用）。"""
-    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": UA}) as client:
+    async with _client(timeout=30, headers={"User-Agent": UA}) as client:
         r = await client.get("https://efts.sec.gov/LATEST/search-index", params={"q": query})
     if r.status_code >= 400:
         raise SearchError(f"SEC EDGAR エラー {r.status_code}")

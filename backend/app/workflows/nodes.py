@@ -2112,6 +2112,10 @@ async def node_web_search(config: dict, ctx: dict) -> dict:
     engine = str(config.get("engine", "duckduckgo"))
     limit = max(1, min(int(config.get("max_results", 8) or 8), 30))
     results: list[dict] = []
+    # オフライン調査（アシスタントの調査の中だけ）。SearXNG はローカルでも中で Web を引くので、起動も検索も止める
+    from app.security.offline import ensure_external_allowed
+
+    ensure_external_allowed("Web 検索")
 
     if engine == "searxng":
         from app.workflows import searxng

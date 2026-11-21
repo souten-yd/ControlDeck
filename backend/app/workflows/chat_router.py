@@ -23,10 +23,15 @@ from app.database import SessionLocal, get_db
 from app.models import User, Workflow, WorkflowExecution
 from app.security.deps import authenticate_websocket, require_permission
 from app.workflows import catalog, engine
+from app.security.offline import NOTICE as OFFLINE_NOTICE
+from app.security.offline import confidential_request_kwargs, confidential_scope, external_research_blocked
 from app.workflows import external_search as ext
 from app.workflows.nodes import NodeError, node_web_search
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+OFFLINE_SOURCES = ("rag", "local_code")   # オフライン調査中に Deep Research が使ってよい情報源
 
 
 def _keep_alive() -> str:
@@ -95,7 +100,7 @@ async def _llm(
         thinking=think, disable_thinking=disable_thinking,
         reasoning_effort=None if disable_thinking else think_spec.reasoning_effort,
         response_format=response_format, keep_alive=_keep_alive(), context_window=context_window,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=timeout_seconds, **confidential_request_kwargs(),
     )
     try:
         return await provider_for_base_url(base_url).complete(request)
@@ -186,6 +191,7 @@ class SearchBody(BaseModel):
     source_types: list[str] = Field(default_factory=list, max_length=8)
     rag_collection: str = Field(default="", max_length=128)
     local_project_path: str = Field(default="", max_length=4096)
+    conversation_id: str = Field(default="", max_length=64)   # 秘密の会話なら、外部の検索をしない
     max_rounds: int = Field(default=0, ge=0, le=6)
     max_search_calls: int = Field(default=0, ge=0, le=48)
     max_evidence_chars: int = Field(default=0, ge=0, le=500000)
@@ -226,6 +232,12 @@ async def searxng_warmup(user: User = Depends(require_permission("workflows.run"
 async def chat_search(body: SearchBody, user: User = Depends(require_permission("workflows.run"))):
     """チャット用の検索。mode=web/academic は結果一覧、deep は引用付きレポートを返す。"""
     limit = max(1, min(body.max_results, 20))
+    if body.conversation_id and _is_confidential(body.conversation_id, user):
+        # 秘密の会話を指定した検索。外部の検索は断り、Deep は外部の情報源なしで動かす（通信の直前の検査も効く）
+        if body.mode in ("web", "academic"):
+            raise HTTPException(status_code=409, detail=OFFLINE_NOTICE)
+        with confidential_scope():
+            return await _deep_search(body) if body.mode == "deep" else _unknown_mode(body)
     if body.mode == "academic":
         fed = await ext.federated(body.query, limit)
         return {"mode": "academic", "results": fed["results"][: limit * 3], "errors": fed["errors"]}
@@ -237,13 +249,28 @@ async def chat_search(body: SearchBody, user: User = Depends(require_permission(
             raise HTTPException(status_code=502, detail=str(e))
         return {"mode": "web", "results": results}
 
-    if body.mode != "deep":
-        raise HTTPException(status_code=422, detail=f"未知の検索モード: {body.mode}")
-    return await _deep_search(body)
+    return await _deep_search(body) if body.mode == "deep" else _unknown_mode(body)
+
+
+def _unknown_mode(body: "SearchBody"):
+    raise HTTPException(status_code=422, detail=f"未知の検索モード: {body.mode}")
+
+
+def _is_confidential(conversation_id: str, user: User) -> bool:
+    """この利用者の会話で、秘密の印があるか。"""
+    from app.database import SessionLocal
+    from app.models import Conversation
+
+    with SessionLocal() as db:
+        conv = db.get(Conversation, conversation_id)
+        return conv is not None and conv.owner_user_id == user.id and conv.confidential_at is not None
 
 
 async def _deep_search(body: SearchBody, progress=None) -> dict:
-    """反復型Deep Research。検索実装とruntimeを共通engineへ注入する。"""
+    """反復型Deep Research。検索実装とruntimeを共通engineへ注入する。
+
+    秘密の会話のスコープの中なら、情報源は添付・RAG とローカルコードだけ（外部の情報源は渡さない）。
+    万一外へ出ようとしても、通信の直前（security/offline.py）で止まる。"""
     from app.models_mgmt import runtime_policy
     from app.models_mgmt.runtime_provider import resolve_target
     from app.workflows import deep_research
@@ -277,6 +304,9 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
     evidence_chars = body.max_evidence_chars or preset[2]
     report_tokens = body.max_report_tokens or preset[3]
     requested_sources = body.source_types or ["web", "academic", "github", "direct"]
+    if external_research_blocked():
+        # 外部の情報源を落とす。空になっても LLM の計画に任せず、ローカルだけを明示する（deep_research は空だと計画を採用する）
+        requested_sources = [value for value in requested_sources if value in OFFLINE_SOURCES] or list(OFFLINE_SOURCES)
     if budget is not None:
         context_state = {**context_state, "budget_window": budget.window, "budget_known": budget.known,
                          "evidence_chars": evidence_chars, "report_tokens": report_tokens}
@@ -344,6 +374,9 @@ async def _deep_search(body: SearchBody, progress=None) -> dict:
                 {"context_profile": context_state},
             )
     result["research"]["context_profile"] = context_state
+    if external_research_blocked():
+        result["research"]["offline_research"] = True
+        result["report"] = f"> {OFFLINE_NOTICE}。添付・資料とローカルのコードだけで調べました。\n\n{result.get('report', '')}"
     return result
 
 
