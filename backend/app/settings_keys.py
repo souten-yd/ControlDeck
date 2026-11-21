@@ -3,9 +3,9 @@ OpenRouter のキーも。今あるキーを全部移動して、消さないよ
 
 キーの置き場（暗号化して保存）は変えない。ここは各置き場の読み書きをまとめる窓口で、今あるキーはそのまま見える:
 - クラウドの AI（OpenRouter・OpenAI・Anthropic・Gemini・OpenAI 互換）: app/models_mgmt/cloud.py
-- Hugging Face のトークン: app/models_mgmt/hf.py（これまで画面が無かった）
 - 特許・論文の公開データ（EPO・USPTO・特許庁）: app/knowledge/sources.py
-- Workflow のシークレット（{{secrets.名前}}）: workflow_secrets 表
+Hugging Face のトークンと Workflow のシークレットはここに出さない（2026-11-21 利用者「モデルのダウンロードと Workflow のシークレットは設定不要」）。
+Workflow のシークレットは Workflow の画面で管理する。
 
 キーの値は返さない（設定済みか・末尾 4 文字だけ）。監査にも値は残さない。
 """
@@ -47,16 +47,6 @@ def _cloud() -> list[dict]:
     return out
 
 
-def _hf() -> dict:
-    from app.models_mgmt import hf
-
-    has = hf.has_token()
-    return {"id": "hf", "group": "models", "name": "Hugging Face", "note": "制限付き（gated）のモデルをダウンロードするときのトークン",
-            "signup": "https://huggingface.co/settings/tokens", "configured": has, "hint": "",
-            "fields": [{"name": "token", "label": "アクセストークン", "configured": has}],
-            "used_by": "Models の Hugging Face からのダウンロード", "manage": "/models"}
-
-
 def _sources() -> list[dict]:
     from app.knowledge import sources
 
@@ -72,24 +62,13 @@ def _sources() -> list[dict]:
     return out
 
 
-def _secrets(db) -> list[dict]:
-    from app.models import WorkflowSecret
-
-    rows = db.query(WorkflowSecret).order_by(WorkflowSecret.name).all()
-    return [{"id": f"secret:{r.name}", "group": "workflow", "name": r.name, "note": "Workflow で {{secrets." + r.name + "}} として使う",
-             "signup": "", "configured": True, "hint": "", "fields": [{"name": "value", "label": "値", "configured": True}],
-             "used_by": "Workflow", "manage": "/workflows", "updated_at": str(r.updated_at or "")} for r in rows]
-
-
 @router.get("")
 def list_keys(user: User = MANAGE, db=Depends(get_db)):
     groups = [
         {"id": "ai", "label": "クラウドの AI", "description": "OpenRouter など。キーを入れた後、使うかどうかとモデルは Models で選ぶ"},
         {"id": "patent", "label": "特許・論文の公開データ", "description": "EPO・USPTO・特許庁。OpenAlex・RSS・GDELT はキーなしで使える"},
-        {"id": "models", "label": "モデルのダウンロード", "description": "Hugging Face"},
-        {"id": "workflow", "label": "Workflow のシークレット", "description": "Workflow の中で {{secrets.名前}} として使う値"},
     ]
-    return {"groups": groups, "keys": [*_cloud(), *_sources(), _hf(), *_secrets(db)]}
+    return {"groups": groups, "keys": [*_cloud(), *_sources()]}
 
 
 class KeyBody(BaseModel):
@@ -112,12 +91,6 @@ def _apply(key_id: str, values: dict[str, str], db) -> None:
             cloud.save_provider(name, {"api_key": values["api_key"]})
         except cloud.CloudError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-    elif key_id == "hf":
-        from app.models_mgmt import hf
-
-        if set(values) != {"token"} or len(values["token"]) > 200:
-            raise HTTPException(status_code=422, detail="トークンの形式が不正です")
-        hf.set_token(values["token"])
     elif kind == "source":
         from app.knowledge import sources
 
@@ -128,12 +101,6 @@ def _apply(key_id: str, values: dict[str, str], db) -> None:
             sources.set_keys(values)
         except sources.SourceError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    elif kind == "secret":
-        from app.workflows.router import upsert_secret
-
-        if set(values) != {"value"}:
-            raise HTTPException(status_code=422, detail="値だけを保存できます")
-        upsert_secret(db, name, values["value"])
     else:
         raise HTTPException(status_code=404, detail="知らないキーです")
 
@@ -157,10 +124,6 @@ def delete_key(key_id: str, request: Request, user: User = MANAGE, db=Depends(ge
             cloud.save_provider(name, {"api_key": ""})
         except cloud.CloudError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-    elif key_id == "hf":
-        from app.models_mgmt import hf
-
-        hf.set_token("")
     elif kind == "source":
         from app.knowledge import sources
 
@@ -168,13 +131,6 @@ def delete_key(key_id: str, request: Request, user: User = MANAGE, db=Depends(ge
         if keys is None:
             raise HTTPException(status_code=404, detail="知らない取得先です")
         sources.set_keys({k: "" for k in keys})
-    elif kind == "secret":
-        from app.models import WorkflowSecret
-
-        row = db.query(WorkflowSecret).filter(WorkflowSecret.name == name).first()
-        if row is not None:
-            db.delete(row)
-            db.commit()
     else:
         raise HTTPException(status_code=404, detail="知らないキーです")
     audit.record(db, "settings.key_delete", user=user, resource_type="key", resource_id=key_id, request=request)

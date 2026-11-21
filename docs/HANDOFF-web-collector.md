@@ -61,6 +61,9 @@
 
 ## 7. 作業記録（新しい順に追記）
 
+- 2026-11-21 Claude: 利用者「モデルのダウンロードと Workflow のシークレットは設定不要」→ Settings「API キー」から Hugging Face と Workflow のシークレットを外した（クラウドの AI と特許の公開データだけ）。
+  Workflow のシークレットは Workflow の画面で従来どおり。保存済みの値は消していない。
+
 - 2026-11-21 Claude: 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめてほしい。OpenRouter のキーも。今あるキーを全部移動、消さないように」。
   Settings に「API キー」（`/settings/keys`、`backend/app/settings_keys.py`・`frontend/src/features/settings/KeysSettings.tsx`）。
   キーの置き場（cloud.py・hf.py・sources.py・workflow_secrets 表）は**変えずに**読み書きをまとめた（今あるキーはそのまま出る・消していない）。値は返さない。
