@@ -420,3 +420,16 @@ export const IconKey = (p: SVGProps<SVGSVGElement>) => (
     <path d="m10.85 12.15 8.65-8.65M17 6l2 2M15 8l2 2" />
   </Icon>
 );
+
+export const IconCopy = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15V6a2 2 0 0 1 2-2h8" />
+  </Icon>
+);
+
+export const IconCheck = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </Icon>
+);
