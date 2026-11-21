@@ -54,6 +54,9 @@ class RuntimeChatRequest:
     context_window: int | None = None
     timeout_seconds: int = 300
     local_only: bool = False
+    # 発明の内容を含む要求。local_only と同じく cloud: を拒否し、ゲートウェイにも印を付けて二重に守る。
+    # local_only=True も機密扱い（loopback の検査は local_only のときだけ）。
+    confidential: bool = False
     # ゲートウェイへ送るときに名乗る呼び出し元（外部モデルの許可はこの単位）。
     # 既定は許可の対象外（internal → ゲートウェイでは api 扱い）。AI アシスタントの経路だけが
     # 明示的に "assistant" を名乗る。Add-on などが黙ってアシスタントの許可を使わないため。
@@ -157,6 +160,8 @@ class LlmRuntimeProvider(ABC):
         return True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
+        if request.confidential and str(request.model or "").startswith("cloud:"):
+            raise RuntimeProviderError("発明の内容を含むため、外部のモデルへは送れません")
         if request.local_only:
             # ゲートウェイは loopback だが、cloud: はそこから外部へ出る。ローカル専用の要求では通さない。
             if str(request.model or "").startswith("cloud:"):
@@ -189,7 +194,8 @@ def _request_headers(request: RuntimeChatRequest) -> dict[str, str]:
     from app.models_mgmt import gateway
 
     return {"Authorization": f"Bearer {gateway.internal_api_key(request.base_url, request.api_key)}",
-            **gateway.client_headers(request.base_url, request.client)}
+            **gateway.client_headers(request.base_url, request.client),
+            **gateway.confidential_headers(request.base_url, request.confidential or request.local_only)}
 
 
 def _http_error(request: RuntimeChatRequest, status_code: int, body: bytes | str = b"") -> RuntimeProviderError:

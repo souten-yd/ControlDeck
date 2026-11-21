@@ -49,9 +49,9 @@ def test_rag_build_and_query(monkeypatch):
     monkeypatch.setattr(rag, "embed", fake_embed)
 
     rag.delete_collection("testcol")
-    run(rag.build("testcol", "りんごは赤い果物\n\nばななは黄色い果物\n\ncar is a vehicle", "t", "http://x/v1", "m", "", reset=True))
+    run(rag.build("testcol", "りんごは赤い果物\n\nばななは黄色い果物\n\ncar is a vehicle", "t", "http://127.0.0.1:1/v1", "m", "", reset=True))
     # ベクトル検索で最上位が「りんご」チャンクになること
-    result = run(rag.query("testcol", "りんご", top_k=1, base_url="http://x/v1", model="m", api_key=""))
+    result = run(rag.query("testcol", "りんご", top_k=1, base_url="http://127.0.0.1:1/v1", model="m", api_key=""))
     assert result["count"] == 1
     assert "りんご" in result["matches"][0]["text"]
     assert result["matches"][0]["score"] > 0
@@ -202,7 +202,7 @@ def test_cpu_reranker_is_preferred_and_its_scores_do_not_gate(monkeypatch):
 
     monkeypatch.setattr(rag, "embed", fake_embed)
     rag.delete_collection("gatecol")
-    run(rag.build("gatecol", "\n\n".join(f"資料{i}の本文" for i in range(6)), "t", "http://x/v1", "m", "", reset=True))
+    run(rag.build("gatecol", "\n\n".join(f"資料{i}の本文" for i in range(6)), "t", "http://127.0.0.1:1/v1", "m", "", reset=True))
     seen = {}
     for engine, expected in (("ruri-reranker", 1), ("llama", 0)):
         async def fake_rerank(question, found, top_k, engine=engine, **_):

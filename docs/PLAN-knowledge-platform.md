@@ -170,6 +170,11 @@ PatentBuddy（main と Draft #10・#23・#24・#29〜#40、`docs/knowledge-graph
    - 通知（Web Push は Apple・Google を通る）: 件数と「期限が近い案件があります」だけ。案件名・本文を書かない
    - MCP: 相手は cloud とみなす（機密を返さない）
 4. **AI はローカル専用**: 案件・ヒアリング・知識抽出・アイデアは Host 管理の GGUF だけ。重い処理は Jobs と GPU の順番待ちに乗せる。
+   - **強制の仕組み（二重の守り、2026-11-21）**: Patent の流れの LLM 呼び出しは `local_only=True`（機密扱い）で、`RuntimeChatRequest._prepare` が
+     `cloud:` を断る。さらにゲートウェイの層では、ヘッダ `x-control-deck-confidential: 1`（内部の呼び出しが `local_only`・`confidential` のとき付ける）が
+     あれば `cloud:` へ出る前に 403 で拒否し、ログに残す（本文なし）。呼び出しの網羅は `tests/test_confidential_local_only.py` が固定する。
+     埋め込みの宛先（`embed_base_url`）はループバックだけ。会話ごとの機密判定・AI アシスタントのモデルの強制は、重くなるため行わない
+     （アシスタントで外部のモデルを選ぶと会話・添付が送られる。画面に警告を出す）。
 5. **1 つの検索の入口**: 画面・Patent・アシスタント・MCP・ウォッチの順位付けは、すべて `knowledge/documents.search_documents` を通す（別の検索を作らない）。
 6. **UI**: ControlDeck の部品と ☰ のナビ。主操作 1 つ、内部の値は「詳細」へ。Patent の中は「資料 → 知識 → アイデア」の流れで、案件と行き来できる。
 7. **常駐の処理を増やさない**: ウォッチの起動は既存の保守の周期で「期限の来たものがあるか」だけを見る。重い処理は Jobs。

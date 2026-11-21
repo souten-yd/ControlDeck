@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import logging
 import re
 import secrets
 import uuid
@@ -234,6 +235,26 @@ CLIENT_HEADER = "x-control-deck-client"
 OPENCODE_CLIENT = "opencode"
 ASSISTANT_CLIENT = "assistant"
 
+# 発明の内容を含む要求の印（2026-11-21 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の
+# LLM へのアクセスを拒否する形に」）。ControlDeck 内部の呼び出しが付け、ゲートウェイは cloud: へ出す前に
+# 必ず拒否する。二重の守りの最後の層で、呼び出し元の許可（egress）より優先する。
+CONFIDENTIAL_HEADER = "x-control-deck-confidential"
+CONFIDENTIAL_REFUSAL = "発明の内容を含むため、外部のモデルへは送れません"
+_audit_log = logging.getLogger("control_deck.audit")
+
+
+def is_confidential_request(request: Request) -> bool:
+    return request.headers.get(CONFIDENTIAL_HEADER, "").strip().lower() in ("1", "true", "yes")
+
+
+def refuse_confidential_cloud(request: Request, model: str) -> None:
+    """機密の印がある要求を外部のモデルへ出さない。本文は残さず、呼び出し元とモデル名だけを記録する。"""
+    if not is_confidential_request(request):
+        return
+    _audit_log.warning("audit action=gateway.confidential_cloud_blocked caller=%s model=%s result=denied",
+                       request.headers.get(CLIENT_HEADER, "")[:32], str(model)[:120])
+    raise HTTPException(status_code=403, detail=CONFIDENTIAL_REFUSAL)
+
 
 def internal_api_key(base: str, api_key: str | None = None) -> str:
     """ControlDeck 内部からゲートウェイへ送るときの鍵。
@@ -255,6 +276,11 @@ def client_headers(base: str, caller: str) -> dict[str, str]:
     （利用者が指定した外部の OpenAI 互換 endpoint など）へは付けない。
     """
     return {CLIENT_HEADER: caller} if is_gateway_url(base) else {}
+
+
+def confidential_headers(base: str, confidential: bool) -> dict[str, str]:
+    """機密の印。ゲートウェイ宛にだけ付ける（外部の endpoint へ内部の印を出さない）。"""
+    return {CONFIDENTIAL_HEADER: "1"} if confidential and is_gateway_url(base) else {}
 
 
 def _greedy_sampling_for(instance: dict, request: Request) -> bool:
@@ -551,6 +577,7 @@ async def _cloud_chat(request: Request, payload: dict):
     """外部のフロンティアモデルへ転送する（docs/PLAN-frontier-models.md）。GPU の受け入れ制御は通らない。"""
     from app.models_mgmt import cloud
 
+    refuse_confidential_cloud(request, str(payload.get("model") or ""))
     header = request.headers.get(CLIENT_HEADER, "")
     caller = header if header in cloud.CALLERS else "api"
     try:
@@ -634,6 +661,7 @@ async def gateway_chat(request: Request):
     except ValueError:
         raise HTTPException(status_code=400, detail="JSONボディが不正です") from None
     if str(payload.get("model") or "").startswith("cloud:"):
+        refuse_confidential_cloud(request, str(payload.get("model") or ""))
         return await _cloud_chat(request, payload)
     instance = await asyncio.to_thread(resolve_instance, str(payload.get("model") or ""))
     alias, port = str(instance["alias"]), int(instance["port"])

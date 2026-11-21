@@ -1,5 +1,23 @@
 # 実装状況
 
+## 2026-11-21 発明の内容を外部の LLM へ出さない守り（ゲートウェイの層・Patent の流れ・埋め込み）
+
+- 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に」「Patent の特許フローに
+  従ってやる場合は基本的にローカルでしか使えないように。会話ごとの判定はやらない（重くなる）」。
+- ゲートウェイ: 要求のヘッダ `x-control-deck-confidential: 1` があると、`cloud:` へ出る前（`gateway_chat` の振り分けと
+  `_cloud_chat`）に 403「発明の内容を含むため、外部のモデルへは送れません」。呼び出し元の許可（egress）より優先。
+  拒否は `control_deck.audit` のログに呼び出し元とモデル名だけ残す（本文は残さない）。
+- `RuntimeChatRequest` に `confidential`（既定 False）。`local_only=True` も機密扱いで、ゲートウェイ宛にだけ印を付けて送る。
+  どちらも `_prepare` で `cloud:` を断る。
+- Patent の流れの LLM 呼び出し（`patents/service.py`・`judge.py`・`survey.py`、`knowledge/analysis.py`、`pdf_ingest.py`）は
+  すべて `local_only=True` 済み（変更不要）。テストで列挙して固定した。
+- 埋め込みの宛先（`workflows/rag.py` の `embed_base_url`）はループバックだけ。`set_config`・`create_collection` で断り、
+  `embed()` でも保存済みの外部 URL へ送らず `RagError`。
+- AI アシスタントの既定モデルはローカル（`AssistantChat.tsx`: 既定は 127.0.0.1、外部は選んだときだけ）。変更なし。
+- 範囲外（やらない）: 会話の自動判定・会話のモデルの強制・OpenCode の会話サーバー。AI アシスタントで外部のモデルを
+  選ぶと、会話・添付はそのモデルへ送られる（画面に警告あり）。
+- テスト: `backend/tests/test_confidential_local_only.py`（13 件）。
+
 ## 2026-11-21 会話のコードブロックにコピーボタン
 
 - 利用者「コードブロックの右上ぐらいにコピーボタンを付けて、押すと全体がコピーできるように」。`frontend/src/features/workflows/MarkdownMessage.tsx` の `pre` を `CodeBlock` に置き換え、上の細い帯の右端にコピーボタン（`aria-label` 「コードをコピー」、見た目 32×28px・押せる範囲 44px 程度）。ボタンは横にずらす `pre` の外にあるので、横スクロールしても右上に留まり文字に重ならない。押すとアイコンがチェックと「コピーしました」に約 1.8 秒変わる。コピーする中身はコード全体（``` の行は含まない・末尾の改行 1 つは落とす）。既存の `lib/clipboard.ts` の `writeClipboard`（http では textarea + execCommand）を使い回し、アイコンは `components/icons.tsx` に `IconCopy`・`IconCheck` を追加。生成中のコードブロックでも押せる。MarkdownMessage を使うほかの画面（ナレッジ・Patent）にも付く。

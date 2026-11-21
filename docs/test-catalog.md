@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 198 ファイル、1779 テスト（目的の未記入 93 ファイル）
+- backend: 199 ファイル、1779 テスト（目的の未記入 93 ファイル）
 - E2E: 96 spec、198 テスト
 
 ## backend（backend/tests）
@@ -625,6 +625,19 @@
 - `test_running_call_reports_time_to_first_token`
 - `test_context_lengths_are_fetched_at_most_hourly`
 - `test_summary_endpoint_requires_settings_manage`
+
+### backend/tests/test_confidential_local_only.py
+
+目的: 発明の内容を外部の LLM へ出さない守り（ゲートウェイの層・Patent の流れ・埋め込みの宛先）。 目的: 「機密」の印（ヘッダ x-control-deck-confidential）がある要求は cloud: へ出ない（403）。Patent の流れの LLM 呼び出しはすべて local_only=True で cloud: を選べない。埋め込みの宛先はループバックだけ。 根拠: 2026-11-21 利用者「知財の、私の方から出したアイデアは、ローカル LLM 以外の LLM へのアクセスを拒否する形に」。docs/PLAN-knowledge-platform.md §10.2。
+
+- `test_confidential_mark_blocks_cloud_even_when_the_caller_is_allowed`
+- `test_without_the_mark_cloud_works_as_before`
+- `test_confidential_mark_does_not_block_local_models`
+- `test_confidential_request_adds_the_mark_only_for_the_gateway`
+- `test_confidential_request_refuses_a_cloud_model_before_sending`
+- `test_every_patent_flow_llm_call_is_local_only`
+- `test_patent_package_has_no_other_llm_entrypoints`
+- `test_embedding_destination_must_be_loopback`
 
 ### backend/tests/test_code_research.py
 
