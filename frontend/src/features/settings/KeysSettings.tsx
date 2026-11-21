@@ -1,5 +1,6 @@
 /** Settings →「API キー」: 外部のサービスのキーを 1 か所で（2026-11-21 利用者「キーを設定の中にまとめて。今あるキーは消さない」）。
- *  キーの置き場は変えず、各置き場（クラウドの AI・Hugging Face・特許の公開データ・Workflow のシークレット）を読み書きする。値は表示しない。 */
+ *  キーの置き場は変えず、各置き場（クラウドの AI・特許の公開データ）を読み書きする。値は表示しない。
+ *  Hugging Face と Workflow のシークレットは出さない（利用者「設定不要」）。 */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -33,7 +34,6 @@ export function KeysSettings() {
           <section key={g.id} aria-labelledby={`keys-${g.id}`} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
             <h3 id={`keys-${g.id}`} className="text-sm font-semibold">{g.label}</h3>
             <p className="mb-3 text-xs text-zinc-500">{g.description}</p>
-            {g.id === "workflow" && <NewSecret />}
             {items.length === 0 ? <p className="text-xs text-zinc-400">まだありません。</p> : (
               <ul className="space-y-2">{items.map((k) => <KeyCard key={k.id} item={k} />)}</ul>
             )}
@@ -109,25 +109,5 @@ function KeyCard({ item }: { item: KeyItem }) {
           confirmLabel="削除する" busy={remove.isPending} onConfirm={() => remove.mutate()} onClose={() => setRemoving(false)} />
       )}
     </li>
-  );
-}
-
-function NewSecret() {
-  const qc = useQueryClient();
-  const show = useToasts((s) => s.show);
-  const [name, setName] = useState("");
-  const [value, setValue] = useState("");
-  const add = useMutation({
-    mutationFn: () => api<KeysState>(`/settings/keys/${encodeURIComponent(`secret:${name.trim()}`)}`, { method: "PUT", json: { values: { value } } }),
-    onSuccess: (next) => { qc.setQueryData(["settings-keys"], next); setName(""); setValue(""); show("シークレットを追加しました"); },
-    onError: (e) => show(e instanceof Error ? e.message : "追加できませんでした", "error"),
-  });
-  return (
-    <form className="mb-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]" autoComplete="off" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
-      <input className={input} placeholder="名前（例: SLACK_TOKEN）" aria-label="シークレットの名前" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className={input} type="password" autoComplete="new-password" placeholder="値" aria-label="シークレットの値" value={value} onChange={(e) => setValue(e.target.value)} />
-      <button className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}
-        disabled={!name.trim() || !value || add.isPending}>追加</button>
-    </form>
   );
 }

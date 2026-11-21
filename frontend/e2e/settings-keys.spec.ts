@@ -9,8 +9,11 @@ for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
     await establishSession(page, context);
     await page.goto("/settings/keys");
-    for (const name of ["クラウドの AI", "特許・論文の公開データ", "モデルのダウンロード", "Workflow のシークレット"]) {
+    for (const name of ["クラウドの AI", "特許・論文の公開データ"]) {
       await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+    }
+    for (const name of ["モデルのダウンロード", "Workflow のシークレット"]) {           // 利用者「設定不要」
+      await expect(page.getByRole("heading", { name, exact: true })).toHaveCount(0);
     }
     await expect(page.locator("li", { hasText: "OpenRouter" }).first()).toBeVisible();
     await expect(page.getByText("特許庁 特許情報取得 API", { exact: false })).toBeVisible();

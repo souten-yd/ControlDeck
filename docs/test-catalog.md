@@ -2216,7 +2216,7 @@
 
 ### backend/tests/test_settings_keys.py
 
-目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で見る・入れる・消す。 目的: - クラウドの AI（OpenRouter など）・Hugging Face・特許の公開データ（EPO・USPTO・特許庁）・Workflow のシークレットが 1 つの一覧に出ること。 - **今あるキーは置き場を変えずにそのまま見える**（移すときに消さない）。値は返さず、設定済みか・末尾 4 文字だけ。 - ここで入れたキーは元の置き場に入り、元の機能（Models・Patent・Workflow）がそのまま使えること。空の値は「変えない」。 - 消すのは明示の DELETE だけ。管理の権限が要ること。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめてほしい。OpenRouter のキーも。 今あるキーを全部移動してほしいので、消さないように」。
+目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で見る・入れる・消す。 目的: - クラウドの AI（OpenRouter など）・特許の公開データ（EPO・USPTO・特許庁）が 1 つの一覧に出ること。 Hugging Face と Workflow のシークレットは出さない（2026-11-21 利用者「モデルのダウンロードと Workflow のシークレットは設定不要」）。 - **今あるキーは置き場を変えずにそのまま見える**（移すときに消さない）。値は返さず、設定済みか・末尾 4 文字だけ。 - ここで入れたキーは元の置き場に入り、元の機能（Models・Patent）がそのまま使えること。空の値は「変えない」。 - 消すのは明示の DELETE だけ。管理の権限が要ること。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめてほしい。OpenRouter のキーも。 今あるキーを全部移動してほしいので、消さないように」。
 
 - `test_existing_keys_show_up_without_moving_or_exposing_them`
 - `test_saving_here_writes_to_the_original_store_and_blank_means_unchanged`

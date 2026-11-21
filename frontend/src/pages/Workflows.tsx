@@ -305,7 +305,6 @@ function SecretsSheet({ onClose }: { onClose: () => void }) {
       <p className="mb-3 text-xs text-zinc-400">
         API キーなどを暗号化して保存し、ノード設定から <code className="font-mono">{"{{secrets.名前}}"}</code> で参照できます。
         定義 JSON に平文が残らず、エクスポートや共有が安全になります。値は保存後に表示できません。
-        ほかのサービスのキーと合わせて Settings の「API キー」でも管理できます。
       </p>
       <div className="mb-4 flex flex-wrap gap-2">
         <input value={name} onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_]/g, ""))} placeholder="名前（例: OPENAI_KEY）" className={`${cls} w-44 font-mono text-xs`} />
