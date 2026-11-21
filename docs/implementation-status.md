@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-21 設定の「API キー」に OpenCode Zen（無料モデル）の登録欄
+
+- Zen の無料モデルは OpenCode の中からしか使えず他の道具は 403（ControlDeck のゲートウェイは通せない）。箱の OpenCode が opencode.ai へ直接繋ぐ。
+- 保存: `app/integrations/opencode/zen.py`（cloud.py と同じ暗号化・0600）。設定 → API キーに組「開発」と項目「OpenCode Zen（無料のモデル）」（`dev:opencode-zen`）。値は返さず末尾 4 文字。
+- 箱: `opencode_argv` だけが `OPENCODE_API_KEY` を渡す（0600・箱の外の一時 `--env-file`、使用後に削除。argv・opencode.json に値なし。shell・exec・mirror には渡さない）。meta `allow_zen`（既定 true）、`sandbox new --no-zen`、`zen <名前> on|off`。`--model` は `provider/モデル` ならそのまま（例 `opencode/deepseek-v4.1-flash-free`）、無ければ `controldeck/` を付ける。`opencode` の対話も execv をやめ子として動かす（後始末のため）。
+- 未公開の情報（特許など）を扱う箱では使わない。実機は未検証（キー登録後に確認）。
+
 ## 2026-11-21 開発用サンドボックスにネットワークの境界（pod と LLM 中継）
 
 - 問題: 箱は `--network host` で、本番のゲートウェイが loopback＋`x-requested-with` なら鍵なしで通すため、箱の AI が本番のモデル切り替え（POST /api/v1/llm/v1/models/{m}/load）まで呼べた。opencode.json に本番の鍵も平文で書いていた。

@@ -91,6 +91,10 @@ class Sandbox:
     def allow_load(self) -> bool:
         return bool(self.meta.get("allow_load", False))
 
+    @property
+    def allow_zen(self) -> bool:
+        return bool(self.meta.get("allow_zen", True))
+
 
 def _pick_port(key: str, base: int, span: int, what: str) -> int:
     used = {int(_read_meta(p).get(key) or 0) for p in root().iterdir() if (p / "sandbox.json").is_file()}
@@ -134,7 +138,8 @@ def _save_meta(path: Path, meta: dict) -> None:
     (path / "sandbox.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_load: bool = False) -> Sandbox:
+def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_load: bool = False,
+           allow_zen: bool = True) -> Sandbox:
     """作業ツリーを複製してサンドボックスを作る。数秒で終わる（オブジェクトは複製しない）。"""
     path = _dir(name)
     if path.exists():
@@ -161,7 +166,7 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
         meta = {
             "name": name, "source": str(top), "git_common_dir": str(common), "revision": revision,
             "origin": origin, "port": _free_port(), "gateway_port": _free_gateway_port(),
-            "allow_load": bool(allow_load), "github": bool(github), "created_at": time.time(),
+            "allow_load": bool(allow_load), "allow_zen": bool(allow_zen), "github": bool(github), "created_at": time.time(),
             # 依存はホストのものを overlay でつなぐ（箱の中で書いてもホストは変わらない）。
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
             "overlays": [
@@ -367,7 +372,7 @@ def ensure_gateway(box: Sandbox) -> None:
 
 
 def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
-                detach: bool = False, env: dict[str, str] | None = None) -> list[str]:
+                detach: bool = False, env: dict[str, str] | None = None, env_file: Path | None = None) -> list[str]:
     pod = ensure_pod(box)
     ensure_gateway(box)
     readonly = [Path(box.meta["git_common_dir"])]
@@ -390,7 +395,7 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
         environment["GH_CONFIG_DIR"] = "/run/gh"
     argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
                           overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach,
-                          pod=pod)
+                          pod=pod, env_file=env_file)
     if extra:
         index = argv.index("--rootfs")
         argv[index:index] = extra
@@ -520,11 +525,40 @@ def opencode_config(box: Sandbox, *, model: str = "auto") -> Path:
     return path
 
 
+def zen_env_file(box: Sandbox) -> Path | None:
+    """Zen のキーを渡す --env-file（0600・箱のフォルダの外の一時ファイル）。キーが無い・箱で禁止なら None。
+
+    使い終わったら remove_env_file(argv) で消す。argv にキーの値は出ない。
+    """
+    from app.integrations.opencode import zen
+
+    key = zen.get() if box.allow_zen else ""
+    if not key:
+        return None
+    import tempfile
+
+    directory = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    fd, name = tempfile.mkstemp(prefix="cd-zen-", suffix=".env", dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:  # mkstemp は 0600
+        handle.write(f"OPENCODE_API_KEY={key}\n")
+    return Path(name)
+
+
+def remove_env_file(argv: list[str]) -> None:
+    if "--env-file" in argv:
+        Path(argv[argv.index("--env-file") + 1]).unlink(missing_ok=True)
+
+
+def opencode_model(model: str) -> str:
+    """`provider/モデル` はそのまま、無ければ controldeck/ を付ける。"""
+    return model if "/" in model else f"controldeck/{model}"
+
+
 def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: str = "auto",
                   interactive: bool = True) -> list[str]:
     from app.features import registry
 
-    opencode_config(box, model=model)
+    opencode_config(box, model="auto" if "/" in model else model)
     binary = registry._managed_executable("opencode-v2")
     if not binary.exists():
         raise SandboxError("OpenCode v2 が導入されていません")
@@ -532,8 +566,14 @@ def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: 
         command = [str(binary), "--standalone", *(["--prompt", message] if message else []), str(box.repo)]
     else:
         command = [str(binary), "run", message, "--format", "json", "--auto",
-                   "--model", f"controldeck/{model}", "--standalone", *(["--session", session] if session else [])]
-    return podman_argv(box, command, interactive=interactive)
+                   "--model", opencode_model(model), "--standalone", *(["--session", session] if session else [])]
+    env_file = zen_env_file(box)
+    try:
+        return podman_argv(box, command, interactive=interactive, env_file=env_file)
+    except BaseException:
+        if env_file:
+            env_file.unlink(missing_ok=True)
+        raise
 
 
 def destroy(name: str) -> None:
@@ -575,6 +615,10 @@ def main(argv: list[str]) -> int:
     new.add_argument("--ref", default="")
     new.add_argument("--github", action="store_true", help="この PC の gh の設定を読み取り専用で見せる")
     new.add_argument("--allow-load", action="store_true", help="箱の AI にモデルの読み込み（切り替え）を許す")
+    new.add_argument("--no-zen", action="store_true", help="OpenCode Zen のキーを箱の OpenCode へ渡さない")
+    zen_toggle = sub.add_parser("zen", help="OpenCode Zen のキーを箱の OpenCode へ渡すかを切り替える")
+    zen_toggle.add_argument("name")
+    zen_toggle.add_argument("state", choices=["on", "off"])
     toggle = sub.add_parser("allow-load", help="モデルの読み込みを許すかを切り替える")
     toggle.add_argument("name")
     toggle.add_argument("state", choices=["on", "off"])
@@ -588,11 +632,13 @@ def main(argv: list[str]) -> int:
     code.add_argument("name")
     code.add_argument("--run", default="")
     code.add_argument("--session", default="")
-    code.add_argument("--model", default="auto")
+    code.add_argument("--model", default="auto",
+                      help="例: --model opencode/deepseek-v4.1-flash-free（Zen の無料モデル。provider/モデルの形はそのまま使う）")
     args = parser.parse_args(argv)
     try:
         if args.command == "new":
-            box = create(args.name, args.repo, args.ref, github=args.github, allow_load=args.allow_load)
+            box = create(args.name, args.repo, args.ref, github=args.github, allow_load=args.allow_load,
+                         allow_zen=not args.no_zen)
             print(json.dumps(status(box), ensure_ascii=False, indent=1))
         elif args.command == "allow-load":
             box = load(args.name)
@@ -600,6 +646,11 @@ def main(argv: list[str]) -> int:
             _save_meta(box.path, box.meta)
             gateway_stop(box)  # 次に箱を使うとき、新しい設定で中継が起きる
             print(f"{args.name}: モデルの読み込みを{'許可' if box.allow_load else '禁止'}にしました")
+        elif args.command == "zen":
+            box = load(args.name)
+            box.meta["allow_zen"] = args.state == "on"
+            _save_meta(box.path, box.meta)
+            print(f"{args.name}: OpenCode Zen のキーを{'渡す' if box.allow_zen else '渡さない'}ようにしました")
         elif args.command == "list":
             print(json.dumps(list_all(), ensure_ascii=False, indent=1))
         elif args.command == "status":
@@ -618,9 +669,11 @@ def main(argv: list[str]) -> int:
             box = load(args.name)
             argv = opencode_argv(box, message=args.run, session=args.session, model=args.model,
                                  interactive=not args.run)
-            if args.run:
+            try:
+                # execv だと使い終わりの後始末ができない（env-file を消せない）ので、子として動かす
                 return subprocess.run(argv, check=False).returncode
-            os.execv(argv[0], argv)
+            finally:
+                remove_env_file(argv)
         elif args.command == "exec":
             command = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
             result = subprocess.run(podman_argv(load(args.name), command or ["true"]), check=False)

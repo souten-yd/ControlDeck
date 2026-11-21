@@ -740,6 +740,10 @@
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
+- `test_zen_key_goes_to_opencode_only_through_a_private_env_file_outside_the_box` — Zen のキーは argv に出ず、0600・箱の外の --env-file で渡す。opencode.json に入らない。
+- `test_zen_key_is_not_given_when_the_box_disallows_it_or_for_shell_and_exec` — allow_zen off・shell・exec にはキーを渡さない。
+- `test_new_box_allows_zen_by_default_and_no_zen_turns_it_off` — 既定は許可、--no-zen で off。
+- `test_opencode_model_keeps_provider_form_and_defaults_to_controldeck` — --model の provider/モデルはそのまま、無ければ controldeck/。
 
 ### backend/tests/test_sandbox_gateway.py
 
@@ -2244,6 +2248,7 @@
 - `test_existing_keys_show_up_without_moving_or_exposing_them`
 - `test_saving_here_writes_to_the_original_store_and_blank_means_unchanged`
 - `test_delete_is_explicit`
+- `test_opencode_zen_key_is_listed_saved_and_deleted_without_exposing_it` — 「開発」の組に Zen の項目。保存・削除でき、値は返さず末尾 4 文字だけ。
 
 ### backend/tests/test_signal_origin.py
 

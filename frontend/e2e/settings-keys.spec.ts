@@ -15,6 +15,8 @@ for (const width of [1280, 320]) {
     for (const name of ["モデルのダウンロード", "Workflow のシークレット"]) {           // 利用者「設定不要」
       await expect(page.getByRole("heading", { name, exact: true })).toHaveCount(0);
     }
+    await expect(page.getByRole("heading", { name: "開発", exact: true })).toBeVisible();   // OpenCode Zen（箱の OpenCode が使う無料モデルのキー）
+    await expect(page.locator("li", { hasText: "OpenCode Zen（無料のモデル）" })).toBeVisible();
     await expect(page.locator("li", { hasText: "OpenRouter" }).first()).toBeVisible();
     await expect(page.getByText("特許庁 特許情報取得 API", { exact: false })).toBeVisible();
 

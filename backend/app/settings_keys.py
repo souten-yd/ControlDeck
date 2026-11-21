@@ -62,13 +62,28 @@ def _sources() -> list[dict]:
     return out
 
 
+ZEN_NOTE = ("開発用の箱の OpenCode だけが使う。ControlDeck のゲートウェイは通らず、箱から opencode.ai へ直接送る。"
+            "無料の範囲だけで課金のないアカウントのキーを入れてください。特許など未公開の情報を扱う箱では使わない")
+
+
+def _dev() -> list[dict]:
+    from app.integrations.opencode import zen
+
+    ok = zen.configured()
+    return [{"id": "dev:opencode-zen", "group": "dev", "name": "OpenCode Zen（無料のモデル）", "note": ZEN_NOTE,
+             "signup": "https://opencode.ai/zen", "configured": ok, "hint": f"••••{zen.hint()}" if ok and zen.hint() else "",
+             "fields": [{"name": "api_key", "label": "API キー", "configured": ok}],
+             "used_by": "開発用サンドボックスの箱の OpenCode（箱ごとに `zen <名前> on|off`）", "manage": ""}]
+
+
 @router.get("")
 def list_keys(user: User = MANAGE, db=Depends(get_db)):
     groups = [
         {"id": "ai", "label": "クラウドの AI", "description": "OpenRouter など。キーを入れた後、使うかどうかとモデルは Models で選ぶ"},
         {"id": "patent", "label": "特許・論文の公開データ", "description": "EPO・USPTO・特許庁。OpenAlex・RSS・GDELT はキーなしで使える"},
+        {"id": "dev", "label": "開発", "description": "開発用サンドボックスの箱の OpenCode が使うキー"},
     ]
-    return {"groups": groups, "keys": [*_cloud(), *_sources()]}
+    return {"groups": groups, "keys": [*_cloud(), *_sources(), *_dev()]}
 
 
 class KeyBody(BaseModel):
@@ -101,6 +116,15 @@ def _apply(key_id: str, values: dict[str, str], db) -> None:
             sources.set_keys(values)
         except sources.SourceError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    elif key_id == "dev:opencode-zen":
+        from app.integrations.opencode import zen
+
+        if set(values) != {"api_key"}:
+            raise HTTPException(status_code=422, detail="API キーだけを保存できます")
+        try:
+            zen.set(values["api_key"])
+        except zen.ZenKeyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     else:
         raise HTTPException(status_code=404, detail="知らないキーです")
 
@@ -131,6 +155,10 @@ def delete_key(key_id: str, request: Request, user: User = MANAGE, db=Depends(ge
         if keys is None:
             raise HTTPException(status_code=404, detail="知らない取得先です")
         sources.set_keys({k: "" for k in keys})
+    elif key_id == "dev:opencode-zen":
+        from app.integrations.opencode import zen
+
+        zen.clear()
     else:
         raise HTTPException(status_code=404, detail="知らないキーです")
     audit.record(db, "settings.key_delete", user=user, resource_type="key", resource_id=key_id, request=request)
