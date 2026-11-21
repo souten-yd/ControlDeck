@@ -243,6 +243,32 @@ def test_mode_file_and_idle_reaping(monkeypatch, tmp_path):
     assert chat_server.load("def456") is not None and chat_server.load("abc123") is None
 
 
+def test_idle_reap_loop_stops_idle_servers_without_a_new_chat(monkeypatch):
+    """最後に使ったサーバーも止める。前は次の会話を始めたとき（ensure）にだけ止めていたので、
+    17.5 時間使われていない箱が host network のまま 21 時間動いていた（2026-11-21 実機）。"""
+    from app.integrations.opencode import chat_server
+
+    calls = []
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 2:
+            raise asyncio.CancelledError
+
+    def fake_reap():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("1 回の失敗で見張りを止めない")
+        return ["abc123"]
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(chat_server, "reap_idle", fake_reap)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(chat_server.idle_reap_loop())
+    assert sleeps[0] == chat_server.REAP_INTERVAL_SECONDS and len(calls) == 2
+
+
 # ---- チャット API ----
 
 def test_code_mode_records_tools_and_permissions_and_answers_them(admin_client, monkeypatch, tmp_path):

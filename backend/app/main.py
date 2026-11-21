@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
     from app.maintenance.auto_update import auto_update_loop
     from app.features.auto_update import feature_auto_update_loop
     from app.project_lab.runs import watch_runs_loop as project_run_watch_loop
+    from app.integrations.opencode.chat_server import idle_reap_loop as opencode_chat_idle_reap_loop
     from app.maintenance.watchdog import (
         _loop_ticker,
         notify_ready,
@@ -145,6 +146,8 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(feature_auto_update_loop()),
             # Project Run の終わりを見つけて、起動した人へ通知する（画面を閉じていても）。
             asyncio.create_task(project_run_watch_loop()),
+            # 使われていない OpenCode の会話サーバー（箱）を止める（前は次の会話を始めたときだけ止めていた）。
+            asyncio.create_task(opencode_chat_idle_reap_loop()),
         ]
         # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
         from app.workflows import searxng

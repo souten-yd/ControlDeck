@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-21 使われていない OpenCode の会話サーバーを数分おきに止める
+
+- 実機: AI アシスタントの OpenCode の会話サーバー（プロジェクトの箱、host network・gh の設定を読み取り専用で見せる）が、17.5 時間使われていないのに 21 時間動いていた。止める処理 `chat_server.reap_idle` を、次の会話を始めたとき（`ensure`）にだけ呼んでいたため、最後に使ったサーバーは止まらなかった。
+- `chat_server.idle_reap_loop`（5 分おき、`main.py` の機械全体の常駐に登録）。1 回の失敗で止めない。止めたら記録に出す。動いていた 1 つは既存の `reap_idle` で止めた（次に会話を開けば起き直る）。
+- 同じ確認で、podman の記録にだけ残り実体の無い Radiance のコンテナ（状態 Removing）も消した（次の起動で名前がぶつからないように）。
+- 検証: `tests/test_opencode_chat_server.py`（+1）、backend 全体 1959 passed（1 回目は既知の全体実行フレーキー 1 件）。
+
 ## 2026-11-21 テストの一時フォルダと箱の /tmp を溜めない
 
 - 利用者「data/sandboxes が 400GB くらいある。不要なら消して、増えないように」。実際の使用は約 3.4GB で、見かけ 372GB は pytest の一時フォルダ（`test_disk_streamed_moe_reservation` が作る 90GB の見かけの GGUF、`test_llama_large_vision_request` の 2GB）だった。pytest は最近 3 回分を残すので、箱の共有 `/tmp`（空のルートの `.rootfs/tmp`）・OpenCode のプロジェクトの一時フォルダ・ホストの `/tmp`（見かけ 93GB）に溜まっていた。中身を詰めないバックアップでは本当に書き出されうる。

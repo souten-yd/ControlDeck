@@ -243,6 +243,27 @@ def reap_idle(now: float | None = None, *, keep: str = "") -> list[str]:
     return stopped
 
 
+REAP_INTERVAL_SECONDS = 5 * 60
+
+
+async def idle_reap_loop() -> None:
+    """使われていないサーバーを数分おきに止める。
+
+    前は次の会話を始めたとき（ensure）にだけ reap_idle を呼んでいたので、最後に使ったサーバーは
+    止まらずに残った（2026-11-21 実機: 17.5 時間使われていない箱が host network のまま 21 時間動いていた）。
+    """
+    import asyncio
+
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_SECONDS)
+        try:
+            stopped = await asyncio.to_thread(reap_idle)
+            if stopped:
+                logger.info("使われていない OpenCode の会話サーバーを止めました: %s", ", ".join(stopped))
+        except Exception:  # noqa: BLE001 - 1 回の失敗で見張りを止めない
+            logger.exception("OpenCode の会話サーバーの片付けに失敗しました")
+
+
 def touch(server: Server) -> None:
     server.last_used = time.time()
     _save(server)
