@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 206 ファイル、1880 テスト（目的の未記入 93 ファイル）
-- E2E: 103 spec、207 テスト
+- backend: 207 ファイル、1889 テスト（目的の未記入 93 ファイル）
+- E2E: 104 spec、210 テスト
 
 ## backend（backend/tests）
 
@@ -1245,6 +1245,20 @@
 - `test_api_refuses_prohibited_documents_missing_documents_and_no_local_model`
 - `test_review_id_is_shard_qualified_and_never_attaches_across_shards` — 抽出の id は分野ごとに振られる。分野つき（patents:1 など）で指定しないと、
 - `test_run_keeps_sync_writes_off_the_event_loop` — run（async）の中の DB 書き込みは asyncio.to_thread を通すこと（AGENTS.md 絶対ルール 9。
+
+### backend/tests/test_knowledge_essence_cross.py
+
+目的: 承認済みの知識エッセンスの横断検索・比較（K2）: app/knowledge/cross.py と API。 目的: - 横断検索が、**承認済みで今の版の**エッセンスだけを返すこと。未承認・却下・差し戻し・原文が 変わった（stale）の item は出ないこと。 - 検索の入口を 1 つに保つこと（計画 §10.2 の 5）: どの文献を探すかは documents.search_documents が 決める。consumer は local なので、利用条件で AI に使えない文献（ai_use=prohibited）は出ないこと （エッセンスはローカル専用の AI の推論であり、横断検索は後のローカルの AI 支援へ知識を渡す入口）。 - 読むたびに引用を原文と確かめ直すこと（K1 の validate と同じ考え方。保存時に検めていても）。 引用が原文に一致しなくなった item は出ないこと。 - 件数の上限（limit）とページ送り（cursor）が、1 回の走査の上限（SCAN_DOCS）と共に守られること。 - 比較が、別の文献 2〜3 件の承認済みを種類ごとに並べるだけであること（AI の判断を足さない）。 - 権限: 読み取り（workflows.run）で見られ、その権限の無い利用者は断られること。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K2 の作り直し。docs/HANDOFF-knowledge-platform.md の K2 の行）。PatentBuddy Draft #36 を設計だけ流用し、保存先・認証・走査の仕組みは ControlDeck の 既存（search_documents・essence.list_essences）を使い回す（コードは写していない）。
+
+- `test_search_returns_only_approved_items`
+- `test_search_goes_through_search_documents_and_ai_use_gate`
+- `test_search_rechecks_revision_and_quote_every_time`
+- `test_search_kind_filter_limit_and_cursor`
+- `test_compare_rows_by_kind`
+- `test_compare_rejects_wrong_shapes_and_prohibited`
+- `test_api_search_and_compare`
+- `test_api_permissions_are_read_only_view`
+- `test_search_keeps_sync_work_off_the_event_loop` — 検索・比較は同期の DB・ファイル I/O を event loop の外（threadpool）で実行すること
 
 ### backend/tests/test_knowledge_r3.py
 
@@ -3241,6 +3255,14 @@
 目的: iPhone: キーボードが出ても、触った入力欄が見える範囲に出る（AI アシスタント以外の画面でも）。 根拠: 2026-11-21 利用者「設定の API キーの入力欄をタップするとキーボードが上がって入力欄が消え、貼り付けられない」。 実機（iOS 18.7、設定の画面）: innerHeight 932 のまま、visual viewport だけ 517 に縮み、殻は 932 のままだった。 殻を見える範囲に合わせる useKeyboardViewportFit を AI アシスタントだけが呼んでいたため。 Chromium はキーボードで visual viewport だけを縮められないので、visualViewport を偽物にして iOS と同じ値を作る。 */
 
 - iPhone: キーボードで visual viewport が縮むと、設定の入力欄が見える範囲に出る
+
+### frontend/e2e/knowledge-essence-cross.spec.ts
+
+目的: 知識の横断（K2）: Knowledge の「知識の横断」タブ。 目的: - 検索の欄と種類の絞り込みで、承認済みの知識エッセンスを横断して探せること。 結果のカードには文献の題名（押すと文献の画面が開く）・種類・要約・引用（折りたたみ）・ 承認の日時が出ること。 - 「比較に加える」で別の文献 2〜3 件を選び、「比較する」で種類ごとの表が見えること。 比較は並べて見せるだけ（AI の判断は足さないことが画面にも書いてある）。 - ページ送り（next_cursor があるとき「もっと見る」）で続きが取れること。 - 何も見つからないとき、文献の画面で知識を抽出・承認するよう案内すること。 - 1280 と 320 で横に崩れず（比較の表は横スクロール）、ライト・ダークで撮影すること。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容を ControlDeck にルールに従って反映して」（K2 の作り直し。docs/HANDOFF-knowledge-platform.md の K2 の行。backend は cross.py として main 済み）。検証用インスタンスには文献も承認済みの 知識も無いので、API は page.route で差し替えて確かめる（本物の LLM は呼ばない）。 */ ---- 差し替える応答（本物の形: backend/app/knowledge/cross.py の search・compare） ----
+
+- Knowledge: 知識の横断で探して種類ごとに比較する（${width}px）
+- Knowledge: 知識の横断で何も見つからないときは案内する（${width}px）
+- Knowledge: 検索の結果が1画面に収まらないとき「もっと見る」で続きを取る（1280px）
 
 ### frontend/e2e/knowledge-essence.spec.ts
 
