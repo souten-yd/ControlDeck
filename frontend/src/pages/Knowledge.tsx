@@ -345,7 +345,10 @@ function AddDocForm({ name, onDone }: { name: string; onDone: () => void }) {
           onFinished={(job) => {
             setJobId(null);
             if (job.status === "succeeded") {
-              show(`${(job.result as { added_chunks?: number } | undefined)?.added_chunks ?? "?"} チャンクを取り込みました`);
+              const r = job.result as { added_chunks?: number; embedded?: boolean } | undefined;
+              show(r?.embedded === false
+                ? `${r.added_chunks ?? "?"} チャンクを取り込みました（埋め込みのサーバーに届かず、意味の検索はまだ使えません。「作り直し」で付けられます）`
+                : `${r?.added_chunks ?? "?"} チャンクを取り込みました`);
               setText(""); setUrl(""); setPath("");
               onDone();
             } else {

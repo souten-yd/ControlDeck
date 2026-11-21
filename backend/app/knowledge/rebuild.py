@@ -138,6 +138,22 @@ def _repoint(old: str, new: str) -> None:
         conn.close()
 
 
+class RebuildIncomplete(RuntimeError):
+    """作り直しの一部が失敗した。画面の Job を「失敗」にして気づけるようにする（結果の中に埋もれさせない）。"""
+
+
+async def apply_job(job, *, describe_figures: bool = True) -> dict:
+    """画面の「作り直す」から。失敗があれば件数・最初の理由・できた分を書いて Job を失敗にする。"""
+    out = await apply(describe_figures=describe_figures, job=job)
+    if out["errors"]:
+        first = out["errors"][0]
+        raise RebuildIncomplete(
+            f"{len(out['errors'])} 件が作り直せませんでした（最初: {first['ref']} — {first['error'][:120]}）。"
+            f"できた分: AI の回答の区別 {out['retagged']} 件・埋め込み {out['reembedded']} 断片・PDF {len(out['reingested'])} 件・"
+            f"図表 {len(out.get('described', []))} 件。原因を直してからもう一度「作り直す」で残りだけ進みます")
+    return out
+
+
 async def apply(*, describe_figures: bool = True, job=None) -> dict:
     todo = await asyncio.to_thread(plan)
     out = {"retagged": await asyncio.to_thread(_retag, todo["retag_ai_answers"]), "reembedded": 0, "reingested": [],

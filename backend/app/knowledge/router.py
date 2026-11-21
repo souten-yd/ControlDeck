@@ -286,7 +286,7 @@ async def rebuild_apply(body: RebuildBody, request: Request, user: User = Depend
     from app.knowledge import rebuild
 
     job = jobs.create("knowledge.rebuild", "ナレッジの作り直し",
-                      lambda j: rebuild.apply(describe_figures=body.describe_figures, job=j), owner_user_id=user.id)
+                      lambda j: rebuild.apply_job(j, describe_figures=body.describe_figures), owner_user_id=user.id)
     audit.record(db, "knowledge.rebuild", user=user, resource_type="knowledge", resource_id="all", request=request,
                  metadata={"job_id": job.id, "describe_figures": body.describe_figures})
     return {"job_id": job.id}

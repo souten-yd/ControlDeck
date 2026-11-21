@@ -152,3 +152,43 @@ def test_figure_reading_is_planned_but_left_to_the_server(monkeypatch, capsys):
     monkeypatch.setattr(rebuild, "_reingest", lambda *a, **k: called.append(a))
     rebuild.main(["--apply"])
     assert called == [] and "画面" in capsys.readouterr().out
+
+
+def test_ingest_keeps_text_when_the_embedding_server_is_down(monkeypatch):
+    """埋め込みのサーバーに届かなくても、本文と全文索引は残し、作り直しの「埋め込み」に出す。
+    根拠: 2026-11-21 ボタンの確認で、接続できないだけで取り込みが丸ごと失敗していた（失敗の知らせは数秒で消える）。"""
+    import httpx
+
+    from app.knowledge import rebuild, store
+    from app.workflows import rag
+
+    async def down(*args, **kwargs):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    monkeypatch.setattr(rag, "embed", down)
+    out = asyncio.run(rag.add_document("embed-down", "窒化ガリウムのスイッチング素子を備えるインバータ。", "メモ"))
+    assert out["embedded"] is False and "ConnectError" in out["embed_error"] and out["added_chunks"] >= 1
+    hits = store.search(["embed-down"], "窒化ガリウム", mode="fulltext", limit=3)
+    assert hits and "インバータ" in hits[0]["text"]
+    assert f"general:{out['doc_id']}" in rebuild.plan()["reembed"]
+
+
+def test_rebuild_job_fails_visibly_when_some_documents_fail(monkeypatch):
+    """作り直しの一部が失敗したら、Job を失敗にして件数と理由を出す（以前は「成功」と出て、失敗が結果の中に埋もれていた）。"""
+    import httpx
+
+    from app.knowledge import rebuild
+    from app.workflows import rag
+
+    async def down(*args, **kwargs):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    monkeypatch.setattr(rag, "embed", down)
+    asyncio.run(rag.add_document("embed-down-2", "スイッチング素子の冷却。", "メモ"))
+
+    class Job:
+        def set_progress(self, *a):
+            pass
+
+    with pytest.raises(rebuild.RebuildIncomplete, match="作り直せませんでした"):
+        asyncio.run(rebuild.apply_job(Job(), describe_figures=False))
