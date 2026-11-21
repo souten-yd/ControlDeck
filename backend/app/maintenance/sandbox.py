@@ -34,6 +34,16 @@ MIRROR_PORT_SPAN = 100
 CONTAINER_PREFIX = "cd-sandbox-"
 GATEWAY_PORT_BASE = 18900
 GATEWAY_PORT_SPAN = 100
+# 開発役のモデルの順番（使い切ったら次へ。利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」）。
+# 最後はローカル LLM（ゲートウェイの中継経由）。Zen のキーが無い・箱で allow_zen が off なら opencode* は飛ばす。
+DEFAULT_MODEL_CHAIN = ["opencode-go/glm-5.3", "opencode/hy4-flash-free", "opencode/deepseek-v4.1-flash-free",
+                       "controldeck/auto"]
+LOCAL_MODEL = "controldeck/auto"
+# 使用量の上限・残高切れ・レート制限の印。語の区切りで見る（"rate" だけだと generate・accurate に当たり、
+# ふつうのエラーで誤って次のモデルへ移る）
+LIMIT_PATTERN = re.compile(
+    r"\b(rate[ _-]?limit(ed)?|too many requests|quota|usage limit|limit (reached|exceeded)|exceeded|insufficient"
+    r"|billing|credits?|payment required|429|402)\b", re.I)
 
 
 class SandboxError(RuntimeError):
@@ -664,6 +674,72 @@ def opencode_model(model: str) -> str:
     return model if "/" in model else f"controldeck/{model}"
 
 
+def normalize_model(model: str) -> str:
+    """`local` はローカル LLM（controldeck/auto）の別名。"""
+    return LOCAL_MODEL if model == "local" else model
+
+
+def _zen_available(box: Sandbox) -> bool:
+    from app.integrations.opencode import zen
+
+    return bool(box.allow_zen and zen.get())
+
+
+def model_chain(box: Sandbox) -> list[str]:
+    """箱で使うモデルの順番。meta の model_chain があれば既定の代わり。Zen が使えなければ opencode* を飛ばす。"""
+    configured = box.meta.get("model_chain")
+    chain = [normalize_model(str(m)) for m in configured] if configured else list(DEFAULT_MODEL_CHAIN)
+    if not _zen_available(box):
+        chain = [m for m in chain if not m.startswith("opencode")]
+    return chain or [LOCAL_MODEL]
+
+
+def is_limit_error(line: dict) -> str:
+    """OpenCode の JSONL の 1 行が使用量の上限・残高切れ・レート制限の印なら理由の先頭 200 字、でなければ空。"""
+    if line.get("type") != "error":
+        return ""
+    text = json.dumps(line, ensure_ascii=False)
+    return text[:200] if LIMIT_PATTERN.search(text) else ""
+
+
+def _run_streaming(argv: list[str]) -> tuple[int, str, str]:
+    """argv を動かし、標準出力の JSONL をそのまま流しつつ読む。(終了コード, sessionID, 上限の理由)。"""
+    session = ""
+    reason = ""
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    for raw in process.stdout or []:
+        sys.stdout.write(raw)
+        sys.stdout.flush()
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(line, dict):
+            continue
+        if not session and isinstance(line.get("sessionID"), str):
+            session = line["sessionID"]
+        reason = reason or is_limit_error(line)
+    return process.wait(), session, reason
+
+
+def run_with_chain(box: Sandbox, message: str, models: list[str], session: str = "") -> int:
+    """順番に実行する。上限の印が出たら次のモデルで同じ指示をやり直す（sessionID があれば続きとして）。"""
+    code = 1
+    for index, model in enumerate(models):
+        box.meta["last_model"] = model
+        _save_meta(box.path, box.meta)
+        argv = opencode_argv(box, message=message, session=session, model=model, interactive=False)
+        try:
+            code, found, reason = _run_streaming(argv)
+        finally:
+            remove_env_file(argv)
+        session = found or session
+        if not reason or index == len(models) - 1:
+            return code
+        print(f"モデルを切り替えます: {model} -> {models[index + 1]}（{reason[:200]}）", file=sys.stderr)
+    return code
+
+
 def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: str = "auto",
                   interactive: bool = True) -> list[str]:
     from app.features import registry
@@ -707,7 +783,8 @@ def status(box: Sandbox) -> dict:
         dirty = False
     return {"name": box.name, "source": box.meta["source"], "branch": branch, "dirty": dirty,
             "mirror": f"http://127.0.0.1:{box.port}" if _health(box.port) else "停止中",
-            "github": box.meta.get("github", False), "path": str(box.path)}
+            "github": box.meta.get("github", False), "path": str(box.path),
+            "model_chain": model_chain(box), "last_model": box.meta.get("last_model", "")}
 
 
 def list_all() -> list[dict]:
@@ -744,8 +821,14 @@ def main(argv: list[str]) -> int:
     code.add_argument("name")
     code.add_argument("--run", default="")
     code.add_argument("--session", default="")
-    code.add_argument("--model", default="auto",
-                      help="例: --model opencode/deepseek-v4.1-flash-free（Zen の無料モデル。provider/モデルの形はそのまま使う）")
+    code.add_argument("--model", default="",
+                      help="省くとモデルの順番（`models` で見る）。指定したらその 1 つだけ（例: opencode/deepseek-v4.1-flash-free、"
+                           "local はローカル LLM）。--run では使用量の上限に当たると次のモデルへ切り替えて続ける。"
+                           "対話（--run なし）は順番の最初の使えるモデルで開き、切り替えはしない")
+    models = sub.add_parser("models", help="モデルの順番を見る・設定する（引数なしで表示、--reset で既定へ）")
+    models.add_argument("name")
+    models.add_argument("models", nargs="*")
+    models.add_argument("--reset", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "new":
@@ -777,10 +860,23 @@ def main(argv: list[str]) -> int:
         elif args.command == "shell":
             os.execv(shutil.which("podman") or "podman",
                      podman_argv(load(args.name), ["/bin/bash", "-l"], interactive=True))
+        elif args.command == "models":
+            box = load(args.name)
+            if args.reset:
+                box.meta.pop("model_chain", None)
+                _save_meta(box.path, box.meta)
+            elif args.models:
+                box.meta["model_chain"] = [normalize_model(m) for m in args.models]
+                _save_meta(box.path, box.meta)
+            print(json.dumps({"model_chain": model_chain(box), "custom": bool(box.meta.get("model_chain")),
+                              "last_model": box.meta.get("last_model", "")}, ensure_ascii=False, indent=1))
         elif args.command == "opencode":
             box = load(args.name)
-            argv = opencode_argv(box, message=args.run, session=args.session, model=args.model,
-                                 interactive=not args.run)
+            if args.run:
+                models = [normalize_model(args.model)] if args.model else model_chain(box)
+                return run_with_chain(box, args.run, models, args.session)
+            chosen = normalize_model(args.model) if args.model else model_chain(box)[0]
+            argv = opencode_argv(box, message=args.run, session=args.session, model=chosen, interactive=True)
             try:
                 # execv だと使い終わりの後始末ができない（env-file を消せない）ので、子として動かす
                 return subprocess.run(argv, check=False).returncode

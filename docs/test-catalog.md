@@ -738,6 +738,11 @@
 - `test_opencode_cannot_stop_production_through_deck_sh`
 - `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
 - `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp（0700）。共有の /tmp にテストの一時フォルダが溜まり見かけ 372GB になった（2026-11-21）。destroy で一緒に消える。
+- `test_default_chain_skips_opencode_models_without_zen_key_or_when_box_disallows` — 箱の OpenCode のモデルの順番（GLM-5.3 → hy4-flash-free → deepseek-v4.1-flash-free → ローカル）。キー無し・allow_zen off で opencode* を飛ばす、meta の model_chain が優先、local は別名（利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」）。
+- `test_run_switches_model_on_limit_error_and_continues_the_session` — 上限の印で次のモデルへ、sessionID は --session で続け、last_model を保存。
+- `test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted` — 道具の失敗では切り替えない。尽きたら最後の終了コード。
+- `test_explicit_model_is_used_alone_and_local_is_an_alias` — --model 明示は 1 つだけ。local はローカル LLM。
+- `test_limit_detection_uses_word_boundaries` — 上限の印は語の区切りで見る（"rate" だけだと generate・accurate で誤って切り替わる）。
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。

@@ -16,7 +16,7 @@
 ## いまの状態
 
 - 計画: 確定（`PLAN-opencode-dev-environment.md` 第 2 段階、`ROADMAP.md`）。
-- P1（安全）: 完了（実機で確認）。箱ごとの pod と中継。次は P1 の残り（箱の開発役のモデル）と P2a。
+- P1（安全）: 完了（実機で確認）。箱ごとの pod と中継。箱の開発役のモデルは順番方式で実装済み（実機の確認待ち）。次は P2a。
 - P2〜P6: 未着手。
 
 ## 実機で確かめた事実（2026-11-21、podman 4.9.3）
@@ -78,7 +78,7 @@
 | P1 | 中継 `sandbox_gateway.py`（許可: モデル一覧・chat・許可した箱だけ `/load`。鍵・Cookie を渡さない。32 MiB・同時 4・ストリーム。外部のモデルは既定で断る） | 完了 | 本 PR |
 | P1 | `opencode_config` から本番の鍵を外し、中継を向ける | 完了 | 本 PR |
 | P1 | 実機: 箱から本番へ直接届かない・許可外は 403・箱の OpenCode が中継越しに会話できる | 完了（`implementation-status.md` 2026-11-21） | 本 PR |
-| P1 | 箱の開発役のモデル: ローカル LLM だけ（利用者 2026-11-21）。OpenCode Zen の無料モデルは「不具合と課題」の 5 を参照 | 方針決定 | — |
+| P1 | 箱の開発役のモデルは順番（`DEFAULT_MODEL_CHAIN`: Go の GLM-5.3 → Zen の無料 2 つ → ローカル LLM。`--run` は上限・残高切れ・レート制限で次へ、`models` で変更。根拠: 利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」） | 実装済み（実機の確認待ち） | 本 PR |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
