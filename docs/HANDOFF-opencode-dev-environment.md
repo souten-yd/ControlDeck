@@ -1,6 +1,6 @@
 # 引き継ぎ: OpenCode で全ての開発ができるようにする（開発用サンドボックス 第 2 段階）
 
-最終更新: 2026-11-21（Opus）。全体の順番は `docs/ROADMAP.md`、計画と方式の評価は `docs/PLAN-opencode-dev-environment.md` の「開発用サンドボックス 第 2 段階」。
+最終更新: 2026-11-21（Opus、P1 完了）。全体の順番は `docs/ROADMAP.md`、計画と方式の評価は `docs/PLAN-opencode-dev-environment.md` の「開発用サンドボックス 第 2 段階」。
 この文書だけで、まっさらな AI が続きを始められるように書く。進捗が動いたら、同じ PR の中で「作業一覧」と「作業記録」を直す。
 
 ## 目的と利用者の決定（時系列）
@@ -16,7 +16,7 @@
 ## いまの状態
 
 - 計画: 確定（`PLAN-opencode-dev-environment.md` 第 2 段階、`ROADMAP.md`）。
-- P1（安全）: 実装中。ブランチ `feat/sandbox-network-boundary`（作業ツリー `/data1tb/ControlDeck/devenv`）。Sonnet が実装し、Opus が差分・テスト・実機を確かめてから PR にする。
+- P1（安全）: 完了（実機で確認）。箱ごとの pod と中継。次は P1 の残り（箱の開発役のモデル）と P2a。
 - P2〜P6: 未着手。
 
 ## 実機で確かめた事実（2026-11-21、podman 4.9.3）
@@ -74,11 +74,11 @@
 | 段 | 項目 | 状態 | PR |
 |---|---|---|---|
 | 計画 | 方式の評価・段階・全体計画・この引き継ぎ | 完了 | 本 PR |
-| P1 | 箱ごとの pod（pasta、`-T` は中継のポートだけ、`-p` はミラーのポート） | 実装中 | — |
-| P1 | 中継 `sandbox_gateway.py`（許可: モデル一覧・chat・許可した箱だけ `/load`。鍵・Cookie を渡さない。32 MiB・同時 4・ストリーム） | 実装中 | — |
-| P1 | `opencode_config` から本番の鍵を外し、中継を向ける | 実装中 | — |
-| P1 | 実機: 箱から本番へ直接届かない・許可外は 403・箱の OpenCode が中継越しに会話できる | 未着手 | — |
-| P1 | 箱の開発役の既定のモデルを選べるようにする（OpenRouter / ローカル）。残高切れ（402）でローカルへ切り替える | 未着手 | — |
+| P1 | 箱ごとの pod（pasta、`-T` は中継のポートだけ、`-p` はミラーのポート） | 完了 | 本 PR |
+| P1 | 中継 `sandbox_gateway.py`（許可: モデル一覧・chat・許可した箱だけ `/load`。鍵・Cookie を渡さない。32 MiB・同時 4・ストリーム。外部のモデルは既定で断る） | 完了 | 本 PR |
+| P1 | `opencode_config` から本番の鍵を外し、中継を向ける | 完了 | 本 PR |
+| P1 | 実機: 箱から本番へ直接届かない・許可外は 403・箱の OpenCode が中継越しに会話できる | 完了（`implementation-status.md` 2026-11-21） | 本 PR |
+| P1 | 箱の開発役のモデル: ローカル LLM だけ（利用者 2026-11-21）。OpenCode Zen の無料モデルは「不具合と課題」の 5 を参照 | 方針決定 | — |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 未着手 | — |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | Vite のプラグイン（`apply: 'serve'`、`transformIndexHtml` で記録のスクリプト、`import.meta.hot.send` / `server.ws.on` で記録、`server.ws.send` で知らせ、`vite:error` を記録）。包みの設定を `vite --config` で渡す。記録は `.controldeck/feedback/*.jsonl` | 未着手 | — |
@@ -89,9 +89,22 @@
 | P5 | 箱のランタイムを `dev:<箱>/<モデル>` で本番のゲートウェイへ一時登録し評価 | 未着手 | — |
 | P6 | 試運転: W2 の最初の項目（`HANDOFF-web-collector.md`）を箱の OpenCode にやらせ、PR → Release まで | 未着手 | — |
 
+## 不具合と課題の一覧（開発中に見つけたもの）
+
+見つけたら、ここに足して優先度を付ける。直したら状態と PR を書く。
+
+| # | 内容 | 影響 | 優先 | 状態 |
+|---|---|---|---|---|
+| 1 | AI アシスタントの OpenCode の「プロジェクトの箱」（`provider.py` が `container_argv` を pod 無しで使う）は今も `--network host`。箱の中から本番のゲートウェイへ鍵なしで届き、`/load` も呼べる | 開発用の箱と同じ穴。ただしこちらはゲートウェイを使うのが本来の用途 | 中 | 未着手。P1 の中継（許可のパスを絞る）をプロジェクトの箱にも使うかを決める |
+| 2 | 本番 data の `sandboxes/` に、過去の作業の箱が約 30 個残っている（`cite`・`diag`・`vp`〜`vp6` など）。OpenCode のプロジェクトの箱の一時フォルダ（`project-tmp` など）も同じ場所 | ディスクと見通し。古い箱は中継のポートを割り当て直す | 低 | 未着手。中身（未 push のコミット）を確かめてから片付ける。`sandbox list` に最終使用日と未 push の有無を出す |
+| 3 | `opencode_config` は `provider._config_payload` を通すので、鍵が未発行だと本番に鍵を新しく作る（設定ファイルには入れない） | 副作用だけ | 低 | 未着手 |
+| 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー（今回 2 件、2 回目は 0 件） | 判定が揺れる | 低 | 既知（メモ） |
+| 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 利用者の判断待ち（Console のアカウント作成と、無料の範囲だけのキーを箱へ渡してよいか） |
+| 6 | 中継のログに httpx の INFO（要求の URL）が 1 行ずつ重なる | 見た目だけ | 低 | 未着手 |
+
 ## 未決事項
 
-- P1: 中継に `/load` を既定で許すか。今は「箱を作るときに `--allow-load` を付けたときだけ」。本番のモデルの停止は許可済みなので、開発役の切り替えに要るなら既定にしてもよい。
+- P1: 中継に `/load` を既定で許すか。今は `--allow-load` を付けた箱だけ（chat は要求に応じて自動でモデルを載せるので、開発役は困らない）。
 - P2b: 箱の開発サーバーを Project Lab の run にしたとき、`web_preview_ready`（ユニットのプロセスがポートを使っているか）が podman のコンテナでも通るか。通らなければ、確認の仕方を箱の run 用に足す。
 - P2c: Vite の公式文書（v8）の API が、ControlDeck の画面の Vite 5.4 でも同じに動くか（最初のテストで確かめる）。`base` を接頭辞にしたときの HMR の接続先（`server.hmr.path`）の合成の仕方は文書に無いので、実機で WebSocket の URL を見る。
 - P4: 借りる時間の上限・VRAM の上限の既定。
@@ -116,4 +129,5 @@
 
 ## 作業記録
 
+- 2026-11-21（Opus）: P1 を Sonnet が実装、Opus が差分を読み「外部のモデルを既定で断る」を足し、テストと実機で確かめた。OpenCode Zen の無料モデルの条件を調べた（不具合と課題の 5）。
 - 2026-11-21（Opus）: ルール（Opus が司令塔）の確認。既存の箱・ミラー・ゲートウェイ・broker・Project Lab の調査（Haiku）と外部の調査（Sonnet）。pasta と pod を実機で確かめ、P1 の設計を決めた。P1 の実装を Sonnet に回した。全体計画 `ROADMAP.md` とこの引き継ぎを書いた。
