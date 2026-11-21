@@ -7,6 +7,7 @@ import { IconTrash } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import type { Biblio } from "../../api/patents";
 import { BiblioBlock } from "./BiblioBlock";
+import { EssenceSection } from "./EssenceSection";
 
 const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 const PREVIEW_CHARS = 4000;
@@ -97,6 +98,7 @@ export function DocumentSheet({ docRef, onClose }: { docRef: string; onClose: ()
               </div>
             )}
           </section>
+          <EssenceSection key={ref} docRef={ref} aiUse={doc.ai_use} />
           <section>
             <h3 className="mb-2 text-xs font-semibold text-zinc-500">本文</h3>
             {doc.text ? (

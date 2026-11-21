@@ -8,7 +8,7 @@
 - 規格の利用可否（保存・AI 利用）の判断: `docs/standards-license-policy.md`
 - 規約の原本: `AGENTS.md`、引き継ぎの入口: `CLAUDE.md`
 
-最終更新: 2026-11-21 v0.102 を本番へ適用・旧データを取り込み済み（Claude, session_01Vr7X7mm3aPQSc8WA3mYwEk）
+最終更新: 2026-11-22 K1b（知識エッセンスの画面）を追加 — K1a・K1b 完了（GLM-5.3、開発の箱の OpenCode）
 
 ## 1. 目的と利用者の決定（時系列）
 
@@ -135,7 +135,7 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 
 | 段 | 内容（PB の PR） | ControlDeck での作り方 | 状態 |
 |---|---|---|---|
-| K1 | 知識エッセンス: 抽出の契約（8 種: 課題・原因・原理・作用機構・実装・効果・制約・応用、1 文献 12 件まで、引用 1200 字まで）・ローカル AI での生成・検めて保存（引用が原文のその位置に 1 回だけあること、版の一致）・人のレビュー（承認・却下・差し戻し、追記だけ、版が変われば stale で旧承認は戻らない）・文献の画面のカード（#29〜#33） | `knowledge/essence.py`（契約と検め）・Job でローカル AI（`knowledge/analysis.py` の呼び方を使い回す）・ナレッジのストアに表を足す・API は `/api/v1/knowledge/documents/{id}/essences`（見る・始める・レビュー）・文献の画面（DocumentSheet）にカードとレビューの操作 | ◐ K1a（backend）済み |
+| K1 | 知識エッセンス: 抽出の契約（8 種: 課題・原因・原理・作用機構・実装・効果・制約・応用、1 文献 12 件まで、引用 1200 字まで）・ローカル AI での生成・検めて保存（引用が原文のその位置に 1 回だけあること、版の一致）・人のレビュー（承認・却下・差し戻し、追記だけ、版が変われば stale で旧承認は戻らない）・文献の画面のカード（#29〜#33） | `knowledge/essence.py`（契約と検め）・Job でローカル AI（`knowledge/analysis.py` の呼び方を使い回す）・ナレッジのストアに表を足す・API は `/api/v1/knowledge/documents/{id}/essences`（見る・始める・レビュー）・文献の画面（DocumentSheet）にカードとレビューの操作 | ☑ K1a・K1b |
 | K2 | 承認済みのエッセンスの横断検索と、別文献 2〜3 件の比較（#36） | 検索は `search_documents` を通し、承認済みのエッセンスだけを返す（版と引用を再照合）。比較は並べて見せるだけ（AI の判断を足さない） | ☐ |
 | K3 | 知識マップ（1〜2 hop、読み取りだけ）と技術仮説のリンク（承認済みの知識の間に `basis=inferred` で明示登録 → 別の操作で承認）。#23 の関係の保存（根拠つきのノード・エッジ、版で stale）を最小限（#34・#35・#23） | ナレッジのストアに関係の表（R2-3 の書誌の関係と同じ置き場に寄せる）。上限（ノード 61・エッジ 60）と打ち切りの表示 | ☐ |
 | K4 | Idea Canvas: 利用者が自分の言葉で発明の仮説を書き、根拠（承認済みのエッセンス 0〜3 件）を固定して版で保存。AI は作らない・保存しない・出願しない（#37） | ローカル専用。保存時に根拠の版と承認を再照合。アイデアから特許の案件を作る導線 | ☐ |
@@ -160,6 +160,14 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 - GitHub: souten-yd/PatentBuddy（Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた。ブランチは残す）、souten-yd/ResearchDataHub。Archive は反映の後。
 
 ## 9. 作業記録（新しい順に追記）
+
+- 2026-11-22 GLM-5.3（開発の箱の OpenCode、K1b）: 知識エッセンスの画面。`frontend/src/features/knowledge/EssenceSection.tsx`
+  （DocumentSheet の「知識エッセンス」の節）・API を `api/knowledge.ts` に追加・Job の進捗表示を `features/knowledge/JobProgress.tsx`
+  へ移して共用。抽出の開始（ローカルのモデルが無い 503・利用条件 422 は理由をそのまま表示）→ 種類ごとのカード（要約・
+  AI の推論（未確認）・引用の折りたたみ・前回のレビュー）→ 承認・却下・差し戻し（メモ任意）→ stale の印・捨てた件数・
+  見るだけの利用者への出し分け。E2E `knowledge-essence.spec.ts`（5 passed、1280/320・ライト/ダーク、API は差し替え）と
+  knowledge・patents の回帰（17 passed）。本物のローカルモデルでの抽出と撮影 PNG の目視は未確認（検証用インスタンスに
+  モデルが無い・このモデルは画像を読めない）。
 
 - 2026-11-21 Claude: 利用者「各ボタンなどの機能動作も確認して」。`frontend/e2e/button-sweep.spec.ts`（Patent・Knowledge のボタンを入力を入れて押し、結果まで確かめる。押した一覧は test-results/button-sweep.json）。
   見つけて直した不具合 2 件: (1) 埋め込みのサーバーに届かないと資料の取り込みが丸ごと失敗していた → 本文と全文索引は残し、埋め込みは「作り直し」で後から（`rag.add_document` の embedded/embed_error）。

@@ -18,6 +18,19 @@ export interface DocumentDetail {
   analysis_kinds?: Record<string, string>;
   related: { ref: string; relation: string; via: string; title: string; collection: string }[];
 }
+/** 知識エッセンス（K1）: ローカル専用の AI が文献から抜き出した知識。引用は原文の [start, end) と一致するものだけ。 */
+export interface EssenceReview {
+  decision: string; note: string; reviewer: string; at: number; stale: boolean;
+}
+export interface EssenceItem {
+  kind: string; summary: string; quote: string; start: number; end: number;
+  basis: string; review_status: string; review: EssenceReview | null;
+}
+export interface EssenceRow {
+  id: number; doc_id: number; source_revision: string; items: EssenceItem[]; dropped: number;
+  status: string; error: string; job_id: string; created: number; updated: number;
+  basis: string; stale: boolean; shard: string;
+}
 export interface LicenseDecision {
   storage: string; ai_use: string; operations: string[]; needs_review: boolean; reasons: string[]; publisher: string | null;
 }
@@ -51,6 +64,13 @@ export const knowledgeApi = {
     api(`/knowledge/documents/${encodeURIComponent(ref)}/annotations/${id}/review`, { method: "POST", json: { review_status } }),
   removeAnnotation: (ref: string, id: number) =>
     api(`/knowledge/documents/${encodeURIComponent(ref)}/annotations/${id}`, { method: "DELETE" }),
+  essences: (ref: string) =>
+    api<{ essences: EssenceRow[]; kinds: Record<string, string> }>(`/knowledge/documents/${encodeURIComponent(ref)}/essences`),
+  extractEssences: (ref: string) =>
+    api<{ job_id: string; essence_id: number; essence_ref: string }>(`/knowledge/documents/${encodeURIComponent(ref)}/essences`, { method: "POST" }),
+  reviewEssence: (essenceRef: string, index: number, decision: string, note = "") =>
+    api<{ essence_id: number; item_index: number; decision: string; reviewer: string }>(
+      `/knowledge/essences/${encodeURIComponent(essenceRef)}/items/${index}/review`, { method: "POST", json: { decision, note } }),
   standards: () => api<{ standards: StandardRow[]; instruments: Record<string, string> }>("/knowledge/standards"),
   decide: (body: Partial<StandardInput>) => api<LicenseDecision>("/knowledge/standards/decide", { method: "POST", json: body }),
   addStandard: (body: StandardInput) => api<{ job_id: string }>("/knowledge/standards", { method: "POST", json: body }),
@@ -70,3 +90,5 @@ export const STORAGE_LABEL: Record<string, string> = {
   shared_server: "本文を保存", personal_copy: "番号と題名だけ（本文は手元の 1 部で読む）", metadata_only: "番号と題名だけ",
 };
 export const STATUS_LABEL: Record<string, string> = { current: "現行", superseded: "旧版", withdrawn: "廃止", unknown: "状態不明" };
+/** エッセンスのレビューの判断（backend/app/knowledge/essence.py の DECISIONS）。 */
+export const ESSENCE_DECISION_LABEL: Record<string, string> = { approved: "承認", rejected: "却下", returned: "差し戻し" };

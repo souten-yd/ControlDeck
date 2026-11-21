@@ -1,5 +1,42 @@
 # 実装状況
 
+## 2026-11-22 開発用の箱の npm・pip をオフラインに
+
+- 実機: 箱の OpenCode（GLM-5.3、K1b の作業中）が `npx tsc` を流し、npm からパッケージを取ってきた（外部からの取得の禁止に反する。本人の報告で判明）。箱の環境に `npm_config_offline=true`・`PIP_NO_INDEX=1`。手元（キャッシュ）に無いものは取りに行かず失敗する（`npx` で `only-if-cached` の失敗を確認）。
+- 検証: `tests/test_dev_sandbox.py`（+1）。
+
+## 2026-11-22 知識エッセンス（K1b）: 文献の画面のカードと人のレビュー（frontend のみ）
+
+- 目的: K1a（backend。`essence.py` の抽出・検め・レビュー・版の失効）を、文献の画面（DocumentSheet）から
+  使えるようにする。PatentBuddy Draft #32・#33 の「知識カード・人のレビュー」の考え方を ControlDeck の
+  書き方（React の部品・権限・Job の見せ方・`docs/ui-ux-guidelines.md`）で作り直した（コードは写していない）。
+- `frontend/src/features/knowledge/EssenceSection.tsx`（新規）: DocumentSheet の「AI の分析」の下に
+  「知識エッセンス」の節を足した。まだ無ければ「知識を抽出（ローカルの AI）」（`workflows.edit` の利用者のみ。
+  AI に使えない文献（ai_use=prohibited）は始める前からその理由を出す）→ 開始（`POST /documents/{ref}/essences`）→
+  Job の進み具合（pages/Knowledge.tsx にあった RagJobProgress を features/knowledge/JobProgress.tsx へ移して共用）→
+  終わったら一覧を読み直す。503（ローカルのモデルが無い）・422（利用条件）は返ってきた理由の文をそのまま出す。
+  Job が「前回と同じ内容」（unchanged）を返したときは「既存の結果とレビューをそのまま使います」と出す
+  （backend が同じ内容の再実行を新しく書かないのと合わせる）。
+- 一覧は抽出（版）ごとに行、行の中を種類（課題・原因・原理・作用機構・実装・効果・制約・応用）ごとにまとめたカード。
+  各カード: 要約・「AI の推論（未確認）」の印・レビューの状態（未確認・承認済み・却下・差し戻し）・引用の折りたたみ
+  （開くと原文からの引用）・前回のレビュー（誰がいつどうした。API が返す最新の 1 件）。
+  権限のある利用者は承認・却下・差し戻しを押す（メモは任意で折りたたみの中）。「押したら API → 一覧を読み直して状態が変わる」。
+  原文の版が変わった行（stale）は「原文が変わりました（前の承認は効きません）」の印を出し、レビューの操作を出さない
+  （backend が古い版へのレビューを断るのと同じ）。検めで捨てた件数（形違い・上限超過）も小さく出す。
+  取り消し（canceled）の Job は「抽出を取り消しました」と通常の通知に、失敗・再起動中断は赤のまま。
+  一覧の初回取得中は操作を出さない（取得前に「抽出」が一瞬出るのを防ぐ）。
+- API は `frontend/src/api/knowledge.ts` に essences（一覧）・extractEssences（開始）・reviewEssence（レビュー）を追加。
+  権限の出し分けは既存の画面（DocumentSheet の分析・ClaimJudge）と同じ `can("workflows.edit")`。
+- E2E `frontend/e2e/knowledge-essence.spec.ts`（新規。API は page.route で差し替え、本物の LLM は呼ばない）:
+  抽出の開始と Job の進み具合・一覧の表示、カードの引用の開閉、承認・却下・差し戻しで状態が変わる、stale の印・捨てた件数、
+  503・422 の理由の表示、見るだけの利用者（/auth/me を差し替え）にボタンが無い、1280・320 で横に崩れず
+  ライト・ダークの撮影（test-results/knowledge-essence-*.png）。5 passed。
+  あわせて knowledge・patents の E2E も回帰（DocumentSheet を共有しているため）: 17 passed。
+  途中で patents の spec が落ちて `essences` キーの無い応答で `refetchInterval` が TypeError を出すのが見つかったので
+  `?.` で頑健に直した（差し替え幅の広い既存の stub でも壊れない）。
+- 確かめられなかった点: 本物のローカルモデルでの抽出（検証用インスタンスにはモデルが無いので開始は差し替え）。
+  撮影した PNG の目視はこのモデルではできない（画像を読めない）。実機の ControlDeck での確認は利用者向けの案内に残す。
+
 ## 2026-11-21 開発の作業場 1 段目（関門 dev-check・開発のスキル・別モデルのレビュー役・目録の道具の修正）
 
 - 目的: 箱の OpenCode（ローカル LLM・GLM）が、Opus の監査に頼らず間違いの少ない開発を自分で進められるようにする。試験で Opus の監査が見つけた機械的な問題（目録の説明の消失・venv の作成と PyPI 取得・箱の git の作者が不定・子のレビュー役が気づかない）を道具で潰す。設計は Opus、実装は Sonnet。
