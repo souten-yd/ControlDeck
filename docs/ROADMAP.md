@@ -22,7 +22,7 @@
 | | | P6 試運転（下の 2 の W2 の最初の項目を OpenCode にやらせる） | 未着手 | 同上 |
 | 2 | 検索基盤（Web 収集） | W2 ブラウザ（JS が要るページ・中継・data_api）→ W3 巡回 | W1 完了（v0.108）。W2 から | `HANDOFF-web-collector.md`、`PLAN-web-collector.md` |
 | 3 | 特許の調査（Patent P1） | テーマ→検索語→承認→取得→関連順→全文判定→保存 | 未着手。W2 とナレッジの検索入口が前提 | 同上 |
-| 4 | 統合ナレッジ | R3-4 知識エッセンス → R3-5 知識マップ・横断比較 → R3-6 の残り。R2-3 書誌グラフ・R2-5 PDF の座標 | R3-0〜3 完了（v0.102）。R3-4 から | `HANDOFF-knowledge-platform.md`、`PLAN-knowledge-platform.md` |
+| 4 | 統合ナレッジ（PatentBuddy の未反映の内容を作り直す） | K1 知識エッセンス → K2 横断検索・比較 → K3 知識マップ・仮説 → K4 Idea Canvas → K5 3 段の画面 → K6（R3-6 の残り）。R2-3 書誌グラフ・R2-5 PDF の座標 | R3-0〜3 完了。PB の PR は 2026-11-21 に閉じた。K1 から（`HANDOFF-knowledge-platform.md`） | `HANDOFF-knowledge-platform.md`、`PLAN-knowledge-platform.md` |
 | 5 | フロンティアモデル | F4 役割と接続（AI アシスタントのゲートウェイ経由化・プロジェクトの「機密」）→ F3 エージェント CLI → F5 開発チーム | F1・F2・F2+（費用・残高・月の上限）完了 | `PLAN-frontier-models.md` |
 | 6 | モデル管理の残り | 既知の不具合 4 件（`HANDOVER-model-management-v2.md` の「既知のバグ」）、A の画面、D-5 の画面 | 文書は 2026-08 で止まっている。直す前に今のコードで再確認 | `HANDOVER-model-management-v2.md` |
 | 7 | Terminal V2 | 4c-5 実機の iPhone・PWA → 4c-6 既定化 | 利用者の実機が要る | `implementation-plan.md` |
