@@ -827,8 +827,11 @@ PERMISSION_PLUGIN = Path(__file__).resolve().parent / "plugins" / "controldeck-p
 CHAT_SERVER_ASK_ACTIONS = ("shell", "edit", "write", "webfetch", "execute")
 
 
-def _apply_chat_server(v2: dict) -> dict:
-    """AI アシスタント用サーバーの設定に、ask の規則と権限プラグインを足す。"""
+def _apply_chat_server(v2: dict, plugin: Path | None = None) -> dict:
+    """AI アシスタント用サーバーの設定に、ask の規則と権限プラグインを足す。
+
+    plugin は権限プラグインの場所（作業場の箱は本番のコードが見えないので、箱の中へ写したものを渡す）。"""
+    plugin = plugin or PERMISSION_PLUGIN
     asks = [{"action": action, "resource": "*", "effect": "ask"} for action in CHAT_SERVER_ASK_ACTIONS]
     # question（利用者へ質問して答えを待つ道具）は禁止する。画面に答える欄が無く、答えが届かないまま
     # 実行が止まる（2026-11-21 実機: 質問の最中に「途中で伝える」を押すと、伝えた文は質問の答えにならず
@@ -837,8 +840,8 @@ def _apply_chat_server(v2: dict) -> dict:
                          {"action": "question", "resource": "*", "effect": "deny"}]
     # アクションリスト（todowrite）。v2 では実験機能で既定は切（2026-11-18 利用者「いつ終わるのかわからん」）
     v2["experimental"] = {**(v2.get("experimental") or {}), "todo": True}
-    plugins = [p for p in (v2.get("plugins") or []) if p != PERMISSION_PLUGIN.as_uri()]
-    v2["plugins"] = [PERMISSION_PLUGIN.as_uri(), *plugins]
+    plugins = [p for p in (v2.get("plugins") or []) if p != plugin.as_uri()]
+    v2["plugins"] = [plugin.as_uri(), *plugins]
     return v2
 
 

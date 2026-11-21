@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 205 ファイル、1862 テスト（目的の未記入 93 ファイル）
-- E2E: 102 spec、208 テスト
+- backend: 206 ファイル、1878 テスト（目的の未記入 93 ファイル）
+- E2E: 103 spec、207 テスト
 
 ## backend（backend/tests）
 
@@ -768,7 +768,6 @@
 - `test_opencode_cannot_stop_production_through_deck_sh`
 - `test_dev_box_runs_in_its_pod_not_on_the_host_network` — 開発用の箱は --pod で動き host network を使わない。プロジェクトの箱（pod 無し）は従来どおり（箱から本番のモデル切り替えを鍵なしで呼べた）。
 - `test_dev_box_has_its_own_tmp_that_goes_away_with_the_box` — 箱ごとの /tmp。空のルートの /tmp は全部の箱で共有され、テストの一時フォルダ（90GB の見かけの GGUF）が
-- `test_box_keeps_npm_and_pip_offline` — 箱の中から npm・npx・pip が外へ取りに行かない（2026-11-22 実機: 箱の OpenCode が npx で npm から取得した）。
 - `test_ensure_pod_reuses_same_spec_and_recreates_on_change` — pod は設定が同じなら使い回し、違えば rm してから作る。pasta:-T と -p の引数。
 - `test_old_sandbox_json_without_gateway_port_gets_one_and_saves_it` — 古い箱は load 時に中継のポートを割り当てて保存する。
 - `test_opencode_config_has_no_production_key_and_points_at_the_relay` — 箱の opencode.json に本番の鍵を入れず、中継を向く。
@@ -790,6 +789,27 @@
 - `test_reviewer_model_differs_from_the_work_model` — レビュー役は作業と別のモデルにする（同じモデルは同じ見落としをする）。ローカルの作業→最初の外部、外部の作業→ローカル。
 - `test_reviewer_stays_local_when_no_external_is_allowed` — allow_zen が off（またはキーが無い）なら外部は使わない。ローカルの作業のレビュー役は設定を変えない（None）。
 - `test_opencode_config_gives_the_reviewer_another_model_and_ships_the_development_skill`
+- `test_box_keeps_npm_and_pip_offline` — 目的: 箱の中から npm・npx・pip が外へ取りに行かない。
+
+### backend/tests/test_dev_workspaces.py
+
+目的: 開発の作業場 2 段目（AI アシスタントの OpenCode の会話から、開発用の箱を選んで・作って、その中で開発させる）。 目的: 作業場（箱）の中で会話サーバー（opencode serve）を、箱の隔離（pod・中継だけに届く・鍵を置かない）を保ったまま 動かす。持ち主だけが入れ、作る・消す・一覧が API から安全にできる（未保存の変更は確認なしで消さない）。 根拠: 2026-11-22 利用者「Claude なしで、AI アシスタントに要望を出せば OpenCode が開発を進められる状態に」。 設計は 2026-11-21 の指示書（段 1 は #532）。podman・systemd は呼ばず（モック）、git は本物を使う。
+
+- `test_new_box_gets_a_serve_port_and_old_box_gets_one_on_load`
+- `test_pod_publishes_serve_port_and_spec_changes_with_it`
+- `test_stale_pod_is_not_recreated_while_containers_run` — 目的: 古い箱の pod に動いているコンテナ（ミラー・作業中の OpenCode）があるとき、作り直して落とさない。
+- `test_stale_pod_is_recreated_when_nothing_runs`
+- `test_box_for_project_only_matches_a_box_work_tree`
+- `test_workspace_chat_is_for_the_owner_only`
+- `test_resolve_project_returns_a_workspace_path_without_importing`
+- `test_workspace_server_starts_in_the_pod_with_env_file_and_relay_only_config` — 目的: 会話サーバーは箱の pod の中（podman --pod）で起き、パスワードは env-file で渡し argv に出さない。
+- `test_workspace_server_refuses_unknown_network_and_reports_old_pod`
+- `test_create_uses_origin_main_and_auto_names_and_lists_only_own`
+- `test_create_from_codedev_requires_a_git_project`
+- `test_delete_refuses_unsaved_changes_without_confirm`
+- `test_delete_is_owner_only`
+- `test_workspace_api_list_create_delete_confirm_and_audit`
+- `test_workspace_api_requires_login_and_terminal_permission`
 
 ### backend/tests/test_diagnostics.py
 
@@ -3029,6 +3049,12 @@
 
 - code block copy button copies the whole code (${width}px)
 
+### frontend/e2e/assistant-dev-workspace.spec.ts
+
+目的: 目的: AI アシスタントの OpenCode で「開発の作業場」を選べること。一覧に自分の作業場が出て、選ぶと作業場の印が出る。 「新しい作業場」で元を選んで作ると選ばれる。送ると作業場の作業ツリーのパスが code_project_path で渡る。 消す操作は確認つき（未保存の変更があれば警告し、確認の印つきで消す）。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「Claude なしで、AI アシスタントに要望を出せば OpenCode が開発を進められる状態に」 （開発の作業場 2 段目）。API と WebSocket は模擬する（箱・OpenCode を動かさない）。
+
+- dev workspaces can be listed, created, used and deleted (${width}px)
+
 ### frontend/e2e/assistant-message-actions.spec.ts
 
 目的: **未記入**
@@ -3216,7 +3242,7 @@
 
 ### frontend/e2e/knowledge-essence.spec.ts
 
-目的: 知識エッセンス（K1b）: 文献の画面（DocumentSheet）の「知識エッセンス」の節。ローカル専用の AI が抜き出した知識（種類 8 つ・引用つき・AI の推論・未確認）を種類ごとのカードで見せ、承認・却下・差し戻し（メモは任意）でカードの状態が変わること。抽出の開始から Job の進み具合を経て一覧が読み直されること。stale の印（前の承認は効かない）・検めで捨てた件数・503（ローカルのモデルが無い）・422（利用条件）の理由・見るだけの利用者にボタンが無いこと。1280 と 320 で崩れずライト・ダークで撮影。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K1 の作り直し。backend は K1a として main 済み）。検証用インスタンスにはローカルのモデルも文献も無いので、API は page.route で差し替える（本物の LLM は呼ばない）。
+目的: 知識エッセンス（K1b）: 文献の画面（DocumentSheet）の「知識エッセンス」の節。 目的: - ローカル専用の AI が抜き出した知識（種類 8 つ・引用つき・AI の推論・未確認）を、種類ごとのカードで 見せられること。抽出の開始から Job の進み具合を経て一覧が読み直されること。 - カードの引用が折りたたみで、開くと原文からの引用が出ること。 - 承認・却下・差し戻し（メモは任意）を押したら API が呼ばれ、カードの状態が変わること。 - 原文の版が変わった行（stale）には「原文が変わりました（前の承認は効きません）」の印と、 検めで捨てた件数（形違い・上限）が出ること。 - ローカルのモデルが無い（503）・AI の利用が禁止の文献（422）は、返ってきた理由がそのまま見えること。 - 見るだけの利用者（workflows.edit が無い）には抽出もレビューのボタンが出ないこと。 - 1280 と 320 で横に崩れず、ライト・ダークで撮影すること。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck に ルールに従って反映して」（知識エッセンス K1 の作り直し。docs/HANDOFF-knowledge-platform.md の K1 の行。 backend は K1a として main 済み）。検証用インスタンスにはローカルのモデルも文献も無いので、 API は page.route で差し替えて確かめる（本物の LLM は呼ばない）。 */ ---- 差し替える応答（本物の形: backend/app/knowledge/essence.py の list_essences と router.py） ----
 
 - Knowledge: 知識エッセンスを抽出して承認・却下・差し戻しで確かめる（${width}px）
 - Knowledge: 知識の抽出が始められないときは理由を出す（${width}px）

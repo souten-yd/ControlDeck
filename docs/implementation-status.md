@@ -37,6 +37,17 @@
 - 確かめられなかった点: 本物のローカルモデルでの抽出（検証用インスタンスにはモデルが無いので開始は差し替え）。
   撮影した PNG の目視はこのモデルではできない（画像を読めない）。実機の ControlDeck での確認は利用者向けの案内に残す。
 
+## 2026-11-22 開発の作業場 2 段目（AI アシスタントの OpenCode の会話から、作業場を選ぶ・作る・消す）
+
+- 目的: 「Claude なしで、AI アシスタントに要望を出せば OpenCode が開発を進められる状態に」（利用者）。今まで端末の `./deck.sh sandbox` だけだった開発用の箱を、AI アシスタントの画面から使えるようにする。
+- 箱の meta に `serve_port`（19000〜、古い箱は load 時に割り当てて保存）。pod が `-p 127.0.0.1:<serve_port>` を公開する（pod の spec が変わる）。`ensure_pod` は、古い spec でも pod の中に動いているコンテナがあれば作り直さない（会話サーバーの起動だけ「古い形の pod」のエラー）。
+- 会話サーバー（`chat_server`）: プロジェクトが作業場（`<sandbox root>/<名前>/work/repo`）なら、箱の pod の中で `opencode serve` を systemd のユーザーユニットで起こす（`_start_workspace`）。設定は `sandbox.opencode_config(chat_server=True, default_model=順番の最初)`（中継を向く・鍵なし・スキル・レビュー役）に権限プラグイン（箱のホームへ写す）・ask・question deny・todo を足して箱のホームへ。パスワード（と使えるなら Zen のキー）は 0600 の env-file（argv に出さない）。持ち主（meta の owner）と会話の利用者が違えば断る。`network` 引数は将来の秘密の会話（none）用の余地（今は `gateway` のみ）。
+- 作業場の API（`/opencode/workspaces` の GET・POST・DELETE、権限 terminal.use、監査 `opencode.workspace.create` / `.delete`）。作成は ControlDeck 本体（`origin/main`）か CodeDEV の git のプロジェクト。削除は未コミット・未 push があれば `confirm=true` 無しでは 409。新モジュール `app/maintenance/workspaces.py`。
+- 画面: AI アシスタントの OpenCode の作業フォルダの選択に「開発の作業場」の組と「新しい作業場…」。作業場の印（バッジ）・元・ブランチ・未保存の表示・確認つきの削除（`DevWorkspace.tsx`）。作業場は作業ツリーのパスを `code_project_path` で送る。
+- 秘密の会話は今までどおり断る（段 2 で別に）。
+- テスト: `test_dev_workspaces.py`（15 件）、`test_dev_sandbox.py` 更新、E2E `assistant-dev-workspace.spec.ts`（320・1280）。
+- 確かめられなかった点: 実機の podman・systemd での起動、古い箱の pod 作り直し、実際の OpenCode との会話（模擬のみ）。
+
 ## 2026-11-21 開発の作業場 1 段目（関門 dev-check・開発のスキル・別モデルのレビュー役・目録の道具の修正）
 
 - 目的: 箱の OpenCode（ローカル LLM・GLM）が、Opus の監査に頼らず間違いの少ない開発を自分で進められるようにする。試験で Opus の監査が見つけた機械的な問題（目録の説明の消失・venv の作成と PyPI 取得・箱の git の作者が不定・子のレビュー役が気づかない）を道具で潰す。設計は Opus、実装は Sonnet。
