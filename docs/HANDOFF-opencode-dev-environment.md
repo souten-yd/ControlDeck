@@ -31,7 +31,7 @@
 - 本番のゲートウェイには OpenRouter の 2 モデル（`cloud:openrouter/deepseek/deepseek-v4.1-flash-1017`、`cloud:openrouter/qwen/qwen4-max`）が登録済み。
 - Project Lab に「利用者の操作を検知・記録する仕組み」はまだ無い（全ブランチ・作業ツリーを探した）。あるのは preview の鍵付きの入口と WebSocket の中継（HMR）。要素を選ぶ処理は Workflow の `ScrapeViewer.tsx` の `PICKER_SCRIPT`（`cssPath`）にある。
 - Project Lab の実行（`project_lab/runs.py::_launch`）: systemd の一時ユニット、書けるのはプロジェクトだけ、メモリ 2GB、CPU 200%、同時 3 本、対象は CodeDEV の中だけ。LLM による評価は未実装（`llmEvaluation: False`）。ControlDeck の MCP に実行の道具は無い（ファイルの受け渡しの許可だけ）。
-- 箱の OpenCode には ControlDeck の MCP（`controldeck_addons`）を載せていない（`sandbox.py::opencode_config`）。
+- （P2a 前の事実）箱の OpenCode には ControlDeck の MCP を載せていなかった。P2a で、中継経由の bridge として載せた（`sandbox.py::opencode_config`）。
 
 ## ファイル地図
 
@@ -42,7 +42,7 @@
 | `backend/app/models_mgmt/gateway.py` | LLM ゲートウェイ（OpenAI 互換、`/api/v1/llm/v1`）。`resolve_instance`・外部 API への送信 |
 | `backend/app/models_mgmt/cloud.py` | 外部プロバイダ（OpenRouter など）、呼び出し元ごとの送信の許可、費用・残高・月の上限 |
 | `backend/app/project_lab/runs.py`・`webview.py`・`router.py` | Project Lab の実行・preview の中継（鍵付きの入口・WS）・API |
-| `backend/app/addons/agent_mcp.py` | ControlDeck の MCP（`control_deck.report`・`research` など）。P2 で実行の道具を足す |
+| `backend/app/addons/agent_mcp.py` | ControlDeck の MCP（`control_deck.report`・`research` など）。P2a で `lab_*` の実行の道具を足した（箱へは中継が許可の道具だけ通す） |
 | `backend/app/resources/router.py`・`addon_runtime/resources.py`・`models_mgmt/resource_provider.py` | GPU の broker と貸し出し（P4 で `sandbox:<名前>` を足す） |
 | `backend/app/models_mgmt/radiance.py` | podman に GPU を渡す実例（`--device /dev/kfd --device /dev/dri --group-add keep-groups`） |
 | `backend/app/models_mgmt/runtime_provider.py` | ランタイムの共通部分（P5 の `dev:` 登録で使う） |
@@ -79,7 +79,7 @@
 | P1 | `opencode_config` から本番の鍵を外し、中継を向ける | 完了 | 本 PR |
 | P1 | 実機: 箱から本番へ直接届かない・許可外は 403・箱の OpenCode が中継越しに会話できる | 完了（`implementation-status.md` 2026-11-21） | 本 PR |
 | P1 | 箱の開発役のモデル: ローカル LLM だけ（利用者 2026-11-21）。OpenCode Zen の無料モデルは「不具合と課題」の 5 を参照 | 方針決定 | — |
-| P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 未着手 | — |
+| P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | Vite のプラグイン（`apply: 'serve'`、`transformIndexHtml` で記録のスクリプト、`import.meta.hot.send` / `server.ws.on` で記録、`server.ws.send` で知らせ、`vite:error` を記録）。包みの設定を `vite --config` で渡す。記録は `.controldeck/feedback/*.jsonl` | 未着手 | — |
 | P2d | 実行の結果・ログ・成果物の差分・撮影・気づきを `control_deck.report` で評価として出す | 未着手 | — |
@@ -101,6 +101,8 @@
 | 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー（今回 2 件、2 回目は 0 件） | 判定が揺れる | 低 | 既知（メモ） |
 | 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 登録欄を用意（設定 → API キー →「開発」、`sandbox new --no-zen` / `zen <名前> on|off`、`opencode --model opencode/deepseek-v4.1-flash-free`）。利用者がキーを登録したら箱で使える（Console のアカウント作成と、無料の範囲だけのキーが要る） |
 | 6 | 中継のログに httpx の INFO（要求の URL）が 1 行ずつ重なる | 見た目だけ | 低 | 未着手 |
+| 7 | 本番の DB に管理者のアカウントが 13 個ある。ほとんどは過去の E2E・試験の使い捨て（`codex-*`・`e2e-*`・`mf-e2e`・`strata-acceptance-*`・`pb-analysis-test-*` など）。`sandbox new` は管理者が複数だと `--owner` を求める | 使い捨ての管理者が残るのは安全上よくない。E2E が本番に向いていた頃の名残 | 高 | 利用者の判断待ち（無効化か削除）。持ち主は `--owner souten` で指定して進める |
+| 8 | MCP の `lab_*` の道具は本番の ControlDeck の中にあるので、本番が更新されるまで箱から見えない（中継の絞り込みとトークンは実機で確認済み） | 実機の通し確認が本番の更新待ち | 中 | Release の後、本番の自動更新（10 分使われていないとき）を待って確かめる |
 
 ## 未決事項
 
@@ -131,3 +133,4 @@
 
 - 2026-11-21（Opus）: P1 を Sonnet が実装、Opus が差分を読み「外部のモデルを既定で断る」を足し、テストと実機で確かめた。OpenCode Zen の無料モデルの条件を調べた（不具合と課題の 5）。
 - 2026-11-21（Opus）: ルール（Opus が司令塔）の確認。既存の箱・ミラー・ゲートウェイ・broker・Project Lab の調査（Haiku）と外部の調査（Sonnet）。pasta と pod を実機で確かめ、P1 の設計を決めた。P1 の実装を Sonnet に回した。全体計画 `ROADMAP.md` とこの引き継ぎを書いた。
+- 2026-11-21（Sonnet、P2a）: MCP に `control_deck.lab_*` 5 道具、中継に MCP の 2 パス（トークンは箱の外・許可の道具だけ）、箱の持ち主 `--owner` と環境変数ファイル、箱の bridge を実装。単体テストは通った。実機（箱の OpenCode から lab_run_start → preview の URL）は未確認。

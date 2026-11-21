@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る（手で書き換えない）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 193 ファイル、1711 テスト（目的の未記入 93 ファイル）
+- backend: 194 ファイル、1740 テスト（目的の未記入 93 ファイル）
 - E2E: 96 spec、198 テスト
 
 ## backend（backend/tests）
@@ -744,10 +744,15 @@
 - `test_zen_key_is_not_given_when_the_box_disallows_it_or_for_shell_and_exec` — allow_zen off・shell・exec にはキーを渡さない。
 - `test_new_box_allows_zen_by_default_and_no_zen_turns_it_off` — 既定は許可、--no-zen で off。
 - `test_opencode_model_keeps_provider_form_and_defaults_to_controldeck` — --model の provider/モデルはそのまま、無ければ controldeck/。
+- `test_owner_is_the_only_admin_or_must_be_named` — 箱の持ち主（MCP の権限）は、管理者が 1 人ならその人、複数・0 人なら --owner を求め、指定は有効な利用者だけ（P2a）。
+- `test_old_box_without_owner_gets_one_by_the_same_rule_and_saves_it` — 古い箱（owner 無し）は同じ規則で決めて保存。読むだけの操作は持ち主が決まらなくても通る。
+- `test_relay_env_file_is_0600_outside_the_box_and_token_stays_out_of_argv` — MCP のトークンは箱の外の 0600 の環境変数ファイルで中継へ渡し、argv に出さない。
+- `test_opencode_config_points_the_bridge_at_the_relay_without_the_mcp_token` — 箱の bridge は中継を向き、トークンは意味の無い値。結果のフォルダは箱の中。
+- `test_opencode_config_refuses_to_write_when_the_mcp_token_would_leak` — MCP のトークンが設定に入るなら書き出しを中止する。
 
 ### backend/tests/test_sandbox_gateway.py
 
-目的: サンドボックスの LLM 中継。箱から本番のモデル切り替え（load）を鍵なしで呼べた（2026-11-21 実測）ので、許した呼び出しだけを通す。上流は MockTransport の偽物。
+目的: サンドボックスの LLM 中継。箱から本番のモデル切り替え（load）を鍵なしで呼べた（2026-11-21 実測）ので、許した呼び出しだけを通す。上流は MockTransport の偽物。MCP（P2a）は、トークンを箱の外の中継だけが持ち、呼べる道具を許可の一覧に絞る。
 
 - `test_only_allowed_calls_pass_and_load_needs_allow_load` — 許可外は 403、load は --allow-load のときだけ。
 - `test_headers_are_replaced_not_forwarded` — Authorization・Cookie を渡さず、決まった頭を付ける。
@@ -756,6 +761,12 @@
 - `test_concurrency_limit_returns_429_without_waiting`
 - `test_upstream_down_is_502_and_slot_is_released`
 - `test_cloud_models_are_refused_unless_allowed` — 箱の OpenCode はローカル LLM だけ（2026-11-21 利用者）。外部のモデル（cloud:）への chat を既定で断り、上流へ送らない。
+- `test_mcp_paths_need_the_relay_token_and_are_closed_without_it` — トークンの無い中継では MCP は閉じ、あっても tools・call 以外は 403。
+- `test_mcp_authorization_is_replaced_with_the_relays_token` — 箱から来た Authorization・Cookie は捨て、中継のトークンを付ける。
+- `test_mcp_call_outside_the_allowlist_is_403_and_never_reaches_upstream` — 許可外の道具・読めない本文は 403 で上流へ送らない。
+- `test_mcp_tools_listing_is_narrowed_and_renewed_token_is_not_passed_on` — /tools は許可の道具だけ。上流の更新トークンの頭を箱へ渡さない。
+- `test_mcp_upstream_errors_pass_through_and_token_stays_out_of_logs` — 上流の拒否はそのまま返し、トークンをログに出さない。
+- `test_relay_reads_the_token_from_the_environment_not_argv` — トークンは環境変数で受け、argv で受けない。
 
 ### backend/tests/test_diagnostics.py
 
@@ -1220,6 +1231,18 @@
 - `test_blob_path_rejects_traversal`
 - `test_concurrent_first_use_imports_legacy_once`
 - `test_failed_copy_leaves_no_empty_target`
+
+### backend/tests/test_lab_mcp_tools.py
+
+目的: ControlDeck の MCP の Project Lab の道具（control_deck.lab_*）。project_lab の既存の関数を呼ぶだけで動き、権限・監査・他人の run の不可視・ログの上限・preview の URL が router.py と同じ規則であること。根拠: 2026-11-21 利用者の決定（P2a）。
+
+- `test_listing_shows_only_the_lab_tools_the_user_may_use` — 権限の無い道具は一覧に出ない。
+- `test_projects_lists_profiles_with_id_label_type`
+- `test_start_returns_preview_urls_and_leaves_an_audit` — web は鍵付きの相対パスと 127.0.0.1 の絶対 URL を返し、監査に残る。
+- `test_start_refusals_without_permission_bad_args_and_run_error` — 権限無し 403・引数の不正 422・実行の失敗 409（失敗も監査）。
+- `test_status_logs_and_stop_work_for_the_owner`
+- `test_logs_are_cut_to_the_tail_limit` — 既定 32 KB、最大 256 KB。
+- `test_other_users_runs_are_invisible_but_admin_sees_all` — 他人の run は 404、管理者は全員分。
 
 ### backend/tests/test_large_model_lifecycle.py
 

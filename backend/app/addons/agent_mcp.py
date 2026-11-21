@@ -103,6 +103,181 @@ async def _run_knowledge(arguments: dict[str, Any]) -> dict:
             "sources": [{"label": s["label"], "title": s["title"]} for s in built.sources]}
 
 
+# ---- Project Lab の実行の道具（P2a）。中身は project_lab の既存の関数を呼ぶだけ ----
+LAB_PROJECTS_TOOL = "control_deck.lab_projects"
+LAB_RUN_START_TOOL = "control_deck.lab_run_start"
+LAB_RUN_STATUS_TOOL = "control_deck.lab_run_status"
+LAB_RUN_LOGS_TOOL = "control_deck.lab_run_logs"
+LAB_RUN_STOP_TOOL = "control_deck.lab_run_stop"
+LAB_TOOLS = (LAB_PROJECTS_TOOL, LAB_RUN_START_TOOL, LAB_RUN_STATUS_TOOL, LAB_RUN_LOGS_TOOL, LAB_RUN_STOP_TOOL)
+LAB_LOG_TAIL_DEFAULT_KB = 32
+LAB_LOG_TAIL_MAX_KB = 256
+
+
+def _lab_tools(permissions: set[str]) -> list[dict[str, Any]]:
+    """権限ごとに出す。見る道具は project_lab.view、始める・止めるは project_lab.run（router.py と同じ）。"""
+    tools: list[dict[str, Any]] = []
+    run_id = {"run_id": {"type": "integer", "minimum": 1, "description": "実行の id。例: 12"}}
+    if "project_lab.view" in permissions:
+        tools.append({
+            "name": LAB_PROJECTS_TOOL,
+            "description": (
+                "Project Lab のプロジェクトの一覧と、実行できる設定（profiles の id・label・type）を返す。"
+                "実行を始める前に呼んで project_id と profile_id を確かめる。引数は無い。"
+            ),
+            "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+        })
+    if "project_lab.run" in permissions:
+        tools.append({
+            "name": LAB_RUN_START_TOOL,
+            "description": (
+                "プロジェクトの実行（cli・test・web）を始める。同時 3 本まで、同じプロジェクトは 1 本まで。"
+                "返り値の id で状態とログを読む。web なら preview の URL も返る（準備ができるまで数秒かかる）。"
+                "例: {\"project_id\": \"my-app\", \"profile_id\": \"dev\", \"timeout_seconds\": 600}"
+            ),
+            "inputSchema": {
+                "type": "object", "additionalProperties": False, "required": ["project_id", "profile_id"],
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                                   "description": "プロジェクトの id（lab_projects で調べる）。例: my-app"},
+                    "profile_id": {"type": "string", "minLength": 1, "maxLength": 64,
+                                   "description": "実行の設定の id。例: dev"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600,
+                                        "description": "最長の実行時間（秒）。既定 600"},
+                },
+            },
+        })
+    if "project_lab.view" in permissions:
+        tools.append({
+            "name": LAB_RUN_STATUS_TOOL,
+            "description": (
+                "実行の状態（status・result・終了コード）、増えた・変わった成果物、web なら preview の URL を返す。"
+                "例: {\"run_id\": 12}"
+            ),
+            "inputSchema": {"type": "object", "additionalProperties": False, "required": ["run_id"],
+                            "properties": run_id},
+        })
+        tools.append({
+            "name": LAB_RUN_LOGS_TOOL,
+            "description": (
+                "実行のログの末尾を返す（秘密は伏せ済み）。"
+                f"tail_kb は 1〜{LAB_LOG_TAIL_MAX_KB}（既定 {LAB_LOG_TAIL_DEFAULT_KB}）。"
+                "例: {\"run_id\": 12, \"tail_kb\": 32}"
+            ),
+            "inputSchema": {"type": "object", "additionalProperties": False, "required": ["run_id"],
+                            "properties": {**run_id,
+                                           "tail_kb": {"type": "integer", "minimum": 1,
+                                                       "maximum": LAB_LOG_TAIL_MAX_KB,
+                                                       "description": "末尾から読む量（KB）。例: 32"}}},
+        })
+    if "project_lab.run" in permissions:
+        tools.append({
+            "name": LAB_RUN_STOP_TOOL,
+            "description": "動いている実行を止める。終わった実行は止められない。例: {\"run_id\": 12}",
+            "inputSchema": {"type": "object", "additionalProperties": False, "required": ["run_id"],
+                            "properties": run_id},
+        })
+    return tools
+
+
+def _lab_int(arguments: dict[str, Any], key: str, *, low: int, high: int, default: int | None = None) -> int:
+    value = arguments.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise HTTPException(status_code=422, detail=f"{key} は {low}〜{high} の整数です")
+    return value
+
+
+def _lab_str(arguments: dict[str, Any], key: str, max_length: int) -> str:
+    value = arguments.get(key)
+    if not isinstance(value, str) or not value or len(value) > max_length:
+        raise HTTPException(status_code=422, detail=f"{key} は 1〜{max_length} 文字の文字列です")
+    return value
+
+
+def _lab_run_for(db: Session, run_id: int, user: User, permissions: set[str]):
+    """他人の run は見えない（管理者 = settings.manage は全員分）。無い run と区別しない。"""
+    from app.models import ProjectRun
+
+    row = db.get(ProjectRun, run_id)
+    if row is None or ("settings.manage" not in permissions and row.created_by != user.id):
+        raise HTTPException(status_code=404, detail="Project runが見つかりません")
+    return row
+
+
+def _lab_out(db: Session, row) -> dict[str, Any]:
+    """run_out に、箱や外から開ける絶対の preview URL（ControlDeck の 127.0.0.1）を足す。"""
+    from app.config import get_config
+    from app.project_lab import runs
+
+    out = runs.run_out(db, row)
+    if row.profile_type == "web":
+        out["previewPath"] = runs.preview_base(row)
+        out["previewUrlAbsolute"] = f"http://127.0.0.1:{int(get_config().server.port)}{runs.preview_base(row)}"
+    return out
+
+
+def _run_lab_tool(name: str, arguments: dict[str, Any], user: User, permissions: set[str],
+                  db: Session, request: Request) -> Any:
+    """同期の処理（subprocess・DB）。呼び出し側が asyncio.to_thread へ出す。"""
+    from app.project_lab import runs
+
+    needed = "project_lab.run" if name in (LAB_RUN_START_TOOL, LAB_RUN_STOP_TOOL) else "project_lab.view"
+    if needed not in permissions:
+        raise HTTPException(status_code=403, detail=f"権限がありません: {needed}")
+    allowed_keys = {
+        LAB_PROJECTS_TOOL: set(), LAB_RUN_START_TOOL: {"project_id", "profile_id", "timeout_seconds"},
+        LAB_RUN_STATUS_TOOL: {"run_id"}, LAB_RUN_LOGS_TOOL: {"run_id", "tail_kb"}, LAB_RUN_STOP_TOOL: {"run_id"},
+    }[name]
+    if not set(arguments) <= allowed_keys:
+        raise HTTPException(status_code=422, detail=f"引数は {sorted(allowed_keys)} だけです")
+    if name == LAB_PROJECTS_TOOL:
+        rows = []
+        for item in project_lab.list_projects():
+            profiles: list[dict[str, str]] = []
+            try:
+                manifest, _ = project_lab._read_manifest(project_lab.resolve_project(item["id"]))
+            except project_lab.ProjectLabError:
+                manifest = None
+            if manifest is not None:
+                profiles = [{"id": p.id, "label": p.label, "type": p.type} for p in manifest.profiles]
+            rows.append({"id": item["id"], "name": item["name"], "profiles": profiles})
+        return {"projects": rows}
+    if name == LAB_RUN_START_TOOL:
+        project_id = _lab_str(arguments, "project_id", 128)
+        profile_id = _lab_str(arguments, "profile_id", 64)
+        timeout = _lab_int(arguments, "timeout_seconds", low=1, high=3600, default=600)
+        try:
+            row = runs.start_run(db, project_id=project_id, profile_id=profile_id,
+                                 timeout_seconds=timeout, created_by=user.id)
+        except project_lab.ProjectLabError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except runs.ProjectRunError as exc:
+            audit.record(db, "project_lab.run.start", user=user, resource_type="project",
+                         resource_id=project_id, request=request, result="failure",
+                         metadata={"profile_id": profile_id, "via": "agent_mcp"})
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit.record(db, "project_lab.run.start", user=user, resource_type="project_run",
+                     resource_id=str(row.id), request=request,
+                     metadata={"project_id": project_id, "profile_id": profile_id, "via": "agent_mcp"})
+        return _lab_out(db, row)
+    row = _lab_run_for(db, _lab_int(arguments, "run_id", low=1, high=2**31 - 1), user, permissions)
+    if name == LAB_RUN_STATUS_TOOL:
+        return _lab_out(db, row)
+    if name == LAB_RUN_LOGS_TOOL:
+        tail_kb = _lab_int(arguments, "tail_kb", low=1, high=LAB_LOG_TAIL_MAX_KB, default=LAB_LOG_TAIL_DEFAULT_KB)
+        runs.refresh_run(db, row)
+        text = runs.run_logs(row)  # 秘密の伏せは run_logs（service.redact_text）が済ませている
+        limit = tail_kb * 1024
+        return {"run_id": row.id, "status": row.status, "truncated": len(text) > limit, "logs": text[-limit:]}
+    try:
+        runs.cancel_run(db, row)
+    except runs.ProjectRunError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, "project_lab.run.cancel", user=user, resource_type="project_run",
+                 resource_id=str(row.id), request=request, metadata={"via": "agent_mcp"})
+    return _lab_out(db, row)
+
+
 DIAGNOSTICS_TOOL = "control_deck.diagnostics"
 
 
@@ -508,6 +683,7 @@ async def list_tools(
         tools.append(_diagnostics_tool())
     if "workflows.run" in permissions:
         tools.append(_knowledge_tool())
+    tools.extend(_lab_tools(permissions))
     return {"tools": tools}
 
 
@@ -548,6 +724,10 @@ async def call_tool(
         audit.record(db, "diagnostics.report", user=user, resource_type="system", resource_id="diagnostics",
                      request=request, metadata={"hours": hours, "via": "agent_mcp"})
         return {"report_markdown": diagnostics_report.to_markdown(data)}
+    if body.name in LAB_TOOLS:
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(_run_lab_tool, body.name, body.arguments, user, permissions, db, request)
     if body.name == RESEARCH_TOOL:
         return await _run_research(body.arguments, user, claims, db, request)
     if body.name == KNOWLEDGE_TOOL:

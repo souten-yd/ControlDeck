@@ -7,6 +7,14 @@
 - 箱: `opencode_argv` だけが `OPENCODE_API_KEY` を渡す（0600・箱の外の一時 `--env-file`、使用後に削除。argv・opencode.json に値なし。shell・exec・mirror には渡さない）。meta `allow_zen`（既定 true）、`sandbox new --no-zen`、`zen <名前> on|off`。`--model` は `provider/モデル` ならそのまま（例 `opencode/deepseek-v4.1-flash-free`）、無ければ `controldeck/` を付ける。`opencode` の対話も execv をやめ子として動かす（後始末のため）。
 - 未公開の情報（特許など）を扱う箱では使わない。実機は未検証（キー登録後に確認）。
 
+## 2026-11-21 ControlDeck の MCP に Project Lab の実行の道具（P2a）。中継で箱にも見せる
+
+- 道具（`app/addons/agent_mcp.py`）: `control_deck.lab_projects`（プロジェクトと profiles の id/label/type）、`lab_run_start`（project_id・profile_id・timeout_seconds。web は preview の鍵付き相対パス `previewPath` と `http://127.0.0.1:<ControlDeck のポート>` 付きの `previewUrlAbsolute`）、`lab_run_status`（`run_out`）、`lab_run_logs`（tail_kb 既定 32・最大 256、秘密の伏せは `run_logs`）、`lab_run_stop`。中身は `project_lab.runs` / `service` の既存関数を呼ぶだけ（新しい実行の仕組みは無し）。見る道具は `project_lab.view`、始める・止めるは `project_lab.run`（権限の無い道具は一覧に出さず、呼んでも 403）。開始・停止は `project_lab.run.start` / `.cancel` を監査（`via: agent_mcp`）。他人の run は 404（管理者 = `settings.manage` は全員分）。
+- 中継（`sandbox_gateway.py`）: `GET /api/v1/addons/agent-mcp/tools` と `POST .../call` を通す。MCP のトークンは箱の外の中継だけが持ち（環境変数 `CONTROL_DECK_SANDBOX_MCP_TOKEN`）、上流へ `Authorization: Bearer` を付ける。箱から来た Authorization は捨てる。`/call` の道具名が許可の一覧（lab_* 5 つ・report・research）に無ければ 403、`/tools` も一覧に絞る。上流の更新トークンの頭（`X-Control-Deck-MCP-Token`）は箱へ渡さない。`/healthz` に `mcp` の有無を出し、MCP の無い古い中継は作り直す。
+- 箱（`sandbox.py`）: 持ち主 `sandbox new --owner <ユーザー名>`（省くと有効な管理者が 1 人ならその人、複数・0 人はエラー）。meta の `owner` に保存。古い箱は中継を起こす時に同じ規則で決めて保存。トークンは `issue_opencode_token(owner, "sandbox-<名前>")` で中継の起動ごとに作り、`<sandboxes>/.relay/<名前>.env`（0600、ディレクトリ 0700、箱の外）へ書いて `--property=EnvironmentFile=` で渡す（argv・ログに出さない。`destroy` で消す）。期限は、ControlDeck 側が loopback からの呼び出しでは見ない（`allow_expired=local`、`x-requested-with` は中継が付ける）ので作り直し不要。
+- 箱の OpenCode の設定: `controldeck_addons` を、箱の中の bridge（`addon_mcp_bridge.py` を箱の `home/.controldeck/` へ写して `/usr/bin/python3` で実行。箱はホストの /data1tb を見られないので写す）に差し替え、URL は中継、トークンは意味の無い値 `sandbox`、結果のフォルダは箱の中。本番の鍵に加え、中継のトークンが設定に入るなら書き出しを中止。
+- 検証: `tests/test_lab_mcp_tools.py`（7）、`tests/test_sandbox_gateway.py`（+6）、`tests/test_dev_sandbox.py`（+5）、`tests/test_addon_agent_mcp.py`（一覧の期待に lab_* を追加）。実機（podman・systemd・箱の OpenCode から呼ぶ）は未確認。
+
 ## 2026-11-21 開発用サンドボックスにネットワークの境界（pod と LLM 中継）
 
 - 問題: 箱は `--network host` で、本番のゲートウェイが loopback＋`x-requested-with` なら鍵なしで通すため、箱の AI が本番のモデル切り替え（POST /api/v1/llm/v1/models/{m}/load）まで呼べた。opencode.json に本番の鍵も平文で書いていた。
