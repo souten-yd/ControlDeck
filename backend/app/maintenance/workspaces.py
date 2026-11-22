@@ -942,8 +942,7 @@ def restore(box: Sandbox, sha: str, username: str) -> dict:
         if code != 0:
             raise SandboxError(f"戻せませんでした: {err.strip()[:200] or f'終了コード {code}'}")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        label = datetime.now().astimezone().strftime("%m/%d %H:%M")
-        note = (f"利用者がコードを {label} の保存 {sha[:7]} の時点へ戻しました。それより後の変更は今のファイルにありません。"
+        note = (f"利用者がコードを保存 {sha[:7]} の時点へ戻しました。それより後の変更は今のファイルにありません。"
                 "必要ならファイルを読み直してから続けてください。")
         restores = [*(meta.get("restores") or []), {"at": now, "by": username, "from": head, "to": sha}]
         _update_meta(box.name, restores=restores[-RESTORE_HISTORY:], restore_count=number, restore_note=note)
