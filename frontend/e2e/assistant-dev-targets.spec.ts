@@ -4,6 +4,8 @@
 //   メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。
 // 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、
 //   表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
+//   同日の追加依頼: モード・権限はフラットアイコンのみ（svg がある・aria-label が残る）、メニュー幅 288px（≤300px で確かめる）、
+//   機能タイルはアイコンとラベルの横並び 1 行（中心 y が同じ）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
@@ -81,6 +83,7 @@ for (const [width, height] of [[1280, 900], [320, 700]]) {
       // 会話の引き継ぎなど「そのときだけ出す操作」の行（各 44px）は数えない
       const extra = (await menu.locator("[data-plus-action]:not([data-plus-action=attach])").count()) * 44;
       expect(box.height - extra).toBeLessThanOrEqual(height * 0.6);
+      expect(box.width).toBeLessThanOrEqual(300);   // 2026-11-22 横幅も小さく（1280px で旧 336px）
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(width);
       expect(await menu.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
@@ -88,6 +91,13 @@ for (const [width, height] of [[1280, 900], [320, 700]]) {
         if (!(await button.isVisible())) continue;
         expect((await button.boundingBox())!.height, await button.innerText()).toBeGreaterThanOrEqual(43.5);
       }
+      // 2026-11-22: 機能タイルはアイコンとラベルの横並び 1 行（中心 y が同じ。前は縦積み 2 行）
+      const [tileIcon, tileLabel] = await menu.locator('[data-mode-option="auto"]').locator("span").all();
+      const iconBox = (await tileIcon.boundingBox())!, labelBox = (await tileLabel.boundingBox())!;
+      expect(Math.abs(iconBox.y + iconBox.height / 2 - (labelBox.y + labelBox.height / 2))).toBeLessThanOrEqual(2);
+      // 2026-11-22 の追試（ui-verifier）: タイルのラベルは「…」で省略しない（長い名前は tile の短縮名で出す）
+      for (const b of await menu.locator("[data-mode-option] span:last-child").all())
+        expect(await b.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), await b.innerText()).toBe(true);
       await page.screenshot({ path: `test-results/assistant-dev-targets-${width}-${scheme}-view.png` });
       // 詳しく: 機能の一覧（表示だけ。gpu は準備中）
       await group.locator("[data-target-detail]").click();
@@ -100,17 +110,18 @@ for (const [width, height] of [[1280, 900], [320, 700]]) {
       await page.screenshot({ path: `test-results/assistant-dev-targets-${width}-${scheme}-view-detail.png` });
       await group.locator("[data-target-detail]").click();
 
-      // モードと権限は半分の幅で左右に並べた 1 行（2026-11-22 利用者）。既存の動き（PUT permission-mode）は同じ
+      // モードと権限は半分の幅で左右に並べた 1 行（2026-11-22 利用者）。ボタンはフラットアイコンのみ。既存の動き（PUT permission-mode）は同じ
       const agentRow = menu.getByRole("group", { name: "OpenCode のモード" });
       const permRow = menu.getByRole("group", { name: "OpenCode の権限" });
       const a = (await agentRow.boundingBox())!, p = (await permRow.boundingBox())!;
       expect(Math.abs(a.y - p.y)).toBeLessThanOrEqual(2);          // 同じ行
       expect(a.x + a.width).toBeLessThanOrEqual(p.x + 1);          // 左がモード、右が権限
       expect(Math.max(a.height, p.height)).toBeLessThanOrEqual(64); // 1 行に収まる
-      for (const b of await menu.locator("[data-agent-option], [data-permission-option]").all())
+      for (const b of await menu.locator("[data-agent-option], [data-permission-option]").all()) {
         expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-      for (const b of await menu.locator("[data-agent-option] span.truncate, [data-permission-option] span.truncate").all())
-        expect(await b.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);   // 文字が切れない
+        expect(await b.locator("svg").count()).toBeGreaterThan(0);    // 2026-11-22 フラットアイコンのみ
+        expect(await b.getAttribute("aria-label")).toBeTruthy();     // アイコンだけでも名前が残る
+      }
       await permRow.locator('[data-permission-option="ask"]').click();
       await expect.poll(() => state.permissionPuts.length).toBe(1);
       expect(state.permissionPuts[0]).toMatchObject({ mode: "ask" });

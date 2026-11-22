@@ -36,7 +36,7 @@ import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
   type ConversationSummary,
 } from "./ConversationHistory";
-import { ComposerPill, PlusMenu, modeIcon, type PlusAction } from "./PlusMenu";
+import { agentIcon, ComposerPill, modeIcon, permissionIcon, PlusMenu, type PlusAction } from "./PlusMenu";
 
 /** 進み具合の取れるアップロード（fetch では送信の進捗が取れない）。 */
 function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: number) => void): Promise<{ ok: boolean; status: number; body: unknown }> {
@@ -85,14 +85,14 @@ const ARCHIVE_ONLY_PROMPT = "添付した圧縮ファイルの中身を確認し
 const ARCHIVE_RE = /\.(zip|7z|rar|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 const ARCHIVE_MAX_BYTES = 200 * 1024 * 1024;
 
-/** hint は空の会話に出す説明、short は機能メニューの一行。 */
-const MODES: { id: Mode; icon: string; label: string; hint: string; short: string; needsEdit?: boolean }[] = [
+/** hint は空の会話に出す説明、short は機能メニューの一行、tile は＋メニューのタイルの短い名前（省略なし 2026-11-22）。 */
+const MODES: { id: Mode; icon: string; label: string; hint: string; short: string; tile?: string; needsEdit?: boolean }[] = [
   { id: "chat", icon: "💬", label: "Chat", short: "LLM と自由に対話", hint: "LLM と自由に対話します" },
   { id: "web", icon: "🌐", label: "Web Search", short: "Web を検索して根拠つきで回答", hint: "Web 検索（DuckDuckGo / SearXNG）の結果を根拠に回答します" },
   { id: "academic", icon: "🎓", label: "Academic", short: "論文・学術ソースを検索して回答", hint: "学術ソース串刺し検索（OpenAlex/arXiv 等）を根拠に回答します" },
   { id: "deep", icon: "🔬", label: "Deep Research", short: "分解して調べ、引用付きレポート（数分）", hint: "テーマを分解して収集し、引用付きレポートを生成します（数分かかります）" },
   { id: "research", icon: "🧭", label: "Research", short: "Web と学術を組み合わせて調査", hint: "LLMがWeb・学術検索を組み合わせ、不足を評価しながら要約します" },
-  { id: "gen", icon: "⚙️", label: "Generate Flow", short: "ワークフローを自動で作って確認", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
+  { id: "gen", icon: "⚙️", label: "Generate Flow", tile: "Gen Flow", short: "ワークフローを自動で作って確認", hint: "やりたいことを書くと、ワークフローを自動生成 → 登録 → 動作確認 → 修正まで行います", needsEdit: true },
   { id: "run", icon: "▶", label: "Run Flow", short: "既存のワークフローを実行", hint: "既存のワークフローをチャットから実行し、結果を表示します" },
   { id: "code", icon: "⌨️", label: "OpenCode", short: "コーディングエージェントが作業", hint: "コーディングエージェント（OpenCode）がこのチャット内で作業し、進捗と結果を表示します（同じ会話で継続対話。フル操作はOpenCode画面から）" },
 ];
@@ -1765,7 +1765,8 @@ export default function AssistantChat() {
   const modeOptions = MODES
     .filter((item) => (!item.needsEdit || can("workflows.edit")) && (item.id !== "code" || opencodeAvailable)
       && !SEARCH_MODES.includes(item.id))
-    .map((item): { id: string; icon: string; label: string; hint: string } => ({ id: item.id, icon: item.icon, label: item.label, hint: item.short }));
+    .map((item): { id: string; icon: string; label: string; hint: string; tile?: string } =>
+      ({ id: item.id, icon: item.icon, label: item.label, hint: item.short, tile: item.tile }));
   modeOptions.splice(1, 0, { id: "investigate", icon: "🔎", label: "調査", hint: "Web・論文を調べて根拠つきで回答（深さは自動か指定）" });
   const showDepth = modeChoice === "investigate";
   // OpenCode の会話（道具を使った回答がある）か、いま OpenCode で送るなら、権限の札を出す
@@ -2413,11 +2414,11 @@ export default function AssistantChat() {
                   </button>
                 )}
                 {planActive ? (
-                  <ComposerPill icon="📋" label="プラン" tone="plan"
+                  <ComposerPill icon={agentIcon("plan", "text-base")} label="プラン" tone="plan"
                     title="プラン（タップでビルドに戻す・PC は Shift+Tab）"
                     kind="plan" onClick={cyclePermissionMode} />
                 ) : showPermissionPill && (
-                  <ComposerPill icon={<span className="font-mono tracking-[-0.2em]">{currentPermission.icon}</span>}
+                  <ComposerPill icon={permissionIcon(permissionMode, "text-base")}
                     label={currentPermission.label} tone={permissionMode === "auto" ? "accent" : "amber"}
                     title={canChangePermissionMode ? `OpenCode の権限: ${currentPermission.label}（押すと切替・PC は Shift+Tab）` : `OpenCode: ビルド（押すとプランへ）`}
                     kind="permission" onClick={cyclePermissionMode} />

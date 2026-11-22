@@ -1,6 +1,7 @@
 # Python
 .venv/
 venv/
+.controldeck/
 __pycache__/
 *.pyc
 .pytest_cache/

@@ -3298,7 +3298,7 @@
 
 ### frontend/e2e/assistant-dev-targets.spec.ts
 
-目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。モードと権限は半分の幅で左右に並べた 1 行で、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
+目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。モードと権限は半分の幅で左右に並べた 1 行で、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。 同日の追加依頼: モード・権限はフラットアイコンのみ（svg がある・aria-label が残る）、メニュー幅 288px（≤300px で確かめる）、 機能タイルはアイコンとラベルの横並び 1 行（中心 y が同じ）。
 
 - plus menu shows the dev target, details and compact toggles (${width}px ${scheme})
 - target controldeck and mirror cannot be chosen when the source is a CodeDEV project

@@ -1,5 +1,17 @@
 # 実装状況
 
+## 2026-11-22 AI アシスタントの＋メニューを作り直す — モード・権限をフラットアイコンに・全体をコンパクトに（L1）
+
+- 利用者「『OpenCode のモード（ビルド／プラン）』と『OpenCode の権限（Auto／確認）』は、文字ではなくフラットデザインのアイコンで表示してほしい（どれを選んでいるかは分かるように）。メニュー全体をもっとコンパクトにして、横幅も小さく、スタイリッシュに。スマホ（幅 320px）でも使いやすく」。承認（同日）: 札（＋の隣）も同じアイコンに揃える・グループの小ラベル（モード／権限）は残す。追加: 「ファイルを添付」と機能タイルの行の 2 行目を無くして 1 行に。
+- `PlusMenu.tsx`: モード・権限はアイコンだけの 44px ボタン（選択中は既存の TONE 色 — プラン=青・ビルド/Auto=アクセント・確認=琥珀。名前と説明は aria-label と title へ、小さな名前の行と sr-only の注記は残す）。添付・操作の行と機能タイルを 1 行に（説明は title へ）、開発対象の説明を 1 行に。幅 336px → 288px（`place()` と className の両方を一緒に）。区切り・見出しの余白を詰めた。
+- `icons.tsx`: `IconHammer`（ビルド）・`IconClipboardList`（プラン）・`IconFastForward`（Auto）を追加。確認は既存 `IconPause`（＋の隣の札の ⏵⏵／⏸ と同じ形を継承）。`AssistantChat.tsx`: 札の 📋・⏵⏵／⏸ を同じフラットアイコンへ（sr-only の `data-pill-label` はそのまま）。
+- E2E: 新規 spec を作らず既存を更新（TDD: まず赤を確認）。`assistant-dev-targets`（メニュー幅 ≤300px・機能タイルのアイコンとラベルの中心 y が同じ・モード/権限ボタンに svg と aria-label・**タイルのラベルは「…」省略なし**）、`assistant-claude-layout`（添付の行の textContent がラベルだけ = 1 行化）。
+- ui-verifier（実ブラウザ・320/390/768/1280×明暗・操作フロー・ダークのコントラスト計測）: 判定 partial（critical 0・major 0・minor 2・info 3）。minor を直した: ①「Generate Flow」タイルのラベルが 288px で省略 → `ModeOption` に `tile`（短縮名「Gen Flow」。ピルと説明は元の名前のまま）を足し、spec に省略なし検査を追加して赤→緑 ②ライトの 10px 薄色（zinc-400 ≈ 3.65:1）が AA 未達 → zinc-500（≈ 4.9:1。ダークは 5.36 のまま）。info（ビルド/プランが同じ青系・矢印キーの空間移動・WebSocket の再接続）は既存の色の決まり・既存のキー移動の挙動・隔離インスタンスの特性なので変えない。
+- 検証: E2E `assistant-dev-targets` 5、`assistant-claude-layout` ほか assistant 関連（`assistant-plan`・`assistant-mobile`・`assistant-message-actions`・`assistant-secret-lock-topbar`・`assistant-offline-research`・`assistant-opencode-progress`・`assistant-queue-voice`・`assistant-code-copy`）32 通過、320／1280・ライト／ダークの撮影、`npm run build`。
+- reviewer（差分レビュー）: 判定 partial（重大・要修正なし・minor 3・info 4）。minor に対応: ①「Generate Flow」タイルの省略（ui-verifier 指摘と同じ。上の `tile` 修正で解消）②未使用になった `PERMISSION_MODES` の `icon` 文字列（⏵⏵／⏸）を削除し、権限の描画は `PlusMenu` の `PERMISSION_ICONS` に一元化 ③メニュー幅の 288px と 18rem の単位不一致 → `place()` が根の文字サイズから 18rem を px で測る（既定でない文字サイズでも位置と実幅がずれない）。info は `.gitignore` へ `.controldeck/` 追加と冒頭コメントの食い違い（説明は title/sr-only へ移った）を解消。info の残り 2 件（添付行の折り返し未検査・タイル span の非 null 断言）は ui-verifier の実ブラウザ確認（全幅 1 行・44px）と「構造が変われば検査が TypeError で落ちる＝意図どおり」の理由で見送り。
+- 最終回帰: `assistant-dev-targets`・`assistant-claude-layout` 25 通過（失敗は上の既知 1 件のみ）。
+- 確かめられなかった点: 実機の指での操作感（E2E の実ブラウザ 320px で代用）。既知の既存失敗（変更前の HEAD でも同じことを stash で確認）: `assistant-claude-layout` の「thinking split」1 件・`assistant-plan` 4 件 — 検証用インスタンスに CodeDEV の app が無い（2026-11-22 の記録どおり）。box の中では `./deck.sh e2e` が venv 作成で止まるため、元の venv（app-strata）と `PLAYWRIGHT_BROWSERS_PATH` で同じ流れを手動で回した。dev-check の「画面の見た目」は箱からゲートウェイへ届かないため未実施（ui-verifier の実ブラウザ検証と E2E 撮影で代用）。
+
 ## 2026-11-22 AI アシスタントの調査: サイト指定・依頼の理解・今日の日付の確認（L2）
 
 - 利用者「Reddit の中で〜、公式ページの機能の使い方、GIGAZINE の記事をもとに調べて」「『調べて』でいきなり検索して関係ないものを選ぶ」「『今日の横浜の天気』で過去の天気を調べる」「検索が不十分にならないよう幅と件数を担保」。
