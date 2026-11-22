@@ -142,10 +142,39 @@ async def _ollama_target(capability: AICapability) -> AITarget:
     return AITarget(base_url=f"{ollama.base_url().rstrip('/')}/v1", model=model)
 
 
+def _upstream() -> str:
+    from app.models_mgmt import gateway
+
+    return gateway.upstream_base()
+
+
+async def _upstream_target(upstream: str) -> AITarget:
+    """ミラー: 上流の LLM（箱の中の中継 → 本番のゲートウェイ）を「ローカルの対象」にする。
+
+    モデル名は auto（本番の Models で選んだものへ流れる）。中継が生きていてモデルが 1 つ以上
+    あるときだけ使えるとする。中継は外部のモデル（cloud:）を断り、機密の印も本番へ渡る。"""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{upstream}/models")
+        models = response.json().get("data") if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        raise AITargetUnavailable("上流の LLM（中継）へ接続できません") from exc
+    if not models:
+        raise AITargetUnavailable("上流の LLM にモデルがありません")
+    from app.models_mgmt.gateway import AUTO_MODEL
+
+    return AITarget(base_url=upstream, model=AUTO_MODEL, gateway_managed=True)
+
+
 async def resolve_ai_target(capability: AICapability) -> AITarget:
     """Resolve a text/vision request according to ControlDeck runtime policy."""
     from app.models_mgmt.runtime_policy import get_policy
 
+    upstream = _upstream()
+    if upstream:
+        return await _upstream_target(upstream)
     runtime = str(get_policy().selected_runtime)
     if runtime == "llama.cpp":
         return await asyncio.to_thread(_llama_target, capability)
@@ -188,6 +217,9 @@ def require_local_target(target: AITarget) -> None:
 
     if not target.gateway_managed:
         raise AITargetUnavailable("local-only execution is not verified for this runtime")
+    if _upstream() and target.base_url == _upstream():
+        # ミラーの上流は箱の中の loopback の中継で、先は本番のローカルのモデル（中継が外部を断る）
+        return
     try:
         url = urlsplit(target.base_url)
         if (url.scheme != "http" or not ipaddress.ip_address(url.hostname or "").is_loopback

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 209 ファイル、1904 テスト（目的の未記入 93 ファイル）
+- backend: 210 ファイル、1912 テスト（目的の未記入 93 ファイル）
 - E2E: 105 spec、212 テスト
 
 ## backend（backend/tests）
@@ -1702,6 +1702,19 @@
 - `test_postgresql_offline_migrations_render_to_head_without_sqlite_statements`
 - `test_postgresql_migration_uses_advisory_lock`
 - `test_unversioned_nonempty_postgresql_schema_is_not_auto_stamped`
+
+### backend/tests/test_mirror_llm_upstream.py
+
+目的: ミラーの「上流の LLM」（config の llm_upstream。計画の P3）。 目的と根拠: 開発用の箱のミラーはモデルの登録が空で、AI アシスタント・Patent の AI・ナレッジの分析が LLM を使えなかった（2026-11-22）。ミラー（CONTROL_DECK_ISOLATED=1）は llm_upstream（箱の中の中継）を 「ローカルの対象」として扱い、中継の先の本番のローカルのモデルへ送る。守ること: - 本番（ISOLATED でない）では llm_upstream を読まない（本番の LLM の経路を変えない）。 - loopback 以外の URL は掴まない（設定ミスで箱の外へ出さない）。 - モデル一覧・chat（ストリーム含む）は上流へそのまま渡り、機密の印（x-control-deck-confidential）も落ちない。 - 内部の AI 機能（resolve_ai_target・RuntimeChatRequest）は上流を使い、local_only の検査を通る。 - mirror_config が中継の URL を書く。 上流は httpx.MockTransport の偽物。
+
+- `test_upstream_is_read_only_when_isolated`
+- `test_upstream_rejects_unset_and_non_loopback`
+- `test_internal_target_goes_to_upstream_only_in_mirror`
+- `test_ai_target_uses_upstream_and_passes_local_check`
+- `test_ai_target_unavailable_when_upstream_is_empty_or_down`
+- `test_runtime_chat_request_streams_via_upstream_with_confidential_mark` — 内部の AI 機能（RuntimeChatRequest, local_only）が上流へ送り、機密の印・呼び出し元が付く。
+- `test_mirror_gateway_relays_models_and_chat_stream`
+- `test_relay_forwards_confidential_header`
 
 ### backend/tests/test_model_display_names.py
 

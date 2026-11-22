@@ -211,6 +211,9 @@ class Config(BaseModel):
     # OpenCode / Project Lab が扱うプロジェクトの置き場。空ならプロジェクトルート
     # （data_dir の親）配下の CodeDEV を使う。
     codedev_dir: str = ""
+    # 検証用のミラー（CONTROL_DECK_ISOLATED=1）だけが読む。ローカルのモデルの代わりに LLM を送る
+    # 上流のゲートウェイ（箱の中の中継 http://127.0.0.1:<port>/api/v1/llm/v1）。本番では無視する。
+    llm_upstream: str = ""
 
 
 def _config_path() -> Path | None:

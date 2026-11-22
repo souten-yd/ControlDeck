@@ -120,6 +120,8 @@ def test_mirror_config_points_inside_the_box(repo):
     box = sandbox.create("work5", str(repo))
     text = sandbox.mirror_config(box).read_text()
     assert f"data_dir: {box.path / 'mirror' / 'data'}" in text and "port: 18800" in text
+    # 上流の LLM は箱の中の中継（P3）
+    assert f"llm_upstream: http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1" in text
 
 
 def test_opencode_cannot_stop_production_through_deck_sh():
