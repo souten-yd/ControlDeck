@@ -251,7 +251,13 @@ def test_idle_reap_loop_stops_idle_servers_without_a_new_chat(monkeypatch):
     calls = []
     sleeps = []
 
+    real_sleep = asyncio.sleep
+
     async def fake_sleep(seconds):
+        # asyncio.sleep はプロセス全体の差し替えになる。asyncio 自身の短い待ち（0 秒など）まで数えると、
+        # 全体実行の負荷しだいで 2 回目の片付けの前に打ち切られて落ちた（2026-11-23）。見張りの待ちだけを数える
+        if seconds != chat_server.REAP_INTERVAL_SECONDS:
+            return await real_sleep(seconds)
         sleeps.append(seconds)
         if len(sleeps) > 2:
             raise asyncio.CancelledError
