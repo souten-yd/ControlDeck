@@ -25,6 +25,8 @@ import { useUxPrefs } from "../../stores/uxPrefs";
 import { getSpeechEngines } from "../../api/speech";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
+import { ROLE_LABELS, type RoleKey } from "../opencode/RolesPanel";
+import { extractPlanQuestions, recommendedAnswer } from "./planQuestions";
 import { CodeDoneCard, OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -463,6 +465,8 @@ export default function AssistantChat() {
   const { data: endpoints } = useQuery({
     queryKey: ["llm-endpoints"],
     queryFn: () => api<{ base_url: string; models: string[]; managed?: boolean; selected?: boolean; selected_runtime?: string;
+      /** 「auto」が今解かれるモデル（ゲートウェイの転送と同じ解き方）。解けなければ null。 */
+      auto_resolves_to?: { alias: string; name: string; runtime: string; loaded: boolean } | null;
       /** 外部のフロンティアモデル（AI アシスタントからの送信を許可したときだけ並ぶ）。 */
       external_models?: { id: string; name: string; provider: string }[];
       /** 利用者が付けたモデルの表示名（ゲートウェイでの名前 → 表示名）。 */
@@ -470,6 +474,9 @@ export default function AssistantChat() {
     staleTime: 60_000,
     enabled: can("workflows.edit"),
   });
+  const autoTarget = endpoints?.find((ep) => ep.base_url === baseUrl)?.auto_resolves_to ?? null;
+  // ヘッダの札: auto は実際に動くモデルを括弧で添える（長ければ省略。全体は title）
+  const modelPill = model === "auto" && autoTarget ? `auto（${autoTarget.name}）` : model;
   // ⚙️の選択runtime（selected=true）へ追従する。選択が前回追従時から変わったら
   // 保存済みの接続先とモデルを上書きし、同じ選択のままなら手動指定を尊重する。
   // ゲートウェイはランタイムを変えてもアドレスが同じなので、Models で選んだ
@@ -1775,7 +1782,7 @@ export default function AssistantChat() {
         base: ep.base_url, model: m, managed: !!ep.managed, external: !!external,
         // auto は特定モデルを固定しない仮想モデル。転送先は ControlDeck が決める。
         label: external ? `外部｜${external.name}`
-          : m === "auto" ? "自動（Models で選んだランタイム）"
+          : m === "auto" ? `自動（Models で選んだランタイム${ep.auto_resolves_to ? `・今は ${ep.auto_resolves_to.name}` : ""}）`
           : ep.managed ? (ep.model_labels?.[m] ? `${ep.model_labels[m]}（${m}）` : m) : `${m} — ${ep.base_url}`,
       };
     })) ?? [];
@@ -1978,13 +1985,14 @@ export default function AssistantChat() {
             onClick={() => setShowSettings((v) => !v)}
             aria-label={showSettings ? "AI設定を閉じる" : "AI設定を開く"}
             aria-expanded={showSettings}
-            title={model || "設定"}
+            title={modelPill ? `${modelPill}（押してモデルを選ぶ）` : "設定"}
+            data-model-pill
             className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-colors ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"
             }`}
           >
             <IconChip className="shrink-0 text-lg" />
-            <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[10rem]">{model || "設定"}</span>
+            <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[13rem]">{modelPill || "設定"}</span>
           </button>
           <button
             type="button"
@@ -2050,6 +2058,7 @@ export default function AssistantChat() {
                 </span>
               )}
             </label>
+            {showPermissionPill && <RoleModels />}
             <label className="block">
               <span className="mb-1 block text-xs text-zinc-500">会話モードの回答傾向</span>
               <select value={talkStyle} onChange={(e) => chooseTalkStyle(e.target.value)} aria-label="会話モードの回答傾向"
@@ -2175,6 +2184,8 @@ export default function AssistantChat() {
                 onAnswerPermission={answerPermission}
                 onBuildFromPlan={!busy && !hasContent && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
                   ? () => { setCodeAgent("build"); rememberPrefs({ agent: "build" }); void send("このプランで実装してください。", "build", "code"); } : undefined}
+                onProceedRecommended={!busy && !hasContent && i === messages.length - 1 && m.agent && m.answeredBy === "code" && m.persistStatus === "completed"
+                  ? (text) => { void send(text, m.agent, "code"); } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}
@@ -2762,6 +2773,28 @@ function CodeTimeline({ msg, textEnd, onAnswer }: {
   );
 }
 
+/** OpenCode の役割ごとに実際に使われるモデル（既存の role_info。設定 → オプション機能で変える）。開いたときだけ読む。 */
+function RoleModels() {
+  const [open, setOpen] = useState(false);
+  const { data } = useQuery({
+    queryKey: ["opencode-role-info"],
+    queryFn: () => api<{ role_info?: { effective?: Partial<Record<RoleKey, { model: string; explicit: boolean }>> } }>("/opencode/workflow"),
+    enabled: open, staleTime: 30_000,
+  });
+  const effective = data?.role_info?.effective ?? {};
+  return (
+    <details data-role-models open={open} onToggle={(e) => setOpen(e.currentTarget.open)} className="min-w-0 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900 sm:col-span-2">
+      <summary className="cursor-pointer select-none font-medium text-zinc-600 dark:text-zinc-300">OpenCode の役割ごとのモデル</summary>
+      <ul className="mt-1.5 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
+        {ROLE_LABELS.filter(([key]) => effective[key]).map(([key, label]) => (
+          <li key={key} className="flex min-w-0 gap-1.5"><span className="shrink-0 text-zinc-500">{label}</span>
+            <span title={effective[key]!.model} className="min-w-0 truncate font-mono">{effective[key]!.model}{effective[key]!.explicit ? "" : "（既定）"}</span></li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function MessageBubble({
   msg,
   onRegister,
@@ -2770,6 +2803,7 @@ function MessageBubble({
   onReference,
   onAnswerPermission,
   onBuildFromPlan,
+  onProceedRecommended,
   editing = false,
   actionsDisabled = false,
   onAction,
@@ -2789,6 +2823,8 @@ function MessageBubble({
   onRetry?: () => void;
   /** プランの回答の後で、そのプランをビルドで実装する */
   onBuildFromPlan?: () => void;
+  /** 本文の「決めてもらいたいこと」の推奨をまとめて答える（同じ会話・同じモードへ送る） */
+  onProceedRecommended?: (text: string) => void;
   resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
@@ -2840,6 +2876,7 @@ function MessageBubble({
       </div>
     );
   }
+  const recommendations = onProceedRecommended && !msg.streaming ? extractPlanQuestions(msg.content) : [];
   const unsettled = !msg.streaming && (msg.persistStatus === "failed" || msg.persistStatus === "canceled" || msg.persistStatus === "interrupted")
     ? msg.persistStatus : null;
   const textEnd = msg.timeline?.length && msg.messageId ? inlineTextEnd(msg) : 0;
@@ -3062,6 +3099,19 @@ function MessageBubble({
         )}
       </div>
     </div>
+    {recommendations.length > 0 && (
+      <div data-plan-recommend className="mt-1 min-w-0 max-w-full rounded-xl border border-accent-200 bg-accent-50/60 p-2.5 text-sm dark:border-accent-700/50 dark:bg-accent-600/10">
+        <ul className="mb-2 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
+          {recommendations.map((q) => (
+            <li key={q.n} className="min-w-0 break-words"><span className="font-semibold">{q.n}.</span> {q.recommended}</li>
+          ))}
+        </ul>
+        <button type="button" data-proceed-recommended onClick={() => onProceedRecommended!(recommendedAnswer(recommendations))}
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 [@media(pointer:coarse)]:min-h-11">
+          <span aria-hidden>✅</span>推奨どおりで進める
+        </button>
+      </div>
+    )}
     {onBuildFromPlan && (
       <button type="button" data-build-from-plan onClick={onBuildFromPlan}
         className="mt-1 inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 [@media(pointer:coarse)]:min-h-11">

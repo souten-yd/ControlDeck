@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 226 ファイル、2121 テスト（目的の未記入 93 ファイル）
-- E2E: 113 spec、231 テスト
+- backend: 227 ファイル、2123 テスト（目的の未記入 93 ファイル）
+- E2E: 114 spec、234 テスト
 
 ## backend（backend/tests）
 
@@ -439,6 +439,13 @@
 - `test_7z_with_a_link_is_rejected_and_a_lying_7z_is_stopped_while_extracting`
 - `test_imports_link_and_broken_layout_are_reported_as_archive_errors`
 - `test_canceled_archive_is_deleted`
+
+### backend/tests/test_assistant_auto_model.py
+
+目的: 目的: AI アシスタントのヘッダの「auto」に出す実モデル（llm-endpoints の auto_resolves_to）が、 ゲートウェイの転送と同じ解き方（選択中のランタイムの優先モデル・載っているもの優先）になること。解けないときは None。 根拠: 2026-11-23 利用者の通し（評価 U11）。「auto」では実際に何のモデルが動くか分からなかった。
+
+- `test_auto_target_follows_selected_runtime_preference_and_loaded`
+- `test_auto_target_is_none_when_nothing_registered`
 
 ### backend/tests/test_assistant_planner.py
 
@@ -3472,6 +3479,14 @@
 - with OpenCode chosen, a question stays in OpenCode
 - in auto, when the model hands the work to OpenCode the answer becomes an OpenCode answer
 - with OpenCode chosen, an attached image is sent to OpenCode, and a model that cannot read images says so
+
+### frontend/e2e/assistant-question-buttons-model-pill.spec.ts
+
+目的: 目的: (U13) OpenCode の回の本文に「決めてもらいたいこと」の番号付きの質問（推奨つき）があれば、本文の下に推奨の一覧と 「推奨どおりで進める」が出て、押すと「推奨どおりでお願いします（1: …、2: …）」を同じ会話・同じモードへ送ること。 見つからない・推奨の無い質問があるときは何も出さないこと（検出は本文の書き方だけ。LLM は使わない）。 (U11) ヘッダの札が「auto（実際のモデル名）」になり、320px でも札が切れて崩れず（長ければ省略・title に全体）、 OpenCode の会話では設定に「役割ごとのモデル」の一覧が出ること。 根拠: 2026-11-23 利用者の通し（評価 U13・U11）。推奨つきの質問に「両方推奨どおり」と打っていた／「auto」では何のモデルが動くか分からなかった。 API は page.route で模擬する（OpenCode と LLM を動かさない）。
+
+- extractPlanQuestions: found / none / recommendation text / all-or-nothing
+- proceed-with-recommendations button and model pill (${width}px ${scheme})
+- no buttons when the body has no recommended questions
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 
