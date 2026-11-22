@@ -260,30 +260,44 @@ async def workspace_check_state(name: str, user: User = Depends(require_permissi
     return await asyncio.to_thread(_check_payload, box)
 
 
+class CheckBody(BaseModel):
+    # 画面の見た目（画像を読むモデルの目）を人が確かめたので、その項目だけ外して流す。管理者だけ・最後の関門が
+    # 見た目だけで落ちたときだけ（2026-11-22: 誤検出で正しい変更が取り込めなかった）
+    skip_visual: bool = False
+
+
 @router.post("/workspaces/{name}/check", status_code=202)
 async def workspace_check(
-    name: str, request: Request,
+    name: str, request: Request, body: CheckBody | None = None,
     user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
 ):
     """関門（dev-check）を作業場へ流す。重いので Job にする。結果は作業場の meta に保存し、GET で読む。"""
     import asyncio
 
-    from app.maintenance import workspaces
+    from app.maintenance import sandbox, workspaces
+    from app.security.deps import user_permissions
 
     box = _owned_box(name, user)
     current = _check_payload(box)
     if current["running"]:
         return {"job_id": current["job_id"], "already_running": True}
+    skip_by = ""
+    if body is not None and body.skip_visual:
+        if "settings.manage" not in user_permissions(user):
+            raise HTTPException(403, "見た目の項目を外せるのは管理者だけです")
+        if not workspaces.only_visual_failed(sandbox._read_meta(box.path).get("last_check")):
+            raise HTTPException(409, "見た目の項目を外せるのは、最後の関門が画面の見た目だけで落ちたときです")
+        skip_by = user.username
 
     async def worker(job):
-        job.log("関門を流しています")
-        saved = await asyncio.to_thread(workspaces.run_check, name)
+        job.log("関門を流しています" + ("（画面の見た目は人が確かめたので外す）" if skip_by else ""))
+        saved = await asyncio.to_thread(workspaces.run_check, name, skip_visual_by=skip_by)
         return {"passed": saved["passed"]}
 
     job = jobs.create("opencode.workspace.check", f"作業場 {name} の関門", worker, owner_user_id=user.id)
     workspaces.mark_check_started(name, job.id)
     audit.record(db, "opencode.workspace.check", user=user, resource_type="opencode_workspace",
-                 resource_id=name, request=request, metadata={"job_id": job.id})
+                 resource_id=name, request=request, metadata={"job_id": job.id, "skip_visual": bool(skip_by)})
     return {"job_id": job.id, "already_running": False}
 
 

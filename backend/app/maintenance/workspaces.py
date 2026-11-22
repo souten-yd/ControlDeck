@@ -347,7 +347,7 @@ def parse_report(text: str) -> list[dict]:
     return items
 
 
-def run_check(name: str) -> dict:
+def run_check(name: str, *, skip_visual_by: str = "") -> dict:
     """関門（dev_check）を作業場へ流し、結果を meta に保存する。重いので Job から呼ぶ（同期の関数）。
 
     関門は箱の中で流す。理由: (1) ホストで流すと dev_check が box.repo の中でホストの git を動かす。(2) 箱の AI が書いた
@@ -360,8 +360,11 @@ def run_check(name: str) -> dict:
     if state.get("unknown"):
         raise SandboxError("箱の中の状態を調べられませんでした")
     python = Path(str(box.meta.get("source") or "")) / ".venv" / "bin" / "python"
+    # skip_visual_by: 画面の見た目（画像を読むモデルの目）を人が確かめたとして外す管理者の名前（2026-11-22: 誤検出で
+    # 正しい変更が取り込めなかった。外したことは結果と監査に残る）
+    extra = ' --skip-visual' if skip_visual_by else ''
     code, out, err = sandbox.in_box_result(
-        box, ["sh", "-c", 'cd backend && exec "$0" -m app.maintenance.dev_check --base "$1"', str(python), base],
+        box, ["sh", "-c", 'cd backend && exec "$0" -m app.maintenance.dev_check --base "$1"' + extra, str(python), base],
         timeout=CHECK_TIMEOUT)
     items = parse_report(out)
     if code in (0, 1) and items:
@@ -370,8 +373,18 @@ def run_check(name: str) -> dict:
         passed = False
         items = [{"status": "ng", "name": "関門", "message": (err.strip() or out.strip() or f"終了コード {code}")[-300:]}]
     saved = {"passed": passed, "items": items, "at": time.time(), "head": state["head"], "tree": state["tree"]}
+    if skip_visual_by:
+        saved["visual_skipped_by"] = skip_visual_by
     _update_meta(name, last_check=saved)
     return saved
+
+
+def only_visual_failed(saved: dict | None) -> bool:
+    """最後の関門が「画面の見た目」だけで落ちたか（人が確かめて外す口を出すかの判定）。"""
+    if not isinstance(saved, dict) or saved.get("passed"):
+        return False
+    failed = [i for i in saved.get("items") or [] if i.get("status") == "ng"]
+    return bool(failed) and all("見た目" in str(i.get("name") or "") for i in failed)
 
 
 def mark_check_started(name: str, job_id: str) -> None:
