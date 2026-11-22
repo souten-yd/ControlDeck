@@ -10,7 +10,8 @@
 - 検証: E2E `assistant-dev-targets` 5、`assistant-claude-layout` ほか assistant 関連（`assistant-plan`・`assistant-mobile`・`assistant-message-actions`・`assistant-secret-lock-topbar`・`assistant-offline-research`・`assistant-opencode-progress`・`assistant-queue-voice`・`assistant-code-copy`）32 通過、320／1280・ライト／ダークの撮影、`npm run build`。
 - reviewer（差分レビュー）: 判定 partial（重大・要修正なし・minor 3・info 4）。minor に対応: ①「Generate Flow」タイルの省略（ui-verifier 指摘と同じ。上の `tile` 修正で解消）②未使用になった `PERMISSION_MODES` の `icon` 文字列（⏵⏵／⏸）を削除し、権限の描画は `PlusMenu` の `PERMISSION_ICONS` に一元化 ③メニュー幅の 288px と 18rem の単位不一致 → `place()` が根の文字サイズから 18rem を px で測る（既定でない文字サイズでも位置と実幅がずれない）。info は `.gitignore` へ `.controldeck/` 追加と冒頭コメントの食い違い（説明は title/sr-only へ移った）を解消。info の残り 2 件（添付行の折り返し未検査・タイル span の非 null 断言）は ui-verifier の実ブラウザ確認（全幅 1 行・44px）と「構造が変われば検査が TypeError で落ちる＝意図どおり」の理由で見送り。
 - 最終回帰: `assistant-dev-targets`・`assistant-claude-layout` 25 通過（失敗は上の既知 1 件のみ）。
-- 確かめられなかった点: 実機の指での操作感（E2E の実ブラウザ 320px で代用）。既知の既存失敗（変更前の HEAD でも同じことを stash で確認）: `assistant-claude-layout` の「thinking split」1 件・`assistant-plan` 4 件 — 検証用インスタンスに CodeDEV の app が無い（2026-11-22 の記録どおり）。box の中では `./deck.sh e2e` が venv 作成で止まるため、元の venv（app-strata）と `PLAYWRIGHT_BROWSERS_PATH` で同じ流れを手動で回した。dev-check の「画面の見た目」は箱からゲートウェイへ届かないため未実施（ui-verifier の実ブラウザ検証と E2E 撮影で代用）。
+- 確かめられなかった点: 実機の指での操作感（E2E の実ブラウザ 320px で代用）。既知の既存失敗（変更前の HEAD でも同じことを stash で確認）: `assistant-claude-layout` の「thinking split」1 件・`assistant-plan` 4 件 — 検証用インスタンスに CodeDEV の app が無い（2026-11-22 の記録どおり）。box の中では `./deck.sh e2e` が venv 作成で止まるため、元の venv（app-strata）と `PLAYWRIGHT_BROWSERS_PATH` で同じ流れを手動で回した。
+- main の視覚ゲートの中継（428bafa）を merge して dev-check を再実行（--base origin/main）: 「画面の見た目」は中継経由で走った（qwen-flash-next・12 枚）が high 3 件を指摘。うち 2 件（320px でチップが画面幅を超える・モード行が下端と重なる）は E2E の幾何検査（メニューは 320px に収まる・はみ出し無し）と ui-verifier の実ブラウザ確認に反する。1 件（「コーディングエージェントが作業」などの長い補助ラベルが「…」で切れる）は 288px 化での切り詰めが実態。対応は次の判断待ち。
 
 ## 2026-11-22 作業場の中から画面の見た目の検査が流れない（Q2）
 
