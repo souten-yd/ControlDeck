@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 210 ファイル、1912 テスト（目的の未記入 93 ファイル）
+- backend: 211 ファイル、1925 テスト（目的の未記入 93 ファイル）
 - E2E: 105 spec、212 テスト
 
 ## backend（backend/tests）
@@ -1498,6 +1498,7 @@
 - `test_rotate_invalidates_previous_key`
 - `test_gateway_requires_bearer_key`
 - `test_models_listing_returns_registered_llm_aliases`
+- `test_models_listing_reports_vision_and_loaded` — 画面の見た目の関門が、画像を読めるローカルのモデルを選べるよう vision・loaded を返す。
 - `test_unknown_model_falls_back_to_highest_priority_llm`
 - `test_admission_waits_using_shared_capacity` — ゲートウェイ経由でも await_capacity を通る（直結との差を無くすのが目的）。
 - `test_direct_port_still_works_and_is_resolvable` — 8090 直結のままでも壊れない（ゲートウェイは任意）。
@@ -2739,6 +2740,23 @@
 - `test_validates_human_approval_and_merge_contracts`
 - `test_quality_score_ranges`
 - `test_generate_workflow_validator_includes_semantic`
+
+### backend/tests/test_visual_review.py
+
+目的: 画面の見た目の関門（app.maintenance.visual_review と dev-check の「画面の見た目」）。 目的: (1) モデルは「画像を読めるローカルのモデル」だけが選ばれ、cloud: や外部は選ばれず、無ければ未実施になる (2) モデルの答えを形で検め、読めない答えは失敗にする (3) dev-check の項目が、high で不合格・medium で注意・ 撮影なしで不合格・frontend を変えていなければ未実施・モデルが無ければ未実施になる。LLM はモックで、外へは出ない。 根拠: 2026-11-22 利用者の依頼。OpenCode（GLM は画像を読めない）が作った画面を、Claude が目で見なくても 仕組みで確かめる。画面の撮影には未公開の内容が写りうるので外部のモデルへ送ってはならない。
+
+- `test_pick_model_only_local_vision_and_never_cloud`
+- `test_review_skips_without_vision_model`
+- `test_review_sends_max_four_images_per_call_with_confidential_mark`
+- `test_prepare_images_skips_too_large_and_non_png`
+- `test_parse_answer_rejects_malformed`
+- `test_parse_answer_accepts_fenced_and_thinking`
+- `test_review_unreadable_answer_is_failure`
+- `test_check_visual_not_run_for_backend_only_change`
+- `test_check_visual_fails_without_screenshots`
+- `test_check_visual_high_fails_medium_warns`
+- `test_check_visual_no_model_is_skipped_not_failed`
+- `test_check_visual_skip_option_and_error`
 
 ### backend/tests/test_vram_margin.py
 

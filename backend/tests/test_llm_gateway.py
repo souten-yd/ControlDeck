@@ -66,6 +66,21 @@ def test_models_listing_returns_registered_llm_aliases(admin_client, monkeypatch
     assert ids == ["auto", "chat-model"]
 
 
+def test_models_listing_reports_vision_and_loaded(admin_client, monkeypatch):
+    """画面の見た目の関門が、画像を読めるローカルのモデルを選べるよう vision・loaded を返す。"""
+    from app.models_mgmt import llama
+
+    key = _issue(admin_client)
+    monkeypatch.setattr(llama, "list_instances", lambda: [
+        {"alias": "vl", "role": "llm", "port": 8090, "runtime": "llama.cpp", "mmproj_path": "/m.gguf", "loaded": True},
+        {"alias": "txt", "role": "llm", "port": 8091, "runtime": "llama.cpp"},
+    ])
+    data = admin_client.get("/api/v1/llm/v1/models", headers={"Authorization": f"Bearer {key}"}).json()["data"]
+    by_id = {m["id"]: m for m in data}
+    assert by_id["vl"]["vision"] is True and by_id["vl"]["loaded"] is True
+    assert by_id["txt"]["vision"] is False
+
+
 def test_unknown_model_falls_back_to_highest_priority_llm(monkeypatch):
     from app.models_mgmt import gateway, llama
 

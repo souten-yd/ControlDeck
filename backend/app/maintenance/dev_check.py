@@ -1,6 +1,6 @@
 """開発の関門。作業の完了の前に流し、base からの差分に応じた検査を順に行う。
 
-    ./deck.sh dev-check [--base <ref>] [--full]
+    ./deck.sh dev-check [--base <ref>] [--full] [--skip-visual]
 
 合否は日本語で 1 行ずつ出し、最後に「合格」または「不合格（直すもの）」を出す。終了コードは合格 0・不合格 1。
 各検査は独立した関数で、git や実行を伴うのは gather_* と run_* だけ（判定は文字列・辞書だけで決まる）。
@@ -112,6 +112,41 @@ def check_frontend(changed: list[str], node_modules: bool, build: tuple[int, str
         return Result(name, OK, "npm run build が通りました")
     return Result(name, NG, f"npm run build が失敗しました: {tail.strip().splitlines()[-1] if tail.strip() else ''}",
                   ["build のエラーを直す"])
+
+
+def check_visual(changed: list[str], shots: list[tuple[str, float]], newest_change: float, review,
+                 *, skip: bool = False, error: str = "") -> Result:
+    """画面の見た目。frontend を変えたときだけ。撮影（今回の E2E のもの）が無ければ不合格、high で不合格、
+    medium は合格のまま注意として出す。モデルが無ければ未実施（不合格にしない）。
+
+    shots は (パス, 更新時刻)。newest_change より古い撮影は「今回の E2E のもの」と見なさない。
+    review は visual_review.ReviewResult（撮影があるときだけ渡る）。error は見させるのに失敗した理由。"""
+    name = "画面の見た目"
+    if not any(p.startswith("frontend/") and not p.startswith("frontend/e2e/") for p in changed):
+        return Result(name, SKIP, "frontend の変更が無いので流していません")
+    if skip:
+        return Result(name, SKIP, "--skip-visual で外しました（流せませんでした。画面の見た目は人の確認が要ります）")
+    fresh = [p for p, mtime in shots if mtime >= newest_change]
+    if not fresh:
+        why = "ありません" if not shots else "すべて frontend の変更より古いです"
+        return Result(name, NG, f"撮影が{why}（E2E で撮ってください）",
+                      ["E2E で 320 と 1280、ライト・ダークを frontend/test-results/ へ撮る（page.screenshot）",
+                       "撮り直したあとで dev-check をもう一度流す"])
+    if error:
+        return Result(name, NG, f"画面の見た目を確かめられませんでした: {error}",
+                      ["ゲートウェイと画像を読めるモデルの状態を見て、dev-check をもう一度流す"])
+    if review is None or review.status == "skipped":
+        why = review.message if review is not None else "モデルを選べません"
+        return Result(name, SKIP, f"{why}ので流せませんでした（不合格にはしていません。画面は人の確認が要ります）")
+    high = [i for i in review.issues if i["severity"] == "high"]
+    medium = [i for i in review.issues if i["severity"] == "medium"]
+    tail = f"（{review.model}、{review.reviewed} 枚" + (f"、飛ばした画像 {len(review.skipped_images)} 枚" if review.skipped_images else "") + "）"
+    if high:
+        return Result(name, NG, f"high の問題が {len(high)} 件あります{tail}: " + " / ".join(f"{i['where']}: {i['what']}" for i in high),
+                      [f"{i['where']}: {i['fix']}" for i in high] + ["直して撮り直し、dev-check をもう一度流す"])
+    if medium:
+        return Result(name, OK, f"合格（注意: medium が {len(medium)} 件{tail}）: " + " / ".join(f"{i['where']}: {i['what']}" for i in medium))
+    return Result(name, OK, f"high・medium の問題はありません{tail}")
 
 
 def check_dependencies(changed: list[str]) -> Result:
@@ -401,7 +436,27 @@ def run_build(repo: Path = REPO) -> tuple[int, str] | None:
     return result.returncode, result.stdout + result.stderr
 
 
-def run_all(base: str = "", *, full: bool = False, repo: Path = REPO) -> tuple[str, bool]:
+def run_visual(diff: Diff, repo: Path, skip: bool) -> Result:
+    """撮影を集め、あれば visual_review にかける（frontend を変えたときだけ）。"""
+    touched = [p for p in diff.changed if p.startswith("frontend/") and not p.startswith("frontend/e2e/")]
+    shots: list[tuple[str, float]] = []
+    if touched and not skip:
+        shots = sorted(((p.relative_to(repo).as_posix(), p.stat().st_mtime)
+                        for p in (repo / "frontend" / "test-results").glob("**/*.png") if p.is_file()),
+                       key=lambda item: -item[1])
+    newest = max((((repo / p).stat().st_mtime) for p in touched if (repo / p).is_file()), default=0.0)
+    review, error = None, ""
+    if shots and any(m >= newest for _, m in shots):
+        from app.maintenance import visual_review
+
+        try:
+            review = visual_review.review([repo / p for p, m in shots if m >= newest])
+        except visual_review.ReviewError as exc:
+            error = str(exc)
+    return check_visual(diff.changed, shots, newest, review, skip=skip, error=error)
+
+
+def run_all(base: str = "", *, full: bool = False, skip_visual: bool = False, repo: Path = REPO) -> tuple[str, bool]:
     base = resolve_base(base, repo)
     diff = gather_diff(base, repo)
     results: list[Result] = []
@@ -422,6 +477,8 @@ def run_all(base: str = "", *, full: bool = False, repo: Path = REPO) -> tuple[s
     touched_frontend = any(p.startswith("frontend/") and not p.startswith("frontend/e2e/") for p in diff.changed)
     build = run_build(repo) if touched_frontend else None
     results.append(check_frontend(diff.changed, (repo / "frontend" / "node_modules").is_dir(), build))
+    # 2b. 画面の見た目
+    results.append(run_visual(diff, repo, skip_visual))
     # 3. 依存
     results.append(check_dependencies(diff.changed))
     # 4. 新しいテスト
@@ -449,7 +506,7 @@ def run_all(base: str = "", *, full: bool = False, repo: Path = REPO) -> tuple[s
 
 
 def main(argv: list[str]) -> int:
-    base, full = "", False
+    base, full, skip_visual = "", False, False
     args = list(argv)
     while args:
         arg = args.pop(0)
@@ -457,11 +514,13 @@ def main(argv: list[str]) -> int:
             base = args.pop(0)
         elif arg == "--full":
             full = True
+        elif arg == "--skip-visual":
+            skip_visual = True
         else:
-            print("使い方: ./deck.sh dev-check [--base <ref>] [--full]", file=sys.stderr)
+            print("使い方: ./deck.sh dev-check [--base <ref>] [--full] [--skip-visual]", file=sys.stderr)
             return 2
     try:
-        text, passed = run_all(base, full=full)
+        text, passed = run_all(base, full=full, skip_visual=skip_visual)
     except RuntimeError as exc:
         print(f"[不合格] 差分を調べられません: {exc}", file=sys.stderr)
         return 1
