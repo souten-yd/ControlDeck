@@ -223,6 +223,32 @@ export const IconPause = (p: SVGProps<SVGSVGElement>) => (
     <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
   </Icon>
 );
+// ＋メニューの OpenCode のモード（ビルド＝金槌・プラン＝クリップボード）と権限（Auto＝早送り。確認は IconPause）。
+// 権限の形は旧札で使っていた文字（⏵⏵＝早送り・⏸＝一時停止）と同じ意味（2026-11-22 利用者「文字ではなく
+// フラットデザインのアイコンで」。実描画は PlusMenu の PERMISSION_ICONS・PERMISSION_MODES は文字を持たない）。
+export const IconHammer = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9" />
+    <path d="m18 15 4-4" />
+    <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" />
+  </Icon>
+);
+export const IconClipboardList = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <path d="M12 11h4" />
+    <path d="M12 16h4" />
+    <path d="M8 11h.01" />
+    <path d="M8 16h.01" />
+  </Icon>
+);
+export const IconFastForward = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M3.5 5.5v13l8.5-6.5z" fill="currentColor" stroke="none" />
+    <path d="M13 5.5v13l8.5-6.5z" fill="currentColor" stroke="none" />
+  </Icon>
+);
 export const IconDownload = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M12 4v12m0 0 4-4m-4 4-4-4" />

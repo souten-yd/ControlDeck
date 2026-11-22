@@ -235,6 +235,8 @@ for (const width of [1280, 320]) {
     const menu = page.getByRole("menu", { name: "添付・機能・権限" });
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: /ファイルを添付/ })).toBeVisible();
+    // 2026-11-22: 添付の行は 1 行（説明は title へ。textContent はラベルだけ）
+    await expect(menu.getByRole("menuitem", { name: /ファイルを添付/ })).toHaveText("ファイルを添付");
     // 検索系は「調査」1 つにまとめた（2026-11-17: 利用者「検索を改修したはずだがこの部分は変わらないのか」）
     for (const id of ["auto", "chat", "investigate", "gen", "run", "code"]) {
       await expect(menu.locator(`[data-mode-option="${id}"]`)).toBeAttached();
