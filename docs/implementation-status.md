@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-22 AI アシスタントの道具 huggingface_models（Hugging Face のモデル検索）
+
+- 利用者「『Qwen の最新のモデルで Strata に対応しているモデルを抽出して特徴とともに教えて』のような検索で、Hugging Face 内を検索して教えてくれる機能が欲しい」「検索の幅・十分な件数を担保して」。
+- `backend/app/models_mgmt/hf_search.py`: 語の揺れ（Qwen3.8 / Qwen-3.8 / Qwen3_8 / Qwen38）・GGUF の別作者（unsloth・ISTA-DASLab・bartowski・lmstudio-community・mradermacher・ggml-org）・ベースモデルからの派生（filter=base_model:）を合わせて、Link ヘッダの cursor でページをたどり、重複を除く。件数は既定 50・最大 200。10 分キャッシュ。各モデルの更新日・DL・いいね・pipeline・license・ベース・パラメータ数（出所つき。名前からは推定と明記）・文脈・画像入力・GGUF の量子化と大きさ（tree）。
+- 答えの単位はベースモデル（公式の作者のモデルを作成日の新しい順。公式の作者は語から検出）。それぞれに Strata で動かせる GGUF の置き場を最大 3（UD・GSQ が先、Q8_0 は後。作者の信頼: 公式>unsloth・ISTA-DASLab>bartowski・lmstudio-community・ggml-org>その他）。個人の派生は公式の行の下に「派生」の印で続く（include_derivatives 既定 true）。既定はテキスト生成だけ（pipeline 引数で TTS・ASR など）。
+- Strata 対応の判定は `check_runnable` と同じ決まり: Unsloth の UD-*（IQ1〜Q6_K_XL、作者 unsloth）・ISTA-DASLab の GSQ-RCO（Q2_0・IQ2_XS・IQ3_XXS・IQ3_S）・Q8_0。ファイル名からの判定で最終確認は起動時（表にも明記）。現在の登録画面で選べる量子化（`strata_gateway._FAMILIES`）も別に出す。登録済み（Strata・llama.cpp の model_path）には印。
+- 道具 `huggingface_models`（`workflows/chat_tools.py`、`chat_persist.py` で web_search と同じ条件＝機能「自動」・道具対応モデルで渡す）。秘密の会話では道具を渡さず、呼ばれても `ensure_external_allowed` で通信しない。
+- テスト `test_hf_search.py`（判定・語の揺れ・別作者と派生で増え重複が消える・ページをたどる・キャッシュと登録済みの印・秘密の会話・道具の登録と答えの形）。
+
 ## 2026-11-22 OpenCode 設定: モデルを選ぶ場所を「役割とモデル」の 1 か所へ
 
 - 利用者「ロールの開発は OpenCode の設定に載せるとあるが、他の設定と競合しないように改めて設定の項目と文言を見直して。ユーザー側に余計な操作はさせずに自動で適用されるように」。

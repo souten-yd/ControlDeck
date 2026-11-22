@@ -358,7 +358,7 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
 
     job = asyncio.run(scenario())
     assert job.status == "succeeded", job.error
-    assert [t["function"]["name"] for t in requests[0].tools] == [chat_tools.WEB_SEARCH]   # 資料が無いので Web だけ
+    assert [t["function"]["name"] for t in requests[0].tools] == [chat_tools.WEB_SEARCH, chat_tools.HF_MODELS]   # 資料が無いので Web と Hugging Face だけ
     tool_msg = [m for m in requests[1].messages if m.get("role") == "tool"][0]["content"]
     assert "横浜の天気" in tool_msg and "[R" in tool_msg
     events = [e for e in job.events if e.get("message") == "sources"]

@@ -1932,7 +1932,8 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
         while True:
             tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
                 [chat_tools.TOOL_SEARCH_KNOWLEDGE] if knowledge_tool is not None else []) + (
-                [chat_tools.TOOL_WEB_SEARCH] if web_tool and not _offline.external_research_blocked() else []) + (
+                [chat_tools.TOOL_WEB_SEARCH, chat_tools.TOOL_HF_MODELS]
+                if web_tool and not _offline.external_research_blocked() else []) + (
                 [chat_tools.TOOL_HAND_OFF_OPENCODE] if code_target is not None and web_tool else [])
             with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
             last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
@@ -1980,6 +1981,13 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                         web_sources.extend(found)
                         buf["meta"]["sources"] = web_sources
                         job.log("sources", sources=web_sources)
+                elif call["name"] == chat_tools.HF_MODELS and web_tool and not _offline.external_research_blocked():
+                    job.log("stats", phase="retrieve", detail=f"Hugging Face を検索しています: {query}", tok_per_sec=0,
+                            gen_tokens=0, prompt_tokens=None, context_max=None)
+                    from app.models_mgmt import context_budget
+
+                    result, record = await chat_tools.run_hf_models(
+                        call, max_chars=context_budget.for_model(base_url, model).rag_chars)
                 elif call["name"] == chat_tools.SEARCH_KNOWLEDGE and knowledge_tool is not None:
                     job.log("stats", phase="retrieve", detail=f"ナレッジを探しています: {query}", tok_per_sec=0,
                             gen_tokens=0, prompt_tokens=None, context_max=None)

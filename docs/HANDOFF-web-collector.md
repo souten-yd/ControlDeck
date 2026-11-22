@@ -61,6 +61,7 @@
 
 ## 7. 作業記録（新しい順に追記）
 
+- 2026-11-22 Claude: AI アシスタントの道具 `huggingface_models`（`models_mgmt/hf_search.py`）を追加。Hugging Face のモデルを語の揺れ・GGUF 別作者・ベースの派生で広く検索し、Strata 対応をファイル名から判定して表で返す。秘密の会話は通信の直前で止める。続き: 画面での表示と、Models 画面への「Strata 対応で探す」の口は未着手。
 - 2026-11-21 Claude: 利用者「モデルのダウンロードと Workflow のシークレットは設定不要」→ Settings「API キー」から Hugging Face と Workflow のシークレットを外した（クラウドの AI と特許の公開データだけ）。
   Workflow のシークレットは Workflow の画面で従来どおり。保存済みの値は消していない。
 
