@@ -1,6 +1,8 @@
 // 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。
 //       関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。
 //       関門の後に変更があれば押せない。320px でも横にはみ出さない。
+//       増減は未コミットの変更も数に入れて「N ファイル +A −R（うち未コミット M）」と出す（2026-11-22 の通し。
+//       取り込んだ ref だけ数えて「0 ファイル +0 −0・未コミット」と出ていた）。
 // 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
@@ -27,9 +29,12 @@ async function mock(page: Page) {
     name: NAME, source: "controldeck", source_label: "ControlDeck 本体", origin: "", branch: `sandbox/${NAME}`,
     dirty: state.dirty, unpushed: 1, created_at: 1, last_used: Date.now() / 1000 - 60, repo_path: REPO }] } }));
   await page.route(new RegExp(`/api/v1/opencode/workspaces/${NAME}/changes$`), (route) => route.fulfill({ json: {
-    base: "abc1234567", head: "def7654321", file_count: 2, added: 30, removed: 4, dirty: state.dirty,
-    files: [{ path: "backend/app/x.py", added: 20, removed: 4, binary: false, untracked: false },
-      { path: "docs/very/long/path/that/should/truncate/instead/of/overflowing/the/card/note.md", added: 10, removed: 0, binary: false, untracked: false }],
+    base: "abc1234567", head: "def7654321", file_count: 3, added: 32, removed: 5, dirty: state.dirty,
+    // 未コミットの変更も数に入れたうえでの内訳（x.py の未コミット +2 −1 と未追跡の new.ts）
+    uncommitted_files: state.dirty ? 2 : 0,
+    files: [{ path: "backend/app/x.py", added: 22, removed: 5, binary: false, untracked: false },
+      { path: "docs/very/long/path/that/should/truncate/instead/of/overflowing/the/card/note.md", added: 10, removed: 0, binary: false, untracked: false },
+      { path: "frontend/src/new.ts", added: 0, removed: 0, binary: false, untracked: true }],
     commits: [{ sha: "def7654321", author: "ControlDeck Sandbox", at: 1, subject: "x を直す" }], commit_count: 1,
     check: state.check ? { ...state.check, at: 1, head: "def7654321", items: state.check.passed
       ? [{ status: "ok", name: "テスト", message: "3 件" }]
@@ -72,13 +77,14 @@ for (const width of [320, 1280]) {
     await page.goto("/assistant");
     const shell = page.locator("[data-assistant-shell]");
     const card = shell.locator('[data-testid="workspace-result"]');
-    await expect(card).toContainText("2 ファイル +30 −4");
-    await expect(card).toContainText("未コミット");
+    await expect(card).toContainText("3 ファイル +32 −5（うち未コミット 2）");
     await expect(card.getByTestId("workspace-check-label")).toHaveText("関門は未実施");
     const noOverflow = async () => expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await card.getByRole("button", { name: /作業場の結果/ }).click();
-    await card.getByRole("button", { name: /変わったファイル 2 件を開く/ }).click();
+    await card.getByRole("button", { name: /変わったファイル 3 件を開く/ }).click();
     await expect(card.getByTestId("workspace-files")).toContainText("backend/app/x.py");
+    await expect(card.getByTestId("workspace-files")).toContainText("frontend/src/new.ts");
+    await expect(card.getByTestId("workspace-files")).toContainText("未追跡");
     const adoptButton = card.getByRole("button", { name: "取り込む" });
     await expect(adoptButton).toBeDisabled();
     await noOverflow();
@@ -110,22 +116,26 @@ for (const width of [320, 1280]) {
   });
 }
 
-test("workspace result card: failed check lists the failure and blocks adopt (dark, 320px)", async ({ page, context }) => {
-  test.skip(!hasSession(), "E2E credentials required");
-  await page.setViewportSize({ width: 320, height: 800 });
-  await page.emulateMedia({ colorScheme: "dark" });
-  await establishSession(page, context);
-  const state = await mock(page);
-  state.check = { passed: false, stale: false };
-  await page.evaluate(() => { localStorage.setItem("cd-chat-conversation", "w1"); });
-  await page.goto("/assistant");
-  const card = page.locator('[data-testid="workspace-result"]');
-  await card.getByRole("button", { name: /作業場の結果/ }).click();
-  await expect(card.getByTestId("workspace-check-label")).toHaveText("関門 不合格");
-  await expect(card.getByTestId("workspace-check-failures")).toContainText("テスト: 1 件落ちた");
-  await expect(card.getByRole("button", { name: "取り込む" })).toBeDisabled();
-  await page.screenshot({ path: "test-results/workspace-result-320-dark-failed.png" });
-});
+for (const width of [320, 1280]) {
+  test(`workspace result card: failed check lists the failure and blocks adopt (dark, ${width}px)`, async ({ page, context }) => {
+    test.skip(!hasSession(), "E2E credentials required");
+    await page.setViewportSize({ width, height: 800 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await establishSession(page, context);
+    const state = await mock(page);
+    state.check = { passed: false, stale: false };
+    await page.evaluate(() => { localStorage.setItem("cd-chat-conversation", "w1"); });
+    await page.goto("/assistant");
+    const card = page.locator('[data-testid="workspace-result"]');
+    await card.getByRole("button", { name: /作業場の結果/ }).click();
+    await expect(card.getByTestId("workspace-check-label")).toHaveText("関門 不合格");
+    await expect(card.getByTestId("workspace-check-failures")).toContainText("テスト: 1 件落ちた");
+    await expect(card.getByRole("button", { name: "取り込む" })).toBeDisabled();
+    // 320/1280・ライト・ダークとも、横のはみ出しは DOM で確かめる（見た目の関門の model の目より確実）
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+    await page.screenshot({ path: `test-results/workspace-result-${width}-dark-failed.png` });
+  });
+}
 
 // 目的: 関門が「画面の見た目」だけで落ちたとき、管理者に「見た目は確かめた（外して流す）」が出て、skip_visual 付きで流し直せる。
 //       見た目以外も落ちているときは出ない。

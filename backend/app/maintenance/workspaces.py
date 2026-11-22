@@ -287,11 +287,33 @@ def _update_meta(name: str, **fields) -> dict:
     return meta
 
 
-def _diff_summary(box: Sandbox, head: str) -> dict:
-    """元（作った時の revision）から export.git の head までの差分。ファイルの中身は返さない。"""
+def change_base(box: Sandbox, head: str) -> str:
+    """差分の起点。作った時の revision ではなく、今の main との共通の祖先（merge-base）。
+
+    作業場が途中で main を取り込む（merge / rebase）と、元の revision との差には取り込んだ main の分まで入り、
+    結果のカードが PR の実際（10 ファイル）より多く（17 ファイル）出ていた（2026-11-22 の通しの U16）。
+    本体の作業場は、ホスト自身の checkout の origin/main を export.git へ fetch して（箱の作業ツリーは触らない）
+    head との merge-base を取る。main が読めない・共通の祖先が無い・CodeDEV の作業場は、元の revision に戻す。
+    """
     base = str(box.meta.get("revision") or "")
-    if not re.fullmatch(r"[0-9a-f]{40}", base):
+    if not _OID.fullmatch(base):
         raise SandboxError("この作業場には元の revision の記録がありません")
+    if str(box.meta.get("workspace_source") or "") != CONTROLDECK:
+        return base
+    exp = export_repo()
+    main_ref = f"refs/ws/{box.name}/main"
+    try:
+        _host_git("-c", "protocol.file.allow=always", "fetch", "--no-tags", "--quiet", str(controldeck_repo()),
+                  f"+refs/remotes/{CONTROLDECK_REF}:{main_ref}", cwd=exp)
+        found = _host_git("merge-base", main_ref, head, cwd=exp)
+    except SandboxError:
+        return base
+    return found if _OID.fullmatch(found) else base
+
+
+def _diff_summary(box: Sandbox, head: str) -> dict:
+    """main との共通の祖先（change_base）から export.git の head までの差分。ファイルの中身は返さない。"""
+    base = change_base(box, head)
     exp = export_repo()
     files = []
     for line in _host_git("diff", "--numstat", "-M", base, head, cwd=exp).splitlines():
@@ -309,12 +331,67 @@ def _diff_summary(box: Sandbox, head: str) -> dict:
             "commits": commits, "commit_count": int(_host_git("rev-list", "--count", f"{base}..{head}", cwd=exp) or 0)}
 
 
+def _uncommitted_stats(box: Sandbox) -> list[dict] | None:
+    """未コミットの変更のファイルごとの増減（箱の中の git で調べる。ホストの git は箱の作業ツリーで動かさない）。
+
+    `git diff --numstat HEAD` でステージ済み・未ステージの両方の増減を数え、`git status` の
+    未追跡の分もファイルとして数える（未追跡は中身を読まないので増減 0 と印だけ。index に
+    副作用を残す `git add -N` は使わない）。箱の git が動かなければ None（呼び出し側はコミット済み
+    の分だけを数えたことになり、画面は「・未コミット」の印を出す）。
+    """
+    try:
+        numstat = sandbox.in_box(
+            box, ["git", "-c", "core.quotepath=false", "diff", "--numstat", "--no-renames", "HEAD"], timeout=60)
+        status = sandbox.in_box(
+            box, ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], timeout=60)
+    except SandboxError:
+        return None
+    files: dict[str, dict] = {}
+    for line in numstat.splitlines():
+        added, removed, path = (line.split("\t", 2) + ["", "", ""])[:3]
+        if path:
+            files[path] = {"path": path, "added": int(added) if added.isdigit() else 0,
+                           "removed": int(removed) if removed.isdigit() else 0,
+                           "binary": added == "-", "untracked": False}
+    for entry in status.split("\0"):
+        if len(entry) > 3 and entry[2] == " ":
+            path = entry[3:]
+            item = files.setdefault(path, {"path": path, "added": 0, "removed": 0,
+                                           "binary": False, "untracked": False})
+            if entry[:2] == "??":
+                item["untracked"] = True
+    return sorted(files.values(), key=lambda item: item["path"])
+
+
 def changes(box: Sandbox) -> dict:
-    """元からの差分の要約（コミット済みの分は export.git で、未コミットの有無は箱の中で調べる）。"""
+    """元からの差分の要約。コミット済みの分は export.git で、未コミットの分は箱の中の git で調べる。
+
+    ファイル数・増減には未コミットの変更も数に入れる（2026-11-22 の通しで「0 ファイル +0 −0・
+    未コミット」と出ていた。取り込んだ ref の差分だけを数えていたため）。同じファイルのコミット済みと
+    未コミットの増減は足し合わせ、未追跡のファイルは増減 0 でファイルとして数える。
+    `uncommitted_files` はそのうち未コミットのファイルの数（箱の git が読めなければ None）。
+    """
     state = sandbox.probe(box, fresh=True, with_tree=True)
     if state.get("unknown"):
         raise SandboxError("箱の中の状態を調べられませんでした。箱が動いているか確かめてください")
     summary_ = _diff_summary(box, import_head(box))
+    uncommitted = _uncommitted_stats(box)
+    if uncommitted is not None:
+        merged: dict[str, dict] = {f["path"]: dict(f) for f in summary_["files"]}
+        for item in uncommitted:
+            entry = merged.setdefault(item["path"], {"path": item["path"], "added": 0, "removed": 0,
+                                                     "binary": item["binary"], "untracked": False})
+            entry["added"] += item["added"]
+            entry["removed"] += item["removed"]
+            entry["binary"] = entry.get("binary", False) or item["binary"]
+            entry["untracked"] = entry.get("untracked", False) or item["untracked"]
+        summary_["files"] = sorted(merged.values(), key=lambda f: f["path"])
+        summary_["file_count"] = len(summary_["files"])
+        summary_["added"] = sum(f["added"] for f in summary_["files"])
+        summary_["removed"] = sum(f["removed"] for f in summary_["files"])
+        summary_.update(uncommitted_files=len(uncommitted))
+    else:
+        summary_.update(uncommitted_files=None)
     summary_.update(dirty=bool(state["dirty"]), uncommitted=state["dirty"],
                     check=check_state(box, state["tree"]), adopted=adopted_state(box), merged=merged_state(box))
     return summary_
@@ -502,10 +579,8 @@ _OID = re.compile(r"[0-9a-f]{40}")
 
 
 def _numstat_files(box: Sandbox, head: str) -> list[dict]:
-    """元の revision から head までのファイル一覧（export.git で取る。リネームは新しい側の名前）。"""
-    base = str(box.meta.get("revision") or "")
-    if not _OID.fullmatch(base):
-        raise SandboxError("この作業場には元の revision の記録がありません")
+    """main との共通の祖先（change_base）から head までのファイル一覧（export.git で取る。リネームは新しい側の名前）。"""
+    base = change_base(box, head)
     files = []
     for line in _host_git("-c", "core.quotepath=false", "diff", "--numstat", "--no-renames", base, head,
                           cwd=export_repo()).splitlines():
@@ -533,8 +608,9 @@ def _uncommitted(box: Sandbox) -> dict | None:
 def file_diff(box: Sandbox, path: str = "") -> dict:
     """元からの差分。path が空ならファイルの一覧だけ、あればそのファイルの unified diff（1 ファイル DIFF_LIMIT まで）。"""
     head = import_head(box)
+    base = change_base(box, head)
     files = _numstat_files(box, head)
-    result: dict = {"base": str(box.meta.get("revision") or "")[:10], "head": head[:10], "files": files,
+    result: dict = {"base": base[:10], "head": head[:10], "files": files,
                     "file": None, "limit": DIFF_LIMIT, "uncommitted": _uncommitted(box)}
     if not path:
         return result
@@ -545,7 +621,7 @@ def file_diff(box: Sandbox, path: str = "") -> dict:
     if not entry["binary"]:
         try:
             text = _host_git("-c", "core.quotepath=false", "diff", "-U3", "--no-color", "--no-ext-diff", "--no-textconv",
-                             "--no-renames", str(box.meta.get("revision")), head, "--", path, cwd=export_repo())
+                             "--no-renames", base, head, "--", path, cwd=export_repo())
         except UnicodeDecodeError:
             detail["binary"] = True
         else:
@@ -621,6 +697,7 @@ def _merge_facts(box: Sandbox) -> dict:
         if not tree or tree != (saved or {}).get("tree"):
             problems.append("PR の内容が、関門で確かめた内容と違います。関門を流し直してください")
         try:
+            # 区分の判定は元の revision から見る（main の取り込み分まで含む広い側。関門は狭めない）
             base = str(box.meta.get("revision") or "")
             _host_git("cat-file", "-e", f"{base}^{{commit}}", cwd=exp)  # 箱の外の export.git での確認（ここも箱の中では動かさない）
             report = change_policy.classify(exp, base, pr_head, "controldeck")

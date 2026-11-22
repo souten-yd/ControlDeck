@@ -22,6 +22,8 @@ export type WorkspaceCheck = {
 };
 export type WorkspaceChanges = {
   base: string; head: string; file_count: number; added: number; removed: number; dirty: boolean;
+  /** 未コミットのファイルの数（ファイル数・増減に数に入れたうえでの内訳。箱の git が読めなければ null） */
+  uncommitted_files?: number | null;
   files: { path: string; added: number; removed: number; binary: boolean; untracked: boolean }[];
   commits: { sha: string; author: string; at: number; subject: string }[]; commit_count: number;
   check: WorkspaceCheck | null;
@@ -148,7 +150,12 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
         <span className="font-medium text-zinc-700 dark:text-zinc-200">作業場の結果</span>
         <span className="min-w-0 flex-1 truncate text-zinc-500 dark:text-zinc-400">
           {error ? "読めませんでした" : info ? `${info.file_count} ファイル +${info.added} −${info.removed}` : "読み込み中…"}
-          {info?.dirty && <span className="text-amber-600 dark:text-amber-400">・未コミット</span>}
+          {/* 未コミットも数に入れたうえで、その内訳を出す（2026-11-22 までは 0 ファイル・未コミットと出ていた） */}
+          {info && (info.uncommitted_files ?? 0) > 0 ? (
+            <span className="text-amber-600 dark:text-amber-400">（うち未コミット {info.uncommitted_files}）</span>
+          ) : info?.dirty ? (
+            <span className="text-amber-600 dark:text-amber-400">・未コミット</span>
+          ) : null}
         </span>
         <span className={`shrink-0 ${checkTone}`} data-testid="workspace-check-label">{checkLabel}</span>
         <span aria-hidden>{open ? "▲" : "▼"}</span>
@@ -163,7 +170,8 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             <ul data-testid="workspace-files" className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px]">
               {info.files.map((f) => (
                 <li key={f.path} className="flex min-w-0 gap-2">
-                  <span className="min-w-0 flex-1 truncate">{f.path}</span>
+                  {/* 長いパスは省略する（はみ出さない代わり）。title で全文に届くようにする */}
+                  <span className="min-w-0 flex-1 truncate" title={f.path}>{f.path}</span>
                   <span className="shrink-0 text-zinc-500">{f.untracked ? "未追跡" : f.binary ? "バイナリ" : `+${f.added} −${f.removed}`}</span>
                 </li>
               ))}
