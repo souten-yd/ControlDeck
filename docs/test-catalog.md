@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 223 ファイル、2069 テスト（目的の未記入 93 ファイル）
-- E2E: 111 spec、224 テスト
+- backend: 225 ファイル、2111 テスト（目的の未記入 93 ファイル）
+- E2E: 112 spec、229 テスト
 
 ## backend（backend/tests）
 
@@ -832,6 +832,36 @@
 - `test_merge_without_pr_or_for_codedev_is_refused`
 - `test_l2_change_needs_the_confirmation_phrase_and_lists_guarded_files`
 - `test_api_merge_needs_settings_manage_confirm_and_is_audited`
+
+### backend/tests/test_dev_workspace_persist.py
+
+目的: 開発の作業場の「保存と中断・再開」（2026-11-22）。 目的: 作業場のコードがいつ保存されるか（1 ターンの終わりの自動保存・起動時の立て直し）、停電や再起動で どうなるか（残った .git/index.lock を消す・生成中のまま止まった会話は「中断」・未保存の変更は保存）、 main の進み（取り込みの前に箱の中で main を取り込む・ぶつかったら止めてファイルを記録）が指示どおりに 動くこと。どの処理でもホストの git が箱の作業ツリーの中で動かない（external fixture の検査）。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。他にも考えられる割り込みのシチュエーションを想定した上で、 問題がないように実装してほしい」。 git は本物（一時のリポジトリ）。箱の中の実行・外部への fetch は fixture の代役（origin はローカルの bare）。
+
+- `test_autosave_commits_each_turn_with_sequence_and_leaves_clean`
+- `test_autosave_at_startup_names_the_reason`
+- `test_autosave_reports_box_failures_without_raising`
+- `test_autosave_skips_while_a_merge_is_unresolved` — マージのぶつかりの解決の途中（unmerged が index に残る）はコミットしない — conflict marker 入りの
+- `test_autosave_skips_when_box_is_gone`
+- `test_disk_floor_blocks_create_and_skips_autosave`
+- `test_disk_floor_is_configurable`
+- `test_changes_report_disk_free_and_low_watermark`
+- `test_busy_follows_the_workspace_chat_server`
+- `test_main_progress_counts_origin_and_caches`
+- `test_main_progress_returns_none_without_origin_or_unreachable`
+- `test_merge_main_pulls_origin_main_into_the_box`
+- `test_merge_main_does_nothing_when_up_to_date`
+- `test_merge_main_reports_conflict_files_and_aborts`
+- `test_adopt_refuses_on_conflict_and_reports_files`
+- `test_adopt_merges_main_then_asks_to_rerun_the_check`
+- `test_restore_interrupted_clears_stale_lock_and_saves_unsaved`
+- `test_restore_interrupted_keeps_lock_while_git_runs`
+- `test_restore_interrupted_marks_generating_messages_of_workspaces`
+- `test_last_conversation_finds_the_latest_of_the_workspace`
+- `test_api_resolve_conflict_sends_the_files_to_the_last_conversation`
+- `test_merge_main_shows_the_bundle_to_the_box_only_read_only` — bundle は箱の AI が書ける場所へ置かず、fetch の間だけ readonly で見せる（symlink を辿らされる脅威）。
+- `test_fetch_main_refuses_unsafe_sources` — 実行を伴うリモート補助（ext::・fd::）とオプションに読める先頭の `-` は fetch しない（git も動かさない）。
+- `test_autosave_runs_one_at_a_time_per_workspace` — 2 つのターンの終わり・起動時の立て直しが重なっても、番号が重ならず index.lock を取り合わない。
+- `test_restore_interrupted_does_not_wake_untouched_workspaces` — 止まっていた作業場まで全部起こさない（podman の起動）。中断にした・lock の残った作業場だけを保存する。
 
 ### backend/tests/test_dev_workspace_targets.py
 
@@ -2073,6 +2103,28 @@
 - `test_advise_role_is_the_auto_advisor_target_and_developer_follows_build` — 目的: 役割「相談」が Auto Advisor の相談先になり、開発担当の子エージェントが build のモデルで動く。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
 - `test_old_advisor_model_api_value_sets_advise_and_unknown_model_is_refused` — 目的: 古い API の advisor_model を受けても壊れず advise へ移る。未登録のモデルは断る。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
 - `test_confidential_scope_drops_advise_and_developer_to_local` — 目的: 秘密の会話では相談・開発担当の外部モデルがローカルへ自動で落ちる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
+
+### backend/tests/test_opencode_workspace_persist.py
+
+目的: 作業場の会話の「保存と中断・再開」の chat 側（2026-11-22）。 目的: 作業場（開発用の箱）の OpenCode の回が終わるたび（成功・失敗・止めた、どれでも）自動保存が呼ばれること。 使用量の上限・残高切れ・レート制限で失敗したら、モデルの順番（chain）の次へセッションを切り替えて同じ依頼を 再送し、会話に 1 行「〜が使えなくなったので〜で続けます」が出ること。中断・止めた回を「続きから」で再開 できること（同じセッションへ・前回の理由と ToDo を本文へ渡す）。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。他にも考えられる割り込みのシチュエーションを想定した上で、 問題がないように実装してほしい」。OpenCode・会話サーバー・autosave は偽物（記録だけ）。
+
+- `test_workspace_turn_autosaves_on_success`
+- `test_workspace_turn_autosaves_even_when_interrupted`
+- `test_workspace_turn_autosaves_when_the_turn_crashes`
+- `test_non_workspace_turns_do_not_autosave`
+- `test_workspace_turn_reports_disk_shortage_in_the_reply`
+- `test_rate_limit_failure_switches_to_the_next_model_and_resends`
+- `test_model_switch_resumes_from_the_last_index_of_previous_turns` — 前の回で chain[2] まで進めていれば、この回で上限が起きたら chain[3] へ（前の分をやり直さない）。
+- `test_rate_limit_exhausts_the_chain_and_keeps_the_failure`
+- `test_other_failures_do_not_switch_models`
+- `test_failed_switch_keeps_the_original_failure`
+- `test_resume_sends_reason_and_todos_to_the_same_session`
+- `test_resume_of_a_failed_turn_carries_the_error`
+- `test_resume_refuses_when_there_is_no_unsettled_opencode_turn`
+- `test_resume_picks_the_latest_unsettled_opencode_turn_without_an_id`
+- `test_model_index_is_not_carried_into_a_new_session` — セッションを作り直した（前のが無い）ときのモデルは既定へ戻っている。前の回の chain の位置を引きずらない
+- `test_resume_cannot_be_done_twice_for_the_same_turn`
+- `test_resume_refuses_while_the_session_still_runs` — ControlDeck の再起動の後も OpenCode のセッションが箱の中で動き続けていれば、続きからは送らずに 409 で知らせる
 
 ### backend/tests/test_passkeys.py
 
@@ -3427,6 +3479,16 @@
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
+
+### frontend/e2e/assistant-workspace-resume.spec.ts
+
+目的: 目的: 作業場の「保存と中断・再開」の画面（2026-11-22）。 中断・止めた OpenCode の回のメニューに「続きから」が出て、押すと resume API が呼ばれる。 結果のカードに main の進み・ディスクの空きの注意・ぶつかったときの「OpenCode に直させる」ボタンが出る。 作業中の作業場を消すときは確認の文言が強くなる。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。…問題がないように実装してほしい」。API は page.route で模擬する。
+
+- interrupted workspace turn has a resume action that posts the message id (${width}px)
+- workspace result card warns about main progress, disk and conflicts (${width}px)
+- conflicts show the files and ask OpenCode to fix them (dark, 320px)
+- a resumed turn does not offer resume again (1280px)
+- deleting a working workspace asks to stop it first (1280px)
 
 ### frontend/e2e/background-return.spec.ts
 
