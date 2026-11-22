@@ -35,6 +35,7 @@ from app.models import utcnow
 from app.schemas.assistant import AssistantPlan, ResearchStep
 from app.security.deps import authenticate_websocket, require_permission
 from app.workflows.chat_router import _keep_alive, resolve_think
+from app.workflows import research_tools
 
 logger = logging.getLogger("control_deck.chat_persist")
 
@@ -1736,9 +1737,10 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
         try:
             query = history[-1]["content"]
             if mode == "research":
-                search_history = await _server_research(job, buf, conv_id, query, params, plan)
+                search_history = await _server_research(job, buf, conv_id, query, params, plan, _recent_text(history))
             else:
-                search_history = await _server_search(job, buf, conv_id, mode, query, params, checkpoint)
+                search_history = await _server_search(job, buf, conv_id, mode, query, params, checkpoint,
+                                                      recent=_recent_text(history))
             if search_history is None:  # deep はここで完結（レポートを content に保存済み）
                 # レポートを会話コレクションへ登録し、以後の会話・別質問で再利用できるようにする
                 try:
@@ -1904,18 +1906,10 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                        and not _offline.external_research_blocked() else None)   # 秘密の会話は OpenCode へ任せない
         hand_off: dict | None = None
 
-        async def web_search(query: str) -> list[tuple[dict, dict]]:
-            from app.models_mgmt import context_budget
-            from app.workflows import chat_router as cr
+        async def register_sources(raw: list[dict]) -> list[dict]:
+            return await asyncio.to_thread(_register_conversation_sources, conv_id, raw)
 
-            sb = cr.SearchBody(query=query, mode="web", engine=params.get("engine", "searxng"),
-                               searxng_url=params.get("searxng_url", ""), base_url=base_url, model=model)
-            results = await cr._web_results(sb, query, context_budget.for_model(base_url, model).search_pages)
-            raw = [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", ""),
-                    "source": r.get("source", "web"), "kind": "page"} for r in results]
-            registered = await asyncio.to_thread(_register_conversation_sources, conv_id, raw)
-            return list(zip(registered, results))
-
+        searx = research_tools.searx_for(params, base_url, model)
         web_sources: list[dict] = []
         # ナレッジ（資料・特許・規格）の横断検索。ローカルの管理モデルなら機密も、cloud なら公開・許諾済みだけ
         knowledge_tool = None
@@ -1929,11 +1923,14 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                     "consumer": "local" if await asyncio.to_thread(kcontext.is_local_model, base_url, model) else "cloud",
                     "bound": [conversation_collection(conv_id)],
                     "max_chars": _knowledge_chars(context_budget.for_model(base_url, model))}
+        if web_tool and not _offline.external_research_blocked():
+            # 調べ方の指示と今の日時（天気などで今日がいつか分からず過去を調べるのを防ぐ）。最初の system の直後に置く
+            head = 1 if messages and messages[0].get("role") == "system" else 0
+            messages = [*messages[:head], {"role": "system", "content": research_tools.guidance()}, *messages[head:]]
         while True:
             tool_defs = ([chat_tools.TOOL_SEARCH_MATERIALS] if material_tool is not None else []) + (
                 [chat_tools.TOOL_SEARCH_KNOWLEDGE] if knowledge_tool is not None else []) + (
-                [chat_tools.TOOL_WEB_SEARCH, chat_tools.TOOL_HF_MODELS]
-                if web_tool and not _offline.external_research_blocked() else []) + (
+                [chat_tools.TOOL_WEB_SEARCH, chat_tools.TOOL_READ_PAGE, chat_tools.TOOL_HF_MODELS] if web_tool and not _offline.external_research_blocked() else []) + (
                 [chat_tools.TOOL_HAND_OFF_OPENCODE] if code_target is not None and web_tool else [])
             with_tools = bool(tool_defs) and rounds < chat_tools.MAX_ROUNDS
             last = bool(tool_defs) and rounds >= chat_tools.MAX_ROUNDS
@@ -1970,15 +1967,22 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                                             for c in calls]})
             for call in calls:
                 query = str(chat_tools.arguments_of(call).get("query") or "")[:80]
-                if call["name"] == chat_tools.WEB_SEARCH and web_tool and not _offline.external_research_blocked():
-                    job.log("stats", phase="retrieve", detail=f"Web を検索しています: {query}", tok_per_sec=0,
-                            gen_tokens=0, prompt_tokens=None, context_max=None)
+                if call["name"] in (chat_tools.WEB_SEARCH, chat_tools.READ_PAGE) and web_tool and not _offline.external_research_blocked():
+                    reading = call["name"] == chat_tools.READ_PAGE
+                    target = str(chat_tools.arguments_of(call).get("url") or "")[:80]
+                    job.log("stats", phase="retrieve", detail=f"ページを読んでいます: {target}" if reading else f"Web を検索しています: {query}",
+                            tok_per_sec=0, gen_tokens=0, prompt_tokens=None, context_max=None)
                     from app.models_mgmt import context_budget
 
-                    result, record, found = await chat_tools.run_web(
-                        call, search=web_search, max_chars=context_budget.for_model(base_url, model).rag_chars)
+                    chars = context_budget.for_model(base_url, model).rag_chars
+                    if reading:
+                        result, record, found = await research_tools.run_read_page_tool(call, register=register_sources, max_chars=chars)
+                    else:
+                        result, record, found = await research_tools.run_search_tool(
+                            call, searx=searx, register=register_sources, max_chars=chars)
                     if found:
-                        web_sources.extend(found)
+                        known = {s.get("reference_id") for s in web_sources}
+                        web_sources.extend(s for s in found if s.get("reference_id") not in known)
                         buf["meta"]["sources"] = web_sources
                         job.log("sources", sources=web_sources)
                 elif call["name"] == chat_tools.HF_MODELS and web_tool and not _offline.external_research_blocked():
@@ -2063,7 +2067,7 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
 
 async def _server_search(
     job: jobs.Job, buf: dict, conv_id: str, mode: str, query: str, params: dict,
-    checkpoint_fn=None,
+    checkpoint_fn=None, recent: str = "",
 ):
     """Web/学術/Deep 検索をサーバー側で実行。web/academic は LLM 生成用の history を返し、
     deep はレポートを buf["content"] に保存して None を返す（呼び出し側で完結）。"""
@@ -2071,26 +2075,9 @@ async def _server_search(
     from app.workflows import external_search as ext
 
     job.log("delta", delta="")  # ストリーム開始マーカー
-    if mode == "academic":
-        fed = await ext.federated(query, 8)
-        results = fed["results"][:12]
-        raw_sources = [{
-            "title": r.get("title", ""), "url": r.get("url", ""), "source": r.get("source", ""),
-            "snippet": r.get("snippet", "") or r.get("abstract", ""), "kind": "paper",
-        } for r in results]
-        sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw_sources)
-        buf["meta"] = {"mode": "academic", "sources": sources}
-        job.log("sources", sources=sources)
-        ctx = "\n\n".join(
-            f"[{source['reference_id']}] {result.get('title','')}\n"
-            f"{str(result.get('snippet','') or result.get('abstract',''))[:400]}\n{result.get('url','')}"
-            for source, result in zip(sources, results)
-        )
-        return [
-            {"role": "system", "content":
-             "以下の学術検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。\n\n" + ctx},
-            {"role": "user", "content": query},
-        ]
+    if mode in ("academic", "web"):
+        # 依頼の理解 → 時の解決 → 検索語 → 選別 → 本文で日付を確認 → 足りない観点だけ追加（research_intent。research モードと同じ流れ）
+        return await _intent_research(job, buf, conv_id, mode, query, params, recent, checkpoint_fn)
 
     # web / deep 共通の Web 検索パラメータ
     sb = cr.SearchBody(query=query, mode=mode, engine=params.get("engine", "searxng"),
@@ -2100,28 +2087,6 @@ async def _server_search(
                        source_types=params.get("deep_sources") or [],
                        rag_collection=conversation_collection(conv_id),
                        local_project_path=params.get("code_project_path", ""))
-    if mode == "web":
-        from app.models_mgmt import context_budget
-
-        results = await cr._web_results(sb, query, context_budget.for_model(params["base_url"], params["model"]).search_pages)
-        raw_sources = [{
-            "title": r.get("title", ""), "url": r.get("url", ""),
-            "snippet": r.get("snippet", ""), "source": r.get("source", "web"), "kind": "page",
-        } for r in results]
-        sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw_sources)
-        buf["meta"] = {"mode": "web", "sources": sources}
-        job.log("sources", sources=sources)
-        ctx = "\n\n".join(
-            f"[{source['reference_id']}] {result['title']}\n{result.get('snippet','')}\n{result['url']}"
-            for source, result in zip(sources, results)
-        )
-        return [
-            {"role": "system", "content":
-             "以下の検索結果を根拠に日本語で回答してください。主張には [R英数字] で出典を付けること。"
-             "検索結果にない内容は推測と明示すること。\n\n" + ctx},
-            {"role": "user", "content": query},
-        ]
-
     # deep: 既存の Deep サーチ（分解→収集→引用付きレポート）をサーバー側で実行
     def deep_progress(phase: str, label: str, iteration: int, details: dict) -> None:
         item = {"phase": phase, "label": label, "iteration": iteration, "details": details}
@@ -2145,10 +2110,6 @@ async def _server_search(
     job.log("delta", delta=report)
     job.log("sources", sources=sources)
     return None
-
-
-def _source_key(source: dict) -> str:
-    return str(source.get("url") or source.get("title") or "").strip().lower()
 
 
 def _register_conversation_sources(conv_id: str, sources: list[dict]) -> list[dict]:
@@ -2205,99 +2166,87 @@ async def _research_for_code(job: jobs.Job, buf: dict, conv_id: str, query: str,
     return head + body
 
 
-async def _server_research(
-    job: jobs.Job, buf: dict, conv_id: str, query: str, params: dict, plan: AssistantPlan | None,
-) -> list[dict]:
-    """Web/学術を組み合わせ、不足評価を挟みながら根拠を集める。"""
-    from app.workflows import chat_router as cr
-    from app.workflows import external_search as ext
-    from app.workflows.assistant_planner import evaluate
+def _recent_text(history: list[dict], limit: int = 4) -> str:
+    """直前の会話（最後の発言を除く）。「それについて調べて」の対象を補うために依頼の理解へ渡す。"""
+    lines = []
+    for m in history[:-1][-limit:]:
+        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str):
+            lines.append(f"{'利用者' if m['role'] == 'user' else 'AI'}: {m['content'][:400]}")
+    return "\n".join(lines)
 
-    if plan is None:
-        plan = AssistantPlan(
-            mode="research", reason="Webと学術情報を組み合わせる調査",
-            steps=[ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)],
-            decided_by="fallback",
-        )
+
+async def _intent_research(job: jobs.Job, buf: dict, conv_id: str, mode: str, query: str, params: dict, recent: str,
+                           checkpoint_fn=None, plan: AssistantPlan | None = None) -> list[dict]:
+    """web・academic・research の調査。LLM が依頼を観点・検索語・時の範囲に整理してから調べる（research_intent）。"""
     from app.models_mgmt import context_budget
+    from app.workflows import external_search as ext
+    from app.workflows import research_intent as ri
+    from app.workflows import research_time as rtime
 
-    budget = context_budget.for_model(params["base_url"], params["model"])
-    max_calls, snippet_chars = budget.investigate_calls, budget.snippet_chars
-    max_iterations = min(max(plan.max_iterations, 1), 5)
-    pending = list(plan.steps) or [ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)]
-    sources: list[dict] = []
-    evidence: list[str] = []
-    seen_sources: set[str] = set()
-    seen_steps: set[tuple[str, str]] = set()
-    calls = 0
-    iteration_count = 0
+    base_url, model = params["base_url"], params["model"]
+    budget = context_budget.for_model(base_url, model)
 
-    def progress(phase: str, label: str, *, iteration: int) -> None:
-        item = {"phase": phase, "label": label, "iteration": iteration}
+    def progress(phase: str, label: str) -> None:
+        item = {"phase": phase, "label": label, "iteration": 0}
         buf.setdefault("meta", {}).setdefault("progress", []).append(item)
         job.log("progress", **item)
+        if checkpoint_fn is not None:
+            checkpoint_fn()
 
-    for iteration in range(1, max_iterations + 1):
-        iteration_count = iteration
-        progress("iteration", f"調査 {iteration}/{max_iterations} 回目", iteration=iteration)
-        current = pending
-        pending = []
-        for step in current:
-            step_key = (step.tool, step.query.strip().lower())
-            if calls >= max_calls or step_key in seen_steps:
-                continue
-            seen_steps.add(step_key)
-            calls += 1
-            progress("search", f"{step.tool}: {step.query}", iteration=iteration)
-            if step.tool == "academic":
-                results = (await ext.federated(step.query, 8))["results"][:10]
-            else:
-                body = cr.SearchBody(
-                    query=step.query, mode="web", engine=params.get("engine", "duckduckgo"),
-                    searxng_url=params.get("searxng_url", ""), base_url=params["base_url"], model=params["model"],
-                )
-                results = await cr._web_results(body, step.query, 8)
-            for result in results:
-                source = {
-                    "title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
-                    "source": str(result.get("source") or step.tool),
-                    "snippet": str(result.get("snippet") or result.get("abstract") or "")[:snippet_chars],
-                    "kind": "paper" if step.tool == "academic" else "page",
-                }
-                key = _source_key(source)
-                if not key or key in seen_sources:
-                    continue
-                seen_sources.add(key)
-                sources.append(source)
-                snippet = str(result.get("snippet") or result.get("abstract") or "")[:snippet_chars]
-                evidence.append(f"{source['title']}\n{snippet}\n{source['url']}")
-        if iteration >= max_iterations or calls >= max_calls:
-            break
-        progress("evaluate", "収集結果の不足を評価中", iteration=iteration)
-        assessment = await evaluate(query, "\n\n".join(evidence), params["base_url"], params["model"])
-        if assessment.sufficient:
-            progress("sufficient", assessment.reason or "回答に必要な根拠が揃いました", iteration=iteration)
-            break
-        pending = [step for step in assessment.next_steps if (step.tool, step.query.strip().lower()) not in seen_steps]
-        if not pending:
-            break
-
-    sources = await asyncio.to_thread(_register_conversation_sources, conv_id, sources)
-    buf["meta"] = {
-        **buf.get("meta", {}), "mode": "research", "sources": sources,
-        "iterations": iteration_count,
-    }
+    progress("understand", "依頼を整理しています（調べること・検索語・時期）")
+    intent = await ri.understand(query, recent, base_url, model, academic=mode == "academic")
+    if plan is not None:   # 計画の段が作った検索語は、観点の検索語へ足す（発言の文そのものは使わない）
+        extra = ri.sanitize_queries([step.query for step in plan.steps], query, "")
+        if extra and plan.steps and intent.aspects and not intent.simple:
+            intent.aspects[0].queries = [*intent.aspects[0].queries, *[q for q in extra if q not in intent.aspects[0].queries]][:4]
+    buf["meta"] = {**(buf.get("meta") or {}), "mode": mode, "intent": intent.summary()}
+    job.log("intent", intent=intent.summary())
+    if intent.clarify:
+        progress("clarify", "調べる前に確認します")
+        return ri.clarify_messages(intent, query)
+    papers: list[dict] = []
+    inv = ri.Investigation(intent=intent)
+    if mode in ("web", "research"):
+        searx = research_tools.searx_for(params, base_url, model)
+        inv = await ri.investigate(intent, searx=searx, base_url=base_url, model=model, progress=progress,
+                                   rounds=ri.ROUNDS["simple"] if intent.simple else ri.ROUNDS["normal"])
+    if mode in ("academic", "research"):
+        queries = [q for a in intent.aspects for q in a.queries][:6]
+        progress("search", "論文を検索しています: " + " / ".join(queries))
+        found = await asyncio.gather(*[ext.federated(q, 8) for q in queries], return_exceptions=True)
+        merged = research_tools._merge([[r for r in f["results"]] for f in found if isinstance(f, dict)], 40)   # noqa: SLF001
+        for r in merged:
+            r.setdefault("snippet", r.get("abstract", ""))
+        papers = await ri.select_results(intent.goal, intent.subjects, merged, 10)
+    raw = inv.sources()
+    known = {r["url"] for r in raw}
+    raw += [{"title": r.get("title", ""), "url": r.get("url", ""), "source": r.get("source", ""),
+             "snippet": str(r.get("snippet") or r.get("abstract") or "")[:1200], "kind": "paper"}
+            for r in papers if r.get("url") and r["url"] not in known]
+    papers = [r for r in papers if r.get("url")]
+    sources = await asyncio.to_thread(_register_conversation_sources, conv_id, raw)
+    buf["meta"] = {**(buf.get("meta") or {}), "mode": mode, "sources": sources, "iterations": inv.rounds}
     job.log("sources", sources=sources)
-    progress("summarize", f"{len(sources)}件の出典を要約中", iteration=min(max_iterations, 5))
-    context = "\n\n".join(
-        f"[{source['reference_id']}] {item}" for source, item in zip(sources, evidence)
-    )
-    return [
-        {"role": "system", "content":
-         "以下はWeb・学術検索を組み合わせて収集した根拠です。利用者の依頼へ日本語で要約し、"
-         "主要な主張には必ず [R英数字] を付けてください。根拠にない内容は推測と明記してください。\n\n" + context},
-        {"role": "user", "content": query},
-    ]
+    refs = {r["url"]: s["reference_id"] for r, s in zip(raw, sources)}
+    progress("summarize", f"{len(sources)}件の出典を整理しています")
+    context = ri.build_context(inv, refs, budget_chars=budget.rag_chars) if mode != "academic" else (
+        rtime.today_note() + f"\n依頼の目的: {intent.goal}\n検索語: " + " / ".join(q for a in intent.aspects for q in a.queries))
+    if papers:
+        context += "\n\n## 学術論文\n" + "\n\n".join(
+            f"[{refs.get(r.get('url', ''), '')}] {r.get('title', '')}\n{str(r.get('snippet') or r.get('abstract') or '')[:500]}\n{r.get('url', '')}"
+            for r in papers)
+    return [{"role": "system", "content": ri.ANSWER_SYSTEM + "\n\n" + context},
+            {"role": "user", "content": query}]
+
+
+async def _server_research(
+    job: jobs.Job, buf: dict, conv_id: str, query: str, params: dict, plan: AssistantPlan | None, recent: str = "",
+) -> list[dict]:
+    """Web と学術を組み合わせた調査（依頼の理解 → 検索 → 本文の確認 → 不足の再調査。research_intent）。
+    調べ先を 1 つに絞った計画（OpenCode の前の調査で利用者が選んだ web / academic）はその調べ先だけにする。"""
+    tools = {step.tool for step in plan.steps} if plan is not None else set()
+    mode = tools.pop() if len(tools) == 1 else "research"
+    return await _intent_research(job, buf, conv_id, mode, query, params, recent, None, plan)
 
 
 def quick_title(text: str) -> str:

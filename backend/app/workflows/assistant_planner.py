@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 
-from app.schemas.assistant import AssistantPlan, ResearchEvaluation, ResearchStep
+from app.schemas.assistant import AssistantPlan, ResearchEvaluation, ResearchStep  # noqa: F401 - 他から assistant_planner.ResearchStep で使う
 from app.workflows.chat_router import _llm
 
 logger = logging.getLogger(__name__)
@@ -96,8 +96,8 @@ def _rule_plan(query: str) -> AssistantPlan | None:
     if academic and (combined or _contains(text, words["current"])):
         return AssistantPlan(
             mode="research", reason="Webと学術情報を組み合わせる依頼",
-            steps=[ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)],
-            decided_by="rule",
+            # 検索語は作らない（発言の文をそのまま検索語にすると関係の薄い結果を拾う）。依頼の理解の段（research_intent）が作る
+            steps=[], decided_by="rule",
         )
     if academic:
         return AssistantPlan(mode="academic", reason="学術情報の明示的な検索", decided_by="rule")
@@ -143,8 +143,6 @@ async def decide(query: str, base_url: str, model: str, api_key: str = "", conte
         )
         plan = AssistantPlan.model_validate(_json_object(raw))
         plan.decided_by = "llm"
-        if plan.mode == "research" and not plan.steps:
-            plan.steps = [ResearchStep(tool="web", query=query), ResearchStep(tool="academic", query=query)]
         if plan.mode != "research":
             plan.steps = []
         return _with_depth(plan)

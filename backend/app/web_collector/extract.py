@@ -12,6 +12,7 @@ import logging
 import os
 import resource
 from pathlib import Path
+from urllib.parse import urljoin
 
 logger = logging.getLogger("control_deck.web_collector.extract")
 
@@ -103,7 +104,7 @@ def fallback(html: str, url: str = "") -> dict:
     text = "\n".join(line for line in lines if line)
     links = []
     for a in soup.find_all("a", href=True)[:500]:
-        href = str(a["href"])
+        href = urljoin(url, str(a["href"])) if url else str(a["href"])   # 相対のリンクも絶対にする（辿れるように）
         if href.startswith(("http://", "https://")):
             links.append({"url": href.split("#", 1)[0], "text": a.get_text(" ", strip=True)[:200]})
     return {"markdown": text, "title": title, "metadata": {"title": title} if title else {}, "links": links,
