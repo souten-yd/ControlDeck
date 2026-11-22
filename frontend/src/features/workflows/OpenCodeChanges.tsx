@@ -122,6 +122,9 @@ export function OpenCodeChanges({ conversationId, messageId, changes, reverted, 
 }
 
 /** 本文から要約を抜く（LLM は使わない）。「結果・まとめ・要約…」の見出しの節、無ければ最初の見出しと続きの段落。 */
+/** これより短い本文は、まとめを付けずに本文そのものを読めば足りる */
+const LONG_ANSWER_CHARS = 400;
+
 export function extractSummary(content: string): string {
   const lines = content.split("\n");
   const heading = (line: string) => /^ {0,3}#{1,4}\s+/.test(line);
@@ -136,6 +139,9 @@ export function extractSummary(content: string): string {
     return body.join(" ");
   };
   const named = lines.findIndex((line) => heading(line) && /(結果|まとめ|要約|概要|完了|やったこと|Summary|Result)/i.test(line));
+  // まとめを出すのは「結果・まとめ」の節があるときか、本文が長いときだけ。短い本文の言い直しは本文の繰り返しになる
+  // （2026-11-23: 「作りました」だけの答えに同じ文のまとめが付き、E2E も同じ文が 2 つで落ちた）
+  if (named < 0 && content.trim().length < LONG_ANSWER_CHARS) return "";
   const first = lines.findIndex(heading);
   const at = named >= 0 ? named : first;
   const text = at >= 0 ? section(at) : "";
