@@ -13,6 +13,7 @@ from typing import Any
 from app.config import data_dir
 from app.features import registry
 from app.files import service as files
+from app.integrations.opencode import roles as roles_mod
 from app.jobs.service import Job
 
 OPERATIONS = {"analyze", "implement", "fix", "test", "review"}
@@ -36,8 +37,11 @@ DEFAULT_SETTINGS = {
     "auto_advisor": "off",
     # レビュー・相談に使うモデル（ゲートウェイの名前）。空ならセッションと同じモデル。
     # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
+    # 旧設定。最終検証（roles.final_check）の指定として読む。roles を保存したら空にする（移行）。
     "review_model": "",
     "advisor_model": "",
+    # 役割ごとのモデル（roles.py）。{plan, build, research, quick_check, final_check, evaluate}、空＝既定。
+    "roles": {},
     # 開発担当（実装を任せる子エージェント developer）。モデルは空ならセッションと同じ。
     # レビュー・相談・開発担当には外部モデル（cloud:<プロバイダ>/<モデル>）も選べるが、
     # 利用者が OpenCode からの外部送信を許可し、そのモデルを有効にしているときだけ使う。
@@ -249,11 +253,51 @@ def save_workflow(patch: dict) -> dict:
                 elif value not in known:
                     raise ValueError(f"登録されていないモデルです: {value}")
             settings[key] = value
+    if "roles" in patch:
+        incoming = patch["roles"] if isinstance(patch["roles"], dict) else {}
+        saved_roles = settings.get("roles") if isinstance(settings.get("roles"), dict) else {}
+        # 旧 review_model で動いていた利用者の画面は、最終検証の欄に旧値を出す。送り返されたものは通す。
+        legacy = str(settings.get("review_model") or "")
+        clean: dict[str, str] = {}
+        for role in roles_mod.ROLES:
+            value = str(incoming.get(role) or "").strip()
+            if value and value not in (str(saved_roles.get(role) or ""), legacy if role == "final_check" else ""):
+                if value.startswith(CLOUD_PREFIX):
+                    if not _cloud_usable(value):
+                        raise ValueError(
+                            "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
+                            "OpenCode からの外部への送信を許可してください")
+                elif value not in known:
+                    raise ValueError(f"登録されていないモデルです: {value}")
+            if value:
+                clean[role] = value
+        settings["roles"] = clean
+        settings["review_model"] = ""   # 最終検証へ移行済み
+        # 同じ段のローカルが 2 つなら保存しない（作る設定でも同じ検査を通る）
+        role_resolution(settings, str(settings.get("model") or ""), strict=True)
     path = _settings_path()
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temp, path)
     return settings
+
+
+def role_resolution(settings: dict, session_model: str, *, strict: bool = False,
+                    local_only: bool = False) -> "roles_mod.Resolution":
+    """設定の roles（と旧 review_model）から、役割ごとの実際のモデルを決める（roles.resolve）。
+
+    使えなくなった外部モデル（許可を外した等）は未設定と同じに扱う。秘密の会話のスコープの中は local_only。"""
+    from app.security import offline
+
+    stored = settings.get("roles") if isinstance(settings.get("roles"), dict) else {}
+    usable = {role: ("" if str(value or "").startswith(CLOUD_PREFIX) and not _cloud_usable(str(value))
+                     else str(value or "")) for role, value in stored.items()}
+    legacy = role_model(settings, "review_model")
+    # ホストの AI アシスタントでは、既定で外部へコードを送らない（外部は役割で明示したときだけ。
+    # 2026-11-22 Opus の監査。作業場は利用者が了承したモデルの順番があるので sandbox 側で外部を既定にする）
+    return roles_mod.resolve(
+        usable, session_model=session_model, first_external="",
+        legacy_review=legacy, local_only=local_only or offline.in_confidential_scope(), strict=strict)
 
 
 ROLE_MODEL_KEYS = ("review_model", "advisor_model", "developer_model")
@@ -446,7 +490,35 @@ def _reviewer_agent(model: str | None = None) -> dict:
     }
 
 
-def _workflow(runtime: str, model: str) -> dict:
+def _role_agent(role: str, model: str | None) -> dict:
+    """役割の子エージェント（調査・簡易検証・評価）。道具は主（build）と同じ範囲で、編集はしない。"""
+    descriptions = {
+        "research": (
+            "調査の係。コードや資料を読む・探す。どこに何があるか、どう動いているか、関係する決まりは何かを調べ、"
+            "根拠（ファイルと行）つきで短く返す。ファイルは変更しない。調べたいことと、探す範囲を渡す。"
+        ),
+        "quick_check": (
+            "簡易検証の係。変更の直後に、関係するテストと関門（型・lint・dev-check など）を流し、"
+            "通ったか・落ちた項目・直すべき所を返す。ファイルは変更しない。変えたファイルと流すコマンドを渡す。"
+            "最終の確認は reviewer が行う。これは作業の合間の確かめ。"
+        ),
+        "evaluate": (
+            "評価の係。完成した物（差分・画面・出力）を、利用者の目的に照らして評価する。"
+            "目的を満たした点・足りない点・次に直す点を、根拠つきで返す。ファイルは変更しない。目的と評価する物を渡す。"
+        ),
+    }
+    denied = {name: False for name in REVIEWER_DENIED}
+    heavy = {pattern: False for patterns in _SUBAGENT_TOOLS.values() for pattern in patterns}
+    return {
+        "mode": "subagent",
+        "description": descriptions[role],
+        "prompt": _agent_prompt(roles_mod.SUBAGENT_NAMES[role]),
+        "tools": {**heavy, **denied},
+        **({"model": f"controldeck/{model}"} if model else {}),
+    }
+
+
+def _workflow(runtime: str, model: str, *, local_only: bool = False) -> dict:
     """有効な拡張から、足すプラグイン・モデル・agent 設定・Auto Advisor 設定を作る。"""
     settings = get_settings()
     specs = workflow_plugin_specs()
@@ -456,20 +528,30 @@ def _workflow(runtime: str, model: str) -> dict:
     advisor: dict | None = None
     if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
-    review = role_model(settings, "review_model")
-    reviewer_model = review if review and review != model else None
-    if reviewer_model:
-        models.append(reviewer_model)
+    # 役割ごとのモデル（roles.py）。秘密なら全部ローカル。同じ段のローカルは 1 つに揃える。
+    resolved = role_resolution(settings, model, local_only=local_only)
+    for note in resolved.notes:
+        logger.info("OpenCode の役割: %s", note)
+    role_models = resolved.models
+    for name in ("plan", "build"):
+        if role_models[name] != model:
+            agents[name] = {"model": f"controldeck/{role_models[name]}"}
+    for role in roles_mod.SUBAGENT_NAMES:
+        agents[roles_mod.SUBAGENT_NAMES[role]] = _role_agent(role, role_models[role] if role_models[role] != model else None)
+    models.extend(m for m in role_models.values() if m != model)
+    review = role_models["final_check"]
+    reviewer_model = review if review != model else None
     if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
-        if review and review != model:
-            models.append(review)
+        if reviewer_model:
             for name in ("adversarial-reviewer", "constructive-reviewer"):
                 agents[name] = {"model": f"controldeck/{review}"}
     mode = str(settings.get("auto_advisor") or "off")
     if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
         target = role_model(settings, "advisor_model")
+        if local_only and target and not roles_mod.is_local(target):
+            target = ""
         if target and target != model:
             models.append(target)
         advisor = {
@@ -480,11 +562,14 @@ def _workflow(runtime: str, model: str) -> dict:
         }
     if settings.get("developer_agent"):
         developer = role_model(settings, "developer_model")
+        if local_only and developer and not roles_mod.is_local(developer):
+            developer = ""
         if developer and developer != model:
             models.append(developer)
         agents["developer"] = _developer_agent(developer if developer != model else None)
     return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor,
-            "reviewer_model": reviewer_model, "auto_review": bool(settings.get("auto_review", True))}
+            "reviewer_model": reviewer_model, "auto_review": bool(settings.get("auto_review", True)),
+            "roles": resolved}
 
 
 def save_settings(patch: dict) -> dict:
@@ -852,9 +937,13 @@ def _config_payload(
     *,
     owner_user_id: int | None = None,
     project_id: str | None = None,
+    local_only: bool = False,
 ) -> dict:
     """設定の中身（書き込み前）。形は旧来の OpenCode 形式で、_v2_payload が v2 へ読み替える。"""
     runtime = "v2"
+    from app.security import offline
+
+    local_only = local_only or offline.in_confidential_scope()   # 秘密は全役割をローカルへ（外部のモデルも並べない）
     limits = _model_limits(model)
     payload = {
         "$schema": "https://opencode.ai/config.json",
@@ -937,10 +1026,10 @@ def _config_payload(
     # ~/.config/opencode へは書かない——そこは利用者自身のもので、こちらが
     # 足したり消したりしてよい場所ではない。ControlDeck から起動した session
     # にだけ効くので、無効化はこの一覧から外すだけで済む。
-    workflow = _workflow(runtime, model)
+    workflow = _workflow(runtime, model, local_only=local_only)
     # 外部のフロンティアモデル。OpenCode からの外部送信を利用者が許可したときだけ並べる
     # （許可はゲートウェイでも呼び出しごとに確かめる）。docs/PLAN-frontier-models.md
-    for item in _cloud_models_for_opencode():
+    for item in ([] if local_only else _cloud_models_for_opencode()):   # 秘密では外部のモデルを並べない
         payload["provider"]["controldeck"]["models"].setdefault(item["id"], {
             "name": f"{item['name']}（外部）", "attachment": True,
             "modalities": {"input": ["text", "image"], "output": ["text"]},
@@ -956,7 +1045,8 @@ def _config_payload(
         }
     if workflow["plugins"]:
         payload["plugin"] = workflow["plugins"]
-    payload["agent"].update(workflow["agents"])
+    for agent_name, spec in workflow["agents"].items():
+        payload["agent"].setdefault(agent_name, {}).update(spec)   # build・plan は道具の設定へ model を足す
     if workflow["advisor"]:
         payload["_auto_advisor"] = workflow["advisor"]
     skill_paths = _skill_paths()

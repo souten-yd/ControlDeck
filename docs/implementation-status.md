@@ -1,5 +1,19 @@
 # 実装状況
 
+## 2026-11-22 OpenCode の「役割ごとのモデル」（役割の表）
+
+- 利用者「計画を実行するモデルと、調査、開発、検証、評価など。同時に 1 モデルしかできないので、同時に実行する可能性のある作業は同じモデルにしたい。どうしても無理なら順番を決める」。
+- 役割 6 と段 3: ① 計画 `plan` / ② 作る `build`・`research`・`quick_check` / ③ 確かめる `final_check`（reviewer 系）・`evaluate`。既定は ② が開発と同じ、③ が計画と同じ（計画が未設定なら外部の最初のモデル、無ければ開発と同じで注意）。段をまたぐ載せ替えは許す（ロードはゲートウェイが呼ばれたときに行う今の方式のまま）。
+- 決まり（`backend/app/integrations/opencode/roles.py` の 1 か所）: 同じ段のローカルは 1 つだけ（保存は 422 で理由、設定を作る時は揃えて続行）・外部は自由に混ぜられる・最終検証＝開発は注意（保存は止めない）・秘密（confidential の scope か `local_only`）は全役割をローカルへ落とし外部モデルを並べもしない。
+- 設定: OpenCode の設定に `roles`。旧 `review_model` は最終検証として読み、roles を保存したら空にする。生成は `provider._workflow`（本番の session）と `sandbox.opencode_config`/`box_roles`（作業場。`model_chain`・機能 `llm`・Zen の可否を守る。`reviewer_model_for` は最終検証の既定に統合）。子エージェント `researcher`・`quick-checker`・`evaluator` を足した（編集不可・重い道具なし）。
+- API: `PUT /opencode/workflow` に `roles`、`POST /opencode/roles/check`（保存せず検査）。画面: 設定の「役割とモデル」（段ごとの枠・既定の明示・その場の理由・保存不可・注意）。
+- テスト `test_opencode_roles.py`、E2E `opencode-roles.spec.ts`（検証用インスタンスは OpenCode の API が無いので check は模擬）。
+
+- Opus の監査と実機（2026-11-22）:
+  - 本物の箱の OpenCode で、開発役（build）はローカル、最終検証役（reviewer の子エージェント）は GLM-5.3 が答えた。子エージェントは設定のモデルが効く。
+  - **主のエージェント（plan・build）は、設定の `agents.plan.model` が効かず、セッションのモデルのまま答えた**（`opencode2 run --agent plan` と serve で実測）。会話サーバーでエージェントを切り替えるとき、`POST /api/session/{id}/model` でセッションのモデルも役割のモデルへ切り替える（`chat_server._agent_model_ref`。serve で model-switched が記録されることを確認）。
+  - ホストの AI アシスタントでは、既定の役割に外部のモデルを入れない（外部は役割で明示したときだけ）。作業場は了承済みのモデルの順番どおり。
+
 ## 2026-11-22 ＋メニューのモードと権限を左右に 1 行・見た目の道具は呼ばれたらロード（利用者の指摘）
 
 - 利用者「OpenCode のモードと権限は、横幅が半分になり、上下に並んでいるものが左右に並んで 1 行になるイメージ」。モード（ビルド／プラン）と権限（Auto／確認）を半分の幅で左右に並べた 1 行にした。押せる高さ 44px、320px では絵文字を外して文字を切らない（E2E で数値と文字切れを確かめる）。

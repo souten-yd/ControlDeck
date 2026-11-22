@@ -13,6 +13,7 @@ import { BottomSheet, ConfirmDialog, IconButton, SegmentedTabs, Skeleton } from 
 import { IconFolder, IconPlus, IconSettings, IconTrash, IconX } from "../../components/icons";
 import { useAuth, useToasts } from "../../stores";
 import { PageHeader } from "../../components/PageHeader";
+import { RolesPanel } from "./RolesPanel";
 import { WorkflowExtensions, workflowBody, type Workflow } from "./WorkflowExtensions";
 import { SettingsGroup, SheetActions, primaryButton } from "../models/formControls";
 
@@ -358,6 +359,7 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
   const [form, setForm] = useState<Settings>(initial.settings);
   const { data: workflowData } = useQuery({ queryKey: ["opencode-workflow"], queryFn: () => api<Workflow>("/opencode/workflow") });
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const [rolesProblem, setRolesProblem] = useState<string | null>(null);   // 同じ段にローカルが 2 つ等。あれば保存できない
   useEffect(() => { if (workflowData && !workflow) setWorkflow(workflowData); }, [workflowData, workflow]);
   const models = workflowData?.models ?? [];
   const save = useMutation({
@@ -387,6 +389,7 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
           </select>
           <p className="text-[11px] text-zinc-500">auto にすると、Models の共通設定で選んだランタイムのモデルを使います（必要なら起動します）。</p>
         </SettingsGroup>
+        {workflow && <RolesPanel value={{ ...workflow, models }} onChange={setWorkflow} editable={editable} onProblem={setRolesProblem} />}
         {workflow && <WorkflowExtensions value={{ ...workflow, models, installed: workflowData?.installed, features: workflowData?.features, browser: workflowData?.browser }} onChange={setWorkflow} editable={editable} />}
         <SettingsGroup title="詳細" description="接続先" collapsible defaultOpen={false}>
           <label className="block text-xs text-zinc-500">接続先（LLM endpoint）
@@ -395,7 +398,7 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
         </SettingsGroup>
         {editable && (
           <SheetActions>
-            <button onClick={() => save.mutate()} disabled={save.isPending || !workflow} className={primaryButton}>{save.isPending ? "保存中…" : "保存"}</button>
+            <button onClick={() => save.mutate()} disabled={save.isPending || !workflow || Boolean(rolesProblem)} className={primaryButton}>{save.isPending ? "保存中…" : "保存"}</button>
           </SheetActions>
         )}
       </div>

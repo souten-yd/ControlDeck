@@ -670,3 +670,32 @@ def test_a_failed_parent_stops_background_children(monkeypatch, tmp_path):
     result, _, tools, calls = _background_case(tail, monkeypatch, tmp_path)
     assert result["status"] == "failed" and tools[-1]["status"] == "failed"
     assert ("POST", "/api/session/ses_child1/interrupt", {}) in calls
+
+
+def test_switching_agent_also_switches_the_session_model_to_the_role(monkeypatch, tmp_path):
+    """役割ごとのモデル: プランへ切り替えたら計画のモデル、ビルドへ戻したら開発のモデルへ、セッションのモデルも切り替える。
+
+    根拠（2026-11-22 Opus の実測）: OpenCode v2 は主のエージェントを切り替えても、設定の agents.plan.model を使わず、
+    セッションのモデルのまま答えた。子エージェント（reviewer）は設定のモデルが効いた。"""
+    from app.integrations.opencode import chat_server
+
+    (tmp_path / "opencode").mkdir()
+    (tmp_path / "opencode" / "opencode.json").write_text(json.dumps({
+        "model": "controldeck/qwen-flash-next",
+        "agents": {"plan": {"model": "opencode-go/glm-5.3"}, "build": {}}}), encoding="utf-8")
+    calls: list = []
+    current = {"agent": "build"}
+
+    async def fake_call2(server, method, path, body=None):
+        calls.append((method, path, body))
+        if method == "POST" and path.endswith("/agent"):
+            current["agent"] = body["agent"]
+        return dict(current) if method == "GET" else {}
+
+    monkeypatch.setattr(chat_server, "_call", fake_call2)
+    chat_server._session_agents.clear()
+    asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_r", "plan"))
+    asyncio.run(chat_server.switch_agent(_server(tmp_path), "ses_r", "build"))
+    models = [body["model"] for method, path, body in calls if path.endswith("/model")]
+    assert models == [{"providerID": "opencode-go", "id": "glm-5.3"},
+                      {"providerID": "controldeck", "id": "qwen-flash-next"}]
