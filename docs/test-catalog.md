@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 218 ファイル、2015 テスト（目的の未記入 93 ファイル）
-- E2E: 109 spec、220 テスト
+- backend: 219 ファイル、2036 テスト（目的の未記入 93 ファイル）
+- E2E: 110 spec、221 テスト
 
 ## backend（backend/tests）
 
@@ -2748,6 +2748,32 @@
 - `test_strata_update_refuses_to_stop_active_model`
 - `test_strata_uninstall_only_managed_cli_and_engine`
 
+### backend/tests/test_swap_scheduler.py
+
+目的: モデルの載せ替えの調停役（models_mgmt/swap_scheduler.py）の振る舞い。 目的: ローカル LLM の載せ替えを 1 か所で決め、(1) 実行中の要求を切らない、(2) 待たせても 503 にしない、 (3) 載せ替えの回数を到着順より減らす、(4) 待ち時間で優先度が上がり必ず実行される、(5) 二重のロックで 行き詰まらない、ことを守る。 根拠: 2026-11-22、箱の OpenCode が開発（Strata）と調査（Maya）を交互に呼ぶと、要求ごとに別々のモデルが互いを 降ろそうとし、解放の見送り・Strata の操作ロックの取り合いで、待てば通る要求が 300〜660 秒待って 503 だった。 利用者の指示（同日）: 並列は Radiance だけ（登録の数まで）・それ以外は 1 本ずつ。断ると要求が消えるので、 待ち時間で点数が上がる方式にする。 載せ替えはモックの loader（時間を制御）、載っている状態は注入した snapshot で模す。
+
+- `test_loaded_model_runs_at_once_and_other_model_waits_for_running_to_finish` — 載っているモデルは待たずに実行・別のモデルは実行中が終わってから切り替える（実行中は切られない）。
+- `test_same_model_runs_one_at_a_time_except_radiance` — 同じモデルの並列は Radiance だけ（登録の数まで）。Strata・Maya・llama.cpp の chat は 1 本ずつ。
+- `test_snapshot_gives_parallel_only_to_radiance` — 既定の snapshot: Radiance だけ登録の max_num_seqs（n_parallel）まで。llama.cpp は n_parallel 4 でも 1。
+- `test_score_prefers_more_waiting_then_faster_load_then_older` — 点数: 待ちが多いモデルが先・載せ替えが速い（warm）モデルが先・同点は古い順。
+- `test_waiting_raises_priority_so_every_request_runs_and_none_gets_503` — 載っているモデルに要求が来続けても、別のモデルの要求は待ち時間で点数が上がり、やがて必ず実行される。
+- `test_swap_always_serves_the_request_it_loaded_for` — 載せた目的の要求は、載せ替えの直後に必ず 1 本は通す（載せたモデルを一度も使わず行き来し続けない）。
+- `test_requests_after_the_switch_decision_are_queued_not_refused` — 切り替えると決めた後に来た元のモデルの要求も、断らず待ち行列へ入れて後で実行する。
+- `test_waiting_requests_are_not_refused_and_a_client_that_leaves_is_dropped` — 待たせても 503 にしない。クライアントが切ったら待ち行列から外れ（499）、載せ替えもしない。
+- `test_failed_swap_returns_503_with_reason_then_pauses_after_two_failures` — 載せ替えの失敗は、そのモデルの待ちに理由つきの 503（ログにも出す）。2 回続いたら少し間を置く。
+- `test_alternating_models_swap_less_than_arrival_order` — 交互に来る 2 つのモデルの要求（開発と調査）で、載せ替えの回数が到着順（FIFO）より少ない。
+- `test_prefetch_only_with_enough_memory_and_failures_are_ignored` — 先読みはメモリが足りないときにしない・失敗しても載せ替えは続く。GGUF の分割も全部読む。
+- `test_run_prefetch_skips_unreadable_files` — 読めないファイル・fadvise の失敗は無視して残りを続ける。
+- `test_auxiliary_and_unknown_models_are_not_scheduled` — 補助のモデル（embedding）と設定に無いモデルは対象外。載せ替え中でも待たず、実行中に数えない。
+- `test_status_reports_queue_next_and_recent_swaps` — swap-queue の中身: モデルごとの待ち数・最古の待ち秒・載っているモデル・次の予定と理由・最近の載せ替え。
+- `test_failopen_when_the_scheduler_itself_breaks` — 調停役の不具合で要求を止めない。snapshot が壊れたら、待たせず通す。
+- `test_gateway_chat_through_the_scheduler_does_not_deadlock` — gateway_chat → 調停役 → _swap_load（_model_startup・lease・ensure_ready）が二重のロックで止まらない。
+- `test_load_endpoint_goes_through_the_scheduler` — /v1/models/{m}/load も調停役に並ぶ。載っていれば載せ替えない・載っていなければ 1 回載せる。
+- `test_load_waits_for_running_chat` — /load は、載っているモデルの実行中の要求が終わるまで待つ（実行中を切らない）。
+- `test_overload_never_starves_another_model` — 到着が処理より速い過負荷でも、別のモデルの要求は上限の時間内に実行される（待てば必ず実行される）。
+- `test_stream_cleanup_runs_even_when_the_relay_never_starts_or_is_cut` — クライアントが relay の始まる前・途中で切れても、lease と調停役の枠が戻る。上流のエラーでも戻る。
+- `test_swap_queue_api` — GET /models/swap-queue が調停役の状態を返す。
+
 ### backend/tests/test_system_services.py
 
 目的: **未記入**
@@ -3540,6 +3566,12 @@
 目的: **未記入**
 
 - uses the common provider routes for pull and model configuration
+
+### frontend/e2e/models-swap-queue.spec.ts
+
+目的: Models 画面の「切り替え待ち」（ゲートウェイの載せ替えの調停役 /models/swap-queue）。 目的: 別のモデルの要求が待っているときだけ 1 行で出て、待ちが無ければ出ないこと。320px で横にはみ出さないこと。 根拠: 2026-11-22 利用者「載せ替えをインテリジェントに」。調停役は要求を断らず待たせるので、待っている理由を画面で見せる。 */
+
+- 切り替え待ちの表示 (${width}px ${scheme})
 
 ### frontend/e2e/navigation-layout.spec.ts
 

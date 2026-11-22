@@ -16,6 +16,7 @@ import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
+import { SwapQueueNotice } from "../features/models/SwapQueueNotice";
 import { SpeechEnginesPanel } from "../features/models/SpeechEnginesPanel";
 import { RetrievalModelsPanel } from "../features/models/RetrievalModelsPanel";
 import { FrontierModelsGroup } from "../features/models/FrontierModelsPanel";
@@ -82,6 +83,8 @@ interface AddonGpuPolicy {
   restore_delay_sec: number;
   max_lend_sec: number;
 }
+interface SwapSchedulerPolicy { aging_seconds: number; prefetch: boolean }
+const DEFAULT_SWAP_SCHEDULER: SwapSchedulerPolicy = { aging_seconds: 30, prefetch: true };
 const DEFAULT_ADDON_GPU: AddonGpuPolicy = { mode: "auto", restore: true, restore_delay_sec: 15, max_lend_sec: 1800 };
 /** 降ろした LLM を載せ直すのにかかる時間の実測（R9700）。会話の KV は llama.cpp 以外は失う。 */
 const RELOAD_SECONDS: Record<string, string> = {
@@ -108,6 +111,7 @@ interface RuntimePolicy {
   };
   compaction: CompactionPolicy;
   addon_gpu?: AddonGpuPolicy;
+  swap_scheduler?: SwapSchedulerPolicy;
   amd_gpu: {
     enabled: boolean;
     profile: "quiet" | "balanced" | "full" | "custom";
@@ -556,6 +560,8 @@ export default function ModelsPage() {
       </p>
       )}
 
+      {/* 待ちがあるときだけ出る。ゲートウェイの状態なので、ランタイムの接続の状態に関係なく出す */}
+      {tab === "llm" && <SwapQueueNotice />}
       <ActiveModelJobs tab={tab} />
       {tab === "llm" && <div className="mb-3"><CapacityWidget /></div>}
       {tab === "embed" && <EmbedRerankPanel />}
@@ -1297,6 +1303,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         onChange={(compaction) => setPolicyCfg({ ...policy, compaction })} />
       <AddonGpuSettingsGroup policy={policy} state={runtimeEnv.addon_gpu_state}
         onChange={(addon_gpu) => setPolicyCfg({ ...policy, addon_gpu })} />
+      <SwapSchedulerSettingsGroup policy={policy}
+        onChange={(swap_scheduler) => setPolicyCfg({ ...policy, swap_scheduler })} />
       <SettingsGroup title="AIアシスタント">
         <L label="アシスタント表示名"><input value={policy.assistant_name} onChange={(e) => setPolicyCfg({ ...policy, assistant_name: e.target.value })} className={input} /></L>
       </SettingsGroup>
@@ -2354,6 +2362,29 @@ function AddonGpuSettingsGroup({ policy, state, onChange }: {
           いま Add-on へ GPU を貸しています（{state.lent.map((x) => x.alias).join("、")}）{state.waiting_llm_requests ? `。LLM の要求 ${state.waiting_llm_requests} 件が待っています` : ""}
         </p>
       )}
+    </SettingsGroup>
+  );
+}
+
+/** モデルの載せ替えの調停。別のモデルの要求がどれだけ早く優先されるか・次のモデルの先読み。 */
+function SwapSchedulerSettingsGroup({ policy, onChange }: {
+  policy: RuntimePolicy;
+  onChange: (value: SwapSchedulerPolicy) => void;
+}) {
+  const g = policy.swap_scheduler ?? DEFAULT_SWAP_SCHEDULER;
+  const set = (patch: Partial<SwapSchedulerPolicy>) => onChange({ ...g, ...patch });
+  return (
+    <SettingsGroup title="モデルの載せ替え" description="別々のモデルの要求が重なったときの順番。要求は断らず、待たせてから載せ替えます">
+      <L label="優先度の上がる速さ（秒）">
+        <PresetOrCustom value={g.aging_seconds} presets={[10, 30, 60, 120, 300].map((v) => ({ v, label: `${v}秒` }))} placeholder="30"
+          onChange={(v) => set({ aging_seconds: Math.max(5, Math.min(600, Number(v ?? 30))) })} />
+      </L>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        いま載っているモデルを続ける点数と、待っている別のモデルの点数（待っている数 ＋ 最も古い待ち秒 ÷ この秒数、を載せ替えの見込み秒で割る）を比べます。
+        小さいほど、少ない待ちでも早く載せ替えます。実行中の要求は切りません。
+      </p>
+      <Toggle label="次のモデルの重みを先に読む" hint="メモリに余裕（重み ＋ 8 GiB）があるときだけ、載せ替えの待ちを短くします"
+        value={g.prefetch} onChange={(v) => set({ prefetch: v })} />
     </SettingsGroup>
   );
 }

@@ -277,6 +277,28 @@ class ResourceTelemetry:
                     return True
         return False
 
+    def expected_load_seconds(self, residency_key: str, *, warm: bool, strict: bool = False) -> float | None:
+        """載せ替えの見込み秒（実測の中央値）。warm はメモリ上から載せ直す場合。
+
+        strict=False は、その種類の実測が無いときもう一方で代える。実測が無ければ None。
+        """
+        key = residency_key.strip()[:128]
+        with self._lock:
+            samples = list(self._load_samples.get(key, ()))
+        for kind in ((("warm", "cold") if warm else ("cold", "warm"))[:1 if strict else 2]):
+            costs = [item["cold_load_cost_sec"] for item in samples if item.get("load_kind", "cold") == kind]
+            if costs:
+                ordered = sorted(costs)
+                return float(ordered[len(ordered) // 2])
+        return None
+
+    def recently_unloaded(self, residency_key: str) -> bool:
+        """停止から WARM_WINDOW_SEC 以内か（重みがページキャッシュに残っている見込み）。"""
+        key = residency_key.strip()[:128]
+        with self._lock:
+            at = self._unloaded_at.get(key)
+        return at is not None and 0 <= self._clock() - at <= WARM_WINDOW_SEC
+
     def cold_load_p90(self, residency_key: str) -> float | None:
         key = residency_key.strip()[:128]
         with self._lock:

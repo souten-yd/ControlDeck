@@ -102,6 +102,17 @@ class AddonGpuSettings(BaseModel):
     max_lend_sec: int = Field(default=1800, ge=60, le=7200)
 
 
+class SwapSchedulerSettings(BaseModel):
+    """モデルの載せ替えの調停（swap_scheduler.py）。
+
+    aging_seconds: 別のモデルの要求が待つほど優先度が上がる速さ。小さいほど早く載せ替える
+      （点数 = (待っている数 + 最古の待ち秒 / aging_seconds) ÷ 載せ替えの見込み秒）。
+    prefetch: 次に載せるモデルの重みを、メモリに余裕があるときだけ先にページキャッシュへ読む。
+    """
+    aging_seconds: int = Field(default=30, ge=5, le=600)
+    prefetch: bool = True
+
+
 class RuntimePolicy(BaseModel):
     selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
@@ -125,6 +136,7 @@ class RuntimePolicy(BaseModel):
     deep_research: DeepResearchSettings = Field(default_factory=DeepResearchSettings)
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     addon_gpu: AddonGpuSettings = Field(default_factory=AddonGpuSettings)
+    swap_scheduler: SwapSchedulerSettings = Field(default_factory=SwapSchedulerSettings)
     amd_gpu: AmdGpuSettings = Field(default_factory=AmdGpuSettings)
     # 空なら libraries.py が data_dir/models/gguf の既定1件を合成する（後方互換）。
     model_libraries: list[ModelLibrary] = Field(default_factory=list)
