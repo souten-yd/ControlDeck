@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 221 ファイル、2058 テスト（目的の未記入 93 ファイル）
+- backend: 222 ファイル、2061 テスト（目的の未記入 93 ファイル）
 - E2E: 110 spec、221 テスト
 
 ## backend（backend/tests）
@@ -2940,6 +2940,14 @@
 - `test_check_visual_high_fails_medium_warns`
 - `test_check_visual_no_model_is_skipped_not_failed`
 - `test_check_visual_skip_option_and_error`
+
+### backend/tests/test_visual_review_in_box.py
+
+目的: 開発の作業場（箱）の中から、画面の見た目の検査が中継を通って流れること。 目的: 箱の中では本番のゲートウェイへ届かないので、箱の環境の OPENAI_BASE_URL（中継）を使う。ローカル LLM を借りない 作業場（中継が無い）では、不合格にせず未実施にする。明示の CONTROL_DECK_GATEWAY_URL があればそれを優先する。 根拠: 2026-11-22、利用者として作業場から＋メニューの作り直しを頼んだ通しで、関門が「画面の見た目: ゲートウェイへ 届きません（Connection refused）」で不合格になり、画面を変えた作業を取り込めなかった。
+
+- `test_box_uses_the_relay`
+- `test_explicit_gateway_wins_and_host_ignores_openai_base_url`
+- `test_box_without_the_llm_relay_is_skipped_not_failed`
 
 ### backend/tests/test_vram_margin.py
 
