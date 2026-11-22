@@ -14,7 +14,7 @@ import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryB
 
 export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string; sha256?: string }
 export interface MayaQuant {
-  family: "glm" | "deepseek" | "minimax";
+  family: "glm" | "deepseek" | "minimax" | "hy4";
   setup_id: string;
   tier: string;
   model: string;
@@ -25,6 +25,7 @@ export interface MayaQuant {
   registered: string;
   ready: boolean;
   missing_gb: number;
+  ngram_gb?: number;
   hf?: string;
   folder_name?: string;
   folder_error?: string;
@@ -40,7 +41,7 @@ export interface MayaQuant {
 }
 export interface MayaCatalog { folder: string; memory: { ram_gb: number; vram_gb: number }; quants: MayaQuant[] }
 
-const FAMILY_ORDER: MayaQuant["family"][] = ["glm", "deepseek", "minimax"];
+const FAMILY_ORDER: MayaQuant["family"][] = ["glm", "deepseek", "minimax", "hy4"];
 const CTX = [32768, 65536, 131072, 262144, 524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }));
 
 export function mayaModelName(model: string, tier: string) {
@@ -173,6 +174,9 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     </SettingsGroup>
 
     {pick && <SettingsGroup title={mayaModelName(pick.model, pick.tier)} description={`ゲートウェイでの名前: ${pick.alias}`}>
+      {pick.family === "hy4" && <p className="text-[11px] text-zinc-500">Tencent Hy License。{pick.ngram_gb
+        ? <>n-gram テーブル（約 {pick.ngram_gb} GB、全サイズ共通）は SSD から読み、RAM には載せません。</>
+        : null}</p>}
       {pick.folder_error && <p className="text-xs text-amber-700 dark:text-amber-400">{pick.folder_error}</p>}
       {pick.blockers.map((b) => <p key={b} className="text-xs text-amber-700 dark:text-amber-400">{b}</p>)}
       {pick.error && <p className="text-xs text-red-600">{pick.error}</p>}
@@ -224,7 +228,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 }
 
 interface MayaInstanceSettings {
-  family: "glm" | "deepseek" | "minimax";
+  family: "glm" | "deepseek" | "minimax" | "hy4";
   context: number; parallel: number; gpu_index: number;
   reasoning_effort: "low" | "medium" | "high" | "max"; thinking_budget: number;
   temperature: number; top_p: number; vram_reserve_mib: number;

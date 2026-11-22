@@ -13,6 +13,9 @@ download_gguf.json）をそのまま使い、ファイル名・大きさの食�
 - DeepSeek-V4.1-Flash: <folder> は DeepSeek-V4.1-Flash-1017-Maya-GGUF（Maya の n-gram 表をそこから
   共有するため、この名前が要る）。<folder>/Maya-XS/ と <folder>/dspark/
 - MiniMax-M3.1-Flash: <folder>/Maya-XS/ など
+- Hy4-Flash: <folder>/Maya-XS/（trunk・n-gram 表・mmproj、repo の XS フォルダと同じ形）。
+  S・M・L の n-gram 表（全サイズで同じ 1 ファイル）と mmproj は XS のフォルダに在り、
+  S・M・L の setup が --models-dir から hard-link する
 """
 from __future__ import annotations
 
@@ -22,7 +25,8 @@ import json
 import sys
 from pathlib import Path
 
-FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash"}
+FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash",
+                "hy4": "Hy4-Flash"}
 
 
 def _quiet(fn, *args):
@@ -141,6 +145,46 @@ def mm3_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> 
     return row
 
 
+def hy4_entry(maya, key: str, tier: str, setup_id: str, folder: Path | None) -> dict:
+    """Hy4-Flash（Tencent、エンジン maya-hy4）: tools/hy4/download.json（maya.HY4_MANIFEST）から読む。
+    Maya 本体 maya.py の hy4_entry と同じ見方: 各サイズ 2 シャード（00001 = モデル本体、00002 = n-gram
+    表）。n-gram 表は全サイズで同じ 1 ファイルで XS のフォルダに在る。S・M・L の setup はそれを
+    本体の hy4_places（--models-dir 直下の正式名フォルダ Hy4-Flash-Maya-* か、登録済み Hy4 の
+    config の model_dir）から hard-link する — hf download が作る <folder>/Maya-XS を拾うには、XS を
+    先に登録しておく（その config の model_dir が XS のフォルダ）が最短。mmproj（画像、全サイズ共通）も
+    XS のフォルダに在り、本体はモデル自身のフォルダの mmproj を 1 個見つけて使う: S・M・L では手で置く。
+    Tencent 自身の Q4_K_M（others）は QUANTS に載らないので出さない。"""
+    man = json.loads(maya.HY4_MANIFEST.read_text(encoding="utf-8"))
+    q = (man.get("quants") or {}).get(maya.HY4_QUANTS.get(key, key)) or {}
+    trunk = {k: v for k, v in (q.get("files") or {}).items()}
+    ngram = next(iter((man.get("ngram") or {}).items()), ("", [0, ""]))
+    mmproj = next(iter((man.get("vision") or {}).items()), ("", [0, ""]))
+    sub = Path(next(iter(trunk), "")).parent.name or tier
+    includes = [f"{sub}/*"] + [ngram[0]] * bool(ngram[0] and sub != Path(ngram[0]).parent.name)
+    values = list(trunk.values()) + ([ngram[1]] if ngram[0] else [])
+    row = {"family": "hy4", "setup_id": setup_id, "tier": tier, "quant": key,
+           "size_gb": round(sum(v[0] for v in values) / 1e9, 1), "memory_gb": int(q.get("memory_gb") or 0),
+           "ngram_gb": round(ngram[1][0] / 1e9, 1) if ngram[0] else 0.0,
+           "published": bool(trunk and ngram[0] and man.get("revision")
+                             and all(isinstance(v, list) and len(v) == 2 and v[0] and v[1] for v in values)),
+           "repo": man.get("repo", ""), "folder_name": "", "subfolder": sub, "revision": man.get("revision", ""),
+           "hf": _hf(man.get("repo", ""), man.get("revision", ""), includes, "<フォルダ>")}
+    if folder is not None:
+        row["model_dir"] = str(folder / sub)
+        row["models_dir"] = str(folder)
+        row["repo_root"] = str(folder)
+        row["files"] = _files(folder / sub, {Path(k).name: v[0] for k, v in trunk.items()},
+                              what="model", sha={Path(k).name: v[1] for k, v in trunk.items()})
+        if ngram[0]:      # 全サイズで同じ 1 ファイル（XS のフォルダに置く）
+            row["files"] += _files(folder / Path(ngram[0]).parent, {Path(ngram[0]).name: ngram[1][0]},
+                                   what="tables", sha={Path(ngram[0]).name: ngram[1][1]})
+        if mmproj[0]:     # 画像の部品（全サイズ共通、XS のフォルダ。無ければテキストだけで登録）
+            row["files"] += _files(folder / Path(mmproj[0]).parent, {Path(mmproj[0]).name: mmproj[1][0]},
+                                   required=False, what="vision", sha={Path(mmproj[0]).name: mmproj[1][1]})
+        row["hf"] = _hf(man.get("repo", ""), man.get("revision", ""), includes, str(folder))
+    return row
+
+
 def blockers(family: str) -> list[str]:
     """Things the setup would have to download (and so must not run without the owner's go-ahead)."""
     out = []
@@ -164,7 +208,7 @@ def main(argv: list[str]) -> int:
     build = {"maya": (engine / "build-hip" / "maya").is_file(),
              "maya-ds4": (engine / "build-hip" / "maya-ds4").is_file()}
     for family, key, tier, setup_id in Q.QUANTS:
-        maker = {"glm": glm_entry, "deepseek": ds4_entry, "minimax": mm3_entry}.get(family)
+        maker = {"glm": glm_entry, "deepseek": ds4_entry, "minimax": mm3_entry, "hy4": hy4_entry}.get(family)
         if maker is None:
             continue
         try:

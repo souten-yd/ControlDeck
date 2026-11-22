@@ -31,6 +31,27 @@ function catalog(folder: string) {
                                        file("MiniMax-M3.1-Flash-Maya-XS-00002-of-00002.gguf", 43e9, false)] : [],
         ...(folder ? { download_root: folder, download_gb: 93, free_gb: 206.3, can_download: true,
           download_files: ["MiniMax-M3.1-Flash-Maya-XS-00001-of-00002.gguf", "MiniMax-M3.1-Flash-Maya-XS-00002-of-00002.gguf"] } : {}) },
+      { family: "hy4", setup_id: "hy4-flash-maya-xs", tier: "Maya-XS", model: "Hy4-Flash", size_gb: 108.1,
+        memory_gb: 52, ngram_gb: 63.4, alias: "maya-hy4-xs", registered: "", ready: false, missing_gb: folder ? 108.1 : 0,
+        published: true, blockers: [],
+        hf: 'hf download peasantsmith/Hy4-Flash-Maya-GGUF --include "Maya-XS/*" --local-dir /data1tb/LLM/Hy4-Flash-Maya',
+        files: folder ? [file("Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf", 44.8e9, false),
+                         file("Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf", 63.4e9, false),
+                         file("mmproj-Hy4-Flash-Maya-XS.gguf", 0.78e9, false, false, "vision")] : [] },
+      { family: "hy4", setup_id: "hy4-flash-maya-s", tier: "Maya-S", model: "Hy4-Flash", size_gb: 116.4,
+        memory_gb: 64, ngram_gb: 63.4, alias: "maya-hy4-s", registered: "", ready: false, missing_gb: folder ? 116.4 : 0,
+        published: true, blockers: [],
+        hf: 'hf download peasantsmith/Hy4-Flash-Maya-GGUF --include "Maya-S/*" --include "Maya-XS/Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf" --local-dir /data1tb/LLM/Hy4-Flash-Maya',
+        files: folder ? [file("Hy4-Flash-Maya-S-IQ2_S-00001-of-00002.gguf", 53.0e9, false),
+                         file("Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf", 63.4e9, false)] : [] },
+      { family: "hy4", setup_id: "hy4-flash-maya-m", tier: "Maya-M", model: "Hy4-Flash", size_gb: 131.8,
+        memory_gb: 76, ngram_gb: 63.4, alias: "maya-hy4-m", registered: "", ready: false, missing_gb: folder ? 131.8 : 0,
+        published: true, blockers: [], files: folder ? [file("Hy4-Flash-Maya-M-IQ3_XXS-00001-of-00002.gguf", 68.4e9, false),
+                                                        file("Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf", 63.4e9, false)] : [] },
+      { family: "hy4", setup_id: "hy4-flash-maya-l", tier: "Maya-L", model: "Hy4-Flash", size_gb: 152.9,
+        memory_gb: 100, ngram_gb: 63.4, alias: "maya-hy4-l", registered: "", ready: false, missing_gb: folder ? 152.9 : 0,
+        published: true, blockers: [], files: folder ? [file("Hy4-Flash-Maya-L-IQ4_XS-00001-of-00002.gguf", 89.5e9, false),
+                                                        file("Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf", 63.4e9, false)] : [] },
     ],
   };
 }
@@ -77,6 +98,21 @@ for (const width of [320, 1280]) {
     await expect(sheet.getByRole("button", { name: "登録", exact: true })).toBeDisabled();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `${SHOTS}/maya-register-missing-${width}.png` });
+    // Hy4-Flash (Tencent): four sizes with the shared n-gram table, the license note, and the alias.
+    await expect(sheet.getByText("Hy4-Flash", { exact: true })).toBeVisible();
+    const hy4 = sheet.getByRole("radio", { name: /Maya-XS.*108\.1 GB/ });
+    await expect(hy4).toBeEnabled();
+    await hy4.click();
+    await expect(sheet.getByText("Hy4-Flash · Maya-XS")).toBeVisible();
+    await expect(sheet.getByText(/ゲートウェイでの名前: maya-hy4-xs/)).toBeVisible();
+    await expect(sheet.getByText(/Tencent Hy License/)).toBeVisible();
+    await expect(sheet.getByText(/あと約 108\.1 GB 足りません/)).toBeVisible();
+    await expect(sheet.getByText(/メモリ 52 GB/)).toBeVisible();
+    await expect(sheet.getByText(/mmproj-Hy4-Flash-Maya-XS\.gguf（任意）/)).toBeVisible();
+    await sheet.getByText("自分で取得する場合のコマンド").click();
+    await expect(sheet.getByText(/hf download peasantsmith\/Hy4-Flash-Maya-GGUF/)).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "登録", exact: true })).toBeDisabled();
+    await page.screenshot({ path: `${SHOTS}/maya-register-hy4-${width}.png` });
     // GLM-5.3-Flash Maya-S24: the files are there.
     await sheet.getByRole("radio", { name: /Maya-S24.*そろっています/ }).click();
     await expect(sheet.getByText("ゲートウェイでの名前: maya-glm-s24")).toBeVisible();

@@ -191,11 +191,20 @@ def vram_margin_mib() -> int:
     return math.ceil(get_policy().vram_margin_gib * 1024)
 
 
-def with_margin_arg(args: list[str], flag: str, *, gib: bool = False) -> list[str]:
-    """Replace duplicate reserve flags, keeping a larger per-model reserve."""
+def with_margin_arg(args: list[str], flag: str, *, gib: bool = False, gb10: bool = False) -> list[str]:
+    """Replace duplicate reserve flags, keeping a larger per-model reserve.
+
+    gib: the flag takes GiB (MiniMax's --reserve-gb). gb10: GB of 10^9 bytes (Hy4-Flash's --reserve-gb — Maya
+    v1.1.73's set_vram_reserve: mib * 1048576 / 1e9), written as Maya's own setup writes it.
+    """
     import math
 
-    margin = vram_margin_mib() / 1024 if gib else vram_margin_mib()
+    if gib:
+        margin = vram_margin_mib() / 1024
+    elif gb10:
+        margin = vram_margin_mib() * 1048576 / 1e9
+    else:
+        margin = vram_margin_mib()
     result: list[str] = []
     index = 0
     while index < len(args):
@@ -212,7 +221,11 @@ def with_margin_arg(args: list[str], flag: str, *, gib: bool = False) -> list[st
         else:
             result.append(arg)
             index += 1
-    return result + [flag, format(margin, "g") if gib else str(math.ceil(margin))]
+    if gib:
+        return result + [flag, format(margin, "g")]
+    if gb10:
+        return result + [flag, f"{margin:.3f}".rstrip("0").rstrip(".")]
+    return result + [flag, str(math.ceil(margin))]
 
 
 def prefer_models(items: list[dict], runtime: str, policy: RuntimePolicy | None = None) -> list[dict]:

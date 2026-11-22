@@ -46,14 +46,21 @@ def test_margin_save_does_not_stop_or_reconfigure_running_models(policy, monkeyp
     assert rp.vram_margin_mib() == 4096
 
 
-@pytest.mark.parametrize('family,flag,value', [('glm', '--vram-reserve-mib', '3072'),
-    ('qwen', '--vram-reserve-mib', '3072'), ('deepseek', '--reserve-mib', '3072'),
-    ('minimax', '--reserve-gb', '3')])
-def test_maya_native_flags_and_decreasing_margin(policy, family, flag, value):
+@pytest.mark.parametrize('family,flag,value,decreased', [
+    ('glm', '--vram-reserve-mib', '3072', '2048'),
+    ('qwen', '--vram-reserve-mib', '3072', '2048'),
+    ('deepseek', '--reserve-mib', '3072', '2048'),
+    ('minimax', '--reserve-gb', '3', '2'),
+    ('hy4', '--reserve-gb', '3.221', '2.147')])
+def test_maya_native_flags_and_decreasing_margin(policy, family, flag, value, decreased):
+    """Each Maya engine's own VRAM-reserve flag gets the common margin (Maya #1026), in the engine's own unit:
+    glm/qwen --vram-reserve-mib (MiB), deepseek --reserve-mib (MiB), minimax --reserve-gb (GiB), hy4 --reserve-gb
+    (GB of 10^9 bytes — Maya v1.1.73's set_vram_reserve: mib * 1048576 / 1e9, checked 2026-11-22; the same flag as
+    MiniMax's but a different unit)."""
     from app.models_mgmt import maya_s
 
     source = policy / 'maya-original.json'
-    original = {'args': ['--max-context', '8192', flag, '0.5' if family == 'minimax' else '700'],
+    original = {'args': ['--max-context', '8192', flag, '0.5' if family in ('minimax', 'hy4') else '700'],
                 'env': {'KEEP': 'yes'}}
     source.write_text(json.dumps(original))
     record = {'alias': 'test', 'config': source, 'family': family}
@@ -65,7 +72,7 @@ def test_maya_native_flags_and_decreasing_margin(policy, family, flag, value):
     assert cfg["control_deck_vram_margin"]["original"] == original["args"][-1]
     rp.save_policy(rp.RuntimePolicy(vram_margin_gib=2))
     cfg = json.loads(maya_s._apply_vram_margin(record).read_text())
-    assert cfg['args'][-1] == ('2' if family == 'minimax' else '2048')
+    assert cfg['args'][-1] == decreased
 
 
 def test_duplicate_flags_larger_reserve_and_invalid_values(policy):

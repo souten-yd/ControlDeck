@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 225 ファイル、2111 テスト（目的の未記入 93 ファイル）
+- backend: 226 ファイル、2118 テスト（目的の未記入 93 ファイル）
 - E2E: 112 spec、229 テスト
 
 ## backend（backend/tests）
@@ -1721,6 +1721,14 @@
 - `test_self_status_api`
 - `test_sd_notify_without_socket`
 
+### backend/tests/test_maya_probe.py
+
+目的: maya_probe の Hy4-Flash の行（hy4_entry）: tools/hy4/download.json を catalog の形へ正しく写す。 目的: Models の Maya 登録画面に Hy4 の 4 サイズ（XS・S・M・L）を出し、n-gram テーブル（全サイズで 同じ 1 ファイル）と mmproj（画像）の在り処を Maya 本体（maya.py の hy4_entry・write_config_hy4）と 同じに保つこと。対応する登録の流れは test_maya_register.py の Hy4 の行で確かめる。 根拠: 2026-11-22 の依頼「Maya の設定に hy4 の対応を追加して」。Hy4 は mm3 と違い、trunk と n-gram テーブルが別々（00001 と 00002 のシャード）で、テーブルが XS のフォルダ 1 か所にだけ在る （S・M・L の setup が --models-dir から hard-link する）。この写し方が違うと、ファイルが在っても 「足りない」と出たり、登録が通っても setup がテーブルを見つけられない。 Maya 本体（v1.1.73、GitHub の mw00/project-maya）の maya.py の hy4_entry・hy4_model_step と tools/hy4/download.json で確かめた見方。
+
+- `test_hy4_list_row_reads_the_manifest_sizes_and_memory`
+- `test_hy4_xs_files_cover_trunk_ngram_and_mmproj_in_one_folder`
+- `test_hy4_bigger_sizes_keep_the_shared_ngram_and_mmproj_in_the_xs_folder`
+
 ### backend/tests/test_maya_register.py
 
 目的: More Maya models beside the first: own alias, port, unit and config; registered from files on disk only. No engine, GPU, systemd or network: the setup and systemctl are replaced.
@@ -1744,6 +1752,10 @@
 - `test_registered_model_settings_write_the_engine_config` — 登録したモデル（DS-XS）の個別設定（2026-11-17 の依頼: 設定が一切無い）。エンジンの args・config へ書き、
 - `test_deepseek_vision_is_detected_from_the_pack_and_can_be_switched` — DeepSeek（maya-ds4）は pack に vision tower が入っていて --vision off でなければ画像を読む（Maya #416）。
 - `test_vision_flag_is_written_only_when_chosen_and_a_refusal_saves_nothing` — レビュー指摘（2026-11-18）: tower の無いモデルでほかの項目を保存すると --vision off まで書いていた
+- `test_hy4_registers_its_alias_and_engine_arguments` — Hy4-Flash の登録: 別名 maya-hy4-xs、表示名「Hy4-Flash · Maya-XS」、setup への引数
+- `test_hy4_vision_comes_from_the_pack_and_deepseek_settings_stay_away` — Hy4-Flash の画像の判定: pack（hy4.txt の vision.dim）に入っていて --vision off でないとき。
+- `test_hy4_download_plan_counts_the_shared_ngram_table` — Hy4-Flash の「ダウンロードして登録」の見積もり: trunk と共通の n-gram 表（S・M・L も
+- `test_hy4_bigger_sizes_need_the_shared_ngram_placed_or_linked` — S・M・L の n-gram 表（全サイズ共通、XS のフォルダに在り）: このサイズのフォルダにも在るか、
 - `test_selftest_warns_when_the_running_engine_and_the_vision_judgement_disagree` — 同じ食い違い（エンジンは読めるのに判定は読めない）が起きたら、自己診断で気付けるように。
 
 ### backend/tests/test_maya_s_addon.py
@@ -3020,7 +3032,7 @@
 
 - `test_validation_and_rounding`
 - `test_margin_save_does_not_stop_or_reconfigure_running_models`
-- `test_maya_native_flags_and_decreasing_margin`
+- `test_maya_native_flags_and_decreasing_margin` — Each Maya engine's own VRAM-reserve flag gets the common margin (Maya #1026), in the engine's own unit:
 - `test_duplicate_flags_larger_reserve_and_invalid_values`
 - `test_radiance_uses_common_minimum_without_changing_model_config`
 - `test_llama_fit_margin_and_cpu_only`
