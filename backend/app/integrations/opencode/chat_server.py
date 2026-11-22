@@ -576,6 +576,26 @@ def _background_child(tool: dict) -> str | None:
     return found.group(1) if found else None
 
 
+def _agent_model_ref(server: Server, agent: str) -> dict | None:
+    """役割（エージェント）のモデル。設定の agents.<agent>.model、無ければ全体の model（`provider/モデル`）。
+
+    OpenCode v2 は主のエージェントを切り替えても、セッションのモデルは変えない（2026-11-22 実測: プランに
+    切り替えても既定のモデルのまま答えた）。役割ごとのモデル（計画＝別のモデルなど）を効かせるため、
+    エージェントを切り替えるときにセッションのモデルも切り替える。子エージェントは設定のモデルが効く。"""
+    base = Path(server.config)
+    for path in (base / "opencode" / "opencode.json", base / "opencode.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        agents = data.get("agents") or data.get("agent") or {}
+        spec = agents.get(agent) if isinstance(agents, dict) else None
+        value = str((spec.get("model") if isinstance(spec, dict) else "") or data.get("model") or "")
+        provider_id, _, model_id = value.partition("/")
+        return {"providerID": provider_id, "id": model_id} if provider_id and model_id else None
+    return None
+
+
 async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
     if agent not in AGENTS:
@@ -590,6 +610,10 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     session = await _call(server, "GET", f"/api/session/{session_id}")
     if isinstance(session, dict) and session.get("agent") not in (None, agent):
         raise ChatServerError(f"OpenCode のエージェントを {agent} に切り替えられませんでした")
+    # 役割のモデルへ切り替える（無ければそのまま）。失敗しても会話は止めない（今のモデルで続く）
+    ref = await asyncio.to_thread(_agent_model_ref, server, agent)
+    if ref and await _call(server, "POST", f"/api/session/{session_id}/model", {"model": ref}) is None:
+        logger.warning("OpenCode のセッションのモデルを %s へ切り替えられませんでした", f"{ref['providerID']}/{ref['id']}")
     if len(_session_agents) > 1024:
         _session_agents.clear()
     _session_agents[(server.key, session_id)] = agent

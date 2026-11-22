@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 215 ファイル、1976 テスト（目的の未記入 93 ファイル）
-- E2E: 108 spec、219 テスト
+- backend: 216 ファイル、1994 テスト（目的の未記入 93 ファイル）
+- E2E: 109 spec、220 テスト
 
 ## backend（backend/tests）
 
@@ -1897,6 +1897,7 @@
 - `test_run_turn_waits_for_a_background_subagent_and_keeps_the_follow_up` — 裏のレビュー: 親のターンが一度終わっても聞き続け、子が終わった後の親の続き（結果）を受け取る（2026-11-18 本番）。
 - `test_the_follow_up_window_starts_when_the_parent_turn_ends` — 子が先に終わり親がその後も動いていても、親の終わりから続きを待つ（レビュー指摘）。
 - `test_a_failed_parent_stops_background_children`
+- `test_switching_agent_also_switches_the_session_model_to_the_role` — 役割ごとのモデル: プランへ切り替えたら計画のモデル、ビルドへ戻したら開発のモデルへ、セッションのモデルも切り替える。
 
 ### backend/tests/test_opencode_chat_timeline.py
 
@@ -1991,6 +1992,28 @@
 - `test_stream_observes_unit_exit_without_db_revision`
 - `test_read_only_role_cannot_stop_survivor`
 - `test_query_timeout_reaps_only_systemctl_client`
+
+### backend/tests/test_opencode_roles.py
+
+目的: OpenCode の「役割ごとのモデル」（plan / build / research / quick_check / final_check / evaluate）。 目的: 役割ごとにモデルを選べ、同時に動きうる役割（同じ段）のローカルのモデルが 2 つにならないことを、 保存の時と設定を作る時（本番の session・開発の作業場）の両方で守る。段をまたぐ載せ替えと外部のモデルの混在は許す。 根拠: 2026-11-22 利用者「計画を実行するモデルと、調査、開発、検証、評価など。制約: 同時に 1 モデルしかできないので、 同時に実行する可能性のある作業は同じモデルにしたい」。ローカルは GPU で同時に 1 つしか動かせない。 最終検証が開発と同じモデルなら別の目で見られないので注意を出す。秘密（confidential）は全役割をローカルへ落とす。 旧 review_model は最終検証として読み、古い設定は動き続ける。
+
+- `test_stage_defaults_follow_build_and_plan`
+- `test_two_different_locals_in_one_stage_are_refused`
+- `test_external_models_mix_freely_and_stages_may_swap_locals`
+- `test_non_strict_resolution_aligns_locals_instead_of_failing`
+- `test_final_check_same_as_build_warns_but_saves`
+- `test_save_refuses_two_locals_in_a_stage_with_a_reason`
+- `test_save_allows_cloud_in_a_stage_and_swapping_between_stages`
+- `test_review_model_migrates_to_final_check` — 旧設定（review_model だけ）は、そのまま最終検証として動く。roles を保存したら空にする。
+- `test_session_config_puts_a_model_on_every_role_agent`
+- `test_adversarial_reviewers_follow_final_check`
+- `test_confidential_drops_every_role_to_local`
+- `test_box_agents_get_models_from_roles_and_the_chain`
+- `test_box_default_final_check_is_plan_then_the_reviewer_chain` — reviewer_model_for は final_check の既定に統合された: 計画が未設定なら、作業と別のモデル。
+- `test_box_without_llm_cannot_choose_a_local_model`
+- `test_box_refuses_two_locals_in_a_stage_by_aligning`
+- `test_api_returns_422_with_the_reason_and_checks_without_saving`
+- `test_host_never_defaults_a_role_to_an_external_model` — ホストの AI アシスタントでは、外部を許可していても、役割を明示しない限り外部へコードを送らない
 
 ### backend/tests/test_opencode_tui_resume.py
 
@@ -3507,6 +3530,12 @@
 目的: **未記入**
 
 - closed OpenCode session can be resumed (${width}px)
+
+### frontend/e2e/opencode-roles.spec.ts
+
+目的: OpenCode 設定の「役割とモデル」。 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価）ごとにモデルを選べ、同じ段のローカルが 2 つになる選択は その場で理由が出て保存できないこと。最終検証＝開発の注意が出ること。320・1280、ライト・ダークで読めること。 根拠: 2026-11-22 利用者の依頼（ローカルのモデルは GPU で同時に 1 つしか動かせない）。 検査はサーバー（/opencode/roles/check）が持つので、ここは検証用インスタンスの本物の API を通す。 */
+
+- 役割とモデル: 同じ段のローカル 2 つは保存できない (${width}px ${scheme})
 
 ### frontend/e2e/opencode-scroll.spec.ts
 

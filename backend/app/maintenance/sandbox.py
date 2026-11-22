@@ -817,6 +817,33 @@ def reviewer_model_for(box: Sandbox, work_model: str) -> str | None:
     return LOCAL_MODEL if "llm" in box.capabilities else None
 
 
+def box_roles(box: Sandbox, work_model: str, roles: dict | None = None, *, local_only: bool = False):
+    """箱の OpenCode の、役割ごとのモデル（opencode/roles.py の決まりを箱の都合で適用する）。
+
+    roles は箱の meta の roles（{plan, build, research, quick_check, final_check, evaluate}）。値は `local` /
+    `controldeck/auto` / `provider/モデル`。箱で使えない指定（llm が無いのにローカル・Zen が使えないのに opencode*）は
+    未設定と同じに扱う（既定へ）。最終検証の既定は、計画 → reviewer_model_for（作業と別のモデル）→ 開発と同じ。
+    戻りの models は `provider/モデル` の形。
+    """
+    from app.integrations.opencode import roles as roles_mod
+
+    llm = "llm" in box.capabilities
+    session = opencode_model(normalize_model(work_model or "auto"))
+    raw: dict[str, str] = {}
+    for role, value in (roles if roles is not None else box.meta.get("roles") or {}).items():
+        if role not in roles_mod.ROLES or not str(value or "").strip():
+            continue
+        ref = opencode_model(normalize_model(str(value).strip()))
+        if roles_mod.is_local(ref) and not llm:
+            continue   # ローカルを借りない箱では選べない
+        if ref.startswith("opencode") and not _zen_available(box):
+            continue
+        raw[role] = ref
+    other = reviewer_model_for(box, work_model or "auto") or ""
+    return roles_mod.resolve(raw, session_model=session, first_external=opencode_model(other) if other else "",
+                             local_only=local_only, local_model=LOCAL_MODEL if llm else "")
+
+
 def _set_git_identity(work: Path, name: str) -> None:
     """作業ツリーの local の git の設定に作者を入れる（利用者の ~/.gitconfig は箱に見せないため）。"""
     _git("config", "user.name", f"ControlDeck Sandbox ({name})", cwd=work)
@@ -830,7 +857,8 @@ PERMISSION_PLUGIN_COPY = "controldeck-permission"
 
 
 def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
-                    chat_server: bool = False, default_model: str = "") -> Path:
+                    chat_server: bool = False, default_model: str = "", roles: dict | None = None,
+                    local_only: bool = False) -> Path:
     """箱の中の OpenCode の設定を作る。本番と同じ生成処理で作り、箱から見えないパスだけ写し替える。
 
     ControlDeck の MCP は、箱の中の bridge から中継経由で載せる（呼べる道具は中継が絞る）。
@@ -899,10 +927,24 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
         shutil.rmtree(target, ignore_errors=True)
         shutil.copytree(development, target, symlinks=False)
         skills.append(str(target))
-    reviewer_model = reviewer_model_for(box, work_model or model)
-    reviewer = (payload.get("agent") or {}).get("reviewer")
-    if reviewer_model and isinstance(reviewer, dict):
-        reviewer["model"] = reviewer_model
+    # 役割ごとのモデル。本番の設定の roles は箱に持ち込まず、箱の機能と model_chain で決め直す。
+    # final_check は reviewer_model_for（作業と別のモデル）を既定に含む。
+    resolved = box_roles(box, work_model or model, roles, local_only=local_only)
+    session_ref = opencode_model(normalize_model(work_model or model))
+    agents = payload.setdefault("agent", {})
+    role_agents = {"plan": "plan", "build": "build", "research": "researcher", "quick_check": "quick-checker",
+                   "final_check": "reviewer", "evaluate": "evaluator"}
+    for name in (*role_agents.values(), "adversarial-reviewer", "constructive-reviewer"):
+        if isinstance(agents.get(name), dict):
+            agents[name].pop("model", None)
+    for role, name in role_agents.items():
+        names = [name, "adversarial-reviewer", "constructive-reviewer"] if role == "final_check" else [name]
+        for target in names:
+            spec = agents.get(target)
+            if isinstance(spec, dict) and (resolved.models[role] != session_ref or role == "final_check"):
+                spec["model"] = resolved.models[role]
+            elif target in ("plan", "build") and resolved.models[role] != session_ref:
+                agents[target] = {"model": resolved.models[role]}
     if skills:
         payload["skills"] = {"paths": skills}
     else:

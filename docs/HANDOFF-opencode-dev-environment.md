@@ -55,6 +55,10 @@
 | `frontend/src/features/workflows/ScrapeViewer.tsx` | 要素を選ぶ処理（P2 で部品として切り出す） |
 | `backend/app/maintenance/self_update.py` | 本番の更新（正式 Release だけ取り込む） |
 
+## 役割とモデル（2026-11-22）
+
+段の順（計画 → 作る（調査・簡易検証は作るモデルの子エージェント）→ 確かめる（最終検証・評価））で、役割ごとにモデルを持てる。ローカルは GPU で同時に 1 つなので、同じ段のローカルは同じモデル。決まりは `backend/app/integrations/opencode/roles.py`、本番の session は `provider._workflow`、作業場は `sandbox.box_roles`（箱の meta の `roles`、無ければ既定: 最終検証は計画 → `reviewer_model_for` → 開発と同じ）。作業場では `llm` が無い箱はローカルを選べない（無視して既定へ）。
+
 ## 守ること
 
 - 箱に秘密を置かない（ゲートウェイの鍵・Cookie・利用者のトークン）。鍵が要るなら箱の外の中継が付ける。

@@ -23,8 +23,11 @@ export interface Workflow {
   /** 自動レビュー: コードを変えたら完了の前に reviewer で確かめ、行き詰まったら advisor() で相談する。 */
   auto_review?: boolean;
   auto_advisor: "off" | "observe" | "active";
-  review_model: string;
+  /** 旧設定（最終検証として読む）。画面は roles.final_check を使う。 */
+  review_model?: string;
   advisor_model: string;
+  /** 役割ごとのモデル（空＝既定）。plan / build / research / quick_check / final_check / evaluate。 */
+  roles?: Partial<Record<"plan" | "build" | "research" | "quick_check" | "final_check" | "evaluate", string>>;
   /** 開発担当（実装を任せる子エージェント developer）を session に足すか。 */
   developer_agent?: boolean;
   /** 開発担当に使うモデル。空ならセッションと同じモデル。 */
@@ -64,7 +67,7 @@ export interface Workflow {
 
 export function workflowBody(value: Workflow) {
   return { superpowers: value.superpowers, adversarial_review: value.adversarial_review, auto_review: value.auto_review ?? true,
-    auto_advisor: value.auto_advisor, review_model: value.review_model, advisor_model: value.advisor_model,
+    auto_advisor: value.auto_advisor, roles: value.roles ?? {}, advisor_model: value.advisor_model,
     developer_agent: value.developer_agent ?? false, developer_model: value.developer_model ?? "",
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
     research_tool: value.research_tool ?? true, research_external: value.research_external ?? false,
@@ -83,7 +86,7 @@ export function WorkflowExtensions({ value, onChange, editable }: {
     </Link>
   );
   const cloudModels = value.cloud_models ?? [];
-  const modelSelect = (label: string, key: "review_model" | "advisor_model" | "developer_model", hint: string) => {
+  const modelSelect = (label: string, key: "advisor_model" | "developer_model", hint: string) => {
     const current = value[key] ?? "";
     const external = cloudModels.find((m) => m.id === current);
     // 保存済みの外部モデルが、いまは選べない（送信の許可を外した・モデルを外した）。
@@ -139,8 +142,9 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         hint="コードを変えたら、完了を報告する前に子エージェント reviewer が差分を読み、重大な指摘は直してから終えます。同じ失敗が続いたり指摘が消えないときは、下の相談先のモデルに自動で相談します"
         value={value.auto_review ?? true} disabled={!editable}
         onChange={(v) => onChange({ ...value, auto_review: v })} />
-      {((value.auto_review ?? true) || (value.adversarial_review && has("adversarial_review"))) && modelSelect("レビューに使うモデル", "review_model",
-        "例: 開発は Flash-Next、レビューは別のモデル。別のモデルを選ぶとレビューのたびに載せ替えます（ローカルは約1分）")}
+      {((value.auto_review ?? true) || (value.adversarial_review && has("adversarial_review"))) && (
+        <p className="-mt-1 text-[11px] text-zinc-500">レビューに使うモデルは、上の「役割とモデル」の最終検証で選びます。</p>
+      )}
       <Toggle label="別の目によるレビュー（Adversarial Review）"
         hint={has("adversarial_review") ? "大きな変更（公開の API・認証・データの移行や削除）では、自動レビューの後に出荷できない理由を探す係も読みます。/adversarial-review で手動でも呼べます" : "未導入です"}
         value={value.adversarial_review && has("adversarial_review")} disabled={!editable || !has("adversarial_review")}

@@ -204,6 +204,10 @@ v2 の既定は 2,000 行 / 51,200 バイト。51,200 バイトは約 14,600 ト
 `formatter: true` は編集のあとに整形を通す。差分が整形だけで膨らむのを防ぎ、
 lint との往復を 1 往復ぶん減らす。
 
+### 役割ごとのモデル（2026-11-22）
+
+OpenCode の設定（`opencode.json` ではなく ControlDeck 側の設定）に `roles: {plan, build, research, quick_check, final_check, evaluate}`（空＝既定）。v2 の `agent.<名前>.model` へ展開する（plan・build は組み込み、researcher・quick-checker・evaluator は子エージェント、final_check は reviewer・adversarial-reviewer・constructive-reviewer）。旧 `review_model` は final_check として読む。`advisor_model`・`developer_model` は従来どおり。
+
 ### 道具の出し入れ
 
 v2 の agent は `tools` map を持たない。代わりに agent 毎の `permissions` へ

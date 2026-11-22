@@ -36,6 +36,8 @@ class WorkflowBody(BaseModel):
     advisor_model: str | None = Field(default=None, max_length=200)
     developer_agent: bool | None = None
     developer_model: str | None = Field(default=None, max_length=200)
+    # 役割ごとのモデル {plan, build, research, quick_check, final_check, evaluate}（空＝既定）。roles.py
+    roles: dict[str, str] | None = None
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None
     research_tool: bool | None = None
@@ -45,8 +47,12 @@ class WorkflowBody(BaseModel):
     isolation: str | None = Field(default=None, max_length=8)
 
 
+class RolesCheckBody(BaseModel):
+    roles: dict[str, str] = Field(default_factory=dict)
+
+
 WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_review", "auto_advisor", "review_model", "advisor_model",
-                 "developer_agent", "developer_model",
+                 "developer_agent", "developer_model", "roles",
                  "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli", "isolation")
 
 
@@ -537,12 +543,42 @@ async def run(
     return {"job_id": job.id}
 
 
+def _role_info(settings: dict, roles: dict | None = None, *, strict: bool = False) -> dict:
+    """画面向け: 選んだ役割と、実際に使われるモデル（既定を解決したもの）・注意。strict=True は同じ段のローカルが 2 つなら error を返す。"""
+    from app.integrations.opencode import roles as roles_mod
+
+    candidate = {**settings, "roles": roles if roles is not None else settings.get("roles") or {}}
+    if roles is not None:
+        candidate["review_model"] = ""   # 画面が送ってきた roles が最終検証まで含めて正
+    try:
+        resolved = opencode.role_resolution(candidate, str(settings.get("model") or ""), strict=strict)
+    except roles_mod.RolesError as exc:
+        return {"error": str(exc), "effective": {}, "notes": []}
+    return {"error": "", "effective": resolved.view(), "notes": resolved.notes}
+
+
+def _roles_for_screen(settings: dict) -> dict:
+    """保存済みの roles。旧 review_model だけで動いていた設定は、最終検証として見せる（移行）。"""
+    roles = dict(settings.get("roles") or {})
+    if settings.get("review_model") and not roles.get("final_check"):
+        roles["final_check"] = settings["review_model"]
+    return roles
+
+
+@router.post("/roles/check")
+def check_roles(body: RolesCheckBody, user: User = Depends(require_permission("workflows.run"))):
+    """保存せずに、役割の選び方が決まりに合うかを確かめる（同じ段のローカルは 1 つ・最終検証＝開発の注意）。"""
+    return _role_info(opencode.get_settings(), body.roles, strict=True)
+
+
 @router.get("/workflow")
 def get_workflow(user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import local_llm
 
     settings = opencode.get_settings()
     return {**{key: settings[key] for key in WORKFLOW_KEYS},
+        "roles": _roles_for_screen(settings),
+        "role_info": _role_info(settings, _roles_for_screen(settings)),
         # 選べるモデル（ゲートウェイの名前）。別のモデルへは要求に合わせて載せ替える。
         "models": [{"alias": str(item["alias"]), "runtime": str(item.get("runtime") or "")}
                    for item in local_llm.llm_instances()],
@@ -567,7 +603,8 @@ def put_workflow(body: WorkflowBody, user: User = Depends(require_permission("se
         settings = opencode.save_workflow(body.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {key: settings[key] for key in WORKFLOW_KEYS}
+    return {**{key: settings[key] for key in WORKFLOW_KEYS}, "roles": _roles_for_screen(settings),
+            "role_info": _role_info(settings, _roles_for_screen(settings))}
 
 
 @router.post("/tools/ui-verify/diagnose")
