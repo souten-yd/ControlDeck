@@ -460,6 +460,26 @@ def test_workspace_progress_states_todo_and_server_from_latest_message(repo, api
     assert by_name["wsstop"]["progress"]["last_active_at"] > by_name["wsdone"]["progress"]["last_active_at"]
 
 
+def test_workspace_progress_flags_interrupted_turns(repo, api, admin_client):
+    """目的: 進み具合が「中断（interrupted）」と「失敗（failed）」を区別して返す（会話の一覧の「中断」の印の根拠）。
+    根拠: 2026-11-23 ROADMAP U9。どちらも state は stopped だが、印は中断だけ別に出す（#561 の interrupted）。"""
+    from app.database import SessionLocal
+    from app.models import utcnow
+
+    cut_box = _progress_box("wscut")
+    bad_box = _progress_box("wsbad")
+    mine = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    db = SessionLocal()
+    try:
+        _code_message(db, "m-cut-000000000000001", mine, cut_box.repo, status="interrupted", at=utcnow())
+        _code_message(db, "m-bad-000000000000002", mine, bad_box.repo, status="failed", at=utcnow())
+    finally:
+        db.close()
+    by_name = {w["name"]: w["progress"] for w in api.get("/api/v1/opencode/workspaces/progress").json()["workspaces"]}
+    assert by_name["wscut"]["state"] == "stopped" and by_name["wscut"]["interrupted"] is True
+    assert by_name["wsbad"]["state"] == "stopped" and by_name["wsbad"]["interrupted"] is False
+
+
 def test_workspace_progress_with_no_workspaces(repo, api):
     """目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。"""
     r = api.get("/api/v1/opencode/workspaces/progress")

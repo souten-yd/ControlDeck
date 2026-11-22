@@ -6,7 +6,7 @@
  * - フロー生成: 目的→定義生成→登録→動作確認→自動修正（ビルドログ表示）
  * - フロー実行: 既存ワークフローをチャットから実行し signal.display を表示
  */
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -32,7 +32,7 @@ import { CodeDoneCard, OpenCodeChanges, type CodeChange } from "./OpenCodeChange
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
-import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace } from "./DevWorkspace";
+import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace, type WorkspaceProgressItem } from "./DevWorkspace";
 import { LS_CONV, targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
 import { writeClipboard } from "../../lib/clipboard";
 import {
@@ -370,6 +370,16 @@ export default function AssistantChat() {
     staleTime: 30_000,
   });
   const workspaces = workspaceList?.workspaces;
+  // 会話の一覧の印。Project Lab の「作業場」タブと同じ API・同じキャッシュ（動いているものがあるときだけ見張る）
+  const { data: wsProgress } = useQuery({
+    queryKey: ["opencode-workspaces-progress"],
+    queryFn: () => api<{ workspaces: WorkspaceProgressItem[]; active: number }>("/opencode/workspaces/progress"),
+    enabled: opencodeAvailable,
+    staleTime: 10_000,
+    refetchInterval: (query) => ((query.state.data?.active ?? 0) > 0 ? 10_000 : false),
+  });
+  const workspaceStates = useMemo(() => Object.fromEntries(
+    (wsProgress?.workspaces ?? []).flatMap((w) => (w.progress ? [[w.progress.conversation_id, w.progress] as const] : []))), [wsProgress]);
   const { data: conversations } = useQuery({
     queryKey: ["chat-conversations"],
     queryFn: () => api<ConversationSummary[]>("/chat/conversations"),
@@ -1871,6 +1881,7 @@ export default function AssistantChat() {
     onSwipeDelete: swipeDeleteConversation,
     archivedConversations,
     onShowArchived: setShowArchived,
+    workspaceStates,
   };
   /** 失敗・中断した回答の「再試行」: 直前の自分の発言をもう一度送る。 */
   /** 失敗した最後の回答をやり直す: 直前の自分の発言を、付けていた画像ごと送り直す。

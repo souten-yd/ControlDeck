@@ -45,9 +45,37 @@ export type WorkspaceProgress = {
   todo: { done: number; total: number } | null;
   /** 最後に動いた時刻（epoch 秒。文字列だと解釈の時間帯でずれるので backend が秒で返す） */
   last_active_at: number;
+  /** 再起動などで止まった（state は stopped）。失敗とは区別する */
+  interrupted?: boolean;
   conversation_id: string;
   title: string;
 };
+/** 作業場の進み具合の文言と色。色は ui-ux ガイドライン（作業中=青・待ち=黄・完了=緑・止まった=赤） */
+export const WS_STATES: Record<string, { label: string; short: string; tone: string; pulse?: boolean }> = {
+  working: { label: "OpenCode が作業中", short: "作業中", tone: "text-sky-700 dark:text-sky-300", pulse: true },
+  waiting: { label: "質問待ち（AI アシスタントで答えてください）", short: "質問待ち", tone: "text-amber-700 dark:text-amber-400" },
+  done: { label: "完了", short: "完了", tone: "text-emerald-700 dark:text-emerald-400" },
+  stopped: { label: "止まった", short: "止まった", tone: "text-red-700 dark:text-red-400" },
+};
+
+/** 会話の一覧の印（作業場を使う OpenCode の会話の状態）。中断は止まった（stopped）のうち interrupted のもの */
+export function WorkspaceStateMark({ progress }: { progress: WorkspaceProgress }) {
+  const mark = progress.state === "stopped" && progress.interrupted
+    ? { short: "中断", cls: "border-orange-300 bg-orange-50 text-orange-800 dark:border-orange-700 dark:bg-orange-950/40 dark:text-orange-300" }
+    : {
+      working: { short: WS_STATES.working.short, cls: "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300" },
+      waiting: { short: WS_STATES.waiting.short, cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300" },
+      done: { short: WS_STATES.done.short, cls: "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" },
+      stopped: { short: WS_STATES.stopped.short, cls: "border-red-300 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-950/40 dark:text-red-300" },
+    }[progress.state];
+  return (
+    <span data-workspace-mark={progress.state === "stopped" && progress.interrupted ? "interrupted" : progress.state}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full border px-1.5 text-[10px] font-medium leading-4 ${mark.cls}`}>
+      {mark.short}
+    </span>
+  );
+}
+
 export type WorkspaceProgressItem = DevWorkspace & { progress: WorkspaceProgress | null };
 
 export const WS_PREFIX = "ws:";

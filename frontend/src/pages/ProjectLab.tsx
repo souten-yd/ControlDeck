@@ -17,20 +17,13 @@ import { BottomSheet, ConfirmDialog, Popover, SegmentedTabs, Skeleton } from "..
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
 import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
-import { WorkspaceBadge, WorkspaceResultCard, ago, type WorkspaceProgressItem } from "../features/workflows/DevWorkspace";
+import { WS_STATES, WorkspaceBadge, WorkspaceResultCard, ago, type WorkspaceProgressItem } from "../features/workflows/DevWorkspace";
 import { LS_CONV } from "../features/workflows/workspaceTargets";
 
 type SheetKind = "projects" | "files" | "info" | "runs" | null;
 /** Project Lab の左の一覧: プロジェクト（残る）と作業場（一時の写し）。寿命が違うので混ぜず切り替える */
 type LabView = "projects" | "workspaces";
 
-/** 作業場の進み具合の文言と色。色は ui-ux ガイドライン（作業中=青・待ち=黄・完了=緑・止まった=赤） */
-const WS_STATES: Record<string, { label: string; short: string; tone: string; pulse?: boolean }> = {
-  working: { label: "OpenCode が作業中", short: "作業中", tone: "text-sky-700 dark:text-sky-300", pulse: true },
-  waiting: { label: "質問待ち（AI アシスタントで答えてください）", short: "質問待ち", tone: "text-amber-700 dark:text-amber-400" },
-  done: { label: "完了", short: "完了", tone: "text-emerald-700 dark:text-emerald-400" },
-  stopped: { label: "止まった", short: "止まった", tone: "text-red-700 dark:text-red-400" },
-};
 
 const TEXTUAL: ProjectLabArtifact["kind"][] = ["code", "text", "markdown", "log", "json", "table"];
 const ACTIVE_STATES = ["QUEUED", "RUNNING"];

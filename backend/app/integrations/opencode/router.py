@@ -236,6 +236,8 @@ def _workspace_progress(db, user_id: int | None, items: list[dict]) -> dict[str,
             "todo": ({"done": sum(1 for t in todos if t.get("status") == "completed"), "total": len(todos)}
                      if todos else None),
             "last_active_at": epoch(created_at),
+            # 再起動などで止まった（#561 の interrupted）。会話の一覧の「中断」の印に使う（failed とは区別する）
+            "interrupted": status == "interrupted",
             "conversation_id": conv_id,
             "title": convs.get(conv_id, ""),
         }
