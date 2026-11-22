@@ -409,6 +409,10 @@ async def workspace_check(
     async def worker(job):
         job.log("関門を流しています" + ("（画面の見た目は人が確かめたので外す）" if skip_by else ""))
         saved = await asyncio.to_thread(workspaces.run_check, name, skip_visual_by=skip_by)
+        from app.alerts.events import notify_event
+
+        notify_event("workspace_gate", title=f"関門{'に合格しました' if saved['passed'] else 'で不合格でした'}",
+                     body=f"作業場 {name}", url="/assistant", tag=f"gate-{name}", user_ids=[user.id])
         return {"passed": saved["passed"]}
 
     job = jobs.create("opencode.workspace.check", f"作業場 {name} の関門", worker, owner_user_id=user.id)
@@ -446,6 +450,10 @@ async def workspace_adopt(
                  resource_id=name, request=request,
                  metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"],
                            "target": box.target, "capabilities": sorted(box.capabilities)})
+    from app.alerts.events import notify_event
+
+    notify_event("workspace_adopted", title="作業場を取り込みました", body=f"作業場 {name}", url="/assistant",
+                 tag=f"adopt-{name}", user_ids=[user.id])
     return result
 
 
@@ -509,6 +517,10 @@ async def workspace_merge(
                  resource_id=name, request=request,
                  metadata={"pr_url": result["pr_url"], "tier": result["tier"], "head": result["head"],
                            "guarded": result["guarded"]})
+    from app.alerts.events import notify_event
+
+    notify_event("workspace_adopted", title="作業場をマージしました", body=f"作業場 {name}", url="/assistant",
+                 tag=f"merge-{name}", user_ids=[user.id])
     return result
 
 

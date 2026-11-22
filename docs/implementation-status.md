@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-23 通知の作り直し: 種類ごとの有効・無効とお休みモード
+
+- 通知の入口を 1 つにした（`backend/app/alerts/events.py::notify_event`）。利用者ごとの種類の設定 → お休みモード → `webpush` の順に判断する。既存の 3 か所（Project Lab の実行・監視の警報・更新）も通す。設定は利用者ごとの JSON（`data_dir/push/notify-prefs.json`。DB の移行なし）。
+- お休みモード: 既定は有効・22:00〜07:00（サーバーの地域の時刻・日またぎ・開始は含み終了は含まない）。休み中は捨てる。緊急の警報（app_down・app_health_failed・gpu_temp_c・cpu_temp_c）だけは「お休み中も送る」（既定は送る）で通す。
+- 種類は 16（AI アシスタント 7・作業場 4・生成 1・システム 4）。AI アシスタントの完了・質問待ち・許可待ち・失敗・中断・調査・長い会話を新しく通知する。一覧と検出の場所は `docs/design-notification-kinds.md`。秘密の会話は題も要約も載せない。通知を押すと `/assistant?conversation=<id>` でその会話を開く。
+- API: `GET/PUT /api/v1/notification-settings`（本人の分だけ）。画面: 設定 → 通知に「お休みモード」「通知の種類」の節（`NotificationSettings.tsx`）。
+- テスト: `test_notify_events.py`、E2E `notification-settings.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/notification-settings-*`）。
+- 確かめられなかった点: 実機の Push の到着（外へ送らない決まりのため差し替えで確認）。
+
 ## 2026-11-23 AI アシスタント: プランの質問を選択肢と自由入力の答えの画面に（U13 の続き）
 
 - 質問の書き方を SKILL.md で変えた: 質問ごとに選択肢（2〜4 個、推奨は末尾の `（推奨）`、複数可は題に `（複数可）`）。古い書き方（`→ 推奨：○○`）も読める。選択肢も推奨も無い質問は自由入力だけの質問として出す（今までは推奨の無い質問が 1 つでもあると全部を捨てていた）。`planQuestions.ts` が `{n, question, options[{label, recommended, note}], multi}` を返す（見出しが無ければ空、LLM 不使用）。

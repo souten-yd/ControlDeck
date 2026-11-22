@@ -122,6 +122,18 @@ def _clear_subscriptions():
         db.commit()
 
 
+def _subscribe_admin() -> int:
+    """admin に端末を 1 台登録する（通知の入口は、端末を持つ人だけを宛先にする）。"""
+    from app.security.crypto import encrypt_text
+
+    with SessionLocal() as db:
+        uid = db.query(User).filter(User.username == "admin").one().id
+        db.add(PushSubscription(user_id=uid, endpoint_digest=os.urandom(8).hex(), subject="https://deck.example",
+                                secret_encrypted=encrypt_text(json.dumps({"endpoint": FCM, "p256dh": "x", "auth": "y"}))))
+        db.commit()
+        return uid
+
+
 def test_subscription_api_rejects_internal_endpoints_and_hides_secrets(admin_client):
     _clear_subscriptions()
     _, p256dh, auth = _receiver()
@@ -240,8 +252,11 @@ def test_push_channel_sends_to_monitoring_viewers(monkeypatch):
 
     calls: list[dict] = []
     monkeypatch.setattr(webpush, "send_to", lambda **kwargs: calls.append(kwargs) or {"sent": 1, "removed": 0, "failed": 0})
+    _clear_subscriptions()
+    _subscribe_admin()
     assert asyncio.run(send_notification("push", "", "CPU が高い", "95%")) is True
     assert calls[0]["permission"] == "system.view" and calls[0]["title"] == "CPU が高い"
+    _clear_subscriptions()
 
 
 def test_push_channel_needs_no_url(admin_client):

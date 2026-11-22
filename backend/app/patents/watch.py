@@ -281,5 +281,6 @@ async def tick() -> dict:
             from app.maintenance.auto_update import notify
 
             # 本文に案件名・内容を書かない（通知は外部のサーバーを通る）
-            await notify("特許の期限", f"期限が近い案件があります（{notices} 件）。ControlDeck の Patent で確認してください。")
+            await notify("特許の期限", f"期限が近い案件があります（{notices} 件）。ControlDeck の Patent で確認してください。",
+                         kind="patent_watch")
     return {"watches": started, "notices": notices}

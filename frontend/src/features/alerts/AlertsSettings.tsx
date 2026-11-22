@@ -5,6 +5,7 @@ import { useAuth, useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
 import type { ManagedApp } from "../../types";
 import { PushDevices } from "./PushDevices";
+import { NotificationSettings } from "./NotificationSettings";
 
 interface Channel {
   id: number;
@@ -54,6 +55,7 @@ export function AlertsSettings() {
   return (
     <>
       <PushDevices />
+      <NotificationSettings />
       <ChannelsSection canEdit={canEdit} />
       <RulesSection canEdit={canEdit} />
     </>

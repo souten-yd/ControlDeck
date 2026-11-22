@@ -58,6 +58,16 @@ def admin_client(client):
 
 
 @pytest.fixture(autouse=True)
+def _notify_at_noon(monkeypatch):
+    """通知のお休みモード（既定 22:00〜07:00）で、夜に流した試験だけ落ちないよう、時計を昼に固定する。"""
+    from datetime import datetime
+
+    from app.alerts import events
+
+    monkeypatch.setattr(events, "local_now", lambda: datetime(2026, 11, 23, 12, 0))
+
+
+@pytest.fixture(autouse=True)
 def _fresh_feature_cache():
     """feature 一覧の覚え書きを test をまたいで持ち越さない。
 

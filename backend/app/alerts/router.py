@@ -14,7 +14,7 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import AlertEvent, AlertLogCursor, AlertRule, ManagedApplication, NotificationChannel, User
 from app.security.crypto import decrypt_text, encrypt_text
-from app.security.deps import require_permission
+from app.security.deps import get_current_user, require_permission
 
 router = APIRouter(tags=["alerts"])
 logger = logging.getLogger("control_deck.alerts")
@@ -308,3 +308,45 @@ def list_events(
         }
         for e in rows
     ]
+
+
+# ---- 通知の種類とお休みモード（利用者本人の設定だけ） ----
+class QuietBody(BaseModel):
+    enabled: bool | None = None
+    start: str | None = None
+    end: str | None = None
+    urgent_alerts: bool | None = None
+
+
+class NotificationSettingsBody(BaseModel):
+    kinds: dict[str, bool] = Field(default_factory=dict, max_length=64)
+    quiet: QuietBody | None = None
+
+
+@router.get("/notification-settings")
+def get_notification_settings(user: User = Depends(get_current_user)):
+    from app.alerts import events
+
+    return events.settings_view(user.id)
+
+
+@router.put("/notification-settings")
+def put_notification_settings(body: NotificationSettingsBody, request: Request,
+                              user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """本人の設定だけを書く（user.id 以外は受け取らない）。知らない種類・形の違う時刻は 422。"""
+    from app.alerts import events
+
+    unknown = [key for key in body.kinds if key not in events.KIND_BY_ID]
+    if unknown:
+        raise HTTPException(422, "知らない通知の種類です")
+    quiet = body.quiet.model_dump(exclude_none=True) if body.quiet else {}
+    for key in ("start", "end"):
+        if key in quiet and events.parse_clock(quiet[key]) is None:
+            raise HTTPException(422, "時刻は HH:MM の形で入れてください")
+    merged = {**events.get_prefs(user.id)["quiet"], **quiet}
+    if events.parse_clock(merged["start"]) == events.parse_clock(merged["end"]):
+        raise HTTPException(422, "開始と終了は別の時刻にしてください")
+    events.save_prefs(user.id, kinds=body.kinds, quiet=quiet)
+    audit.record(db, "notification.settings", user=user, resource_type="notification_settings",
+                 resource_id=str(user.id), request=request)
+    return events.settings_view(user.id)

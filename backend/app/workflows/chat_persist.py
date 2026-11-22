@@ -1648,6 +1648,11 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                     await on_todos(todos)
                 return
             entry = next((t for t in tools if t["id"] == tool["id"]), None)
+            if tool.get("name") == "question" and tool.get("status") == "running" \
+                    and (entry is None or entry.get("status") != "running"):
+                from app.alerts import chat_events
+
+                await asyncio.to_thread(chat_events.announce_waiting, conv_id, "code_question")
             if entry is None:
                 tools.append(dict(tool))
                 timeline.append({"k": "u", "id": tool["id"]})
@@ -1658,6 +1663,10 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
 
         async def on_permission(item: dict) -> None:
             entry = next((p for p in permissions if p["id"] == item["id"]), None)
+            if item.get("status") == "pending" and (entry is None or entry.get("status") != "pending"):
+                from app.alerts import chat_events
+
+                await asyncio.to_thread(chat_events.announce_waiting, conv_id, "code_permission")
             if entry is None:
                 permissions.append(dict(item))
             else:
@@ -1805,6 +1814,12 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 job.log("autosave", saved=saved, status=status)
                 if saved["skipped"] == "disk":
                     await on_text(f"\n\n（ディスクの空きが少ないので保存できません。残り {saved['free_gib']:.0f} GiB）")
+                    from app.alerts.events import notify_event
+
+                    notify_event("workspace_disk", title="ディスクの空きが少ない",
+                                 body=f"空き {saved['free_gib']:.0f} GiB。作業場を保存できませんでした",
+                                 url=f"/assistant?conversation={conv_id}", tag="workspace-disk",
+                                 user_ids=[job.owner_user_id] if job.owner_user_id else [], cooldown=3600)
 
             _steer_targets[assistant_id] = steer
             # 添付した画像は OpenCode の発言に付ける（OpenCode が画像を読めるモデルへそのまま渡す）
@@ -2753,10 +2768,20 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
     label = {"auto": "自動判定", "chat": "チャット生成", "web": "Web検索", "academic": "学術検索",
              "deep": "Deepサーチ", "research": "複合調査", "code": "OpenCode"}.get(body.mode, "生成")
     async def run(j: jobs.Job) -> dict:
+        from app.alerts import chat_events
+
+        started = time.monotonic()
         try:
             result = await _run_chat_job(j, assistant_id, conv_id, history, params)
+        except Exception:
+            # 回が失敗して終わった（止めた・キャンセルは本人の操作なので知らせない）
+            await asyncio.to_thread(chat_events.announce_turn, conv_id, assistant_id, params.get("mode", "chat"),
+                                    failed=True, seconds=time.monotonic() - started)
+            raise
         finally:
             _latest_stats.pop(assistant_id, None)
+        await asyncio.to_thread(chat_events.announce_turn, conv_id, assistant_id, params.get("mode", "chat"),
+                                failed=False, seconds=time.monotonic() - started)
         # 正常に終わったら、送信待ちの要望を送る（止めた・失敗したときは送らずに保留する）
         _after_turn(conv_id, assistant_id, j)
         # 題名はジョブの外で（送信待ちの自動送信を遅らせない）

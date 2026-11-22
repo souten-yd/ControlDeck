@@ -13,19 +13,23 @@ import httpx
 logger = logging.getLogger("control_deck.alerts")
 
 
-async def send_notification(channel_type: str, destination: str, title: str, message: str) -> bool:
+async def send_notification(channel_type: str, destination: str, title: str, message: str, *,
+                            kind: str = "alert", urgent: bool = False) -> bool:
     if channel_type == "push":
         # 宛先を持たない。監視を見られる人（system.view）の、通知を受け取る端末すべてへ送る。
-        from app.alerts import webpush
+        from app.alerts.events import notify_event
 
         try:
+            # 種類の有効・無効とお休みモードを通す入口から送る（kind は呼び出し元が決める）
             result = await asyncio.to_thread(
-                webpush.send_to, title=title, body=message, url="/", permission="system.view",
+                notify_event, kind, title=title, body=message, url="/", permission="system.view",
+                urgent=urgent, wait=True,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("通知送信失敗 (%s, %s)", channel_type, type(e).__name__)
             return False
-        return result["sent"] > 0
+        # 種類を切っている・お休み中の人しかいないときは「届かなかった」ではなく、送らない選択なので成功とする
+        return result["users"] == 0 or result.get("sent", 0) > 0
     if channel_type == "email":
         try:
             settings = json.loads(destination)

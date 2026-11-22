@@ -132,7 +132,7 @@ export function PushDevices() {
     <section data-push-devices className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="text-sm font-semibold text-zinc-500">この端末への通知</h2>
       <p className="mt-1 text-xs text-zinc-500">
-        Project の実行が終わったとき（起動した人へ）と、通知チャンネル「この ControlDeck の通知」を選んだアラートが届きます。通知を押すと、その画面を開きます。
+        AI アシスタントの完了・質問待ち、Project の実行の終わりなどが届きます（種類は下で選べます）。通知を押すと、その画面を開きます。
       </p>
       {isIos() && !standalone() ? (
         <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">

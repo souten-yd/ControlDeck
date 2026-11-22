@@ -763,6 +763,7 @@ def recover_on_startup() -> int:
     db = SessionLocal()
     try:
         rows = db.query(JobRow).filter(JobRow.status.in_(("queued", "running"))).all()
+        chat_jobs = [row.id for row in rows if row.kind == "chat.completion"]
         for row in rows:
             row.status = "interrupted"
             row.error = row.error or "バックエンド再起動により中断されました"
@@ -770,6 +771,10 @@ def recover_on_startup() -> int:
         if rows:
             db.commit()
             logger.info("%d 件の実行中ジョブを interrupted としてマーク", len(rows))
+            if chat_jobs:
+                from app.alerts import chat_events
+
+                chat_events.announce_interrupted(chat_jobs)   # OpenCode の回だったものを知らせる（#561）
         return len(rows)
     finally:
         db.close()
