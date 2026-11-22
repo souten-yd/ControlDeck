@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-22 画面の見た目の関門（画像を読めるローカルのモデルに撮影を見せる）
+
+- 目的: OpenCode（GLM は画像を読めない）が作った画面を、Claude が目で見なくても仕組みで確かめる。設計は Opus。
+- `./deck.sh ui-review <png...> [--spec 説明]`（`app/maintenance/visual_review.py`）: 撮影の PNG を本番のゲートウェイ（loopback）の、画像を読めるローカルのモデルへ送り、`{"issues":[{severity,where,what,fix}],"summary"}` を返させる。観点は ui-ux-guidelines から（文字の切れ・重なり・はみ出し、横はみ出し、押せる大きさ、ライト/ダークの色、空白の偏り、英語の混在、エラー表示）。読めない答えは失敗（終了 2）。
+- モデルの選び方: `/v1/models` に足した `vision`・`loaded`（`gateway.instance_sees_images` と同じ判定）で、cloud:・external・auto を除き、画像を読めるものだけ。起動中を優先。無ければ「画像を読めるローカルのモデルがありません」で未実施。古いゲートウェイ（項目が無い）は手元の登録から同じ判定で補う。機密の印（x-control-deck-confidential）を付け、cloud: へ流れても断られる二重の守り。
+- 画像: 1 回 4 枚まで、既定で最大 16 枚。Pillow を使わない（依存を足さない）ので縮めず、4 MB 超・PNG でない・読めないものは飛ばして報告に出す。
+- dev-check の「画面の見た目」: frontend（e2e を除く）を変えたときだけ。`frontend/test-results/**/*.png` のうち frontend の変更より新しいものが無ければ不合格（「撮影がありません（E2E で撮ってください）」）。high があれば不合格、medium は合格のまま注意を表示。モデルが無ければ未実施。見させるのに失敗（通信・答えが読めない）は不合格。`--skip-visual` で外せる（報告に出る）。backend だけの変更では未実施。
+- スキル `controldeck-development` に「画面を変えたら E2E で 320・1280、ライト・ダークを撮り、dev-check の見た目の項目を通す」を足した。
+- 検証: `tests/test_visual_review.py`（新規。モデルの選び方・cloud を使わない・未実施・4 枚ずつ・答えの検め・dev-check の項目の合否）、`tests/test_llm_gateway.py`（vision・loaded）。実機: 本番の起動中の qwen-flash-next に 320 の撮影 2 枚を見させ、形どおりの JSON が返った（17 秒）。
+- 確かめられなかった点: 本番のゲートウェイはまだ新しい項目（vision）を返さない（次の更新後）。それまでは手元の登録から補う（実機ではこの経路で確認）。縮小は未実装。dev-check 全体を frontend 変更つきで実機に流すこと。
+
 ## 2026-11-22 開発のスキルに「要望から指示書（計画）を書く」段
 
 - 利用者「Claude が要る部分の開発にまず注力」。2026-11-22 の試験で、成果を一番左右したのは Opus が書いた指示書の質だった。その型（目的・まず読むもの（手本の実在を確かめる）・作るもの・守ること・テスト・完了の条件・利用者に決めてもらうこと）を `controldeck-development` のスキル（1.1.0）の最初の段にした。

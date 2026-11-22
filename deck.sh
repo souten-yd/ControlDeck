@@ -18,7 +18,8 @@
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
 #   ./deck.sh test-catalog テストの目録 docs/test-catalog.md を作り直す（手書きの説明は残る。venv は作らない）
-#   ./deck.sh dev-check [--base <ref>] [--full]  開発の関門（完了の前に。差分に応じた検査・合否は終了コード）
+#   ./deck.sh dev-check [--base <ref>] [--full] [--skip-visual]  開発の関門（完了の前に。差分に応じた検査・合否は終了コード）
+#   ./deck.sh ui-review <png...> [--spec 説明]  画面の撮影を、画像を読めるローカルのモデルに見せて見た目の問題を返させる
 #   ./deck.sh knowledge-migrate [--apply] 旧 RAG・ResearchDataHub のデータを統合ナレッジへ取り込む（既定は計画の表示だけ）
 #   ./deck.sh knowledge-rebuild [--apply] ナレッジの作り直し（AI の回答の区別・埋め込み・PDF の取り込み直し。既定は計画の表示）
 #   ./deck.sh knowledge-storage ...  ナレッジの保存先・保存対象・バックアップ（status|add-target|place|backup|verify|restore-to|relocate|move-db）
@@ -675,6 +676,12 @@ cmd_dev_check() {
   run_dev_tool app.maintenance.dev_check "$@"
 }
 
+# 画面の見た目の関門。撮影の PNG を、画像を読めるローカルのモデルに見せて問題を JSON で返させる。
+cmd_ui_review() {
+  check_root
+  run_dev_tool app.maintenance.visual_review "$@"
+}
+
 cmd_knowledge_migrate() {
   check_root; check_python; ensure_venv
   cd "$REPO_ROOT/backend"
@@ -913,6 +920,7 @@ case "${1:-start}" in
   sandbox) shift; cmd_sandbox "$@" ;;
   test-catalog) shift; cmd_test_catalog "$@" ;;
   dev-check) shift; cmd_dev_check "$@" ;;
+  ui-review) shift; cmd_ui_review "$@" ;;
   knowledge-migrate) shift; cmd_knowledge_migrate "$@" ;;
   knowledge-storage) shift; cmd_knowledge_storage "$@" ;;
   knowledge-rebuild) shift; cmd_knowledge_rebuild "$@" ;;

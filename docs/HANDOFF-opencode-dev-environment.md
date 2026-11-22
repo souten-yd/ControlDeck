@@ -92,6 +92,14 @@
 | P5 | 箱のランタイムを `dev:<箱>/<モデル>` で本番のゲートウェイへ一時登録し評価 | 未着手 | — |
 | P6 | 試運転: W2 の最初の項目（`HANDOFF-web-collector.md`）を箱の OpenCode にやらせ、PR → Release まで | 未着手 | — |
 
+## Claude が要る部分を減らす: 画面の見た目（2026-11-22）
+
+- 課題: OpenCode の GLM は画像を読めないので、作った画面の見た目は Claude（Opus）が目で見ていた。
+- 仕組み: `./deck.sh ui-review <png...> [--spec 説明]`（`app/maintenance/visual_review.py`）が、E2E の撮影を本番のゲートウェイの「画像を読めるローカルのモデル」へ送り、`{"issues":[{severity,where,what,fix}],"summary"}` を返させる。cloud: は使わない（機密の印も付ける）。モデルが無ければ「未実施」。1 回 4 枚まで、縮めず、4 MB 超は飛ばして記録。
+- 関門: `dev-check` の「画面の見た目」。frontend を変えたとき、`frontend/test-results/**/*.png`（frontend の変更より新しいもの）が無ければ不合格、high で不合格、medium は注意、モデルが無ければ未実施。`--skip-visual` で外せる（報告に「外した」と出る）。
+- 使い方: 画面を変えたら E2E で 320 と 1280、ライト・ダークを撮り、dev-check を通す（スキル `controldeck-development`）。
+- 限界: モデルの目は Opus より粗い。high を見落とす・過剰に挙げることがある。最終の見た目の判断（デザインの良し悪し）は人・Opus。
+
 ## 不具合と課題の一覧（開発中に見つけたもの）
 
 見つけたら、ここに足して優先度を付ける。直したら状態と PR を書く。

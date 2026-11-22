@@ -585,8 +585,11 @@ async def gateway_models(request: Request):
     # autoを先頭に置く。クライアントが特定モデルを名指ししない限り、Models で選んだランタイムのモデルへ流れる。
     data = [{"id": AUTO_MODEL, "object": "model", "owned_by": "control-deck",
              "runtime": "auto"}] if llms else []
+    # vision（画像を読めるか。Models の「画像」と同じ判定）と loaded は互換性を壊さない追加項目。
+    # 画面の見た目の関門（maintenance/visual_review.py）が、画像を読めるローカルのモデルを選ぶのに使う。
     data += [{"id": str(i["alias"]), "object": "model", "owned_by": "control-deck",
-              "runtime": str(i.get("runtime") or "")} for i in llms]
+              "runtime": str(i.get("runtime") or ""), "vision": instance_sees_images(i),
+              "loaded": bool(i.get("loaded"))} for i in llms]
     # 外部のフロンティアモデル。使ってよいかは呼び出しのときに呼び出し元ごとに判定する。
     from app.models_mgmt import cloud
 
