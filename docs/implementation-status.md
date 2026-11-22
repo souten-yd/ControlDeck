@@ -53,6 +53,18 @@
 - 検証: `tests/test_mirror_llm_upstream.py`（新規 8。ISOLATED のときだけ読む・loopback 以外を拒否・内部の振り分け・AI target と local_only の検査・上流が空/落ちている・RuntimeChatRequest のストリームと機密の印・ゲートウェイの models/chat の中継）、`test_dev_sandbox.py`（mirror_config が中継の URL を書く）。
 - 確かめられなかった点: 実機のミラー（podman）から中継経由で本番のモデルへ会話できるか（AI アシスタント・Patent・ナレッジの分析）。実際の長い生成での中継のタイムアウト（中継は read 900 秒）。
 
+## 2026-11-22 E2E 直し: モデル管理の画面 2 件（HANDOFF 不具合と課題 14）
+
+- 対象: `frontend/e2e/model-provider-common.spec.ts` と `frontend/e2e/resource-load-profile-ui.spec.ts` が main のまま落ちる。まず `frontend` の build 後に検証用インスタンス（`cmd_e2e` と同じ手順、箱では `./deck.sh e2e` が PyPI 取りに行き使えないので python だけ既存 venv に差し替え）で再現してから直した。
+- 原因と根拠（どちらも「画面が変わったのに E2E が古い」で、画面のバグでは無い）:
+  - `model-provider-common`: `getByRole('button', { name: '閉じる' })` が部分一致で、画面shell刷新 ad73f23（☰ サイドバー）で増えた `aria-label="サイドバーを閉じる"` と衝突（失敗時の aria スナップショットに「サイドバーを閉じる」と「閉じる」の 2 件）。→ 個別設定 sheet（dialog 名 `fake-model`）とモデル取得 sheet（dialog 名 `モデル取得`）の中だけに絞った。確かめる中身はそのまま（保存の PUT、取得ジョブの POST、320px の横溢れ）。
+  - `resource-load-profile-ui`: 退避(yield)機構を 4deb560（2026-09-04「画像生成をRAMへ載せてLLMと共存させ、退避(yield)機構を廃止する」）で廃止、GPU Broker パネルごと `frontend/src` から削除済み（`今すぐ退避`・`実測（暫定）`・`load_profiles` が grep ゼロ、失敗時の aria スナップショットでもダイアログは開きつつ該当欄が無い）。→ 後継の「Add-on への GPU の譲り方」パネル（`AddonGpuSettingsGroup`）に読み替え: 方針の説明（自動）、載せ直し制御と貸す時間の欄、載せ直し目安の実測文、方針を「LLM 優先」にすると載せ直し制御が消え説明が連動すること、320px の横溢れなし、を PC/モバイル両幅で確かめる。
+  - 保証の変化: 旧 spec の cold/warm 実測・退避根拠・「処理時間が未申告」の説明は、対象機能が製品から削除されたため立て直せない（削除は機能の意図的な廃止で、画面の退行ではない）。同じダイアログのモバイル/デスクトップ表示と 320px 非溢れの保証は保ったまま、現存する後継機能の説明表示へ読み替えた（理由を spec 先頭の目的・根拠にも書いた）。
+- 変更: `frontend/e2e/model-provider-common.spec.ts`（閉じる 2 箇所を dialog スコープに）、`frontend/e2e/resource-load-profile-ui.spec.ts`（全面書き換え。`/api/v1/resources` の mock と yield 欄の policy フィクスチャは未消費なので削除）、`docs/test-catalog.md`（spec の目的を反映して作り直し）。コード・画面は変えていない。
+- 検証: 対象 2 件 pass。関係 E2E（`frontier-models`・`model-display-name`・`runtime-preferred-model`・`llama-runtime-settings`・`vram-margin`・`gpu-settings` の 15 テスト）を一緒に流し、13 pass / 2 fail。**落ちた 2 件（`frontier-models`・`llama-runtime-settings`）は今回の差分と無関係な既存の main 落ち**（それぞれ別種の画面 drift。不具合と課題 15 として記録）。
+- レビュー役（別のモデル）: critical 0・major 0・minor 3。minor は直した — (1) 目録が旧題名のままだった → 作り直してこの差分に含めた (2) 320px の横溢れ確認が方針を「LLM 優先」に切り替えた後だけになっていた → 切り替える前（載せ直し制御が出ている状態）でも確かめた (3) コメント誤記。info は見送った: toHaveCount(0) を combobox にも足すのは同一の条件分岐で等価、`gateway_only`・`drain_timeout_sec` の interface 残存と waitLabels の yield_* は画面側の変更になるためこの PR のスコープ外（実害なし）。
+- 確かめられなかった点: GitHub Actions の E2E 一式（箱のため）。`./deck.sh dev-check` の backend pytest は箱の `.venv` が空で流せない（外部取得禁止のため依存を入れられない）→ frontend build と差分に基づく静的検査まで。詳細は下の関門の行。
+
 ## 2026-11-22 開発の作業場 3 段目: 結果のカードと「取り込む」
 
 - 目的: 作業場の会話に「作業場の結果」のカード（変更の要約・関門・取り込む）を足し、頼む → 作る → 見て試す → 取り込む、を画面で通す。本番を変えるのは利用者の一押しの後だけ。
