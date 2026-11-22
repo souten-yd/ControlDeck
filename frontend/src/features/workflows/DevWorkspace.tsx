@@ -14,6 +14,8 @@ export type DevWorkspace = {
   dirty: boolean; unpushed: number; created_at: number; last_used: number; repo_path: string;
   /** 開発対象と機能（古い API では無い）。adopt は取り込み先（pr は GitHub の PR、branch は元へのブランチ） */
   target?: string; target_label?: string; capabilities?: string[]; adopt?: "pr" | "branch";
+  /** OpenCode（会話サーバー）がこの作業場で今も動いているか（消すときの確認を強くする） */
+  working?: boolean;
 };
 
 export type WorkspaceCheck = {
@@ -22,12 +24,31 @@ export type WorkspaceCheck = {
 };
 export type WorkspaceChanges = {
   base: string; head: string; file_count: number; added: number; removed: number; dirty: boolean;
+  /** 未コミットのファイルの数（ファイル数・増減に数に入れたうえでの内訳。箱の git が読めなければ null） */
+  uncommitted_files?: number | null;
   files: { path: string; added: number; removed: number; binary: boolean; untracked: boolean }[];
   commits: { sha: string; author: string; at: number; subject: string }[]; commit_count: number;
   check: WorkspaceCheck | null;
   adopted: { kind: "pr" | "branch"; branch: string; pr_url: string; head: string } | null;
   merged?: { at: number; by: string; pr_url: string; tier: string } | null;
+  /** 元の main が何件進んでいるか（取れなければ null） */
+  behind?: number | null;
+  /** 取り込みでぶつかったファイル（OpenCode に直させるボタンを出す） */
+  merge_conflict?: { conflicts: string[]; at: number } | null;
+  /** data のある所のディスクの空き（GiB）と、下限の 2 倍未満か */
+  disk_free_gib?: number; disk_low?: boolean;
 };
+
+/** 作業場の進み具合（GET /opencode/workspaces/progress。Project Lab の「作業場」のタブ用） */
+export type WorkspaceProgress = {
+  state: "working" | "waiting" | "done" | "stopped";
+  todo: { done: number; total: number } | null;
+  /** 最後に動いた時刻（epoch 秒。文字列だと解釈の時間帯でずれるので backend が秒で返す） */
+  last_active_at: number;
+  conversation_id: string;
+  title: string;
+};
+export type WorkspaceProgressItem = DevWorkspace & { progress: WorkspaceProgress | null };
 
 export const WS_PREFIX = "ws:";
 export const WS_NEW = "__ws_new__";
@@ -51,7 +72,7 @@ export function WorkspaceBadge({ className = "", target }: { className?: string;
   );
 }
 
-function ago(seconds: number): string {
+export function ago(seconds: number): string {
   if (!seconds) return "未使用";
   const diff = Math.max(0, Date.now() / 1000 - seconds);
   if (diff < 90) return "たった今";
@@ -74,15 +95,24 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const [diff, setDiff] = useState(false);
   const [adopting, setAdopting] = useState(false);
   const [working, setWorking] = useState(false);
+  const [asking, setAsking] = useState(false);
   const [message, setMessage] = useState("");
   const wasBusy = useRef(busy);
   const changesKey = ["workspace-changes", name];
   const { data: info, error } = useQuery({
     queryKey: changesKey, staleTime: 15_000,
-    // 応答が欠けていても画面ごと落とさない（2026-11-22: 形の違う応答で files.length が落ちた）
+    // 応答が欠けていても画面ごと落とさない（2026-11-22: 形の違う応答で files.length が落ちた）。
+    // 数も 0 で保証する（visual review: 欠けた応答で「undefined ファイル」と画面に出た）
     queryFn: async () => {
       const raw = await api<Partial<WorkspaceChanges>>(`${base}/changes`);
-      return { ...raw, files: Array.isArray(raw?.files) ? raw.files : [], commits: Array.isArray(raw?.commits) ? raw.commits : [] } as WorkspaceChanges;
+      const files = Array.isArray(raw?.files) ? raw.files : [];
+      return {
+        ...raw, files,
+        commits: Array.isArray(raw?.commits) ? raw.commits : [],
+        file_count: typeof raw?.file_count === "number" ? raw.file_count : files.length,
+        added: typeof raw?.added === "number" ? raw.added : 0,
+        removed: typeof raw?.removed === "number" ? raw.removed : 0,
+      } as WorkspaceChanges;
     },
   });
   const { data: checkState } = useQuery({
@@ -121,6 +151,19 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
       show(e instanceof Error ? e.message : "関門を流せませんでした", "error");
     }
   };
+  const askResolve = async () => {
+    // 取り込みでぶつかったファイルを、この作業場で動いた同じ会話の OpenCode に直させる
+    if (asking || working) return;
+    setAsking(true);
+    try {
+      await api(`${base}/resolve-conflict`, { method: "POST" });
+      show("ぶつかりを OpenCode に直させる文を会話へ送りました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "OpenCode に直させる文を送れませんでした", "error");
+    } finally {
+      setAsking(false);
+    }
+  };
   const adopt = async () => {
     if (working) return;
     setWorking(true);
@@ -148,22 +191,50 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
         <span className="font-medium text-zinc-700 dark:text-zinc-200">作業場の結果</span>
         <span className="min-w-0 flex-1 truncate text-zinc-500 dark:text-zinc-400">
           {error ? "読めませんでした" : info ? `${info.file_count} ファイル +${info.added} −${info.removed}` : "読み込み中…"}
-          {info?.dirty && <span className="text-amber-600 dark:text-amber-400">・未コミット</span>}
+          {/* 未コミットも数に入れたうえで、その内訳を出す（2026-11-22 までは 0 ファイル・未コミットと出ていた） */}
+          {info && (info.uncommitted_files ?? 0) > 0 ? (
+            <span className="text-amber-600 dark:text-amber-400">（うち未コミット {info.uncommitted_files}）</span>
+          ) : info?.dirty ? (
+            <span className="text-amber-600 dark:text-amber-400">・未コミット</span>
+          ) : null}
+          {info?.disk_low && <span className="text-amber-600 dark:text-amber-400">・空き {info.disk_free_gib} GiB</span>}
+          {info?.merge_conflict && <span className="text-red-600 dark:text-red-400">・ぶつかり</span>}
         </span>
         <span className={`shrink-0 ${checkTone}`} data-testid="workspace-check-label">{checkLabel}</span>
         <span aria-hidden>{open ? "▲" : "▼"}</span>
       </button>
       {open && info && (
         <div className="space-y-2 border-t border-zinc-200 px-3 py-2 dark:border-zinc-800">
+          {info.disk_low && (
+            <p data-testid="workspace-disk-low" className="text-amber-700 dark:text-amber-400">
+              ⚠️ ディスクの空きが少ない（残り {info.disk_free_gib} GiB）。下限を下回ると自動保存が止まります。必要なものを消してください。
+            </p>
+          )}
+          {info.merge_conflict && (
+            <div data-testid="workspace-conflict" className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+              <p>main を取り込むときに {(info.merge_conflict.conflicts ?? []).length} ファイルがぶつかりました。</p>
+              <ul className="mt-1 max-h-24 overflow-y-auto font-mono text-[11px]">
+                {(info.merge_conflict.conflicts ?? []).slice(0, 10).map((f) => <li key={f} className="truncate">{f}</li>)}
+              </ul>
+              <button type="button" onClick={() => void askResolve()} disabled={asking} className={`mt-2 ${BTN}`}>
+                {asking ? "送っています…" : "OpenCode に直させる"}
+              </button>
+            </div>
+          )}
+          {typeof info.behind === "number" && info.behind > 0 && !info.merge_conflict && (
+            <p data-testid="workspace-behind" className="text-zinc-500 dark:text-zinc-400">
+              元の main が {info.behind} 件進んでいます（取り込むときに箱の中へ取り込みます）。
+            </p>
+          )}
           <button type="button" onClick={() => setFiles((v) => !v)} aria-expanded={files}
             className="min-h-11 w-full text-left text-zinc-700 underline-offset-2 hover:underline dark:text-zinc-200">
             変わったファイル {info.file_count} 件{files ? "を閉じる" : "を開く"}
           </button>
           {files && (
-            <ul data-testid="workspace-files" className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+            <ul data-testid="workspace-files" className="max-h-40 space-y-0.5 overflow-y-auto overflow-x-hidden font-mono text-[11px]">
               {info.files.map((f) => (
                 <li key={f.path} className="flex min-w-0 gap-2">
-                  <span className="min-w-0 flex-1 truncate">{f.path}</span>
+                  <span className="w-0 min-w-0 flex-1 truncate" title={f.path}>{f.path}</span>
                   <span className="shrink-0 text-zinc-500">{f.untracked ? "未追跡" : f.binary ? "バイナリ" : `+${f.added} −${f.removed}`}</span>
                 </li>
               ))}
@@ -199,7 +270,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             {!adopted && (
               <button type="button" onClick={() => setAdopting(true)} disabled={!ready}
                 title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "関門が合格で、その後に変更が無いときに押せます" : ""}
-                className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-40">
+                className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:bg-sky-600/15 disabled:text-sky-700 dark:disabled:text-sky-400">
                 取り込む
               </button>
             )}
@@ -322,11 +393,12 @@ export function WorkspaceBar({
   const unsaved = current.dirty || current.unpushed > 0;
   return (
     <>
-    <div data-testid="workspace-info" className="mb-2 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+    <div data-testid="workspace-info" className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
       <WorkspaceBadge target={current.target} />
       <span className="min-w-0 flex-1 truncate">
         {current.source_label}・{current.branch || "ブランチ不明"}・{ago(current.last_used)}
         {unsaved && <span className="ml-1 text-amber-600 dark:text-amber-400">・未保存の変更あり</span>}
+        {current.working && <span className="ml-1 text-sky-600 dark:text-sky-400">・OpenCode が作業中</span>}
       </span>
       <button type="button" onClick={() => setDeleting(current)} aria-label={`作業場 ${current.name} を消す`}
         className="grid min-h-8 shrink-0 place-items-center rounded-lg border border-zinc-300 px-2 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
@@ -335,10 +407,12 @@ export function WorkspaceBar({
       {deleting && (
         <ConfirmDialog
           title="作業場を消す"
-          message={deleting.dirty || deleting.unpushed > 0
-            ? `作業場 ${deleting.name} には保存されていない変更があります（${[deleting.dirty ? "未コミット" : "", deleting.unpushed > 0 ? `未 push のコミット ${deleting.unpushed} 件` : ""].filter(Boolean).join("・")}）。消すと戻せません。`
-            : `作業場 ${deleting.name} を消します。元のリポジトリには影響しません。`}
-          confirmLabel={deleting.dirty || deleting.unpushed > 0 ? "変更ごと消す" : "消す"}
+          message={deleting.working
+            ? `作業場 ${deleting.name} で OpenCode が今も作業中です。止めてから消してください（作業の途中で消すと、続きからできません）。消すと戻せません。`
+            : deleting.dirty || deleting.unpushed > 0
+              ? `作業場 ${deleting.name} には保存されていない変更があります（${[deleting.dirty ? "未コミット" : "", deleting.unpushed > 0 ? `未 push のコミット ${deleting.unpushed} 件` : ""].filter(Boolean).join("・")}）。消すと戻せません。`
+              : `作業場 ${deleting.name} を消します。元のリポジトリには影響しません。`}
+          confirmLabel={deleting.working || deleting.dirty || deleting.unpushed > 0 ? "変更ごと消す" : "消す"}
           busy={working}
           onConfirm={() => void remove()}
           onClose={() => setDeleting(null)}

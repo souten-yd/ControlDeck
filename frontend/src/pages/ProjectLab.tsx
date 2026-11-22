@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../stores";
+import { api } from "../api/client";
+import { useMeta } from "../api/hooks";
 import {
   projectLabApi,
   type ProjectLabArtifact,
@@ -11,12 +13,24 @@ import {
   type ProjectLabPublishState,
 } from "../api/projectLab";
 import { CodeViewer } from "../features/projectlab/CodeViewer";
-import { BottomSheet, ConfirmDialog, Popover, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, Popover, SegmentedTabs, Skeleton } from "../components/ui";
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
 import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
+import { WorkspaceBadge, WorkspaceResultCard, ago, type WorkspaceProgressItem } from "../features/workflows/DevWorkspace";
+import { LS_CONV } from "../features/workflows/workspaceTargets";
 
 type SheetKind = "projects" | "files" | "info" | "runs" | null;
+/** Project Lab の左の一覧: プロジェクト（残る）と作業場（一時の写し）。寿命が違うので混ぜず切り替える */
+type LabView = "projects" | "workspaces";
+
+/** 作業場の進み具合の文言と色。色は ui-ux ガイドライン（作業中=青・待ち=黄・完了=緑・止まった=赤） */
+const WS_STATES: Record<string, { label: string; short: string; tone: string; pulse?: boolean }> = {
+  working: { label: "OpenCode が作業中", short: "作業中", tone: "text-sky-700 dark:text-sky-300", pulse: true },
+  waiting: { label: "質問待ち（AI アシスタントで答えてください）", short: "質問待ち", tone: "text-amber-700 dark:text-amber-400" },
+  done: { label: "完了", short: "完了", tone: "text-emerald-700 dark:text-emerald-400" },
+  stopped: { label: "止まった", short: "止まった", tone: "text-red-700 dark:text-red-400" },
+};
 
 const TEXTUAL: ProjectLabArtifact["kind"][] = ["code", "text", "markdown", "log", "json", "table"];
 const ACTIVE_STATES = ["QUEUED", "RUNNING"];
@@ -99,6 +113,41 @@ export default function ProjectLabPage() {
   }, [searchParams, setSearchParams]);
   // 取り消せない操作なので、確認を挟む。対象は選択中のプロジェクト。
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
+  // 一覧の切り替え: プロジェクト（残る）｜作業場（一時の写し）。作業場は OpenCode が使える人にだけ見せる
+  const [labView, setLabView] = useState<LabView>("projects");
+  const [wsName, setWsName] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const { data: appMeta } = useMeta();
+  const workspacesAvailable = !!appMeta?.enabled_features?.includes("opencode-v2") && can("terminal.use");
+  const wsProgressQuery = useQuery({
+    queryKey: ["opencode-workspaces-progress"],
+    queryFn: () => api<{ workspaces: WorkspaceProgressItem[]; active: number }>("/opencode/workspaces/progress"),
+    // タブの印（動いている作業場の数）はプロジェクトを見ている間にも出すので、タブに関係なく 1 回は読む
+    enabled: workspacesAvailable,
+    staleTime: 10_000,
+    // 見張るのは作業場のタブを見ていて動いているものがあるときだけ（プロジェクトを見ている間は読まない）
+    refetchInterval: (query) => (labView === "workspaces" && (query.state.data?.active ?? 0) > 0 ? 10_000 : false),
+  });
+  const wsItems = useMemo(() => wsProgressQuery.data?.workspaces ?? [], [wsProgressQuery.data]);
+  const wsActive = wsProgressQuery.data?.active ?? 0;
+  const currentWs = wsItems.find((w) => w.name === wsName) ?? null;
+  useEffect(() => {
+    if (labView !== "workspaces" || wsItems.length === 0) return;
+    // 選んだ作業場が消えても（AI アシスタントで消す）残りの先頭を選び直す
+    if (wsName === null || !wsItems.some((w) => w.name === wsName)) setWsName(wsItems[0].name);
+  }, [labView, wsItems, wsName]);
+  const labTabs = useMemo(() => {
+    if (!workspacesAvailable) return [] as const;
+    return [
+      ["projects", "プロジェクト"] as const,
+      ["workspaces", wsActive > 0 ? `作業場・${wsActive}` : "作業場"] as const,
+    ];
+  }, [workspacesAvailable, wsActive]);
+  /** AI アシスタントのその会話へ（AssistantChat は localStorage の会話 ID から始まる） */
+  const openWsConversation = (conversationId: string) => {
+    localStorage.setItem(LS_CONV, conversationId);
+    navigate("/assistant");
+  };
 
   const projectsQuery = useQuery({ queryKey: ["project-lab"], queryFn: projectLabApi.list });
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
@@ -198,27 +247,49 @@ export default function ProjectLabPage() {
             onClick={() => setSheet(sheet === "projects" ? null : "projects")}
             className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-xl px-2.5 text-left hover:bg-white dark:hover:bg-zinc-900"
           >
-            <span className="min-w-0 truncate text-sm font-semibold">{detail?.name ?? "Project Lab"}</span>
+            <span className="min-w-0 truncate text-sm font-semibold">
+              {labView === "workspaces" ? (currentWs?.name ?? "作業場") : (detail?.name ?? "Project Lab")}
+            </span>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 text-zinc-400 transition-transform ${sheet === "projects" ? "rotate-180" : ""}`} aria-hidden>
               <path d="m6 9 6 6 6-6" />
             </svg>
           </button>
           {/* 起点のボタン直下（左上基点）から開く。中央のシートだと視線と操作位置がずれる。 */}
-          <Popover open={sheet === "projects"} label="プロジェクト" onClose={() => setSheet(null)}>
-            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
-            {projects.map((project) => (
-              <ProjectRow
-                key={project.id}
-                project={project}
-                selected={project.id === projectId}
-                onSelect={() => {
-                  setProjectId(project.id);
-                  setSheet(null);
-                }}
-              />
-            ))}
-            {projects.length === 0 && (
-              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
+          <Popover open={sheet === "projects"} label={labView === "workspaces" ? "作業場" : "プロジェクト"} onClose={() => setSheet(null)}>
+            {labTabs.length > 0 && (
+              <SegmentedTabs className="mb-2" tabs={labTabs} value={labView} onChange={(value) => setLabView(value)} />
+            )}
+            {labView === "workspaces" ? (
+              <>
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">作業場（一時）</p>
+                {wsItems.map((w) => (
+                  <WorkspaceRow key={w.name} item={w} selected={w.name === wsName}
+                    onSelect={() => { setWsName(w.name); setSheet(null); }} />
+                ))}
+                {wsItems.length === 0 && !wsProgressQuery.isLoading && (
+                  <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">
+                    作業場がありません。AI アシスタントの作業フォルダの選択欄の「🧪 ＋ 新しい作業場」で作れます。
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
+                {projects.map((project) => (
+                  <ProjectRow
+                    key={project.id}
+                    project={project}
+                    selected={project.id === projectId}
+                    onSelect={() => {
+                      setProjectId(project.id);
+                      setSheet(null);
+                    }}
+                  />
+                ))}
+                {projects.length === 0 && (
+                  <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
+                )}
+              </>
             )}
           </Popover>
         </div>
@@ -268,58 +339,89 @@ export default function ProjectLabPage() {
       <div className="flex min-h-0 flex-1 gap-3 px-2 pb-2 md:px-3 md:pb-3">
         <aside className="hidden w-72 shrink-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 md:flex">
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
-            {projectsQuery.isLoading && <Skeleton className="mx-2 h-14 rounded-xl" />}
-            {projects.map((project) => (
-              <ProjectRow key={project.id} project={project} selected={project.id === projectId} onSelect={() => setProjectId(project.id)} />
-            ))}
-            {projects.length > 0 && (
+            {labTabs.length > 0 && (
+              <SegmentedTabs className="mb-2" tabs={labTabs} value={labView} onChange={(value) => setLabView(value)} />
+            )}
+            {labView === "projects" ? (
               <>
-                <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">ファイル</p>
-                {artifacts.map((item) => (
-                  <FileRow key={item.path} artifact={item} selected={item.path === artifact?.path} onSelect={() => selectArtifact(item.path)} />
+                <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
+                {projectsQuery.isLoading && <Skeleton className="mx-2 h-14 rounded-xl" />}
+                {projects.map((project) => (
+                  <ProjectRow key={project.id} project={project} selected={project.id === projectId} onSelect={() => setProjectId(project.id)} />
                 ))}
-                {artifacts.length === 0 && <p className="px-2 text-xs text-zinc-400">表示できるファイルがありません</p>}
+                {projects.length > 0 && (
+                  <>
+                    <p className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">ファイル</p>
+                    {artifacts.map((item) => (
+                      <FileRow key={item.path} artifact={item} selected={item.path === artifact?.path} onSelect={() => selectArtifact(item.path)} />
+                    ))}
+                    {artifacts.length === 0 && <p className="px-2 text-xs text-zinc-400">表示できるファイルがありません</p>}
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">作業場（一時）</p>
+                {wsProgressQuery.isLoading && <Skeleton className="mx-2 h-14 rounded-xl" />}
+                {wsItems.map((w) => (
+                  <WorkspaceRow key={w.name} item={w} selected={w.name === wsName} onSelect={() => setWsName(w.name)} />
+                ))}
+                {wsItems.length === 0 && !wsProgressQuery.isLoading && (
+                  <p className="px-2 text-xs leading-relaxed text-zinc-400">
+                    作業場がありません。AI アシスタントの作業フォルダの選択欄の「🧪 ＋ 新しい作業場」で作れます。
+                  </p>
+                )}
               </>
             )}
           </div>
         </aside>
 
-        <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <Stage
-            projectRoot={projectRoot}
-            projects={projects}
-            loading={projectsQuery.isLoading || (projectId !== null && detailQuery.isLoading)}
-            error={projectsQuery.error ?? detailQuery.error}
-            detail={detail}
-            artifact={artifact}
-            sourceMode={sourceMode}
-            reloadToken={reloadToken}
-            fit={fitWidth}
-            externalAllowed={allowExternalAlways || (artifact ? externalAllowed[artifact.path] === true : false)}
-            onAllowExternal={() => {
-              if (!artifact) return;
-              setExternalAllowed((current) => ({ ...current, [artifact.path]: true }));
-              setReloadToken((value) => value + 1);
-            }}
-          />
-          {artifact && detail && (
-            <Dock
+        {labView === "workspaces" ? (
+          <section className="relative min-h-0 min-w-0 flex-1 overflow-y-auto rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <WorkspaceStage
+              item={currentWs}
+              loading={wsProgressQuery.isLoading}
+              error={wsProgressQuery.error}
+              onOpenConversation={openWsConversation}
+            />
+          </section>
+        ) : (
+          <section className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <Stage
+              projectRoot={projectRoot}
+              projects={projects}
+              loading={projectsQuery.isLoading || (projectId !== null && detailQuery.isLoading)}
+              error={projectsQuery.error ?? detailQuery.error}
               detail={detail}
               artifact={artifact}
               sourceMode={sourceMode}
+              reloadToken={reloadToken}
               fit={fitWidth}
-              onToggleFit={() => setFitWidth((value) => !value)}
-              running={startFileRun.isPending || Boolean(activeRun)}
-              onFiles={() => setSheet("files")}
-              onReload={() => setReloadToken((value) => value + 1)}
-              onToggleSource={() => setSourceMode((value) => !value)}
-              onRun={() => startFileRun.mutate(artifact)}
-              onRuns={() => setSheet("runs")}
-              onInfo={() => setSheet("info")}
+              externalAllowed={allowExternalAlways || (artifact ? externalAllowed[artifact.path] === true : false)}
+              onAllowExternal={() => {
+                if (!artifact) return;
+                setExternalAllowed((current) => ({ ...current, [artifact.path]: true }));
+                setReloadToken((value) => value + 1);
+              }}
             />
-          )}
-        </section>
+            {artifact && detail && (
+              <Dock
+                detail={detail}
+                artifact={artifact}
+                sourceMode={sourceMode}
+                fit={fitWidth}
+                onToggleFit={() => setFitWidth((value) => !value)}
+                running={startFileRun.isPending || Boolean(activeRun)}
+                onFiles={() => setSheet("files")}
+                onReload={() => setReloadToken((value) => value + 1)}
+                onToggleSource={() => setSourceMode((value) => !value)}
+                onRun={() => startFileRun.mutate(artifact)}
+                onRuns={() => setSheet("runs")}
+                onInfo={() => setSheet("info")}
+              />
+            )}
+          </section>
+        )}
       </div>
 
       {sheet === "files" && detail && (
@@ -373,6 +475,116 @@ function ProjectRow({ project, selected, onSelect }: { project: ProjectLabSummar
         </span>
       </span>
     </button>
+  );
+}
+
+/** 作業場の行（一覧）。進み具合の短い印と、動いているものの点を出す */
+function WorkspaceRow({ item, selected, onSelect }: { item: WorkspaceProgressItem; selected: boolean; onSelect: () => void }) {
+  const progress = item.progress;
+  const state = progress ? WS_STATES[progress.state] : null;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected}
+      data-testid="workspace-row"
+      className={`mb-1 flex min-h-12 w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${
+        selected ? "bg-accent-50 text-accent-900 dark:bg-accent-500/15 dark:text-accent-200" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      }`}
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-100 text-base dark:bg-sky-500/15" aria-hidden>🧪</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{item.name}</span>
+        <span className="num block truncate text-[11px] text-zinc-400">
+          {item.source_label}{item.target_label ? ` · ${item.target_label}` : ""}
+          {state ? ` · ${state.short}` : ""}
+          {progress?.todo ? ` ${progress.todo.done}/${progress.todo.total}` : ""}
+        </span>
+      </span>
+      {progress && (progress.state === "working" || progress.state === "waiting") && (
+        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-500" role="img" aria-label="動いています" />
+      )}
+    </button>
+  );
+}
+
+/** 作業場のカード: 元・開発対象の札・進み具合・ToDo・最後に動いた時刻・会話を開く・結果（関門・差分・取り込み） */
+function WorkspaceCard({ item, onOpenConversation }: { item: WorkspaceProgressItem; onOpenConversation: (conversationId: string) => void }) {
+  const progress = item.progress ?? null;
+  const state = progress ? WS_STATES[progress.state] : null;
+  const lastActive = progress?.last_active_at ? ago(progress.last_active_at) : "";
+  return (
+    <div data-testid="workspace-card" className="space-y-2">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="min-w-0 truncate text-sm font-semibold">{item.name}</span>
+          <WorkspaceBadge target={item.target} />
+          <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+            元: {item.source_label}・{item.branch || "ブランチ不明"}
+          </span>
+        </div>
+        <p className="mt-1.5 min-w-0 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          {progress ? (
+            <>
+              <span className={`font-medium ${state?.tone ?? ""}`} data-testid="workspace-progress-state">
+                {state?.label ?? progress.state}{state?.pulse ? "…" : ""}
+              </span>
+              {progress.todo && <span className="tabular-nums">・ToDo {progress.todo.done}/{progress.todo.total}</span>}
+              {lastActive && `・最後に動いた: ${lastActive}`}
+            </>
+          ) : (
+            "まだ会話がありません。AI アシスタントでこの作業場を選んで話しかけてください。"
+          )}
+        </p>
+        {progress && (
+          <button
+            type="button"
+            onClick={() => onOpenConversation(progress.conversation_id)}
+            className="mt-2 inline-flex min-h-11 items-center rounded-xl border border-zinc-300 px-4 text-sm font-medium hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
+          >
+            会話を開く{progress.title ? `（${progress.title}）` : ""}
+          </button>
+        )}
+        <p className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500">
+          実行して確かめる（準備中: 箱の中で動かす仕組みが要ります）
+        </p>
+      </div>
+      {/* 変更・関門・差分・取り込みは既存の結果のカード（AI アシスタントと同じ部品） */}
+      <WorkspaceResultCard workspace={item} busy={progress?.state === "working"} />
+    </div>
+  );
+}
+
+function WorkspaceStage({
+  item, loading, error, onOpenConversation,
+}: {
+  item: WorkspaceProgressItem | null;
+  loading: boolean;
+  error: unknown;
+  onOpenConversation: (conversationId: string) => void;
+}) {
+  if (loading) return <div className="grid h-full place-items-center"><Skeleton className="h-24 w-48 rounded-2xl" /></div>;
+  if (error) {
+    return (
+      <Centered>
+        <p className="text-sm text-red-600 dark:text-red-400">{error instanceof Error ? error.message : "読み込みに失敗しました"}</p>
+      </Centered>
+    );
+  }
+  if (!item) {
+    return (
+      <Centered>
+        <p className="text-base font-semibold">作業場がありません</p>
+        <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+          AI アシスタントの作業フォルダの選択欄の「🧪 ＋ 新しい作業場」から作れます（ControlDeck を直す・試すための、元から隔離した箱です）。
+        </p>
+      </Centered>
+    );
+  }
+  return (
+    <div className="mx-auto max-w-2xl p-3 md:p-4">
+      <WorkspaceCard item={item} onOpenConversation={onOpenConversation} />
+    </div>
   );
 }
 

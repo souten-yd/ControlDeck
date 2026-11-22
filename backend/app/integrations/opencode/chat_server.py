@@ -596,6 +596,19 @@ def _agent_model_ref(server: Server, agent: str) -> dict | None:
     return None
 
 
+async def switch_model(server: Server, session_id: str, model: str) -> None:
+    """このセッションのモデルを chain の次へ切り替える（使用量の上限で失敗したときに呼び出し元が使う）。
+
+    モデルの参照は _agent_model_ref と同じ形（{"providerID", "id"}）。モデル名は `provider/モデル`。
+    """
+    provider_id, _, model_id = str(model).partition("/")
+    if not provider_id or not model_id:
+        raise ChatServerError(f"モデルの指定が正しくありません: {model}")
+    if await _call(server, "POST", f"/api/session/{session_id}/model",
+                   {"model": {"providerID": provider_id, "id": model_id}}) is None:
+        raise ChatServerError("OpenCode のセッションが見つかりません")
+
+
 async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
     if agent not in AGENTS:

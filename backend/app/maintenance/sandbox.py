@@ -696,10 +696,10 @@ def ensure_gateway(box: Sandbox) -> None:
 
 def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
                 detach: bool = False, env: dict[str, str] | None = None, env_file: Path | None = None,
-                need_serve_port: bool = False) -> list[str]:
+                need_serve_port: bool = False, readonly: list[Path] = ()) -> list[str]:
     pod = ensure_pod(box, need_serve_port=need_serve_port)
     ensure_gateway(box)
-    readonly = [Path(box.meta["git_common_dir"])]
+    readonly = [Path(box.meta["git_common_dir"]), *readonly]
     overlays = []
     for entry in box.meta.get("overlays") or []:
         source_path, target = (entry, entry) if isinstance(entry, str) else entry
@@ -1144,9 +1144,13 @@ echo "tree=$t"
 
 
 def in_box_result(box: Sandbox, command: list[str], *, timeout: int = 120,
-                  env: dict[str, str] | None = None) -> tuple[int, str, str]:
-    """箱（pod の中の使い捨てコンテナ）の作業ツリーで command を動かす。(終了コード, 標準出力, 標準エラー)。"""
-    argv = podman_argv(box, command, env=env)
+                  env: dict[str, str] | None = None, readonly: list[Path] = ()) -> tuple[int, str, str]:
+    """箱（pod の中の使い捨てコンテナ）の作業ツリーで command を動かす。(終了コード, 標準出力, 標準エラー)。
+
+    readonly は箱の AI が書けない場所（ホストの data の中など）を読み取り専用で見せる。ホストだけが書く
+    ファイル（merge の bundle など）を渡すときに使う — 箱の書ける場所へ置くと symlink を仕込まれて
+    ホストの処理がそれを辿ってしまう（レビュー指摘 2026-11-22）。"""
+    argv = podman_argv(box, command, env=env, readonly=readonly)
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:

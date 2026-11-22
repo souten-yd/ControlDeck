@@ -25,6 +25,7 @@ FAKE_KEY = "production-" + "gateway-key-" + "value"
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     data = tmp_path / "data"
+    data.mkdir(parents=True, exist_ok=True)   # 空きの確認（statvfs）はディレクトリが在ることが前提
     monkeypatch.setattr(sandbox, "_data_dir", lambda: data)
     ports = iter(range(18800, 18900))
     monkeypatch.setattr(sandbox, "_free_port", lambda: next(ports))
@@ -57,7 +58,7 @@ def repo(tmp_path, monkeypatch):
     (fakebin / "git").chmod(0o755)
     BOX_CHECK["result"] = (0, "[合格] テスト: 3 件\n[未実施] 依存: なし\n\n合格", "")
 
-    def in_box_result(box, command, *, timeout=120, env=None):
+    def in_box_result(box, command, *, timeout=120, env=None, readonly=()):
         if "app.maintenance.dev_check" in " ".join(command):
             return BOX_CHECK["result"]
         done = subprocess.run(command, cwd=box.repo, capture_output=True, text=True, timeout=60, check=False,
@@ -360,7 +361,106 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 10  # 一覧・作る・消す + 3 段目の changes・check（GET/POST）・adopt + 4 段目の diff・merge（GET/POST）
+    assert len(routes) == 12  # 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる
     for route in routes.values():
-        wanted = "settings.manage" if route.path.endswith("/merge") else "terminal.use"  # マージだけは管理者
+        # マージだけは管理者、直させる（会話へ送る）は送信と同じ workflows.run、ほかは terminal.use
+        wanted = ("settings.manage" if route.path.endswith("/merge")
+                  else "workflows.run" if route.path.endswith("/resolve-conflict") else "terminal.use")
         assert wanted in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path
+
+
+# ---- 進み具合（Project Lab の「作業場」のタブ） ----
+
+def _progress_box(name):
+    return sandbox.load(workspaces.create("admin", "controldeck", name)["name"])
+
+
+def _code_message(db, message_id, conv_id, repo, *, status="completed", todos=None, pending=False, at=None):
+    """作業場で動いた OpenCode の回答の記録（ChatMessage の meta は本物の保存と同じ形）。"""
+    from app.models import ChatMessage, utcnow
+
+    meta = {"mode": "code", "project_path": str(repo), "opencode_session": "ses_" + message_id}
+    if todos is not None:
+        meta["todos"] = todos
+    if pending:
+        meta["permissions"] = [{"id": "r1", "status": "pending", "title": "書き込み"}]
+    db.add(ChatMessage(id=message_id, conversation_id=conv_id, role="assistant", content="x", status=status,
+                       meta_json=json.dumps(meta, ensure_ascii=False), created_at=at or utcnow()))
+    db.commit()
+
+
+def test_workspace_progress_states_todo_and_server_from_latest_message(repo, api, admin_client, monkeypatch, tmp_path):
+    """目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
+    会話の最新の OpenCode の回答の meta と会話サーバーの状態から正しく出る。
+    根拠: 2026-11-22 利用者「Project Lab で現在の進捗とかって確認できないんだったけ」。他人の会話は読まない。
+    生成中・質問待ちでも会話サーバーが止まっていたら「止まった」（サーバー再起動後に残る見せない）。"""
+    from datetime import timedelta
+
+    from app.database import SessionLocal
+    from app.integrations.opencode import chat_server
+    from app.models import Conversation, User, utcnow
+
+    done_box = _progress_box("wsdone")
+    wait_box = _progress_box("wswait")
+    gen_box = _progress_box("wsgen")
+    stop_box = _progress_box("wsstop")
+    _progress_box("wsidle")      # まだ会話が無い
+    # 動いている（生成中・質問待ち）の作業場の会話サーバー（状態ファイルだけ。unit は生きていることにする）
+    monkeypatch.setattr(chat_server, "_state_dir", lambda: tmp_path)
+    for key, port, target in (("kg", 19003, gen_box), ("kw", 19004, wait_box)):
+        chat_server._save(chat_server.Server(
+            key=key, port=port, password="x", unit=f"cd-opencode-chat-{key}", config=str(tmp_path),
+            project=str(target.repo), permission_file=str(tmp_path), started_at=0, last_used=0,
+            owner=None, workspace=target.name))
+    monkeypatch.setattr(chat_server, "_unit_active", lambda unit: True)
+
+    mine = admin_client.post("/api/v1/chat/conversations", headers=CSRF_HEADERS).json()["id"]
+    db = SessionLocal()
+    try:
+        # 他人の会話で動いた分は出さない（実在する別ユーザーの会話。FK のため user を作る）
+        from app.security.passwords import hash_password
+
+        stranger = User(id=999, username="progress-other", password_hash=hash_password("other-pass-123"),
+                         role_id=db.scalar(select(User.role_id).where(User.username == "admin")))
+        db.add(stranger)
+        db.commit()
+        _code_message(db, "m-done-0000000000000001", mine, done_box.repo, status="completed", at=utcnow(),
+                      todos=[{"content": "a", "status": "completed"}, {"content": "b", "status": "completed"},
+                             {"content": "c", "status": "in_progress"}])
+        _code_message(db, "m-wait-0000000000000002", mine, wait_box.repo, status="completed",
+                      pending=True, at=utcnow() + timedelta(seconds=10))
+        _code_message(db, "m-gen-000000000000003", mine, gen_box.repo, status="generating",
+                      at=utcnow() + timedelta(seconds=20))
+        _code_message(db, "m-stop-000000000000004", mine, stop_box.repo, status="generating",
+                      at=utcnow() + timedelta(seconds=30))
+        other = Conversation(id="conv-other-00000000000000000", title="他人", owner_user_id=999)
+        db.add(other)
+        db.commit()
+        _code_message(db, "m-other-00000000000005", other.id, gen_box.repo, status="generating",
+                      at=utcnow() + timedelta(seconds=40))
+    finally:
+        db.close()
+
+    r = api.get("/api/v1/opencode/workspaces/progress")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    by_name = {w["name"]: w for w in data["workspaces"]}
+    assert {w["name"] for w in data["workspaces"]} == {"wsdone", "wswait", "wsgen", "wsstop", "wsidle"}
+    assert by_name["wsdone"]["progress"]["state"] == "done"
+    assert by_name["wsdone"]["progress"]["todo"] == {"done": 2, "total": 3}
+    assert by_name["wsdone"]["progress"]["conversation_id"] == mine
+    assert by_name["wswait"]["progress"]["state"] == "waiting", "保留中の権限の問い合わせ"
+    assert by_name["wsgen"]["progress"]["state"] == "working", "生成中でサーバーが生きている"
+    assert by_name["wsgen"]["progress"]["conversation_id"] == mine, \
+        "他人の会話の分（新しい）で上書きされていないことの pin（2026-11-22 レビュー）"
+    assert by_name["wsstop"]["progress"]["state"] == "stopped", "生成中でもサーバーが止まっていたら止まった"
+    assert by_name["wsidle"]["progress"] is None, "まだ会話が無い"
+    assert data["active"] == 2, "動いている（作業中・質問待ち）の数"
+    # 最新のメッセージの時刻。遅く送った分が新しい
+    assert by_name["wsstop"]["progress"]["last_active_at"] > by_name["wsdone"]["progress"]["last_active_at"]
+
+
+def test_workspace_progress_with_no_workspaces(repo, api):
+    """目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。"""
+    r = api.get("/api/v1/opencode/workspaces/progress")
+    assert r.status_code == 200 and r.json()["workspaces"] == [] and r.json()["active"] == 0

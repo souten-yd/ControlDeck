@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 223 ファイル、2064 テスト（目的の未記入 93 ファイル）
-- E2E: 110 spec、222 テスト
+- backend: 225 ファイル、2111 テスト（目的の未記入 93 ファイル）
+- E2E: 112 spec、229 テスト
 
 ## backend（backend/tests）
 
@@ -805,7 +805,9 @@
 
 目的: 開発の作業場 3 段目（結果の要約・関門・取り込む）。 目的: 作業場の結果（元からの差分）が要約でき、関門が保存され、「関門が合格で、その後に変更が無い」ときだけ取り込めること。 本体は GitHub に PR（push と gh pr create はホスト側・箱の中からではない。マージはしない）、CodeDEV は元のリポジトリへブランチとして 取り込むだけで元の作業中のブランチは変えない。本体の取り込みは settings.manage。差分の中身は監査へ残さない。 箱の中の AI が書ける .git/config・フック（fsmonitor・credential.helper・sshCommand・insteadOf など）が、ホストの処理 （一覧・状態・差分・関門・取り込み・削除）で動かない（ホストの git は box.repo の中で動かさず、export.git へ取り込んで比べる）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目。外部への push と権限に関わる L2）。 git は本物（一時のリポジトリ）、箱の中の実行・push・gh はモック（関門の結果は差し替え）。
 
-- `test_changes_summarizes_files_commits_and_uncommitted`
+- `test_changes_summarizes_files_commits_and_uncommitted` — 目的: changes の要約（ファイル数・増減）に未コミットの変更も数に入れること。
+- `test_changes_counts_from_merge_base_with_main_not_the_original_revision` — 目的: 作業場が main を取り込んでも、結果のカードの差分は「PR の実際」（main との共通の祖先からの分）だけを数えること。
+- `test_changes_falls_back_to_revision_when_main_is_unreadable` — 目的: main が読めなくても、結果のカードは元の revision との差で出る（落ちない・黙って 0 にしない）。
 - `test_check_is_saved_with_items_and_goes_stale_after_a_change`
 - `test_adopt_refuses_without_check_failed_check_changes_after_and_uncommitted`
 - `test_adopt_controldeck_pushes_from_export_repo_and_opens_pr_without_merging`
@@ -830,6 +832,36 @@
 - `test_merge_without_pr_or_for_codedev_is_refused`
 - `test_l2_change_needs_the_confirmation_phrase_and_lists_guarded_files`
 - `test_api_merge_needs_settings_manage_confirm_and_is_audited`
+
+### backend/tests/test_dev_workspace_persist.py
+
+目的: 開発の作業場の「保存と中断・再開」（2026-11-22）。 目的: 作業場のコードがいつ保存されるか（1 ターンの終わりの自動保存・起動時の立て直し）、停電や再起動で どうなるか（残った .git/index.lock を消す・生成中のまま止まった会話は「中断」・未保存の変更は保存）、 main の進み（取り込みの前に箱の中で main を取り込む・ぶつかったら止めてファイルを記録）が指示どおりに 動くこと。どの処理でもホストの git が箱の作業ツリーの中で動かない（external fixture の検査）。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。他にも考えられる割り込みのシチュエーションを想定した上で、 問題がないように実装してほしい」。 git は本物（一時のリポジトリ）。箱の中の実行・外部への fetch は fixture の代役（origin はローカルの bare）。
+
+- `test_autosave_commits_each_turn_with_sequence_and_leaves_clean`
+- `test_autosave_at_startup_names_the_reason`
+- `test_autosave_reports_box_failures_without_raising`
+- `test_autosave_skips_while_a_merge_is_unresolved` — マージのぶつかりの解決の途中（unmerged が index に残る）はコミットしない — conflict marker 入りの
+- `test_autosave_skips_when_box_is_gone`
+- `test_disk_floor_blocks_create_and_skips_autosave`
+- `test_disk_floor_is_configurable`
+- `test_changes_report_disk_free_and_low_watermark`
+- `test_busy_follows_the_workspace_chat_server`
+- `test_main_progress_counts_origin_and_caches`
+- `test_main_progress_returns_none_without_origin_or_unreachable`
+- `test_merge_main_pulls_origin_main_into_the_box`
+- `test_merge_main_does_nothing_when_up_to_date`
+- `test_merge_main_reports_conflict_files_and_aborts`
+- `test_adopt_refuses_on_conflict_and_reports_files`
+- `test_adopt_merges_main_then_asks_to_rerun_the_check`
+- `test_restore_interrupted_clears_stale_lock_and_saves_unsaved`
+- `test_restore_interrupted_keeps_lock_while_git_runs`
+- `test_restore_interrupted_marks_generating_messages_of_workspaces`
+- `test_last_conversation_finds_the_latest_of_the_workspace`
+- `test_api_resolve_conflict_sends_the_files_to_the_last_conversation`
+- `test_merge_main_shows_the_bundle_to_the_box_only_read_only` — bundle は箱の AI が書ける場所へ置かず、fetch の間だけ readonly で見せる（symlink を辿らされる脅威）。
+- `test_fetch_main_refuses_unsafe_sources` — 実行を伴うリモート補助（ext::・fd::）とオプションに読める先頭の `-` は fetch しない（git も動かさない）。
+- `test_autosave_runs_one_at_a_time_per_workspace` — 2 つのターンの終わり・起動時の立て直しが重なっても、番号が重ならず index.lock を取り合わない。
+- `test_restore_interrupted_does_not_wake_untouched_workspaces` — 止まっていた作業場まで全部起こさない（podman の起動）。中断にした・lock の残った作業場だけを保存する。
 
 ### backend/tests/test_dev_workspace_targets.py
 
@@ -881,6 +913,8 @@
 - `test_delete_is_owner_only`
 - `test_workspace_api_list_create_delete_confirm_and_audit`
 - `test_workspace_api_requires_login_and_terminal_permission`
+- `test_workspace_progress_states_todo_and_server_from_latest_message` — 目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
+- `test_workspace_progress_with_no_workspaces` — 目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。
 
 ### backend/tests/test_diagnostics.py
 
@@ -2070,6 +2104,28 @@
 - `test_old_advisor_model_api_value_sets_advise_and_unknown_model_is_refused` — 目的: 古い API の advisor_model を受けても壊れず advise へ移る。未登録のモデルは断る。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
 - `test_confidential_scope_drops_advise_and_developer_to_local` — 目的: 秘密の会話では相談・開発担当の外部モデルがローカルへ自動で落ちる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
 
+### backend/tests/test_opencode_workspace_persist.py
+
+目的: 作業場の会話の「保存と中断・再開」の chat 側（2026-11-22）。 目的: 作業場（開発用の箱）の OpenCode の回が終わるたび（成功・失敗・止めた、どれでも）自動保存が呼ばれること。 使用量の上限・残高切れ・レート制限で失敗したら、モデルの順番（chain）の次へセッションを切り替えて同じ依頼を 再送し、会話に 1 行「〜が使えなくなったので〜で続けます」が出ること。中断・止めた回を「続きから」で再開 できること（同じセッションへ・前回の理由と ToDo を本文へ渡す）。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。他にも考えられる割り込みのシチュエーションを想定した上で、 問題がないように実装してほしい」。OpenCode・会話サーバー・autosave は偽物（記録だけ）。
+
+- `test_workspace_turn_autosaves_on_success`
+- `test_workspace_turn_autosaves_even_when_interrupted`
+- `test_workspace_turn_autosaves_when_the_turn_crashes`
+- `test_non_workspace_turns_do_not_autosave`
+- `test_workspace_turn_reports_disk_shortage_in_the_reply`
+- `test_rate_limit_failure_switches_to_the_next_model_and_resends`
+- `test_model_switch_resumes_from_the_last_index_of_previous_turns` — 前の回で chain[2] まで進めていれば、この回で上限が起きたら chain[3] へ（前の分をやり直さない）。
+- `test_rate_limit_exhausts_the_chain_and_keeps_the_failure`
+- `test_other_failures_do_not_switch_models`
+- `test_failed_switch_keeps_the_original_failure`
+- `test_resume_sends_reason_and_todos_to_the_same_session`
+- `test_resume_of_a_failed_turn_carries_the_error`
+- `test_resume_refuses_when_there_is_no_unsettled_opencode_turn`
+- `test_resume_picks_the_latest_unsettled_opencode_turn_without_an_id`
+- `test_model_index_is_not_carried_into_a_new_session` — セッションを作り直した（前のが無い）ときのモデルは既定へ戻っている。前の回の chain の位置を引きずらない
+- `test_resume_cannot_be_done_twice_for_the_same_turn`
+- `test_resume_refuses_while_the_session_still_runs` — ControlDeck の再起動の後も OpenCode のセッションが箱の中で動き続けていれば、続きからは送らずに 409 で知らせる
+
 ### backend/tests/test_passkeys.py
 
 目的: **未記入**
@@ -2621,6 +2677,7 @@
 目的: サンドボックスの LLM 中継（app.maintenance.sandbox_gateway）。 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。 上流は httpx.MockTransport の偽物。 MCP の中継（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具（Project Lab の実行など）を使わせたいが、 箱へ MCP のトークンは置けない。トークンは箱の外の中継だけが持ち、箱から来た Authorization は捨てて付け替える。 呼べる道具は許可の一覧だけに絞り、一覧（/tools）も同じ範囲にする。
 
 - `test_only_allowed_calls_pass_and_load_needs_allow_load`
+- `test_models_response_passes_through_with_vision_and_loaded` — 目的: 中継は /models の応答の中身を変えない（vision・loaded がそのまま箱へ届く）。
 - `test_headers_are_replaced_not_forwarded`
 - `test_body_over_32_mib_is_413`
 - `test_stream_chunks_arrive_separately`
@@ -3338,10 +3395,10 @@
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts
 
-目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
+目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 増減は未コミットの変更も数に入れて「N ファイル +A −R（うち未コミット M）」と出す（2026-11-22 の通し。 取り込んだ ref だけ数えて「0 ファイル +0 −0・未コミット」と出ていた）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
 
 - workspace result card: check then adopt creates a PR (${width}px)
-- workspace result card: failed check lists the failure and blocks adopt (dark, 320px)
+- workspace result card: failed check lists the failure and blocks adopt (dark, ${width}px)
 - workspace result card: visual-only failure can be skipped after a human check (320px)
 
 ### frontend/e2e/assistant-dev-workspace.spec.ts
@@ -3422,6 +3479,16 @@
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
+
+### frontend/e2e/assistant-workspace-resume.spec.ts
+
+目的: 目的: 作業場の「保存と中断・再開」の画面（2026-11-22）。 中断・止めた OpenCode の回のメニューに「続きから」が出て、押すと resume API が呼ばれる。 結果のカードに main の進み・ディスクの空きの注意・ぶつかったときの「OpenCode に直させる」ボタンが出る。 作業中の作業場を消すときは確認の文言が強くなる。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した 場合はどうなるのか。中断して再開できるのか。…問題がないように実装してほしい」。API は page.route で模擬する。
+
+- interrupted workspace turn has a resume action that posts the message id (${width}px)
+- workspace result card warns about main progress, disk and conflicts (${width}px)
+- conflicts show the files and ask OpenCode to fix them (dark, 320px)
+- a resumed turn does not offer resume again (1280px)
+- deleting a working workspace asks to stop it first (1280px)
 
 ### frontend/e2e/background-return.spec.ts
 
@@ -3688,6 +3755,13 @@
 目的: **未記入**
 
 - starts, previews, and stops an isolated Project Lab Web profile
+
+### frontend/e2e/project-lab-workspaces.spec.ts
+
+目的: 目的: Project Lab の一覧の上の「プロジェクト｜作業場」の切り替えと、作業場のカード（元・開発対象の札・ 進み具合・ToDo・最後に動いた時刻・会話を開く）が正しく出る。AI アシスタントの作業フォルダの選択欄は 「CodeDEV のプロジェクト」と「作業場（一時）」に分かれ、「🧪 ＋ 新しい作業場（ControlDeck を直す・試す）」は選択欄の中の「➕ 新規作成」のすぐ下に出る（利用者の決定。選択欄の外の別のボタンは作らない）。 根拠: 2026-11-22 利用者「Project Lab で現在の進捗とかって確認できないんだったっけ…参照先がテンポラリーな フォルダなら、今あるドロップダウンの一覧とは別にした方がいい」「入口が選択欄のいちばん下に隠れて分からない」。 API は模擬する（箱・OpenCode を動かさない）。320・1280、ライト・ダークの撮影もこの中で行う。
+
+- project lab switches to workspaces and shows progress (${width}px ${scheme})
+- assistant folder select separates codedev and workspaces (${width}px ${scheme})
 
 ### frontend/e2e/project-lab.spec.ts
 

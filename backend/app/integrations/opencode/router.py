@@ -25,6 +25,8 @@ class AgentTargetBody(BaseModel):
 class SettingsBody(AgentTargetBody):
     # 使うOpenCodeの系列。未指定なら現在の設定を保つ（既存クライアントを壊さない）。
     runtime: str = Field(default="", max_length=8)
+    # 開発の作業場: data のある所のディスクの空きの下限（GiB）。None（未指定）なら変えない。
+    workspace_min_free_gib: float | None = Field(default=None, ge=0, le=4096)
 
 
 class WorkflowBody(BaseModel):
@@ -80,7 +82,8 @@ def settings(
     body: SettingsBody, request: Request,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
-    patch = {key: value for key, value in body.model_dump().items() if key != "runtime" or value}
+    patch = {key: value for key, value in body.model_dump().items()
+             if value is not None and (key != "runtime" or value)}
     try:
         result = opencode.save_settings(patch)
     except (ValueError, OSError) as exc:
@@ -157,6 +160,118 @@ def list_workspaces(user: User = Depends(require_permission("terminal.use"))):
         return {"workspaces": workspaces.list_for(user.username)}
     except workspaces.SandboxError as exc:
         raise _workspace_error(exc) from exc
+
+
+def _workspace_progress(db, user_id: int | None, items: list[dict]) -> dict[str, dict]:
+    """作業場ごとの進み具合（Project Lab の「作業場」のタブ用）。会話の最新の OpenCode の回答の meta から組み立てる。
+
+    state: working（OpenCode が作業中）/ waiting（質問待ち）/ done（完了）/ stopped（止まった）。
+    生成中でも会話サーバーが止まっていたら stopped と出す（サーバーの再起動後に generating が
+    残るのを「作業中」と見せないため）。その作業場でまだ会話が無ければ進み具合は無い（None）。
+    アーカイブした会話・他人の会話は読まない（自分の会話だけ）。
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from app.integrations.opencode import chat_server
+    from app.maintenance import sandbox as sandbox_mod
+    from app.models import ChatMessage, Conversation
+
+    if not items or user_id is None:
+        return {}
+    by_repo = {str(item["repo_path"]): str(item["name"]) for item in items}
+    convs = dict(db.execute(select(Conversation.id, Conversation.title).where(
+        Conversation.owner_user_id == user_id, Conversation.archived_at.is_(None))).all())
+    if not convs:
+        return {}
+
+    def epoch(value) -> float:
+        """時刻を epoch 秒へ。DB（SQLite）からは tz 落ちの naive UTC が返るので、UTC として数える。
+        画面は文字列の日付をその場の時間帯で解釈してしまう（2026-11-22 レビュー: 約 9 時間古く出た）。"""
+        from datetime import timezone
+
+        if value is None:
+            return 0.0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
+    # 作業場の repo は <sandbox の root>/<名前>/work/repo（名前は英小文字・数字・ハイフンだけ）。like で一括して拾う
+    root = str(sandbox_mod.root().resolve())
+    escaped = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = '%"project_path": "' + escaped + '/%/work/repo"%'
+    rows = db.execute(
+        select(ChatMessage.conversation_id, ChatMessage.role, ChatMessage.status, ChatMessage.meta_json,
+               ChatMessage.created_at)
+        .where(ChatMessage.conversation_id.in_(convs), ChatMessage.meta_json.like(pattern, escape="\\"))
+        .order_by(ChatMessage.created_at.desc()).limit(600)
+    ).all()
+    progress: dict[str, dict] = {}
+    for conv_id, role, status, meta_json, created_at in rows:
+        try:
+            meta = _json.loads(meta_json or "{}") or {}
+        except ValueError:
+            continue
+        name = by_repo.get(str(meta.get("project_path") or ""))
+        if name is None or name in progress:
+            continue          # 新しい順に走るので、その作業場の最初の 1 件が最新
+        pending = [p for p in (meta.get("permissions") or [])
+                   if isinstance(p, dict) and p.get("status") == "pending"]
+        todos = [t for t in (meta.get("todos") or []) if isinstance(t, dict)]
+        if role == "user":
+            # user の行の meta には project_path が入らない（chat_persist の保存は assistant の行だけ）。
+            # 将来 user 行にも付く形の変化があっても、最新の 1 件として「送った直後」扱いにしておく
+            state = "working"
+        elif pending:
+            state = "waiting"
+        elif status == "generating":
+            state = "working"
+        elif status in ("failed", "interrupted", "canceled"):
+            state = "stopped"
+        else:
+            state = "done"
+        progress[name] = {
+            "state": state,
+            "todo": ({"done": sum(1 for t in todos if t.get("status") == "completed"), "total": len(todos)}
+                     if todos else None),
+            "last_active_at": epoch(created_at),
+            "conversation_id": conv_id,
+            "title": convs.get(conv_id, ""),
+        }
+    if any(p["state"] in ("working", "waiting") for p in progress.values()):
+        # 会話サーバーが止まっていないか、動いている（生成中・質問待ち）の作業場だけ確かめる（systemctl はその分だけ）。
+        # 質問待ちのままサーバーが死んでいると、会話を開いても回答は届かないので「止まった」と出す
+        servers = {s.workspace: s for s in chat_server._all() if s.workspace}
+        for name, state in progress.items():
+            if state["state"] not in ("working", "waiting"):
+                continue
+            server = servers.get(name)
+            if server is None or not chat_server._unit_active(server.unit):
+                state["state"] = "stopped"
+    return progress
+
+
+@router.get("/workspaces/progress")
+def workspaces_progress(
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """自分の作業場の一覧と進み具合（Project Lab の「作業場」タブ用の 1 本。既存の一覧と同じ形に progress を足す）。
+
+    一覧は list_for と同じ（AI アシスタントの選択欄は軽い既存の一覧 API をそのまま使う）。
+    active は動いている作業場（作業中・質問待ち）の数（タブの印に出す）。
+    """
+    from app.maintenance import workspaces
+
+    try:
+        items = workspaces.list_for(user.username)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    rows = _workspace_progress(db, user.id, items)
+    for item in items:
+        item["progress"] = rows.get(item["name"])
+    active = sum(1 for item in items if (item["progress"] or {}).get("state") in ("working", "waiting"))
+    return {"workspaces": items, "active": active}
 
 
 @router.post("/workspaces", status_code=201)
@@ -390,6 +505,44 @@ async def workspace_merge(
                  resource_id=name, request=request,
                  metadata={"pr_url": result["pr_url"], "tier": result["tier"], "head": result["head"],
                            "guarded": result["guarded"]})
+    return result
+
+
+@router.post("/workspaces/{name}/resolve-conflict", status_code=202)
+async def workspace_resolve_conflict(
+    name: str, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db=Depends(get_db),
+):
+    """main の取り込みでぶつかったファイルを、この作業場で動いた同じ会話の OpenCode に直させる。
+
+    元の main は merge_main が箱の中の MAIN_REF へ取り込み済み。ぶつかったファイルの一覧を user
+    メッセージとして会話へ送る（通常の送信と同じ流れ・workflows.run）。セッションは会話の meta のものを続ける。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+    from app.models import Conversation
+    from app.workflows import chat_persist
+
+    box = _owned_box(name, user)
+    conflict = await asyncio.to_thread(workspaces.merge_conflict_state, box)
+    if conflict is None:
+        raise HTTPException(status_code=409,
+                            detail="ぶつかったファイルの記録がありません。もう一度「取り込む」を試してください")
+    conv_id = await asyncio.to_thread(workspaces.last_conversation, box)
+    conv = db.get(Conversation, conv_id) if conv_id else None
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=409, detail="この作業場で OpenCode が動いた会話が見つかりません")
+    files = "\n".join(f"- {f}" for f in (conflict.get("conflicts") or [])[:50])
+    content = ("main を取り込もうとしたら、次のファイルがぶつかりました:\n"
+               f"{files}\n\n"
+               f"元の main はこの作業場の中の `{workspaces.MAIN_REF}` に取り込み済みです。"
+               f"`git merge {workspaces.MAIN_REF}` でぶつかりを解決してください"
+               "（main の変更とこの作業の内容を両方残す）。解決したらコミットして、残りの作業を続けてください。")
+    body = chat_persist.SendBody(content=content, mode="code", code_project_path=str(box.repo))
+    result = await chat_persist._start_send(db, conv, body, user.id)
+    audit.record(db, "opencode.workspace.resolve_conflict", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request,
+                 metadata={"conversation_id": conv_id, "files": len(conflict.get("conflicts") or [])})
     return result
 
 

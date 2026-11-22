@@ -74,7 +74,9 @@ def test_search_and_claim_chart_use_the_shared_knowledge(admin_client, monkeypat
         store.create_collection("pat-lit-test", shard="patents", kind="patent")
     store.add_document("pat-lit-test", [store.NewChunk("スイッチング素子を窒化ガリウムで構成したインバータ")], title="公報A")
     hits = admin_client.post(f"{API}/search", json={"query": "スイッチング素子"}, headers=CSRF_HEADERS).json()["results"]
-    assert hits and hits[0]["doc_ref"].startswith("patents:")
+    # 共有のナレッジには他のテストの文書も残りうるので、1 件目かどうかではなく、入れた特許の文書が出ることを確かめる
+    # （2026-11-22: 関門が選んだ順で流すと、先の test_knowledge_rebuild の一般の文書が 1 件目に来て落ちていた）
+    assert any(h["doc_ref"].startswith("patents:") and h["title"] == "公報A" for h in hits), hits
     case_id = admin_client.post(f"{API}/cases", json={"title": "GaN インバータ"}, headers=CSRF_HEADERS).json()["id"]
     admin_client.post(f"{API}/cases/{case_id}/claims", json={"text": "【請求項１】\nスイッチング素子と、制御部と、を備えるインバータ。"},
                       headers=CSRF_HEADERS)
