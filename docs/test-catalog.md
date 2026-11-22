@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 228 ファイル、2136 テスト（目的の未記入 93 ファイル）
-- E2E: 117 spec、242 テスト
+- E2E: 118 spec、243 テスト
 
 ## backend（backend/tests）
 
@@ -3596,6 +3596,12 @@
 目的: 目的: ホームのシステムサマリーで、CPU・GPU のファン回転（rpm）が数値で表示され、 320px（iPhone の最小幅）と PC 幅のどちらでも横にはみ出さないこと。 根拠: ファン回転をサマリーのカードに入れたとき（モバイルで横スクロールが出た）。2026-11-17 のファン制御 v2 で 「FAN 1,500 RPM」の文字表記がアイコン＋「1500 RPM」になっていたのに合わせて書き直した。 ファンの値は実機のセンサー次第（無ければ出さない）なので、出ている分の形式と幅だけを確かめる。
 
 - dashboard shows CPU and GPU fan values without mobile overflow
+
+### frontend/e2e/dev-workspace-settings.spec.ts
+
+目的: 目的: 設定 → 開発（作業場）に、役割の要約・隔離・ディスクの下限が出て、編集が既存の API（workflow・settings）へ届くこと。 根拠: 開発の設定が OpenCode 画面・AI アシスタントに散らばっていたので 1 か所に集めた（ROADMAP U10）。新しい設定値は持たない。
+
+- dev workspace settings at ${width}px
 
 ### frontend/e2e/diagnostics.spec.ts
 

@@ -4,6 +4,12 @@
 
 - 利用者「お休み中の通知は届かないようにしてほしい」。お休みモードの「緊急の監視の警報はお休み中も送る」の既定を無効にした（`events.QUIET_DEFAULT`）。有効にすれば今までどおり通る。本番の souten の設定は先に無効へ書き換えた。
 - お休みモードを通らない Push は設定画面の「試しに送る」（利用者が押したときだけ）のみであることを確かめた。
+## 2026-11-23 設定に「開発（作業場）」の節（U10）
+
+- 設定 → 開発（作業場）（`/settings/dev`、節の id は `#dev-workspace`、`DevWorkspaceSettings.tsx`）。新しい設定値は持たず、既存の API をまとめた。
+- 編集できる: 隔離（`isolation`）・自動レビュー（`auto_review`）= `/opencode/workflow`、AI アシスタントの権限モード = `/chat/opencode/permission-mode`、ディスクの空きの下限（`workspace_min_free_gib`）= `/opencode/settings`。OpenCode 画面と同じ値。
+- 要約とリンク: 役割とモデル（指定のある役割を一覧し、編集は OpenCode 画面へ）・開発対象と取り込み先（本体は PR、ほかは元のリポジトリへブランチ）・関門（dev-check）の説明・自動保存（ターンの終わりごと・常に有効。ディスクの下限との関係を説明）。
+- テスト: E2E `dev-workspace-settings.spec.ts`（320・1280）。
 
 ## 2026-11-23 通知の作り直し: 種類ごとの有効・無効とお休みモード
 

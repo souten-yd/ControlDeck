@@ -23,6 +23,7 @@ import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 import { IconBell, IconChevronRight, IconChip, IconKey, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
 import { KeysSettings } from "../features/settings/KeysSettings";
+import { DevWorkspaceSettings } from "../features/settings/DevWorkspaceSettings";
 import { RemoteDesktopSettings } from "../features/settings/RemoteDesktopSettings";
 
 const AccessManagement = lazy(() => import("../features/auth/AccessManagement"));
@@ -70,7 +71,7 @@ export default function SettingsPage() {
   return <SettingsLayout />;
 }
 
-type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "keys" | "gpu" | "hardware" | "system";
+type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "keys" | "dev" | "gpu" | "hardware" | "system";
 type Can = (permission: string) => boolean;
 
 interface SettingsSectionDef {
@@ -100,6 +101,9 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "keys", label: "API キー", summary: "クラウドの AI（OpenRouter など）と特許の公開データ（EPO・USPTO・特許庁）のキー",
     icon: IconKey, keywords: ["キー", "API", "鍵", "OpenRouter", "OpenAI", "Anthropic", "Gemini", "EPO", "USPTO", "特許庁", "JPO", "トークン", "パスワード"],
     allowed: (can) => can("settings.manage") },
+  { id: "dev", label: "開発（作業場）", summary: "既定のモデルと役割・隔離・自動レビュー・権限モード・ディスクの下限・関門・取り込み先",
+    icon: IconChip, keywords: ["開発", "作業場", "開発対象", "役割", "モデル", "隔離", "箱", "自動レビュー", "権限", "ディスク", "下限", "自動保存", "関門", "取り込み", "PR", "OpenCode", "dev-check"],
+    allowed: (can) => can("settings.manage") || can("workflows.run") },
   { id: "gpu", label: "GPU 設定", summary: "発熱を抑えるクロック・電圧と、電力・静音",
     icon: IconChip, keywords: ["GPU", "クロック", "周波数", "電圧", "アンダーボルト", "電力", "静音", "VRAM", "R9700", "ホットスポット"],
     allowed: (can) => can("settings.manage") || can("workflows.edit") },
@@ -218,6 +222,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
     case "keys": return <KeysSettings />;
+    case "dev": return <DevWorkspaceSettings />;
     case "gpu": return <GpuSettings />;
     case "hardware": return <FanControlSettings />;
     case "notifications": return <AlertsSettings />;
