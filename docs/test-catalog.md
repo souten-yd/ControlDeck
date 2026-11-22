@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 227 ファイル、2123 テスト（目的の未記入 93 ファイル）
-- E2E: 114 spec、236 テスト
+- backend: 228 ファイル、2136 テスト（目的の未記入 93 ファイル）
+- E2E: 117 spec、242 テスト
 
 ## backend（backend/tests）
 
@@ -922,6 +922,7 @@
 - `test_workspace_api_list_create_delete_confirm_and_audit`
 - `test_workspace_api_requires_login_and_terminal_permission`
 - `test_workspace_progress_states_todo_and_server_from_latest_message` — 目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
+- `test_workspace_progress_flags_interrupted_turns` — 目的: 進み具合が「中断（interrupted）」と「失敗（failed）」を区別して返す（会話の一覧の「中断」の印の根拠）。
 - `test_workspace_progress_with_no_workspaces` — 目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。
 
 ### backend/tests/test_diagnostics.py
@@ -1923,6 +1924,23 @@
 - `test_ollama_settings_has_no_dead_idle_unload_keys` — ollama-settings.json に idle アンロードの死んだキーを持たせない。
 - `test_think_normalize_and_config` — think の正規化と個別設定の保存/クリア。
 - `test_native_base_helper`
+
+### backend/tests/test_notify_events.py
+
+目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」が有効なら送る。無効なら送らない。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
+
+- `test_disabled_kind_is_not_sent_and_defaults_apply`
+- `test_quiet_hours_cross_midnight_and_boundaries`
+- `test_quiet_hours_custom_same_day_range_and_off`
+- `test_urgent_alert_passes_quiet_hours_only_when_allowed`
+- `test_cooldown_sends_same_tag_once`
+- `test_settings_api_is_own_only_and_validates`
+- `test_turn_end_calls_entry_with_kind_and_conversation_url`
+- `test_plain_chat_is_silent_by_default_and_only_when_long`
+- `test_canceled_turn_is_not_announced`
+- `test_secret_conversation_and_summary_carry_no_content`
+- `test_waiting_and_startup_interruption_notify`
+- `test_other_detection_points_go_through_entry`
 
 ### backend/tests/test_offline_research.py
 
@@ -3371,6 +3389,12 @@
 
 - App Studio deletes a project through the secondary menu with confirmation
 
+### frontend/e2e/assistant-chat-list-workspace-badge.spec.ts
+
+目的: 目的: 会話の一覧に、作業場を使う OpenCode の会話の状態の小さな印（作業中・質問待ち・完了・中断）が出る。 作業場を使わない会話には印が無い。320px でも題が読め（横にはみ出さない）、ライト・ダークで印が読める。 根拠: 2026-11-23 ROADMAP「AI 開発環境の UX 改善」U9。Project Lab の作業場の一覧（#560）と同じ API （/opencode/workspaces/progress）・中断は #561 の interrupted を使う。API は page.route で模擬する。
+
+- conversation list shows workspace state marks (${width}px, ${scheme})
+
 ### frontend/e2e/assistant-claude-layout.spec.ts
 
 目的: **未記入**
@@ -3428,6 +3452,15 @@
 目的: 目的: AI アシスタントの OpenCode で「開発の作業場」を選べること。一覧に自分の作業場が出て、選ぶと作業場の印が出る。 「新しい作業場」で元を選んで作ると選ばれる。送ると作業場の作業ツリーのパスが code_project_path で渡る。 消す操作は確認つき（未保存の変更があれば警告し、確認の印つきで消す）。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「Claude なしで、AI アシスタントに要望を出せば OpenCode が開発を進められる状態に」 （開発の作業場 2 段目）。API と WebSocket は模擬する（箱・OpenCode を動かさない）。
 
 - dev workspaces can be listed, created, used and deleted (${width}px)
+
+### frontend/e2e/assistant-diff-ask-review.spec.ts
+
+目的: 目的: (U7) 差分の行（会話の「変更」・作業場の結果の「変更」）を押すと小さな入力が開き、送ると 「<ファイル>:<行> の <その行の内容> について: <文>」が同じ会話へビルド（code_agent: build）で送られること。 完了カードと作業場の結果のカードの「レビューして」が短い指示（reviewer の係・問題があれば直す）を同じ会話へ送ること。 生成中は行も「レビューして」も出ないこと。320・1280、ライト・ダークで横にはみ出さないこと。 根拠: 2026-11-23 利用者の通し（評価 U7）。差分を見て気づいた所を、文でファイルと行を説明して頼んでいた。 送る口は「推奨どおりで進める」と同じ send。API は page.route で模擬する（OpenCode と LLM を動かさない）。
+
+- unifiedLineNumbers / askMessage: new-side numbers, deleted lines use old numbers, long content is cut
+- changes list: ask about a line, review from the done card (${width}px ${scheme})
+- workspace result card: ask about a diff line, review (${width}px ${scheme})
+- no ask rows or review button while the assistant is generating
 
 ### frontend/e2e/assistant-live-status.spec.ts
 
@@ -3736,6 +3769,12 @@
 - keeps Workflows below the logo with an iPhone standalone safe area
 - migrates the saved Play destination to Workflows
 - pins up to six favorites at the top of the drawer
+
+### frontend/e2e/notification-settings.spec.ts
+
+目的: 目的: - 設定 → 通知 の「通知の種類」で、種類ごとのスイッチの保存（再読み込みしても残る）と、既定（調査の完了は有効・ ふつうの会話は無効）が出る。 - 「お休みモード」の開始・終了の時刻が保存され、表示に出る。今の状態（お休み中かどうか）が出る。 - 320px と 1280px で横にあふれず、ライト・ダークで読める（撮影を test-results に残す）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。実の API（検証用インスタンス）で確かめる。
+
+- notification kinds and quiet hours are saved and shown
 
 ### frontend/e2e/opencode-focus.spec.ts
 

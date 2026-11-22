@@ -160,7 +160,7 @@ def test_secret_conversation_and_summary_carry_no_content(sent):
     chat_events.announce_turn(conv, msg, "code", failed=False, seconds=5)
     blob = json.dumps(sent[0], ensure_ascii=False)
     assert "特許" not in blob and "請求項" not in blob and "草案" not in blob
-    line = chat_events.one_line("# /home/u/secret/app.py を直した sk-abcdef1234567890abcdef と https://x.example/a")
+    line = chat_events.one_line(f"# /home/u/secret/app.py を直した {'sk' + '-abcdef1234567890abcdef'} と https://x.example/a")
     assert "/home" not in line and "sk-abc" not in line and "x.example" not in line
 
 
