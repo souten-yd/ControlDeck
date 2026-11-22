@@ -47,6 +47,35 @@ export interface CrossCompareResult {
   rows: { kind: string; label: string; cells: CrossCompareCell[][] }[];
   kinds: Record<string, string>;
 }
+/** 知識マップ（K3）: 1 つの文献を中心に 1〜2 hop の文献と承認済みの知識を結んだ部分グラフ。 */
+export interface MapNode {
+  id: string; kind: "document" | "essence";
+  ref?: string; title?: string; relation?: string; depth?: number; via?: string;
+  essence_ref?: string; item_index?: number; doc_ref?: string;
+  essence_kind?: string; summary?: string; reviewed_at?: number | null;
+}
+export interface MapEdge { source: string; target: string; relation: string }
+export interface KnowledgeMapResult {
+  nodes: MapNode[]; edges: MapEdge[]; hops: number; truncated: boolean;
+  limits: { nodes: number; edges: number };
+  kinds: Record<string, string>; relations: Record<string, string>;
+}
+/** 技術仮説のリンク（K3）: 承認済みの知識どうしを利用者が明示して結んだもの（inferred 固定・未確認から確かめる）。 */
+export interface LinkSide {
+  doc_ref: string; doc_title: string; essence_ref: string; item_index: number;
+  kind: string; summary: string; reviewed_at?: number | null; epoch?: number;
+}
+export interface KnowledgeLink {
+  link_ref: string; basis: string;
+  source: LinkSide | null; target: LinkSide | null;
+  note: string; created: number; stale: boolean;
+  review: { decision: string; note: string; reviewer: string; at: number; stale: boolean } | null;
+  review_status: string;
+}
+export interface LinkCreateResult {
+  link_ref: string; basis: string; review_status: string;
+  source: LinkSide; target: LinkSide; note: string;
+}
 /** 種類の 8 種（backend/app/knowledge/essence.py の KINDS と同じ。初回検索前に絞り込みを選べるように固定で持つ）。 */
 export const ESSENCE_KINDS: Record<string, string> = {
   problem: "課題", cause: "原因", principle: "原理", mechanism: "作用機構",
@@ -96,6 +125,16 @@ export const knowledgeApi = {
     api<CrossSearchResult>("/knowledge/essences/search", { method: "POST", json: { q, kind, cursor, limit } }),
   compareEssences: (refs: string[]) =>
     api<CrossCompareResult>("/knowledge/essences/compare", { method: "POST", json: { refs } }),
+  knowledgeMap: (ref: string, hops: 1 | 2) =>
+    api<KnowledgeMapResult>(`/knowledge/documents/${encodeURIComponent(ref)}/map?hops=${hops}`),
+  documentLinks: (ref: string) =>
+    api<{ links: KnowledgeLink[] }>(`/knowledge/documents/${encodeURIComponent(ref)}/links`),
+  createLink: (sourceEssenceRef: string, sourceItem: number, targetEssenceRef: string, targetItem: number, note: string) =>
+    api<LinkCreateResult>(`/knowledge/essences/${encodeURIComponent(sourceEssenceRef)}/items/${sourceItem}/links`,
+      { method: "POST", json: { target_essence_ref: targetEssenceRef, target_item: targetItem, note } }),
+  reviewLink: (linkRef: string, decision: string, note = "") =>
+    api<{ link_ref: string; decision: string; reviewer: string }>(
+      `/knowledge/links/${encodeURIComponent(linkRef)}/review`, { method: "POST", json: { decision, note } }),
   standards: () => api<{ standards: StandardRow[]; instruments: Record<string, string> }>("/knowledge/standards"),
   decide: (body: Partial<StandardInput>) => api<LicenseDecision>("/knowledge/standards/decide", { method: "POST", json: body }),
   addStandard: (body: StandardInput) => api<{ job_id: string }>("/knowledge/standards", { method: "POST", json: body }),

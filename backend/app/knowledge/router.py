@@ -242,6 +242,75 @@ def compare_essences(body: EssenceCompareBody, user: User = VIEW):
     return _wrap(cross.compare, body.refs)
 
 
+@router.get("/documents/{ref}/map")
+def get_knowledge_map(ref: str, hops: int = 1, user: User = VIEW):
+    """知識マップ: 1 つの文献を中心に 1〜2 hop の文献と承認済みの知識をノードとエッジで返す
+    （読み取りだけ。LLM は呼ばない。上限はノード 61・エッジ 60、超えたら打ち切りの印）。
+
+    同期の DB 読み取りを含むため endpoint は def で threadpool へ（AGENTS.md 絶対ルール 9）。
+    """
+    from app.knowledge import map as kmap
+
+    hops = hops or 1
+    if hops not in (1, 2):
+        raise HTTPException(status_code=422, detail="hop は 1 か 2 で指定してください")
+    return _wrap(kmap.knowledge_map, ref, hops)
+
+
+class LinkBody(BaseModel):
+    target_essence_ref: str = Field(min_length=3, max_length=64)
+    target_item: int = Field(ge=0, le=11)
+    note: str = Field(min_length=1, max_length=1000)
+
+
+@router.post("/essences/{essence_ref}/items/{index}/links", status_code=201)
+def create_link(essence_ref: str, index: int, body: LinkBody, request: Request,
+                user: User = Depends(EDIT), db=Depends(get_db)):
+    """承認済みの知識どうし（別の文献）を、利用者の明示操作で結ぶ（技術仮説のリンク）。
+
+    basis=inferred で固定し、作っただけでは未確認。理由のメモは必須。
+    監査には id と組合せだけ（summary・引用の本文は書かない）。
+    """
+    from app.knowledge import links
+
+    out = _wrap(links.create, essence_ref, index, body.target_essence_ref, body.target_item,
+                 body.note, user.username)
+    audit.record(db, "knowledge.link", user=user, resource_type="knowledge",
+                 resource_id=str(essence_ref), request=request,
+                 metadata={"item_index": int(index), "target_essence_ref": body.target_essence_ref,
+                           "target_item": int(body.target_item)})
+    return out
+
+
+@router.get("/documents/{ref}/links")
+def list_links(ref: str, user: User = VIEW):
+    """1 文献に関わる技術仮説のリンクの一覧（source でも target でも。読み取りだけ。"""
+    from app.knowledge import links
+
+    return _wrap(links.list_for, ref)
+
+
+class LinkReviewBody(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    note: str = Field(default="", max_length=1000)
+
+
+@router.post("/links/{link_ref}/review")
+def review_link(link_ref: str, body: LinkReviewBody, request: Request,
+                user: User = Depends(EDIT), db=Depends(get_db)):
+    """リンクへの人のレビュー（承認・却下）を追記する（消さない・書き換えない）。
+
+    承認しても basis は inferred のまま（推論は事実にならない）。監査には id と判断だけ。
+    """
+    from app.knowledge import links
+
+    out = _wrap(links.review, link_ref, body.decision, body.note, user.username)
+    audit.record(db, "knowledge.link_review", user=user, resource_type="knowledge",
+                 resource_id=str(link_ref), request=request,
+                 metadata={"decision": body.decision})
+    return out
+
+
 class PdfJobBody(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     title: str = Field(default="", max_length=300)

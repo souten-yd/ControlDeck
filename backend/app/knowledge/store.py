@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -32,6 +33,8 @@ from typing import Iterable
 import numpy as np
 
 from app.knowledge import storage, textproc
+
+logger = logging.getLogger("control_deck.knowledge.store")
 
 SHARDS = ("general", "patents", "standards")
 SENSITIVITY = ("confidential", "public")
@@ -250,17 +253,21 @@ def delete_collection(name: str) -> bool:
     if ref is None:
         return False
     conn = connect(ref.shard)
+    docs: list[int] = []
     try:
         ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE collection_id=?", (ref.id,))]
         _delete_chunk_rows(conn, ids)
         docs = [r[0] for r in conn.execute("SELECT id FROM documents WHERE collection_id=?", (ref.id,))]
         _delete_document_side_rows(conn, docs)
         _delete_essence_rows(conn, docs)
+        _delete_link_rows(conn, ref.shard, docs)
         conn.execute("DELETE FROM documents WHERE collection_id=?", (ref.id,))
         conn.execute("DELETE FROM collections WHERE id=?", (ref.id,))
         conn.commit()
     finally:
         conn.close()
+    # ほかの分野に置いてある「target がこのコレクションの文書」のリンクも消す（コミットの後）
+    _delete_link_rows_other_shards(ref.shard, docs)
     return True
 
 
@@ -355,6 +362,121 @@ def _carry_essences(conn: sqlite3.Connection, old_doc_id: int, new_doc_id: int) 
     conn.execute("INSERT OR IGNORE INTO knowledge_essence_epochs(doc_id, epoch) VALUES(?, 1)", (new_doc_id,))
 
 
+def _carry_links(conn: sqlite3.Connection, shard: str, old_doc_id: int, new_doc_id: int) -> None:
+    """置き換えた文献の技術仮説のリンクも新しい id へ付け直す（essence と同じ考え。app/knowledge/links.py）。
+
+    リンクは「分野:番号」の文字列で文献を指すため、置き換えで番号が変わると付け直しが要る。
+    ここでは同じ分野（今の接続）の行だけ直す。target が別の分野のリンクは
+    _carry_links_other_shards がコミットの後に直す（ファイルをまたぐトランザクションを作らない決まり）。
+    付け直しても失効の判定（知識が今の版で承認済みか）は変わらない: 知識の行は _carry_essences で
+    新しい id へ移り、epoch が 1 進むので前の版の承認は効かなくなる。
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_links'").fetchone() is None:
+        return
+    old_ref, new_ref = f"{shard}:{int(old_doc_id)}", f"{shard}:{int(new_doc_id)}"
+    conn.execute("UPDATE knowledge_links SET source_doc_ref=? WHERE source_doc_ref=?", (new_ref, old_ref))
+    conn.execute("UPDATE knowledge_links SET target_doc_ref=? WHERE target_doc_ref=?", (new_ref, old_ref))
+
+
+def _carry_links_other_shards(shard: str, old_doc_id: int, new_doc_id: int) -> None:
+    """target がこの文献を指すリンクのうち、ほかの分野に置いてあるものを付け直す（コミットの後に呼ぶ）。
+
+    リンクの行は source 側の分野に置くので、target が別の分野のときはそちらの DB に
+    置いてある行を別々に直さないと付け替えが残る。失敗しても文書の登録を落とさない:
+    付け替えが残っていればリンクは失効（stale）として見えるだけ（links._approved_item は
+    無い文書を失効として扱う）なので、警告を残して続ける（AGENTS.md ルール 7・8）。
+    """
+    old_ref, new_ref = f"{shard}:{int(old_doc_id)}", f"{shard}:{int(new_doc_id)}"
+    for other in SHARDS:
+        if other == shard:
+            continue
+        try:
+            if not shard_path(other).exists():
+                continue
+            conn = connect(other)
+        except (sqlite3.Error, KnowledgeError):
+            # storage の設定が壊れているなど、開けない分野は警告を残して続ける
+            # （本体の登録はコミット済み。付け替えが残ればリンクは失効として見えるだけ）
+            logger.warning("技術仮説のリンクの付け替えに失敗しました（分野 %s の接続）", other, exc_info=True)
+            continue
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='knowledge_links'").fetchone() is None:
+                continue
+            changed = conn.execute("UPDATE knowledge_links SET target_doc_ref=? WHERE target_doc_ref=?",
+                                    (new_ref, old_ref)).rowcount
+            if changed:
+                conn.commit()
+        except sqlite3.Error:
+            logger.warning("技術仮説のリンクの付け替えに失敗しました（分野 %s の文書 %s）",
+                           other, old_ref, exc_info=True)
+        finally:
+            conn.close()
+
+
+def _delete_link_rows(conn: sqlite3.Connection, shard: str, doc_ids: list[int]) -> None:
+    """文書を消すときにその文書を指す技術仮説のリンク・レビューも消す（表が無い分野では何もしない）。
+
+    条件の ? の数だけ値を渡す（source と target の 2 つの IN 句で同じ組を 2 回使う）。
+    ここで消すのはこの分野（今の接続）に置いてある行。target がほかの分野の文書を指すリンクは
+    そちらの DB にも置けるため、_delete_link_rows_other_shards がコミットの後に消す。
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_links'").fetchone() is None:
+        return
+    for start in range(0, len(doc_ids), 500):
+        part = [f"{shard}:{int(d)}" for d in doc_ids[start:start + 500]]
+        marks = ",".join("?" * len(part))
+        values = part + part
+        conn.execute(f"DELETE FROM knowledge_link_reviews WHERE link_id IN "
+                     f"(SELECT id FROM knowledge_links WHERE source_doc_ref IN ({marks}) "
+                     f"OR target_doc_ref IN ({marks}))", values)
+        conn.execute(f"DELETE FROM knowledge_links WHERE source_doc_ref IN ({marks}) "
+                     f"OR target_doc_ref IN ({marks})", values)
+
+
+def _delete_link_rows_other_shards(shard: str, doc_ids: list[int]) -> None:
+    """削除した文書を target に持つリンクのうち、ほかの分野に置いてあるものを消す（コミットの後に呼ぶ）。
+
+    リンクの行は source 側の分野に置くので、target が別の分野のときはそちらの DB に
+    置いてある行を別々に消さないと残る。残った行は id の使い回しで無関係な文書を指し、
+    古いリンク判断が「復活」して見える。失敗しても文書の削除を落とさない: 警告を残して
+    続ける（links._approved_item は無い文書を失効として扱う）。
+    """
+    refs = [f"{shard}:{int(d)}" for d in doc_ids]
+    for other in SHARDS:
+        if other == shard:
+            continue
+        try:
+            if not shard_path(other).exists():
+                continue
+            conn = connect(other)
+        except (sqlite3.Error, KnowledgeError):
+            # storage の設定が壊れているなど、開けない分野は警告を残して続ける（本体の削除は済んでいる）
+            logger.warning("技術仮説のリンクの削除に失敗しました（分野 %s の接続）", other, exc_info=True)
+            continue
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='knowledge_links'").fetchone() is None:
+                continue
+            for start in range(0, len(refs), 500):
+                part = refs[start:start + 500]
+                marks = ",".join("?" * len(part))
+                values = part + part
+                changed = conn.execute(
+                    f"DELETE FROM knowledge_link_reviews WHERE link_id IN "
+                    f"(SELECT id FROM knowledge_links WHERE source_doc_ref IN ({marks}) "
+                    f"OR target_doc_ref IN ({marks}))", values).rowcount
+                changed += conn.execute(
+                    f"DELETE FROM knowledge_links WHERE source_doc_ref IN ({marks}) "
+                    f"OR target_doc_ref IN ({marks})", values).rowcount
+                if changed:
+                    conn.commit()
+        except sqlite3.Error:
+            logger.warning("技術仮説のリンクの削除に失敗しました（分野 %s の文書）", other, exc_info=True)
+        finally:
+            conn.close()
+
+
 @dataclass
 class NewChunk:
     text: str
@@ -388,16 +510,19 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
         raise KnowledgeError(f"不正な機密区分: {level}")
     now = _now()
     conn = connect(ref.shard)
+    replaced_doc_id: int | None = None
+    removed_docs: list[int] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
         carried: list = []
-        replaced_doc_id: int | None = None
         if replace_collection:
             ids = [r[0] for r in conn.execute("SELECT id FROM chunks WHERE collection_id=?", (ref.id,))]
             _delete_chunk_rows(conn, ids)
             docs = [r[0] for r in conn.execute("SELECT id FROM documents WHERE collection_id=?", (ref.id,))]
             _delete_document_side_rows(conn, docs)
             _delete_essence_rows(conn, docs)
+            _delete_link_rows(conn, ref.shard, docs)
+            removed_docs = [int(d) for d in docs]
             conn.execute("DELETE FROM documents WHERE collection_id=?", (ref.id,))
         if ext_id is not None:
             old = conn.execute("SELECT id, sha256 FROM documents WHERE collection_id=? AND ext_id=?",
@@ -431,6 +556,8 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
             # 知識エッセンスも新しい版へ持ち越す。版の番号（epoch）を 1 進めるので、
             # 前の版の承認は同じ文面へ戻っても戻らない
             _carry_essences(conn, replaced_doc_id, int(doc_id))
+            # 技術仮説のリンクも新しい id へ付け直す（失効の判定は知識の側で変わる）
+            _carry_links(conn, ref.shard, replaced_doc_id, int(doc_id))
         wrote_vectors = False
         for idx, chunk in enumerate(chunks):
             cid = conn.execute(
@@ -453,6 +580,14 @@ def add_document(name: str, chunks: list[NewChunk], *, source: str = "", title: 
         raise
     finally:
         conn.close()
+    # ほかの分野の DB も触る処理は、本体のコミットの後・try の外で（本体が登録できたのに
+    # 例外で落とさない。ファイルをまたぐトランザクションを作らない決まりも守る）
+    if replaced_doc_id is not None:
+        # target が別の分野にいるリンクはコミットの後に付け直す（トランザクションをまたがない）
+        _carry_links_other_shards(ref.shard, replaced_doc_id, int(doc_id))
+    if removed_docs:
+        # 置き換えで消した文書を target に持つリンク（ほかの分野に置いてあるもの）も消す
+        _delete_link_rows_other_shards(ref.shard, removed_docs)
     return {"doc_id": int(doc_id), "unchanged": False, "added_chunks": len(chunks), "total_chunks": int(total)}
 
 
@@ -489,10 +624,13 @@ def delete_document(name: str, doc_id: int) -> bool:
         _delete_chunk_rows(conn, ids)
         _delete_document_side_rows(conn, [doc_id])
         _delete_essence_rows(conn, [doc_id])
+        _delete_link_rows(conn, ref.shard, [doc_id])
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         conn.commit()
     finally:
         conn.close()
+    # ほかの分野に置いてある「target がこの文書」のリンクも消す（コミットの後）
+    _delete_link_rows_other_shards(ref.shard, [doc_id])
     return True
 
 

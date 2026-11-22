@@ -65,6 +65,80 @@
 - レビュー役（別のモデル）: critical 0・major 0・minor 3。minor は直した — (1) 目録が旧題名のままだった → 作り直してこの差分に含めた (2) 320px の横溢れ確認が方針を「LLM 優先」に切り替えた後だけになっていた → 切り替える前（載せ直し制御が出ている状態）でも確かめた (3) コメント誤記。info は見送った: toHaveCount(0) を combobox にも足すのは同一の条件分岐で等価、`gateway_only`・`drain_timeout_sec` の interface 残存と waitLabels の yield_* は画面側の変更になるためこの PR のスコープ外（実害なし）。
 - 確かめられなかった点: GitHub Actions の E2E 一式（箱のため）。`./deck.sh dev-check` の backend pytest は箱の `.venv` が空で流せない（外部取得禁止のため依存を入れられない）→ frontend build と差分に基づく静的検査まで。詳細は下の関門の行。
 
+## 2026-11-22 知識マップ・技術仮説のリンク（K3）: 1〜2 hop の読み取りと inferred の明示登録
+
+- 目的: K1・K2 で文献ごとに抽出・承認した知識エッセンスを、**文献をまたいだ構造**で見られるようにする。
+  PatentBuddy Draft #34（知識マップ）・#35（技術仮説のリンク）の考え方を ControlDeck の書き方で
+  作り直した（コードは写していない）。読み取りのマップは LLM を呼ばない。リンクの作成も
+  AI に推論させず利用者が明示して結ぶ（`basis=inferred` 固定・理由のメモ必須）。
+- 知識マップ（読み取りだけ）: `app/knowledge/map.py`（新規）。`GET /api/v1/knowledge/documents/{ref}/map?hops=1|2`。
+  中心の文献から書誌の関係（documents.related_documents の引用・別の版）で 1〜2 hop の文献を広げ、
+  それぞれの**承認済み・今の版の**エッセンス（K1 の list_essences の判定を使い回す）をノードと
+  エッジで返す。上限はノード 61・エッジ 60（PB の 36/52 を広げた）、1 文献の知識は 8 件まで。
+  超えたら打ち切りの印（truncated）。引用の再照合は行わない（K2 の横断検索と違い、2 hop の文献数ぶんの
+  全文読みは重いため。エッセンスは保存時に検めてある）。
+- 技術仮説のリンク: `app/knowledge/links.py`（新規）。承認済みのエッセンスどうし（別の文献）を
+  利用者が明示して結ぶ。作っただけでは「未確認」、別の操作（承認・却下）で確かめる。レビューは
+  追記だけ（K1 と同じ）。どちらかの知識が今の版で承認済みでなくなったらリンクも stale
+  （判定は K1 の list_essences に任せる）。リンクのレビューには両側の版の番号（epoch）を
+  記録し、番号が変わったら前の判断は効かない（知識の承認をやり直しても同じ文面でも戻らない。
+  K1 と同じ決まり）。保存はナレッジの shard DB に表（knowledge_links・knowledge_link_reviews。
+  K1 の表の足し方）。リンクの行は source 側の分野に置き、target は「分野:番号」で持つ。
+  文書の差し替えでは `store.py` の `_carry_links`（同分野）・`_carry_links_other_shards`
+  （コミット後に他分野）で付け直し、削除では `_delete_link_rows`・`_delete_link_rows_other_shards`
+  で消す（annotations・essence と同じ考え）。後から足した列は `store._LATE_COLUMNS` と同じ
+  作りで ALTER で足す。
+- API・権限: マップとリンク一覧は閲覧（workflows.run）、リンクの作成・レビューは workflows.edit、
+  監査は作成・レビューに id と判断だけ記録（K1 と同じ）。endpoint は `def` で threadpool へ
+  （AGENTS.md ルール 9）。
+- 画面: DocumentSheet（`features/knowledge/`）に「知識マップ」（`KnowledgeMap.tsx`。SVG で手書きの
+  放射図・依存を足さない。hop 1/2 の切り替え・打ち切りの印・ノードを押すとその文献を開く・
+  320px で読めるよう題名は 8 字に切って全文は title 属性）と「知識のつながり」（`LinkSection.tsx`。
+  エッセンスのカード（`EssenceSection.tsx`）に「別の文献の知識と結ぶ」（`LinkMaker.tsx`。
+  相手は K2 の横断検索から選ぶ → 理由 → 作成）。
+- テスト: `backend/tests/test_knowledge_map.py`（8 件: 1/2 hop・承認済みだけ・stale・上限と打ち切り・
+  形の悪い指定・権限・threadpool）・`test_knowledge_links.py`（10 件: 作成の門・未確認から承認への
+  2 段階・追記だけ・source/target それぞれの失効・同じ文面へ戻しても戻らない・両側からの一覧・
+  重複・分野をまたいだ差し替え・権限・threadpool）。knowledge 系の回帰 57 件。
+  E2E `knowledge-map.spec.ts` 2 passed（API は page.route で差し替え。1280・320、ライト・ダーク、
+  撮影 4 枚）+ knowledge・knowledge-essence・knowledge-essence-cross の回帰 13 passed。
+- PatentBuddy から変えた点: PB の GraphRAG（PR #23 の graph_nodes/graph_edges）を正本にせず、
+  ControlDeck の書誌の関係（identifiers）+ K1 のエッセンスの投影として作った。PB の
+  evidence_graph.save/review・`_connection` トランザクション拡張・`knowledge_link_origins` 表・
+  deterministic な edge id（write0）を作らず、K1 の表の足し方に合わせた。レビューは
+  PB の graph_revision 409 ではなく K1 と同じ「追記だけ・stale では付けられない」に寄せた。
+  上限 36/52 → 61/60、`include_unreviewed` の opt-in は作らない（未確認の知識は出さない割り切り）。
+  素の JavaScript の画面 → React の SVG（部品は既存のものだけ）。
+- レビュー役（別のモデル）の指摘を直した: critical 1（`_delete_link_rows` の SQL バインド数ミスで、
+  リンクの表がある分野で文書・コレクションの削除が 500 になる。一覧を開くだけで全分野に表が
+  作られるので最悪の発動条件だった）・major 4（一覧の重複除去を id だけでしていた（分野違いの
+  同番号が消える）→「分野と番号」の組へ。文書削除でほかの分野に残る target のリンクも消す
+  `_delete_link_rows_other_shards` を足した（残ると id の使い回しで無関係な文書へ「復活」する）。
+  LinkSection の「メモを添える」の note を送っていなかった→直した。SVG の 2 段目の知識の円が
+  viewBox の外にはみ出して押せなかった→viewBox 420・半径を詰めて収まるようにした）。
+  minor も直した: リンクのレビューに両側の版の番号（epoch）を記録し、知識の承認をやり直しても
+  前の判断が復活しない（K1 と同じ考え）・`HOP_DOCS` で切ったときも打ち切りの印・
+  `_carry_links_other_shards` の connect を try の中へ。テストも 5 本足した（削除×リンク・
+  分野またぎの同番号・epoch の復活禁止・HOP_DOCS・E2E で 2 段目の知識の押下とメモの送信）。
+  1 件落ちた knowledge.spec の「審査基準のコレクション」は使い回した検証インスタンスに
+  guidelines-e2e が残っていた環境起因と確かめた（POST /knowledge/collections 422。
+  使い捨ての新インスタンスでは 15/15 通過）。
+- 再レビュー（同じモデル・2 回目）の major を直した: `knowledge_link_reviews` に後から足した
+  列（source_epoch・target_epoch）の追加移行が無く、列の無い DB で一覧・レビューが 500 に
+  なっていた → `links.connect` で `PRAGMA table_info` を見て ALTER で足す（`store._LATE_COLUMNS`
+  と同じ作り。テスト `test_connect_adds_missing_review_columns_to_existing_tables` で旧スキーマを
+  再現して確認）。minor も直した: モジュールの説明文を実装に合わせた・レビュー後にメモを
+  クリア（K1 と同じく成功したとき。403・失敗時は入力を残す）・`LinkSide` 型に epoch・
+  `add_document` の他分野への付け替え・削除の呼び出しを try の外（本体が登録できたのに
+  500 にならない）へ・`essence.epoch_of` を公開の形に・スイープの `shard_path` も try の中へ
+  （storage が壊れている分野は警告を残して続ける）。SVG も微調整（ラベル 7 字・viewBox 440・
+  各段の半径を見直して、どの段の要素も枠に収まり段どうしが重ならない）。残した軽微な点は
+  報告のとおり（一覧の N+1・並び順・逆向き重複の許容など。一覧は 1 文献 100 件までで実測
+  39 件 81ms）。3 回目のレビューは合格（critical 0・major 0・minor 2 → minor を直して確定）。
+- 確かめられなかった点: 撮影 PNG の目視（このモデルは画像を読めない。E2E の要素単位の検査と
+  320px の横 overflow 無しは機械的に確認済み）。本物のローカルモデルでの抽出を含む通し
+  （検証用インスタンスにモデルが無いため、エッセンスの応答は E2E で差し替え）。
+
 ## 2026-11-22 開発の作業場 3 段目: 結果のカードと「取り込む」
 
 - 目的: 作業場の会話に「作業場の結果」のカード（変更の要約・関門・取り込む）を足し、頼む → 作る → 見て試す → 取り込む、を画面で通す。本番を変えるのは利用者の一押しの後だけ。

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 213 ファイル、1953 テスト（目的の未記入 93 ファイル）
-- E2E: 107 spec、218 テスト
+- backend: 215 ファイル、1976 テスト（目的の未記入 93 ファイル）
+- E2E: 108 spec、219 テスト
 
 ## backend（backend/tests）
 
@@ -1322,6 +1322,39 @@
 - `test_api_search_and_compare`
 - `test_api_permissions_are_read_only_view`
 - `test_search_keeps_sync_work_off_the_event_loop` — 検索・比較は同期の DB・ファイル I/O を event loop の外（threadpool）で実行すること
+
+### backend/tests/test_knowledge_links.py
+
+目的: 技術仮説のリンク（K3）: app/knowledge/links.py と API。 目的: - 承認済みの知識エッセンスどうし（別の文献）を、利用者が明示して結べること。 結ぶのは人だけ（AI を呼ばない）。basis は inferred で固定され、承認しても 「原文の事実」にならないこと（統合の決まり 1）。 - 理由のメモが必須であること。未承認の知識・同じ文献・同じ組合せは断ること。 - 作っただけでは「未確認」で、別の操作（承認・却下）で確かめること。 レビューは消さず追記だけ（K1 のレビューと同じ考え）。 - どちらかの知識が stale（今の版で承認済みでない）になったらリンクも stale になること。 stale なリンクにはレビューを付けられないこと。同じ文面へ戻っても承認は戻らないこと （K1 の epoch の決まりを使い回す）。 - 一覧は結ぶ側・結ばれる側のどちらの文献でも見えること。 - 権限: 一覧は読み取り（workflows.run）、作成・レビューは workflows.edit。 同期の DB 読み取りは event loop の外（threadpool）で動くこと。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K3 の作り直し。docs/HANDOFF-knowledge-platform.md の K3 の行）。PatentBuddy Draft #35 を設計だけ流用し（コードは写していない）、 保存先はナレッジの shard DB（K1 の表の足し方）、失効の判定は K1 の list_essences に任せる。
+
+- `test_create_links_approved_items_of_different_documents`
+- `test_create_refuses_same_document_empty_note_and_duplicates`
+- `test_link_is_unreviewed_until_reviewed_and_reviews_append`
+- `test_link_goes_stale_when_source_essence_stales`
+- `test_link_goes_stale_when_target_essence_stales`
+- `test_list_for_shows_both_sides_with_summaries`
+- `test_link_endpoints_keep_sync_work_off_the_event_loop`
+- `test_link_across_shards_survives_target_replacement` — target が別の分野にいるリンク: target の差し替えで文書の id が変わっても、
+- `test_list_for_keeps_links_apart_by_shard` — リンクの id は分野ごとに振られる。同じ番号でも別の分野のリンクは別々に一覧に出ること
+- `test_delete_document_and_collection_remove_links` — 文書・コレクションの削除が、リンクの表があっても落ちることなく通ること。
+- `test_link_review_does_not_revive_after_reapproval` — リンクの承認は、知識の承認をやり直しても復活しないこと。
+- `test_connect_adds_missing_review_columns_to_existing_tables` — レビュー表に後から足した列（source_epoch・target_epoch）が、既に作られた DB にも
+- `test_api_create_list_and_review`
+- `test_api_link_permissions_separate_view_and_edit`
+
+### backend/tests/test_knowledge_map.py
+
+目的: 知識マップ（K3）: app/knowledge/map.py と API。 目的: - 1 つの文献を中心に、書誌の関係（引用する・される・別の版）で 1〜2 hop の文献と、 それぞれの **承認済み・今の版の** 知識エッセンスを、ノードとエッジで返すこと。 未承認・却下・差し戻し・原文が変わった（stale）の知識は地図に載らないこと。 - 読み取りだけであること（LLM を呼ばない・書き込みしない・表を足さない）。 - 上限（ノード 61・エッジ 60）を超えたら打ち切りの印（truncated）を出すこと。 hop は 1 か 2 だけで、無い文書は「ありません」で断ること。 - 権限: 読み取り（workflows.run）で見られ、その権限の無い利用者は断られること。 同期の DB 読み取りは event loop の外（threadpool）で動くこと。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K3 の作り直し。docs/HANDOFF-knowledge-platform.md の K3 の行）。PatentBuddy Draft #34 を設計だけ流用し（コードは写していない）、 関係の正本は ControlDeck の書誌の関係（documents.related_documents）、知識の判定は K1 の list_essences を使い回す。上限 36/52 は 61/60 に広げた（文献と知識を 1 つの 地図に載せる分。指示書どおり）。
+
+- `test_map_one_hop_with_essences`
+- `test_map_two_hop_reaches_documents_one_hop_cannot`
+- `test_map_shows_only_approved_and_current_essences`
+- `test_map_cuts_at_limits_with_a_mark`
+- `test_map_validates_hops_and_missing_documents`
+- `test_map_marks_truncation_when_hop_docs_cut` — 1 回の広げで見る文献の上限（HOP_DOCS）で切ったときも打ち切りの印を出すこと
+- `test_map_keeps_sync_work_off_the_event_loop`
+- `test_api_map_and_links_list`
+- `test_api_map_permissions`
 
 ### backend/tests/test_knowledge_r3.py
 
@@ -3388,6 +3421,12 @@
 - Knowledge: 知識エッセンスを抽出して承認・却下・差し戻しで確かめる（${width}px）
 - Knowledge: 知識の抽出が始められないときは理由を出す（${width}px）
 - Knowledge: 見るだけの利用者に抽出もレビューのボタンが無い（1280px）
+
+### frontend/e2e/knowledge-map.spec.ts
+
+目的: 知識マップ（K3）: 文献の画面（DocumentSheet）の「知識マップ」と「知識のつながり」。 目的: - 知識マップ: 1 つの文献を中心に 1〜2 hop の文献と承認済みの知識を SVG の放射図で見ること。 hop の切り替えで広がりが変わり、上限に達したら打ち切りの印が出ること。 ノード（四角=文献・円=知識）を押すとその文献を開くこと。 - 技術仮説のリンク: 承認済みのエッセンスのカードから「別の文献の知識と結ぶ」で 相手を検索して選び、理由を書いて結ぶこと。作っただけでは未確認で、 「知識のつながり」の一覧に承認・却下の別操作が出ること。 - 1280 と 320 で横に崩れず、ライト・ダークで撮影すること。 根拠: 2026-11-21 利用者「PatentBuddy の開いている PR は閉じてよい。開発した内容は ControlDeck にルールに従って反映して」（K3 の作り直し。docs/HANDOFF-knowledge-platform.md の K3 の行。backend は map.py・links.py）。検証用インスタンスには文献も承認済みの 知識も無いので、API は page.route で差し替えて確かめる（本物の LLM は呼ばない）。 */ ---- 差し替える応答（本物の形: backend/app/knowledge/map.py・links.py・essence.py） ----
+
+- Knowledge: 知識マップで関係を見て、技術仮説のリンクを結んで承認する（${width}px）
 
 ### frontend/e2e/knowledge.spec.ts
 
