@@ -58,8 +58,12 @@ def repo(tmp_path, monkeypatch):
     (fakebin / "git").chmod(0o755)
     BOX_CHECK["result"] = (0, "[合格] テスト: 3 件\n[未実施] 依存: なし\n\n合格", "")
 
+    gate = tmp_path / "gate"
+    monkeypatch.setattr(workspaces, "trusted_gate_code", lambda: gate)
+
     def in_box_result(box, command, *, timeout=120, env=None, readonly=()):
         if "app.maintenance.dev_check" in " ".join(command):
+            BOX_CHECK["last"] = {"command": list(command), "env": dict(env or {}), "readonly": list(readonly)}
             return BOX_CHECK["result"]
         done = subprocess.run(command, cwd=box.repo, capture_output=True, text=True, timeout=60, check=False,
                               env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}"})

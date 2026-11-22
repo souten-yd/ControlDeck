@@ -486,12 +486,59 @@ def parse_report(text: str) -> list[dict]:
     return items
 
 
+GATE_CODE_KEEP = 3
+
+
+def trusted_gate_code() -> Path:
+    """関門のコード（backend/app）を、ホストの本体の main から、箱が書けない所へ取り出す（ROADMAP U21）。
+
+    前は箱の中の dev_check（作業場のコピー）で関門を動かしていたので、箱の AI が関門の仕組みそのものを書き換えて
+    「合格」にできた（マージの L2 の警告だけが守りだった）。取り出しはホストの git（本番の checkout・信頼できる）で、
+    箱の作業ツリーには触れない。版（main の sha）ごとに作り、新しい 3 つだけ残す。"""
+    import tarfile
+
+    repo = controldeck_repo()
+    sha = _host_git("rev-parse", f"{CONTROLDECK_REF}^{{commit}}", cwd=repo)
+    if not _OID.fullmatch(sha):
+        raise SandboxError("本体の main を読めません")
+    root = sandbox._data_dir() / "gate-code"
+    target = root / sha
+    if (target / "backend" / "app" / "maintenance" / "dev_check.py").is_file():
+        return target
+    root.mkdir(parents=True, exist_ok=True)
+    staging = root / f".{sha}.{os.getpid()}.{threading.get_ident()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir()
+    try:
+        archive = subprocess.run(["git", "archive", "--format=tar", sha, "backend/app"], cwd=repo,
+                                 capture_output=True, timeout=120, check=False)
+        if archive.returncode != 0:
+            raise SandboxError(f"関門のコードを取り出せません: {archive.stderr.decode(errors='replace').strip()[:200]}")
+        import io
+
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(staging, filter="data")
+        try:
+            staging.rename(target)
+        except OSError:          # 同時に作った方が先に置いた
+            shutil.rmtree(staging, ignore_errors=True)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    olds = sorted((d for d in root.iterdir() if d.is_dir() and _OID.fullmatch(d.name) and d != target),
+                  key=lambda d: d.stat().st_mtime, reverse=True)
+    for old in olds[GATE_CODE_KEEP - 1:]:
+        shutil.rmtree(old, ignore_errors=True)
+    return target
+
+
 def run_check(name: str, *, skip_visual_by: str = "") -> dict:
     """関門（dev_check）を作業場へ流し、結果を meta に保存する。重いので Job から呼ぶ（同期の関数）。
 
     関門は箱の中で流す。理由: (1) ホストで流すと dev_check が box.repo の中でホストの git を動かす。(2) 箱の AI が書いた
     テスト・コードがホストの権限で動く。箱の中なら隔離が保たれ、未コミットの変更も関門が見る。箱の中は元の venv が見える。
-    （箱の AI が dev_check 自体を書き換えて「合格」にしうるので、マージ前の関門は本番側で改めて通すこと。）
+    本体の作業場では、関門のコードは箱のコピーではなく trusted_gate_code()（ホストの main から取り出し、読み取り
+    専用で見せる）を使う（U21）。テスト・ビルドそのものは作業場のもの（テストの書き換えは L2 の守る場所の警告が見る）。
     """
     box = sandbox.load(name)
     base = str(box.meta.get("revision") or "")
@@ -502,9 +549,19 @@ def run_check(name: str, *, skip_visual_by: str = "") -> dict:
     # skip_visual_by: 画面の見た目（画像を読むモデルの目）を人が確かめたとして外す管理者の名前（2026-11-22: 誤検出で
     # 正しい変更が取り込めなかった。外したことは結果と監査に残る）
     extra = ' --skip-visual' if skip_visual_by else ''
+    env: dict[str, str] | None = None
+    readonly: list[Path] = []
+    flags = ""
+    if str(box.meta.get("workspace_source") or "") == CONTROLDECK:
+        gate = trusted_gate_code()
+        # -P: 今いる場所（箱の backend）を import の先頭に足さない。-s: 箱の HOME の user site（AI が書ける）を読まない
+        env = {"PYTHONPATH": str(gate / "backend"), "CONTROL_DECK_DEV_CHECK_REPO": str(box.repo)}
+        readonly = [gate]
+        flags = " -s -P"
     code, out, err = sandbox.in_box_result(
-        box, ["sh", "-c", 'cd backend && exec "$0" -m app.maintenance.dev_check --base "$1"' + extra, str(python), base],
-        timeout=CHECK_TIMEOUT)
+        box, ["sh", "-c", f'cd backend && exec "$0"{flags} -m app.maintenance.dev_check --base "$1"' + extra,
+              str(python), base],
+        timeout=CHECK_TIMEOUT, env=env, readonly=readonly)
     items = parse_report(out)
     if code in (0, 1) and items:
         passed = code == 0

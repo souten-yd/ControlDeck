@@ -16,7 +16,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+# 調べるリポジトリ。作業場の関門は、箱の AI が書き換えられない版（ホストの本体の main から取り出したもの）で
+# 動かし、調べる対象（箱の作業ツリー）をここで受ける（ROADMAP U21）。無ければこのファイルの在るリポジトリ
+REPO = Path(os.environ.get("CONTROL_DECK_DEV_CHECK_REPO") or Path(__file__).resolve().parents[3])
 
 OK, NG, SKIP = "ok", "ng", "skip"
 LABEL = {OK: "合格", NG: "不合格", SKIP: "未実施"}
@@ -415,6 +417,10 @@ def _clean_env() -> dict[str, str]:
     """本番の設定を指す環境変数は外す（外さないと本番の data に書く）。"""
     env = dict(os.environ)
     env.pop("CONTROL_DECK_CONFIG", None)
+    # 信頼できる版の関門の置き場（PYTHONPATH）を子へ渡さない。渡すと作業場のテストが作業場の app ではなく
+    # 関門側の app を読んでしまう（U21）
+    env.pop("PYTHONPATH", None)
+    env.pop("CONTROL_DECK_DEV_CHECK_REPO", None)
     return env
 
 
