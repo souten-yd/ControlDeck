@@ -30,15 +30,17 @@ for (const width of [320, 1280]) {
     await expect(section.getByRole("heading", { name: "開発（作業場）" })).toBeVisible();
     await expect(section.getByText("既定のモデル: default-model")).toBeVisible();
     await expect(section.getByText("qwen-build")).toBeVisible();
-    await expect(section.getByText("GitHub の PR", { exact: false })).toBeVisible();
+    await expect(section.getByText("GitHub の PR（main への取り込み）", { exact: false })).toBeVisible();
 
     await section.getByLabel("ディスクの空きの下限").fill("30");
     await section.getByRole("button", { name: "保存", exact: true }).click();
     await expect.poll(() => settingsPut?.workspace_min_free_gib).toBe(30);
     expect(settingsPut.model).toBe("default-model");
 
-    await section.getByLabel("自動レビュー").uncheck();
+    await section.getByLabel("自動レビュー").click();      // 値は保存後の読み直しで変わる（制御された部品）
     await expect.poll(() => workflowPut?.auto_review).toBe(false);
+    await expect(section.getByLabel("自動レビュー")).not.toBeChecked();
+    await page.screenshot({ path: `test-results/dev-workspace-settings-${width}.png`, fullPage: true });
 
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
