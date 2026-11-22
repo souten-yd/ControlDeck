@@ -22,6 +22,8 @@ async function mock(page: Page) {
     return route.fulfill({ response, json: meta });
   });
   await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [{ name: "app", path: "/CodeDEV/app", git: true }] } }));
+  // 作業場の一覧も模擬する。届かないと「フォルダ指定」のまま名前（app）に直らず、code_project が空で送られる
+  await page.route(/\/api\/v1\/opencode\/workspaces$/, (route) => route.fulfill({ json: { workspaces: [] } }));
   let current = "auto";   // サーバーと同じく、変えた権限を覚えて返す
   await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => {
     if (route.request().method() === "PUT") {

@@ -8,6 +8,10 @@
 - U6: `CodeDoneCard`（`OpenCodeChanges.tsx`）。本文から要約を抜き（「結果・まとめ…」の節、無ければ最初の見出し。LLM 不使用）、ToDo の完了数・変更数、作業場の結果のカード（`workspace-result`）への入口。ファイル一覧は既存の `OpenCodeChanges`。
 - テスト: `test_opencode_chat_server.py`（2 件追加）、E2E `assistant-live-status.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/live-status-*`・`done-card-*`）。
 - 未了・確かめられなかった点: 実際のモデルでの子の `last_active_at`（イベントの形はテストの模擬）、前景で動く子（task が裏でない場合）は動き時刻が付かない、U6 の撮影の縮小画像、U5 の「待たずに進める」・レビュー係の既定モデル。見た目の視覚ゲートは今夜は外した。
+## 2026-11-23 E2E の既知の失敗 5 件を 0 件に（Q3）
+
+- 原因: 作業フォルダの選択（`AssistantChat.tsx` の `__folder__` → プロジェクト名への直し）は、プロジェクト一覧と作業場の一覧（`/opencode/workspaces`）の両方が届くまで直さない（#560 以降）。`assistant-plan.spec.ts`（4 件）と `assistant-claude-layout.spec.ts`（1 件）は作業場の一覧を模擬しておらず、選択が `__folder__` のまま残り `code_project` が空で送られた。画面の不具合ではない。
+- 直し: 両 spec に `/opencode/workspaces`（空の一覧）の page.route を足しただけ。確かめる中身は変えていない。画面のコードは触っていない。
 
 ## 2026-11-23 マージの L2 の承認をボタンだけに・区分を PR の差分で判定（U20）
 
