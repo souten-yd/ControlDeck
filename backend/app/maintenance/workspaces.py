@@ -16,14 +16,20 @@ integrations/opencode/chat_server.py。
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.maintenance import sandbox
 from app.maintenance.sandbox import Sandbox, SandboxError
+
+logger = logging.getLogger("control_deck.workspaces")
 
 CONTROLDECK = "controldeck"
 CODEDEV_PREFIX = "codedev:"
@@ -74,17 +80,21 @@ def box_for_project(project: Path) -> Sandbox | None:
         return None
 
 
-def _boxes_of(username: str) -> list[Sandbox]:
+def _all_boxes() -> list[Sandbox]:
+    """全ての作業場の箱（持ち主の絞り込みなし。改ざんの恐れがある箱は飛ばす）。"""
     boxes = []
     for entry in sorted(sandbox.root().iterdir()):
         if entry.is_dir() and sandbox.NAME.fullmatch(entry.name) and sandbox.has_meta(entry):
             try:
-                box = sandbox.load(entry.name)
+                boxes.append(sandbox.load(entry.name))
             except SandboxError:
                 continue          # 改ざんの恐れがある箱は一覧に出さない（使わせない）
-            if username and box.meta.get("owner") == username:
-                boxes.append(box)
     return boxes
+
+
+def _boxes_of(username: str) -> list[Sandbox]:
+    """username が空なら全ての箱（起動時の立て直し・管理側の処理用）。空でなければその人の箱だけ。"""
+    return [box for box in _all_boxes() if not username or box.meta.get("owner") == username]
 
 
 def get(name: str, username: str) -> Sandbox:
@@ -148,6 +158,8 @@ def summary(box: Sandbox) -> dict:
         "repo_path": str(box.repo),
         "target": box.target, "target_label": PRESETS[box.target]["short"],
         "capabilities": [c for c in sandbox.CAPABILITIES if c in box.capabilities], "adopt": box.adopt_mode,
+        # OpenCode（会話サーバー）がこの作業場で作業中か。消すときの確認の文言が強くなる
+        "working": busy(box),
     }
 
 
@@ -194,6 +206,11 @@ def create(username: str, source: str, name: str = "", *, target: str = "",
     capabilities は機能の上書き。権限の確認（required_permission）は呼ぶ側（router）が済ませる。"""
     if source != CONTROLDECK and not source.startswith(CODEDEV_PREFIX):
         raise SandboxError("元は controldeck か codedev:<プロジェクト名> を指定してください")
+    free = disk_free_gib()
+    if free < min_free_gib():
+        raise SandboxError(
+            f"ディスクの空きが {free:.1f} GiB しかありません（下限 {min_free_gib():.0f} GiB）。"
+            "必要なものを消すか、下限の設定を変えてください")
     target, caps, adopt_mode = plan(source, target, capabilities)
     if source == CONTROLDECK:
         repo, ref = controldeck_repo(), CONTROLDECK_REF
@@ -370,6 +387,7 @@ def changes(box: Sandbox) -> dict:
     未コミット」と出ていた。取り込んだ ref の差分だけを数えていたため）。同じファイルのコミット済みと
     未コミットの増減は足し合わせ、未追跡のファイルは増減 0 でファイルとして数える。
     `uncommitted_files` はそのうち未コミットのファイルの数（箱の git が読めなければ None）。
+    main の進み・ぶつかり・ディスクの空きも付く（結果のカードへ出す）。
     """
     state = sandbox.probe(box, fresh=True, with_tree=True)
     if state.get("unknown"):
@@ -394,6 +412,10 @@ def changes(box: Sandbox) -> dict:
         summary_.update(uncommitted_files=None)
     summary_.update(dirty=bool(state["dirty"]), uncommitted=state["dirty"],
                     check=check_state(box, state["tree"]), adopted=adopted_state(box), merged=merged_state(box))
+    summary_["behind"] = main_progress(box)
+    summary_["merge_conflict"] = merge_conflict_state(box)
+    summary_["disk_free_gib"] = round(disk_free_gib(), 1)
+    summary_["disk_low"] = disk_free_gib() < min_free_gib() * 2
     return summary_
 
 
@@ -502,12 +524,16 @@ def _require_adoptable(box: Sandbox, commit_message: str) -> dict:
     return saved
 
 
-def _body_of(summary_: dict, name: str, saved: dict, username: str) -> str:
+def _body_of(summary_: dict, name: str, saved: dict, username: str, box: Sandbox | None = None) -> str:
     labels = {"ok": "合格", "ng": "不合格", "skip": "未実施"}
     lines = ["AI アシスタントの開発の作業場から作りました。", "",
              f"- 作業場: {name}（元: {summary_['base']} から {summary_['commit_count']} コミット）",
              f"- 変更: {summary_['file_count']} ファイル（+{summary_['added']} / -{summary_['removed']}）",
-             f"- 利用者: {username}", "", "関門（./deck.sh dev-check）の結果:"]
+             f"- 利用者: {username}"]
+    autosaved = int((box.meta if box is not None else {}).get("autosave_count") or 0)
+    if autosaved:
+        lines.append(f"- 途中の自動保存: {autosaved} 回（ターンの終わりごと）")
+    lines += ["", "関門（./deck.sh dev-check）の結果:"]
     for item in saved.get("items") or []:
         lines.append(f"- [{labels.get(item['status'], item['status'])}] {item['name']}: {item['message']}")
     lines += ["", "マージと Release は、関門を通してから行ってください（この PR は自動ではマージされません）。"]
@@ -524,6 +550,13 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
     if mode == "pr" and source != CONTROLDECK:
         raise AdoptRefused("PR で取り込めるのは、元が ControlDeck 本体の作業場だけです")
     saved = _require_adoptable(box, commit_message)
+    # main の進み: 取り込みの前に、箱の中で main を取り込む（指示 2026-11-22）。ぶつかったら取り込みを止める
+    merged = merge_main(box)
+    if merged["conflicts"]:
+        raise AdoptRefused(f"main を取り込むときに {len(merged['conflicts'])} ファイルがぶつかりました。"
+                           "OpenCode に直させてから、もう一度取り込んでください")
+    if merged["merged"] and sandbox.probe(box, fresh=True, with_tree=True)["tree"] != saved.get("tree"):
+        raise AdoptRefused(f"main を {merged['behind']} 件取り込みました。関門を流し直してから、もう一度取り込んでください")
     head = import_head(box)
     if _host_git("rev-parse", f"{head}^{{tree}}", cwd=export_repo()) != saved.get("tree"):
         raise AdoptRefused("関門で確かめた内容と取り込む内容が違います。関門を流し直してください")
@@ -544,7 +577,8 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
             subject = commit_message.strip().splitlines()[0] if commit_message.strip() else (
                 _host_git("log", "-1", "--format=%s", head, cwd=exp) or f"作業場 {name} からの変更")
             url = _gh("pr", "create", "-R", slug, "--base", "main", "--head", branch,
-                      "--title", (title.strip() or subject)[:120], "--body", _body_of(summary_, name, saved, username)
+                      "--title", (title.strip() or subject)[:120],
+                      "--body", _body_of(summary_, name, saved, username, box)
                       ).splitlines()[-1].strip()
         result = {"kind": "pr", "branch": branch, "pr_url": url, "slug": slug}
     else:
@@ -733,3 +767,371 @@ def merge(name: str, username: str, *, confirm_phrase: str = "") -> dict:
               "guarded": [row["path"] for row in facts["guarded"]][:50]}
     _update_meta(name, merged=result)
     return result
+
+
+# ---- 保存と中断・再開（2026-11-22 利用者「作業場のコードが保存されるタイミング・停電や再起動・中断して再開できるか」）----
+#
+# 区切りは 2 つ: 作業場の会話の 1 ターン（OpenCode の応答）が終わるたびの自動保存と、ControlDeck の起動時の
+# 立て直し（index.lock・生成中のまま止まったメッセージ・未保存の変更）。取り込み（adopt）は今までどおり 1 つの
+# PR にまとめる（squash）。途中の保存はコミットの並びに残り、PR の本文にその数だけ出る。
+
+MAIN_TTL = 10 * 60.0        # main の進み（外部への fetch）を覚えておく長さ
+GIT_PROBE_TIMEOUT = 60
+
+
+def disk_free_gib() -> float:
+    """data のある所（箱・export.git・本番の DB）の空き（GiB）。
+
+    ディレクトリはここでは作らない（symlink のパスを mkdir が解決してマウントの外へ作る恐れがあるため）。
+    本番では起動時に data は必ず在る。調べられなければ呼び出し元が安全側へ扱えるよう例外を返す。"""
+    usage = os.statvfs(sandbox._data_dir())
+    return usage.f_bavail * usage.f_frsize / (1024 ** 3)
+
+
+def min_free_gib() -> float:
+    """ディスクの空きの下限（GiB）。これを下回ると新しい作業場を作らない・自動保存を飛ばす（設定で変えられる）。"""
+    from app.integrations.opencode import provider
+
+    try:
+        value = float(provider.get_settings().get("workspace_min_free_gib") or 15.0)
+    except (TypeError, ValueError):
+        value = 15.0
+    return max(0.0, value)
+
+
+_AUTOSAVE_LOCKS: dict[str, threading.Lock] = {}
+_AUTOSAVE_GUARD = threading.Lock()
+
+
+def _autosave_lock(name: str) -> threading.Lock:
+    with _AUTOSAVE_GUARD:
+        return _AUTOSAVE_LOCKS.setdefault(name, threading.Lock())
+
+
+def autosave(box: Sandbox, conversation_id: str = "") -> dict:
+    """箱の中の未コミットの変更を区切り（1 ターンの終わり・起動時の立て直し）でコミットする。
+
+    - 変更が無ければしない。ディスクの空きが下限を下回れば飛ばす（{"skipped": "disk"}）。
+    - コミットは箱の中の箱の git で（--no-verify でフックを動かさない。作者は箱の設定済みの作者）。
+    - 成功したら export.git へ取り込む（結果のカードの差分は export.git を見るので、途中の保存が見える）。
+    返り値: {"committed": bool, "count": int, "skipped": ""|"disk"|"clean"|"unknown"|"error", "free_gib": float, "error": str}
+    """
+    # 同じ作業場の保存が重なる（2 つの会話のターンの終わり・起動時の立て直しと利用者の送信）と、番号が
+    # 重なり index.lock を取り合うので、1 つずつにする
+    with _autosave_lock(box.name):
+        return _autosave(box, conversation_id)
+
+
+def _autosave(box: Sandbox, conversation_id: str) -> dict:
+    free = disk_free_gib()
+    if free < min_free_gib():
+        return {"committed": False, "count": 0, "skipped": "disk", "free_gib": round(free, 1), "error": ""}
+    state = sandbox.probe(box, fresh=True)
+    if state.get("unknown"):
+        return {"committed": False, "count": 0, "skipped": "unknown", "free_gib": round(free, 1),
+                "error": "箱の中の状態を調べられません"}
+    if not state["dirty"]:
+        return {"committed": False, "count": 0, "skipped": "clean", "free_gib": round(free, 1), "error": ""}
+    count = int(sandbox._read_meta(box.path).get("autosave_count") or 0) + 1
+    note = f"（会話 {conversation_id} のターン）" if conversation_id else "（起動時の立て直し）"
+    message = f"作業途中の保存 #{count}{note}"
+    try:
+        # マージのぶつかりの解決の途中（unmerged が残っている）はコミットしない — conflict marker 入りの
+        # まま「解決済み」として履歴に残してしまう（レビュー指摘 2026-11-22）。42 はその印
+        code, _, err = sandbox.in_box_result(
+            box, ["sh", "-c",
+                  'test -z "$(git ls-files -u)" || exit 42\n'
+                  'git add -A && git commit --no-verify -q -m "$1"', "sh", message],
+            timeout=180)
+    except SandboxError as exc:
+        return {"committed": False, "count": count, "skipped": "error", "free_gib": round(free, 1),
+                "error": str(exc)[:200]}
+    if code == 42:
+        return {"committed": False, "count": count, "skipped": "merge", "free_gib": round(free, 1),
+                "error": "マージのぶつかりの解決の途中なので保存しませんでした"}
+    if code != 0:
+        return {"committed": False, "count": count, "skipped": "error", "free_gib": round(free, 1),
+                "error": (err.strip() or f"終了コード {code}")[:200]}
+    _update_meta(box.name, autosave_count=count)
+    try:
+        import_head(box)
+    except SandboxError:
+        pass          # カードは次に開いたときの取り込みで追いつく（保存自体は済んでいる）
+    return {"committed": True, "count": count, "skipped": "", "free_gib": round(free, 1), "error": ""}
+
+
+def busy(box: Sandbox) -> bool:
+    """OpenCode（会話サーバー）がこの作業場で今も動いているか（消すときの確認の文言を強くする）。"""
+    from app.integrations.opencode import chat_server
+
+    for server in chat_server._all():
+        if server.workspace == box.name:
+            return chat_server._unit_active(server.unit)
+    return False
+
+
+def _start_ref(meta: dict, exp: Path) -> str:
+    """main の進みを数える起点。取り込んだ記録（main_merged_to）が export.git にあればそこから、
+    無ければ元の revision から（取り込んだ分は「進み」として数えない）。"""
+    base = str(meta.get("revision") or "")
+    start = str(meta.get("main_merged_to") or "")
+    if _OID.fullmatch(start):
+        try:
+            if _host_git("rev-parse", "--verify", f"{start}^{{commit}}", cwd=exp):
+                return start
+        except SandboxError:
+            pass
+    return base
+
+
+def _safe_fetch_source(origin: str) -> bool:
+    """fetch してよい取得元か。実行を伴うリモート補助（ext::・fd:: など `::` を含むもの）と、オプションに
+    読める先頭の `-` は拒む（メタはホストだけが書くが、書き込み経路が増えたときのための二重の守り）。"""
+    return bool(origin) and not origin.startswith("-") and "::" not in origin and "\n" not in origin
+
+
+def fetch_main(box: Sandbox) -> int | None:
+    """export.git へ元の origin の main を取り込み、まだ取り込んでいない main の進みを数える（取れなければ None）。
+
+    ホストの git は export.git（bare・ホストが管理）で動かす。箱の作業ツリーでは動かさない。
+    revision・origin は都度ディスクの meta から読む（_update_meta で書いた値が in-memory の box.meta に
+    届かないため。メモリ内の meta は呼び出し元が古いまま持ちがち）。
+    merge_main が取り込んだ main の sha を meta の main_merged_to へ記録するので、そこから先の分だけ数える。"""
+    meta = sandbox._read_meta(box.path)
+    origin = str(meta.get("origin") or "")
+    if not _OID.fullmatch(str(meta.get("revision") or "")) or not origin:
+        return None
+    if not _safe_fetch_source(origin):
+        return None
+    exp = export_repo()
+    try:
+        _host_git("-c", "protocol.ext.allow=never", "fetch", "--no-tags", "--quiet", origin, "+refs/heads/main:refs/remotes/origin/main",
+                  cwd=exp, timeout=60)
+        tip = _host_git("rev-parse", "refs/remotes/origin/main", cwd=exp)
+        return int(_host_git("rev-list", "--count", f"{_start_ref(meta, exp)}..{tip}", cwd=exp) or 0)
+    except SandboxError:
+        return None
+
+
+def main_progress(box: Sandbox, *, fresh: bool = False) -> int | None:
+    """元の main が何件進んでいるか。10 分は覚えた値を使う（外部への fetch は毎回しない）。"""
+    saved = sandbox._read_meta(box.path).get("main_progress")
+    if not fresh and isinstance(saved, dict) and time.time() - float(saved.get("at") or 0) < MAIN_TTL:
+        return saved.get("behind")
+    behind = fetch_main(box)
+    if behind is None and isinstance(saved, dict):
+        behind = saved.get("behind")       # 取れなければ前回の値（最初から取れなければ None）
+    _update_meta(box.name, main_progress={"at": time.time(), "behind": behind})
+    return behind
+
+
+def merge_conflict_state(box: Sandbox) -> dict | None:
+    saved = sandbox._read_meta(box.path).get("merge_state")
+    return saved if isinstance(saved, dict) and saved.get("conflicts") else None
+
+
+MAIN_REF = "refs/controldeck/main"       # 箱の中で取り込んだ元の main（ぶつかりを OpenCode が直すときの merge 元）
+
+
+def merge_main(box: Sandbox) -> dict:
+    """取り込みの前に、箱の中で元の main を取り込む（export.git から bundle を作り、箱へ読み取り専用で
+    見せて箱の中の git で fetch + merge。ホストの git は export.git で動かすだけ）。
+
+    bundle は箱の AI が書ける場所へは置かない（symlink を仕込まれてホストの git がそれを辿る脅威。
+    レビュー指摘 2026-11-22）。ホストだけが書く export.git の隣へ置き、この呼び出しの間だけ readonly
+    マウントで箱へ見せ、終わったら必ず消す（常駐の OpenCode の箱には見えない。ぶつかりを直すときは、
+    取り込み済みの MAIN_REF を merge させる）。
+    返り値: {"behind": int | None, "merged": bool, "conflicts": [ファイル], "error": str}
+    ぶつかったら merge --abort で作業ツリーを箱へ帰し、ぶつかったファイルを meta の merge_state へ残す
+    （結果のカードに「OpenCode に直させる」ボタンが出る）。merge できたら main の進みの記録を 0 に戻す。
+    """
+    behind = main_progress(box, fresh=True)       # 取り込みの判断は、覚えた値ではなく今の main で
+    result: dict = {"behind": behind, "merged": False, "conflicts": [], "error": ""}
+    if not behind:
+        return result
+    exp = export_repo()
+    bundle = exp.parent / f"{box.name}-main.bundle"     # ホストだけが書く場所（箱からは readonly で見える）
+    bundle.unlink(missing_ok=True)
+    try:
+        _host_git("bundle", "create", "--quiet", str(bundle), "refs/remotes/origin/main", cwd=exp)
+        code, out, err = sandbox.in_box_result(
+            box, ["git", "fetch", "-q", str(bundle), f"+refs/remotes/origin/main:{MAIN_REF}"],
+            timeout=GIT_PROBE_TIMEOUT, readonly=[bundle])
+        if code != 0:
+            result["error"] = (err.strip() or out.strip())[:300]
+            return result
+        code, out, err = sandbox.in_box_result(
+            box, ["git", "merge", "--no-edit", "--no-verify", MAIN_REF], timeout=180)
+        if code == 0:
+            tip = _host_git("rev-parse", "refs/remotes/origin/main", cwd=exp)
+            _update_meta(box.name, main_progress={"at": time.time(), "behind": 0},
+                         main_merged_to=tip, merge_state=None)
+            result["merged"] = True
+            return result
+        # ぶつかったか失敗したか。ぶつかったファイルの一覧を取ってから、必ず abort（作業ツリーを帰す）
+        c2, out2, _ = sandbox.in_box_result(box, ["git", "diff", "--name-only", "--diff-filter=U"],
+                                            timeout=GIT_PROBE_TIMEOUT)
+        conflicts = [line for line in out2.splitlines() if line.strip()][:200] if c2 == 0 else []
+        if conflicts:
+            c3, _, err3 = sandbox.in_box_result(box, ["git", "merge", "--abort"], timeout=GIT_PROBE_TIMEOUT)
+            result["conflicts"] = conflicts
+            if c3 != 0:
+                # 作業ツリーにぶつかりが残る（自動保存はぶつかりの最中は保存しない）。利用者へ伝える
+                result["error"] = f"merge --abort に失敗しました: {err3.strip()[:200]}"
+            _update_meta(box.name, merge_state={"conflicts": conflicts, "at": time.time()})
+        else:
+            result["error"] = (err.strip() or out.strip())[:300]
+    except SandboxError as exc:
+        result["error"] = str(exc)
+    finally:
+        bundle.unlink(missing_ok=True)
+    return result
+
+
+def last_conversation(box: Sandbox) -> str:
+    """この作業場で最後に OpenCode が動いた会話の ID（「ぶつかりを OpenCode に直させる」の送り先。無ければ空）。"""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    target = str(box.repo.resolve())
+    escaped = target.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    with SessionLocal() as db:
+        rows = db.execute(select(ChatMessage).where(
+            ChatMessage.meta_json.like(pattern, escape="\\")).order_by(
+            ChatMessage.created_at.desc()).limit(50)).scalars().all()
+        for row in rows:
+            try:
+                meta = json.loads(row.meta_json or "{}")
+            except ValueError:
+                continue
+            project = str(meta.get("project_path") or "")
+            try:
+                if project and str(Path(project).resolve()) == target:
+                    return row.conversation_id
+            except OSError:
+                continue
+    return ""
+
+
+def _box_git_running(box: Sandbox) -> bool:
+    """箱（pod）の中で git の process が動いているか。pod が止まっていれば動いていない。
+    分からなければ「動いている」扱い（消さない・安全側）。"""
+    if not sandbox._pod_running_containers(sandbox.pod_name(box)):
+        return False
+    podman = shutil.which("podman") or "podman"
+    result = subprocess.run([podman, "pod", "top", sandbox.pod_name(box)],
+                            capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        return True
+    return any(re.search(r"\bgit\b", line) for line in result.stdout.splitlines())
+
+
+def _interrupt_generating(repo_paths: list[str], cutoff: object) -> set[str]:
+    """生成中（status=generating）のまま止まった会話のメッセージで、作業場のパスを持ち、cutoff（この処理の
+    開始時刻・aware な UTC）より前に始まったものを「中断」にする（ControlDeck の再起動で止まった分。
+    既存の interrupt_unfinished と同じ形）。中断にした作業場のパス（resolve 済み）を返す。cutoff 以後に始まった回は、サーバーが受け付けを始めてから
+    利用者が送り直した新しい回の可能性があるので触らない（レビュー指摘 2026-11-22）。"""
+    from datetime import timezone
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import ChatMessage
+
+    if not repo_paths:
+        return set()
+    paths = set()
+    for raw in repo_paths:
+        try:
+            paths.add(str(Path(raw).resolve()))
+        except OSError:
+            continue
+    if not paths:
+        return set()
+    hit: set[str] = set()
+    with SessionLocal() as db:
+        rows = db.execute(select(ChatMessage).where(
+            ChatMessage.role == "assistant", ChatMessage.status == "generating",
+            ChatMessage.meta_json.like('%"project_path"%'))).scalars().all()
+        for row in rows:
+            if row.created_at is None:
+                continue
+            created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
+            if created >= cutoff:
+                continue          # 起動後に始まった新しい回 — 触らない
+            try:
+                meta = json.loads(row.meta_json or "{}")
+            except ValueError:
+                continue
+            project = str(meta.get("project_path") or "")
+            try:
+                resolved = str(Path(project).resolve())
+            except OSError:
+                continue
+            if resolved not in paths:
+                continue
+            row.status = "interrupted"
+            row.error = "ControlDeck の再起動で中断しました"
+            hit.add(resolved)
+        db.commit()
+    return hit
+
+
+def restore_interrupted() -> None:
+    """ControlDeck の起動時に 1 回（裏で）: 全ての作業場の立て直し。
+
+    - 箱の中に git の process が無ければ、残った .git/index.lock を消す（ログ 1 行）。
+    - 生成中のまま止まった作業場の会話のメッセージを「中断（ControlDeck の再起動）」にする。
+    - 中断にした会話の作業場と、index.lock が残っていた作業場は、未保存の変更を自動保存する（ターンの終わりの
+      autosave と同じ）。止まっていた作業場まで全部起こす（podman の起動）ことはしない。
+    どれかが失敗しても他の箱の立て直しは続く（起動は止めない）。
+    """
+    boxes = _all_boxes()
+    # この処理より後に始まった回は、サーバーが受け付けを始めてから利用者が送った新しい回の可能性がある
+    cutoff = datetime.now(timezone.utc)
+    try:
+        interrupted = _interrupt_generating([str(box.repo) for box in boxes], cutoff)
+    except Exception:  # noqa: BLE001 - DB の失敗で起動の立て直しを止めない
+        logger.exception("再起動で止まった作業場の会話の記録に失敗しました")
+        interrupted = set()
+    if interrupted:
+        logger.info("再起動で止まった作業場の会話を「中断」にしました（作業場 %d 個）", len(interrupted))
+    for box in boxes:
+        lock = box.repo / ".git" / "index.lock"
+        had_lock = lock.is_file()
+        if had_lock:
+            try:
+                running = _box_git_running(box)
+            except Exception:  # noqa: BLE001 - podman の失敗で起動の立て直しを止めない
+                logger.exception("作業場 %s の箱の中の確認に失敗しました", box.name)
+                running = True
+            if not running:
+                try:
+                    sandbox.in_box(box, ["rm", "-f", ".git/index.lock"])
+                except SandboxError as exc:
+                    logger.warning("作業場 %s の .git/index.lock を消せませんでした: %s", box.name, exc)
+                else:
+                    logger.info("作業場 %s に残った .git/index.lock を消しました", box.name)
+        try:
+            resolved = str(box.repo.resolve())
+        except OSError:
+            resolved = ""
+        if not had_lock and resolved not in interrupted:
+            continue
+        if lock.is_file():
+            continue          # git が動いている（lock を消さなかった）間は保存しない
+        try:
+            saved = autosave(box)
+        except Exception:  # noqa: BLE001
+            logger.exception("作業場 %s の起動時の自動保存に失敗しました", box.name)
+            continue
+        if saved["committed"]:
+            logger.info("作業場 %s の未保存の変更を自動保存しました（#%d）", box.name, saved["count"])
+        elif saved["skipped"] == "error":
+            logger.warning("作業場 %s の自動保存に失敗しました: %s", box.name, saved["error"])
+        elif saved["skipped"] == "disk":
+            logger.warning("ディスクの空きが %.1f GiB なので、作業場 %s を保存できません",
+                           saved["free_gib"], box.name)

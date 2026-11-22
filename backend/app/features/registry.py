@@ -847,6 +847,19 @@ def restore_enabled_services() -> None:
     except Exception:
         logger.exception("知識エッセンスの中断の記録に失敗しました")
 
+    # 作業場の立て直しは箱（podman）を起こすので遅い。サービスの起動復旧を待たせないよう別のスレッドで
+    import threading
+
+    def restore_workspaces() -> None:
+        try:
+            from app.maintenance import workspaces
+
+            workspaces.restore_interrupted()
+        except Exception:
+            logger.exception("開発の作業場の起動時の立て直し（index.lock・中断の記録・未保存の保存）に失敗しました")
+
+    threading.Thread(target=restore_workspaces, name="workspace-restore", daemon=True).start()
+
     for feature_id, spec in list(FEATURES.items()):
         if spec["kind"] != "release-bundle":
             continue

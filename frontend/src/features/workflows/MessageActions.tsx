@@ -5,13 +5,14 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export type MessageAction = "copy" | "fork" | "edit" | "delete";
+export type MessageAction = "copy" | "fork" | "edit" | "delete" | "resume";
 
 const LABEL: Record<MessageAction, { label: string; hint: string }> = {
   copy: { label: "コピー", hint: "この発言の文字を写す" },
   fork: { label: "ここから分岐", hint: "ここまでを新しい会話に写して続ける（元の会話は残る）" },
   edit: { label: "編集して送り直す", hint: "書き直した文で、ここから別の会話として送り直す" },
   delete: { label: "削除", hint: "この発言を消す（自分の発言なら、その回答も）" },
+  resume: { label: "続きから", hint: "中断した OpenCode の作業を、同じ作業の続きとして再開します" },
 };
 
 type MenuPos = { left: number; top: number; maxHeight: number };

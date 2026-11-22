@@ -25,6 +25,8 @@ class AgentTargetBody(BaseModel):
 class SettingsBody(AgentTargetBody):
     # 使うOpenCodeの系列。未指定なら現在の設定を保つ（既存クライアントを壊さない）。
     runtime: str = Field(default="", max_length=8)
+    # 開発の作業場: data のある所のディスクの空きの下限（GiB）。None（未指定）なら変えない。
+    workspace_min_free_gib: float | None = Field(default=None, ge=0, le=4096)
 
 
 class WorkflowBody(BaseModel):
@@ -80,7 +82,8 @@ def settings(
     body: SettingsBody, request: Request,
     user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
 ):
-    patch = {key: value for key, value in body.model_dump().items() if key != "runtime" or value}
+    patch = {key: value for key, value in body.model_dump().items()
+             if value is not None and (key != "runtime" or value)}
     try:
         result = opencode.save_settings(patch)
     except (ValueError, OSError) as exc:
@@ -502,6 +505,44 @@ async def workspace_merge(
                  resource_id=name, request=request,
                  metadata={"pr_url": result["pr_url"], "tier": result["tier"], "head": result["head"],
                            "guarded": result["guarded"]})
+    return result
+
+
+@router.post("/workspaces/{name}/resolve-conflict", status_code=202)
+async def workspace_resolve_conflict(
+    name: str, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db=Depends(get_db),
+):
+    """main の取り込みでぶつかったファイルを、この作業場で動いた同じ会話の OpenCode に直させる。
+
+    元の main は merge_main が箱の中の MAIN_REF へ取り込み済み。ぶつかったファイルの一覧を user
+    メッセージとして会話へ送る（通常の送信と同じ流れ・workflows.run）。セッションは会話の meta のものを続ける。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+    from app.models import Conversation
+    from app.workflows import chat_persist
+
+    box = _owned_box(name, user)
+    conflict = await asyncio.to_thread(workspaces.merge_conflict_state, box)
+    if conflict is None:
+        raise HTTPException(status_code=409,
+                            detail="ぶつかったファイルの記録がありません。もう一度「取り込む」を試してください")
+    conv_id = await asyncio.to_thread(workspaces.last_conversation, box)
+    conv = db.get(Conversation, conv_id) if conv_id else None
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=409, detail="この作業場で OpenCode が動いた会話が見つかりません")
+    files = "\n".join(f"- {f}" for f in (conflict.get("conflicts") or [])[:50])
+    content = ("main を取り込もうとしたら、次のファイルがぶつかりました:\n"
+               f"{files}\n\n"
+               f"元の main はこの作業場の中の `{workspaces.MAIN_REF}` に取り込み済みです。"
+               f"`git merge {workspaces.MAIN_REF}` でぶつかりを解決してください"
+               "（main の変更とこの作業の内容を両方残す）。解決したらコミットして、残りの作業を続けてください。")
+    body = chat_persist.SendBody(content=content, mode="code", code_project_path=str(box.repo))
+    result = await chat_persist._start_send(db, conv, body, user.id)
+    audit.record(db, "opencode.workspace.resolve_conflict", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request,
+                 metadata={"conversation_id": conv_id, "files": len(conflict.get("conflicts") or [])})
     return result
 
 

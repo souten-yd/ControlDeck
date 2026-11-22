@@ -59,6 +59,9 @@ DEFAULT_SETTINGS = {
     # OpenCode をどこで動かすか。box: プロジェクトの箱（podman、書けるのはプロジェクトだけ）、
     # host: これまでどおり利用者と同じ権限で。箱が使えない（podman が無い）ときは host。
     "isolation": "box",
+    # 開発の作業場: data のある所のディスクの空きの下限（GiB）。下回ると新しい作業場を作らない・
+    # ターンの終わりの自動保存を飛ばす（会話に「保存できません」が出る）。下限の 2 倍未満は注意。
+    "workspace_min_free_gib": 15,
     # Context7（ライブラリの公式文書）。問い合わせが外部へ出るので既定はオフ。
     "context7": False,
     # この PC で設定済みの gh（GitHub CLI）を session から使わせるか。AI に利用者の GitHub の
