@@ -6,6 +6,16 @@
 - 指示書が渡されていなければ `.controldeck/plan.md` に書く。プランのモードでは要点を見せて止まり、ビルドに切り替えたらその指示書どおりに進める。ビルドのモードで決めてもらうことが無ければそのまま進む。大きな作業は段に分けて段ごとに関門とコミット。
 - 検証: `tests/test_dev_skill_planning.py`（1）。
 
+## 2026-11-22 ミラーの LLM（P3）: 上流の LLM を中継経由で使う
+
+- 目的: 箱のミラー（`CONTROL_DECK_ISOLATED=1`）はモデルの登録が空で、AI アシスタント・Patent の AI・ナレッジの分析が LLM を使えなかった。ミラーに「上流の LLM」を設定し、箱の中の中継（127.0.0.1:<gateway_port>）経由で本番のローカルのモデルへ送る。
+- 設定: `config.llm_upstream`（`mirror_config` が `http://127.0.0.1:<gateway_port>/api/v1/llm/v1` を書く）。`gateway.upstream_base()` が読むのは ISOLATED のときだけ（本番では無視）。loopback の http・ポート付き・パスに `/api/v1/llm/v1` を含むものだけ受け、それ以外は空扱い（設定ミスで箱の外へ出さない）。
+- 振り分け（既存の関数に分岐を足しただけ）: (1) `gateway.resolve_internal_target`（`RuntimeChatRequest` 経路・`resolve_target`）: 上流があればゲートウェイ宛を上流へ（モデル名・`cloud:` はそのまま）。(2) `ai_gateway.resolve_ai_target`: 上流の `/models` を確かめ（接続できない・空なら `AITargetUnavailable`）、`AITarget(上流, "auto", gateway_managed=True)`。`require_local_target` は上流の URL なら通す（先は本番のローカルのモデル。外部は中継が断る）。`resolve_local_target`（Patent）などはこれで動く。(3) ミラーのゲートウェイ `GET /models`・`POST /chat/completions`: 上流へそのまま中継（ストリーム含む）。機密の印・呼び出し元・accept を渡す。
+- 中継（`sandbox_gateway.py`）: 機密の印 `x-control-deck-confidential` を上流へ渡すよう `FORWARD_REQUEST_HEADERS` に 1 語足した（以前は落ちていて、`cloud:` を許可した箱で印が効かない）。外部のモデルは既定で断る（今までどおり）。
+- 設計から外れた点: 中継は呼び出し元を常に `opencode` に付け替えるので、アシスタントの `assistant` は本番へ届かない（外部のモデルの許可は箱では効かず、既定の断りが効く）。モデル名は `auto` 固定（本番の Models で選んだものへ流れる。ミラーの画面でモデルを選ぶ操作は上流の一覧のとおり）。
+- 検証: `tests/test_mirror_llm_upstream.py`（新規 8。ISOLATED のときだけ読む・loopback 以外を拒否・内部の振り分け・AI target と local_only の検査・上流が空/落ちている・RuntimeChatRequest のストリームと機密の印・ゲートウェイの models/chat の中継）、`test_dev_sandbox.py`（mirror_config が中継の URL を書く）。
+- 確かめられなかった点: 実機のミラー（podman）から中継経由で本番のモデルへ会話できるか（AI アシスタント・Patent・ナレッジの分析）。実際の長い生成での中継のタイムアウト（中継は read 900 秒）。
+
 ## 2026-11-22 開発の作業場 3 段目: 結果のカードと「取り込む」
 
 - 目的: 作業場の会話に「作業場の結果」のカード（変更の要約・関門・取り込む）を足し、頼む → 作る → 見て試す → 取り込む、を画面で通す。本番を変えるのは利用者の一押しの後だけ。

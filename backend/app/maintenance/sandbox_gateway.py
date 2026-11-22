@@ -33,7 +33,7 @@ logger = logging.getLogger("control_deck.sandbox_gateway")
 API = "/api/v1/llm/v1"
 MAX_BODY_BYTES = 32 * 1024 * 1024
 MAX_CONCURRENT = 4
-FORWARD_REQUEST_HEADERS = {"content-type", "accept", "accept-encoding"}
+FORWARD_REQUEST_HEADERS = {"content-type", "accept", "accept-encoding", "x-control-deck-confidential"}
 _DROP_RESPONSE_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
     "transfer-encoding", "upgrade", "set-cookie",

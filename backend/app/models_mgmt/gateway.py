@@ -118,6 +118,66 @@ def is_gateway_url(url: str) -> bool:
     return API_PATH in str(url or "")
 
 
+def upstream_base() -> str:
+    """ミラー（CONTROL_DECK_ISOLATED=1）の「上流の LLM」。無ければ空。
+
+    ミラーはモデルの登録が空なので、設定 llm_upstream（箱の中の中継）へ LLM を送る。本番では読まない。
+    箱の外へ出る URL を設定ミスで掴まないよう、loopback の http だけを受ける。
+    """
+    from urllib.parse import urlsplit
+
+    from app.config import get_config, isolated
+
+    if not isolated():
+        return ""
+    value = str(get_config().llm_upstream or "").strip().rstrip("/")
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        import ipaddress
+
+        if (parts.scheme != "http" or not parts.port or parts.username or parts.password
+                or not ipaddress.ip_address(parts.hostname or "").is_loopback or API_PATH not in parts.path):
+            return ""
+    except ValueError:
+        return ""
+    return value
+
+
+def _upstream_headers(request: Request) -> dict[str, str]:
+    """上流（中継）へ渡す要求のヘッダ。機密の印と呼び出し元は落とさない。"""
+    out = {"content-type": "application/json"}
+    for name in (CONFIDENTIAL_HEADER, CLIENT_HEADER, "accept"):
+        if request.headers.get(name):
+            out[name] = request.headers[name]
+    return out
+
+
+async def _relay_to_upstream(request: Request, upstream: str, method: str, path: str, body: bytes = b""):
+    """ミラーのゲートウェイ → 上流のゲートウェイ（中継）。ストリームもそのまま流す。"""
+    client = httpx.AsyncClient(timeout=httpx.Timeout(20, read=900), follow_redirects=False)
+    try:
+        response = await client.send(
+            client.build_request(method, f"{upstream}{path}", headers=_upstream_headers(request), content=body),
+            stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="上流のゲートウェイへ接続できません") from None
+
+    async def stream():
+        try:
+            async for chunk in response.aiter_raw():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    headers = {k: v for k, v in response.headers.items()
+               if k.lower() in ("content-type", "cache-control", "retry-after")}
+    return StreamingResponse(stream(), status_code=response.status_code, headers=headers)
+
+
 def _selected_runtime() -> str:
     """Models で選択中のランタイム。読めなければ空（従来の選び方になる）。"""
     try:
@@ -190,6 +250,11 @@ def resolve_internal_target(base: str, model: str) -> tuple[str, str]:
     """
     if not is_gateway_url(base):
         return base, model
+    upstream = upstream_base()
+    if upstream:
+        # ミラー: 実インスタンスは無い。上流のゲートウェイ（中継）へ、モデル名も cloud: もそのまま送る
+        # （外部のモデルを断るのは中継と本番のゲートウェイ）。
+        return upstream, model
     if str(model or "").startswith("cloud:"):
         # 外部のフロンティアモデルに実インスタンスは無い。ゲートウェイ自身へ送り、
         # 送ってよいか（呼び出し元の許可・上限額・データの扱い）をそこで判定させる。
@@ -511,6 +576,9 @@ async def gateway_models(request: Request):
     OpenAI 仕様には無い項目なので、互換性を壊さない追加フィールドで示す。
     """
     _authorize(request)
+    upstream = upstream_base()
+    if upstream:
+        return await _relay_to_upstream(request, upstream, "GET", "/models")
     from app.models_mgmt import local_llm
 
     llms = await asyncio.to_thread(local_llm.llm_instances)
@@ -654,6 +722,9 @@ async def _cloud_chat(request: Request, payload: dict):
 async def gateway_chat(request: Request):
     """受け入れ制御を挟んでローカルランタイムへ転送する。stream もそのまま中継する。"""
     _authorize(request)
+    upstream = upstream_base()
+    if upstream:
+        return await _relay_to_upstream(request, upstream, "POST", "/chat/completions", await request.body())
     from app.models_mgmt import local_llm
 
     try:

@@ -87,7 +87,7 @@
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
 | P2d | 実行の結果・ログ・成果物の差分・撮影・気づきを `control_deck.report` で評価として出す | 未着手 | — |
 | P2e | 記録中の表示・気づきボタン（スマホは長押しで要素を選ぶ）・評価の画面（Opus と Sonnet） | 未着手 | — |
-| P3 | ミラーの LLM 要求を中継経由でホストへ | 未着手 | — |
+| P3 | ミラーの LLM 要求を中継経由でホストへ | 実装・単体テスト済み（実機は未確認）。`mirror_config` が `llm_upstream`（箱の中の中継）を書き、ミラー（ISOLATED）のゲートウェイと内部の AI 機能が上流へ送る。中継は機密の印を通す | 本 PR |
 | P4 | GPU の貸し出し（`sandbox gpu <名前> acquire/release`、broker の `sandbox:<名前>`、期限切れで回収） | 未着手 | — |
 | P5 | 箱のランタイムを `dev:<箱>/<モデル>` で本番のゲートウェイへ一時登録し評価 | 未着手 | — |
 | P6 | 試運転: W2 の最初の項目（`HANDOFF-web-collector.md`）を箱の OpenCode にやらせ、PR → Release まで | 未着手 | — |

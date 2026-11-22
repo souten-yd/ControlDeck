@@ -676,7 +676,9 @@ def mirror_config(box: Sandbox) -> Path:
         f"server:\n  host: 127.0.0.1\n  port: {box.port}\n"
         f"data_dir: {box.path / 'mirror' / 'data'}\n"
         f"codedev_dir: {box.path / 'mirror' / 'CodeDEV'}\n"
-        f"git_apps_dir: {box.path / 'mirror' / 'apps'}\n",
+        f"git_apps_dir: {box.path / 'mirror' / 'apps'}\n"
+        # 上流の LLM: 箱の中の中継（本番のローカルのモデルへ届く。外部のモデルは中継が断る）
+        f"llm_upstream: http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1\n",
         encoding="utf-8",
     )
     return config
