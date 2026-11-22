@@ -1,8 +1,10 @@
 """OpenCode の「役割ごとのモデル」を決める 1 か所（本番の session と開発の作業場の両方が使う）。
 
 利用者の依頼（2026-11-22）: 計画・開発・調査・簡易検証・最終検証・評価に別々のモデルを選べるようにしたい。
-ただしローカルのモデルは GPU で同時に 1 つしか動かせない。同時に動きうる役割は同じローカルのモデルにし、
-無理なら順番を決めて載せ替える。
+同じモデルの役割が続くときは載せ替えない（ゲートウェイは起動中のモデルをそのまま使う）。全部同じでも、
+全部違うモデルでもよい（2026-11-22 利用者「変な制限は設けなくて良い」）。ローカルのモデルは GPU で同時に
+1 つしか動かせないが、ゲートウェイが要求を順番に受けて載せ替える（生成中の要求は最後まで返し、割り込んだ要求は
+待ってから載せ替える。2026-11-22 Opus の実測）。同じ段に別のローカルがあれば、載せ替えで遅くなる旨を知らせるだけ。
 
 役割（6）と段（3）:
   段 1 計画      plan
@@ -10,8 +12,8 @@
   段 3 確かめる  final_check / evaluate           （最終検証と評価は並んで動きうる）
 段をまたぐ載せ替えは許す（順番に動くため。ロードはゲートウェイが呼ばれたときに行う）。
 
-決まり（保存の時に検め、session・作業場の設定を作るときも守る）:
-- 同じ段の中のローカルのモデルは 1 つだけ。外部のモデルは自由に混ぜてよい。
+決まり:
+- どの役割にもどのモデルでも選べる（制限しない）。同じ段に別のローカルがあれば、お知らせ（notes）を出すだけ。
 - 秘密（confidential / local_only）では、外部が選ばれていても全役割をローカルへ落とす。
 - 最終検証が開発と同じモデルなら注意を出す（保存は止めない）。
 """
@@ -32,12 +34,12 @@ SUBAGENT_NAMES = {"research": "researcher", "quick_check": "quick-checker", "eva
 # 既定を持つ側が、同じ段の明示された別のローカルに合わせてよい役割（主の plan・build は黙って変えない）
 _ADOPTABLE = frozenset({"research", "quick_check", "final_check", "evaluate"})
 
-LOCAL_CONFLICT = "同時に動きうる役割なので、ローカルは同じモデルにしてください（GPU で同時に 1 つしか動かせません）"
+LOCAL_SWAP = "同時に動きうる役割に別のローカルのモデルがあります。並んで動くときは順番に載せ替えるので、待ち時間が増えます"
 SAME_AS_BUILD = "最終検証が開発と同じモデルです。別の目で見られません"
 
 
 class RolesError(ValueError):
-    """同じ段にローカルのモデルが 2 つ以上ある。"""
+    """（互換のために残す。いまは送出しない）"""
 
 
 def is_local(model: str) -> bool:
@@ -68,25 +70,12 @@ def _label(role: str, res: Resolution) -> str:
     return f"{ROLE_LABELS[role]}（{'選択' if role in res.explicit else '既定'}: {res.models[role]}）"
 
 
-def _settle(stage: int, res: Resolution, strict: bool) -> None:
+def _settle(stage: int, res: Resolution, strict: bool = False) -> None:
+    """同じ段に別のローカルのモデルがあれば知らせる（変えない・断らない）。strict は互換のために受けるだけ。"""
     names = [r for r in ROLES if STAGE_OF[r] == stage and is_local(res.models[r])]
-    if len({res.models[r] for r in names}) <= 1:
-        return
-    chosen = list(dict.fromkeys(res.models[r] for r in names if r in res.explicit))
-    if len(chosen) == 1:
-        for role in names:
-            if role in _ADOPTABLE and role not in res.explicit:
-                res.models[role] = chosen[0]
-    if len({res.models[r] for r in names}) <= 1:
-        return
-    if strict:
-        detail = " と ".join(_label(r, res) for r in names)
-        raise RolesError(f"{STAGE_NAMES[stage]}の {detail}: {LOCAL_CONFLICT}")
-    first = res.models[names[0]]
-    for role in names[1:]:
-        if res.models[role] != first:
-            res.notes.append(f"{ROLE_LABELS[role]}のローカルのモデルを {first} に揃えました（{LOCAL_CONFLICT}）")
-            res.models[role] = first
+    if len({res.models[r] for r in names}) > 1:
+        detail = "・".join(f"{ROLE_LABELS[r]}＝{res.models[r]}" for r in names)
+        res.notes.append(f"{STAGE_NAMES[stage]}（{detail}）: {LOCAL_SWAP}")
 
 
 def resolve(roles: Mapping | None, *, session_model: str, first_external: str = "", legacy_review: str = "",
@@ -96,7 +85,7 @@ def resolve(roles: Mapping | None, *, session_model: str, first_external: str = 
     既定: 調査・簡易検証は開発と同じ。開発・計画の未設定はセッションのモデル。最終検証・評価は計画と同じ
     （計画が未設定なら first_external＝外部の最初のモデル、それも無ければ開発と同じ）。
     legacy_review は旧設定 review_model（最終検証の指定として読む）。
-    strict=True は同じ段のローカルが 2 つで RolesError（保存の検査）。False は揃えて notes に残す（設定を作るとき）。
+    strict は互換のために受けるだけ（制限はしない。同じ段の別のローカルは notes で知らせる）。
     local_only は秘密: 外部が選ばれていても、全役割をローカル（local_model、無ければセッションのモデル）へ落とす。
     """
     raw = _clean(roles)

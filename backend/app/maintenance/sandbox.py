@@ -941,10 +941,23 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
         names = [name, "adversarial-reviewer", "constructive-reviewer"] if role == "final_check" else [name]
         for target in names:
             spec = agents.get(target)
-            if isinstance(spec, dict) and (resolved.models[role] != session_ref or role == "final_check"):
+            # 全ての役割にモデルを明示する（空だと子は呼んだ側のモデルを引き継ぐ）
+            if isinstance(spec, dict):
                 spec["model"] = resolved.models[role]
-            elif target in ("plan", "build") and resolved.models[role] != session_ref:
+            elif target in ("plan", "build"):
                 agents[target] = {"model": resolved.models[role]}
+    # 役割で選んだローカルのモデルを、箱の controldeck の一覧へ足す（無いと OpenCode が
+    # 「Model unavailable: controldeck/<モデル>」で止まる。2026-11-22 全部違うモデルの実機で見つけた）
+    local_models = payload["provider"]["controldeck"].setdefault("models", {})
+    for value in resolved.models.values():
+        if str(value).startswith("controldeck/"):
+            alias = str(value).split("/", 1)[1]
+            if alias and alias not in local_models:
+                local_models[alias] = {
+                    "name": alias, "attachment": True,
+                    "modalities": {"input": ["text", "image"], "output": ["text"]},
+                    **({"limit": limits} if (limits := provider._model_limits(alias)) else {}),
+                }
     if skills:
         payload["skills"] = {"paths": skills}
     else:

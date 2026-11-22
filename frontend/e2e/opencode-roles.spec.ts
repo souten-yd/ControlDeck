@@ -3,9 +3,9 @@ import { openOpenCode } from "./support/opencode";
 import { establishSession, hasSession } from "./support/session";
 
 /** OpenCode 設定の「役割とモデル」。
- * 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価）ごとにモデルを選べ、同じ段のローカルが 2 つになる選択は
- * その場で理由が出て保存できないこと。最終検証＝開発の注意が出ること。320・1280、ライト・ダークで読めること。
- * 根拠: 2026-11-22 利用者の依頼（ローカルのモデルは GPU で同時に 1 つしか動かせない）。
+ * 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価）ごとに自由にモデルを選べ（全部違っても保存できる）、
+ * 同じ段に別のローカルがあればお知らせだけ出ること。最終検証＝開発のお知らせ。320・1280、ライト・ダークで読めること。
+ * 根拠: 2026-11-22 利用者「個別にモデルを設定できるようにして。全部同じも全部違うも。変な制限は設けなくて良い」。
  * 検査はサーバー（/opencode/roles/check）が持つので、ここは検証用インスタンスの本物の API を通す。 */
 const workflow = {
   superpowers: false, adversarial_review: false, auto_review: true, auto_advisor: "off", advisor_model: "",
@@ -19,7 +19,7 @@ const workflow = {
 
 for (const width of [320, 1280]) {
   for (const scheme of ["light", "dark"] as const) {
-    test(`役割とモデル: 同じ段のローカル 2 つは保存できない (${width}px ${scheme})`, async ({ page, context }) => {
+    test(`役割とモデル: どの組み合わせでも保存できる (${width}px ${scheme})`, async ({ page, context }) => {
       test.skip(!hasSession(), "E2E credentials are required");
       await page.setViewportSize({ width, height: 900 });
       await page.emulateMedia({ colorScheme: scheme });
@@ -28,15 +28,14 @@ for (const width of [320, 1280]) {
       await page.route("**/api/v1/opencode/roles/check", async (route) => {
         const roles = route.request().postDataJSON().roles as Record<string, string>;
         const stages = [["build", "research", "quick_check"], ["final_check", "evaluate"]];
-        const reason = "同時に動きうる役割なので、ローカルは同じモデルにしてください（GPU で同時に 1 つしか動かせません）";
         const local = (m?: string) => Boolean(m) && !m!.startsWith("cloud:");
-        let error = "";
+        const notes: string[] = [];
         for (const names of stages) {
-          const set = new Set(names.map((n) => roles[n]).filter(local));
-          if (set.size > 1) error = `${names[0] === "build" ? "② 作る" : "③ 確かめる"}の ${[...set].join(" と ")}: ${reason}`;
+          if (new Set(names.map((n) => roles[n]).filter(local)).size > 1)
+            notes.push("同時に動きうる役割に別のローカルのモデルがあります。並んで動くときは順番に載せ替えるので、待ち時間が増えます");
         }
-        const notes = roles.final_check && roles.final_check === roles.build ? ["最終検証が開発と同じモデルです。別の目で見られません"] : [];
-        await route.fulfill({ json: { error, notes, effective: {} } });
+        if (roles.final_check && roles.final_check === roles.build) notes.push("最終検証が開発と同じモデルです。別の目で見られません");
+        await route.fulfill({ json: { error: "", notes, effective: {} } });
       });
       await openOpenCode(page, workflow);
       await page.getByRole("button", { name: "OpenCode 設定を開く" }).click();
@@ -53,19 +52,19 @@ for (const width of [320, 1280]) {
       const save = sheet.getByRole("button", { name: "保存", exact: true });
       await expect(save).toBeEnabled();
 
-      // 段②: 開発と調査に別のローカル → 理由が出て保存できない
+      // 段②: 開発と調査に別のローカル → 保存できる。載せ替えのお知らせだけ出る
       await select("② 作る", "開発").selectOption("maya-s");
       await select("② 作る", "調査").selectOption("qwen-flash-next");
-      const alert = sheet.getByRole("alert").filter({ hasText: "同時に 1 つしか動かせません" });
-      await expect(alert).toBeVisible();
-      await expect(alert).toContainText("同時に動きうる役割なので、ローカルは同じモデルにしてください");
-      await expect(save).toBeDisabled();
-      await alert.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      const note = sheet.getByRole("note").filter({ hasText: "載せ替え" });
+      await expect(note).toBeVisible();
+      await expect(sheet.getByRole("alert")).toHaveCount(0);
+      await expect(save).toBeEnabled();
+      await note.evaluate((el) => el.scrollIntoView({ block: "center" }));
       await page.screenshot({ path: `test-results/roles-conflict-${width}-${scheme}.png` });
 
-      // 外部のモデルは同じ段に混ぜてよい（調査を外部へ）。保存できる
+      // 外部のモデルも混ぜられる
       await select("② 作る", "調査").selectOption("cloud:openrouter/x/y");
-      await expect(alert).toHaveCount(0);
+      await expect(note).toHaveCount(0);
       await expect(save).toBeEnabled();
 
       // 段をまたぐ載せ替えは許す（計画は別のローカル）。最終検証＝開発の注意

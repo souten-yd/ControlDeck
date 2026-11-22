@@ -1,7 +1,7 @@
 /** 役割とモデル。計画・開発・調査・簡易検証・最終検証・評価に別々のモデルを選ぶ。
- * ローカルのモデルは GPU で同時に 1 つしか動かせないので、同時に動きうる役割（同じ段）のローカルは 1 つだけ。
- * 外部のモデルは自由に混ぜられ、段をまたぐ載せ替えは順番に行われる。決まりの検査はサーバー（roles.py）が持ち、
- * ここは保存せずに確かめる API（/opencode/roles/check）の結果を、その場で出す。 */
+ * どの役割にもどのモデルでも選べる（全部同じでも全部違ってもよい。2026-11-22 利用者「変な制限は設けなくて良い」）。
+ * 同じモデルが続けば載せ替えは起きない。同じ段に別のローカルがあれば、待ち時間が増える旨をお知らせだけ出す
+ * （保存せずに確かめる API /opencode/roles/check の notes）。 */
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { api } from "../../api/client";
@@ -21,12 +21,12 @@ const STAGES: { n: number; title: string; hint: string; roles: { key: RoleKey; l
   { n: 1, title: "① 計画", hint: "計画と指示書を作る（OpenCode の plan）", roles: [
     { key: "plan", label: "計画", hint: "計画・指示書を作るモデル", fallback: "セッションと同じモデル（既定）" },
   ] },
-  { n: 2, title: "② 作る", hint: "開発と、その間に呼ぶ子エージェント。同時に動きうるので、ローカルは同じモデルにします", roles: [
+  { n: 2, title: "② 作る", hint: "開発と、その間に呼ぶ子エージェント", roles: [
     { key: "build", label: "開発", hint: "実装するモデル（build）", fallback: "セッションと同じモデル（既定）" },
     { key: "research", label: "調査", hint: "コードや資料を読む・探す子エージェント", fallback: "開発と同じ（既定）" },
     { key: "quick_check", label: "簡易検証", hint: "変更の直後にテストや関門を流す子エージェント", fallback: "開発と同じ（既定）" },
   ] },
-  { n: 3, title: "③ 確かめる", hint: "最終検証と評価。同時に動きうるので、ローカルは同じモデルにします", roles: [
+  { n: 3, title: "③ 確かめる", hint: "最終検証と評価", roles: [
     { key: "final_check", label: "最終検証", hint: "完了の前に差分を読むレビュー役（reviewer など）", fallback: "計画と同じ（既定）" },
     { key: "evaluate", label: "評価", hint: "完成物を目的に照らして評価する子エージェント", fallback: "計画と同じ（既定）" },
   ] },
@@ -47,7 +47,7 @@ export function RolesPanel({ value, onChange, editable, onProblem }: {
   const field = "mt-1 min-h-11 w-full truncate pr-8 text-ellipsis rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
   const set = (key: RoleKey, next: string) => onChange({ ...value, roles: { ...roles, [key]: next } });
   return (
-    <SettingsGroup title="役割とモデル" description="段の順に動きます。ローカルのモデルは GPU で同時に 1 つだけなので、同じ段のローカルは同じモデルにします（外部のモデルは自由）">
+    <SettingsGroup title="役割とモデル" description="役割ごとに好きなモデルを選べます（全部同じでも、全部違ってもよい）。同じモデルが続くときは載せ替えません">
       {STAGES.map((stage) => (
         <section key={stage.n} aria-label={stage.title} className="space-y-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/50">
           <div>
@@ -86,14 +86,9 @@ export function RolesPanel({ value, onChange, editable, onProblem }: {
         </section>
       ))}
       <div aria-live="polite" className="space-y-2">
-        {error && (
-          <p role="alert" className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium leading-relaxed text-zinc-900 dark:border-red-800 dark:bg-red-950/60 dark:text-red-100">
-            保存できません。{error}
-          </p>
-        )}
-        {!error && (check.data?.notes ?? []).filter((n) => n.includes("別の目")).map((note) => (
-          <p key={note} role="note" className="rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-            注意: {note}。最終検証か計画に別のモデルを選ぶと、別の目で確かめられます。
+        {(check.data?.notes ?? []).filter((n) => n.includes("載せ替え") || n.includes("別の目")).map((note) => (
+          <p key={note} role="note" className="rounded-xl bg-zinc-100 px-3 py-2 text-xs leading-relaxed text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+            お知らせ: {note}
           </p>
         ))}
       </div>

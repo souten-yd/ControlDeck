@@ -1,7 +1,9 @@
 """OpenCode の「役割ごとのモデル」（plan / build / research / quick_check / final_check / evaluate）。
 
-目的: 役割ごとにモデルを選べ、同時に動きうる役割（同じ段）のローカルのモデルが 2 つにならないことを、
-保存の時と設定を作る時（本番の session・開発の作業場）の両方で守る。段をまたぐ載せ替えと外部のモデルの混在は許す。
+目的: 役割ごとに自由にモデルを選べ（全部同じでも全部違ってもよい）、全ての役割にそのモデルが明示されることを、
+本番の session・開発の作業場の両方で守る。同じ段に別のローカルがあればお知らせだけ出す（断らない）。
+根拠（2026-11-22 利用者、2 回目）: 「個別にモデルを設定できるようにして。全部同じも全部違うもできるように。変な制限は
+設けなくて良い」。ゲートウェイは別々のローカルへの同時の要求を順番に載せ替え、生成中の要求は最後まで返す（Opus 実測）。
 根拠: 2026-11-22 利用者「計画を実行するモデルと、調査、開発、検証、評価など。制約: 同時に 1 モデルしかできないので、
 同時に実行する可能性のある作業は同じモデルにしたい」。ローカルは GPU で同時に 1 つしか動かせない。
 最終検証が開発と同じモデルなら別の目で見られないので注意を出す。秘密（confidential）は全役割をローカルへ落とす。
@@ -34,17 +36,19 @@ def test_stage_defaults_follow_build_and_plan():
     assert roles.SAME_AS_BUILD not in res.notes
 
 
-def test_two_different_locals_in_one_stage_are_refused():
-    with pytest.raises(roles.RolesError, match="GPU で同時に 1 つしか動かせません"):
-        roles.resolve({"build": "maya-s", "research": "qwen-flash-next"}, session_model="auto", strict=True)
-    with pytest.raises(roles.RolesError):
-        roles.resolve({"final_check": "maya-s", "evaluate": "qwen-flash-next"}, session_model="auto", strict=True)
-    # 開発が既定（セッション）で、調査だけ別のローカルでも同じ（黙って開発を変えない）
-    with pytest.raises(roles.RolesError):
-        roles.resolve({"research": "maya-s"}, session_model="qwen-flash-next", strict=True)
-    # 同じローカルなら良い。既定の側は同じ段の明示されたローカルに合わせる
-    res = roles.resolve({"final_check": "maya-s"}, session_model="qwen-flash-next", strict=True)
-    assert res.models["evaluate"] == "maya-s"
+def test_any_combination_is_allowed_and_only_noted():
+    # 同じ段に別のローカルでも断らない・揃えない。お知らせだけ出す
+    res = roles.resolve({"build": "maya-s", "research": "qwen-flash-next"}, session_model="auto", strict=True)
+    assert res.models["build"] == "maya-s" and res.models["research"] == "qwen-flash-next"
+    assert any("載せ替え" in n for n in res.notes)
+    # 全部違うモデル
+    every = {"plan": "a", "build": "b", "research": "c", "quick_check": "d", "final_check": "e", "evaluate": "f"}
+    res = roles.resolve(every, session_model="auto", strict=True)
+    assert res.models == every
+    # 全部同じモデルならお知らせも出ない（載せ替えは起きない）
+    same = {role: "qwen-flash-next" for role in roles.ROLES}
+    res = roles.resolve(same, session_model="auto", strict=True)
+    assert set(res.models.values()) == {"qwen-flash-next"} and not any("載せ替え" in n for n in res.notes)
 
 
 def test_external_models_mix_freely_and_stages_may_swap_locals():
@@ -55,11 +59,6 @@ def test_external_models_mix_freely_and_stages_may_swap_locals():
     assert res.models["plan"] != res.models["build"], "段をまたぐ載せ替えは許す"
 
 
-def test_non_strict_resolution_aligns_locals_instead_of_failing():
-    res = roles.resolve({"build": "maya-s", "research": "qwen-flash-next"}, session_model="auto")
-    assert res.models["research"] == "maya-s" and any("揃えました" in n for n in res.notes)
-
-
 def test_final_check_same_as_build_warns_but_saves(isolated):
     saved = provider.save_workflow({"roles": {"build": "maya-s", "final_check": "maya-s"}})
     assert saved["roles"]["final_check"] == "maya-s"
@@ -68,10 +67,9 @@ def test_final_check_same_as_build_warns_but_saves(isolated):
     assert "別の目で見られません" in roles.SAME_AS_BUILD
 
 
-def test_save_refuses_two_locals_in_a_stage_with_a_reason(isolated):
-    with pytest.raises(ValueError, match="同時に動きうる役割なので、ローカルは同じモデルにしてください"):
-        provider.save_workflow({"roles": {"build": "maya-s", "research": "qwen-flash-next"}})
-    assert provider.get_settings()["roles"] == {}, "拒んだら保存しない"
+def test_save_accepts_two_locals_in_a_stage(isolated):
+    saved = provider.save_workflow({"roles": {"build": "maya-s", "research": "qwen-flash-next"}})
+    assert saved["roles"]["build"] == "maya-s" and saved["roles"]["research"] == "qwen-flash-next"
     with pytest.raises(ValueError, match="登録されていないモデル"):
         provider.save_workflow({"roles": {"plan": "not-registered"}})
 
@@ -105,13 +103,14 @@ def test_session_config_puts_a_model_on_every_role_agent(isolated):
     payload, _ = _v2(isolated, model="qwen-flash-next")
     agents = payload["agents"]
     assert agents["plan"]["model"] == "controldeck/maya-s"
-    assert "model" not in agents["build"], "セッションと同じなら足さない"
+    assert agents["build"]["model"] == "controldeck/qwen-flash-next", "セッションと同じでも明示する"
     assert any(rule["effect"] == "deny" for rule in agents["plan"]["permissions"]), "道具の設定は残る"
     assert agents["evaluator"]["model"] == "controldeck/maya-s"
     assert agents["reviewer"]["model"] == "controldeck/maya-s"
     for name in ("researcher", "quick-checker", "evaluator"):
         assert agents[name]["mode"] == "subagent" and agents[name]["system"], name
-    assert "model" not in agents["quick-checker"] and "model" not in agents["researcher"]
+    # 空だと子は呼んだ側（計画など）のモデルを引き継ぐので、全ての役割に明示する
+    assert agents["quick-checker"]["model"] == agents["researcher"]["model"] == "controldeck/qwen-flash-next"
     assert "調査" in agents["researcher"]["description"] and "テスト" in agents["quick-checker"]["description"]
     assert "目的" in agents["evaluator"]["description"]
     assert set(payload["providers"]["controldeck"]["models"]) >= {"qwen-flash-next", "maya-s"}
@@ -152,7 +151,8 @@ def test_box_agents_get_models_from_roles_and_the_chain(repo, monkeypatch):  # n
     assert agents["plan"]["model"] == "opencode-go/glm-5.3"
     assert agents["reviewer"]["model"] == "opencode/hy4-flash-free"
     assert agents["evaluator"]["model"] == "opencode/hy4-flash-free"
-    assert "model" not in agents["build"] and "model" not in agents["researcher"], "作業のモデル（箱の既定）と同じ"
+    assert agents["build"]["model"] == agents["researcher"]["model"], "作業のモデルと同じでも明示する"
+    assert agents["researcher"]["model"], "空だと呼んだ側のモデルを引き継ぐ"
     assert agents["quick-checker"]["mode"] == "subagent"
 
 
@@ -186,23 +186,20 @@ def test_box_without_llm_cannot_choose_a_local_model(repo, monkeypatch):
     assert '"controldeck/auto"' not in json.dumps(json.loads(text)["agents"])
 
 
-def test_box_refuses_two_locals_in_a_stage_by_aligning(repo):
+def test_box_keeps_two_locals_in_a_stage(repo):
     box = sandbox.create("role4", str(repo))
     res = sandbox.box_roles(box, "auto", {"final_check": "controldeck/auto", "evaluate": "controldeck/other"})
-    assert len({m for r, m in res.models.items() if roles.STAGE_OF[r] == 3 and roles.is_local(m)}) == 1
+    assert res.models["final_check"] == "controldeck/auto" and res.models["evaluate"] == "controldeck/other"
 
 
-def test_api_returns_422_with_the_reason_and_checks_without_saving(isolated):
-    from fastapi import HTTPException
-
+def test_api_saves_any_combination_and_returns_the_notes(isolated):
     from app.integrations.opencode import router
 
-    body = router.WorkflowBody(roles={"build": "maya-s", "research": "qwen-flash-next"})
-    with pytest.raises(HTTPException) as caught:
-        router.put_workflow(body, user=None)
-    assert caught.value.status_code == 422 and "GPU で同時に 1 つしか動かせません" in caught.value.detail
+    saved = router.put_workflow(router.WorkflowBody(roles={"build": "maya-s", "research": "qwen-flash-next"}), user=None)
+    assert saved["role_info"]["effective"]["research"]["model"] == "qwen-flash-next"
+    assert any("載せ替え" in n for n in saved["role_info"]["notes"])
     checked = router.check_roles(router.RolesCheckBody(roles={"build": "maya-s", "research": "qwen-flash-next"}), user=None)
-    assert "同じモデルにしてください" in checked["error"] and provider.get_settings()["roles"] == {}
+    assert not checked["error"]
     ok = router.put_workflow(router.WorkflowBody(roles={"build": "maya-s", "final_check": "maya-s"}), user=None)
     assert ok["role_info"]["effective"]["research"]["model"] == "maya-s"
     assert roles.SAME_AS_BUILD in ok["role_info"]["notes"]
@@ -214,3 +211,14 @@ def test_host_never_defaults_a_role_to_an_external_model(isolated, cloud_store):
     cloud_store.save_egress({"opencode": True})
     payload, _ = _v2(isolated, model="qwen-flash-next")
     assert "cloud:" not in json.dumps(payload["agents"]), "既定の役割に外部のモデルが入った"
+
+
+def test_box_lists_every_local_role_model(repo):  # noqa: F811
+    """役割で選んだローカルのモデルが、箱の OpenCode のモデルの一覧に載ること。
+    根拠: 2026-11-22 全部違うモデルの実機で「Model unavailable: controldeck/qwen-flash-next」で止まった。"""
+    box = sandbox.create("role5", str(repo))
+    config = json.loads(sandbox.opencode_config(box, roles={
+        "build": "controldeck/qwen-flash-next", "research": "controldeck/maya-deepseek-xs",
+        "quick_check": "controldeck/qwen-flash-next-uc"}).read_text())
+    listed = set(config["providers"]["controldeck"]["models"])
+    assert {"qwen-flash-next", "maya-deepseek-xs", "qwen-flash-next-uc"} <= listed

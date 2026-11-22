@@ -184,12 +184,12 @@ async def prepare_switch(alias: str) -> None:
         logger.info("%s を起動するための解放を見送りました（推論中）", alias)
         return
     try:
-        await release_for(runtime)
+        await release_for(runtime, keep=alias)
     except RuntimeError as exc:
         logger.info("%s を起動するための解放を見送りました: %s", alias, exc)
 
 
-async def release_for(runtime: str) -> None:
+async def release_for(runtime: str, *, keep: str = "") -> None:
     """Free memory before an on-demand start of `runtime`.
 
     Maya-S and Strata cannot both fit; Maya-S also needs the GPU that llama.cpp
@@ -205,8 +205,13 @@ async def release_for(runtime: str) -> None:
         ok, reason = await asyncio.to_thread(maya_s.stop_instance)
         if not ok:
             raise RuntimeError(reason or "Maya-Sを停止できませんでした")
-    if runtime != STRATA and strata.installed():
+    if strata.installed():
+        # 別のランタイムを起こすときは全部、Strata を起こすときは頼まれたもの（keep）以外を降ろす。
+        # Strata 同士の載せ替えを誰も降ろさず、起動が失敗して 300 秒後に 503 になっていた
+        # （2026-11-22、役割を全部違うモデルにした実機で qwen-flash-next → qwen-flash-next-uc）。
         for item in await asyncio.to_thread(strata_gateway.list_instances):
+            if runtime == STRATA and str(item.get("alias")) == keep:
+                continue
             if item.get("loaded"):
                 if item.get("idle_exclude"):
                     raise RuntimeError(f"Strataモデル {item['alias']} が常駐指定で稼働中です")

@@ -60,8 +60,9 @@ def test_turning_off_removes_plugins_and_advisor_file(isolated):
     provider.save_workflow({"adversarial_review": True, "auto_advisor": "observe"})
     payload, advisor = _v2(isolated)
     assert advisor["routing"]["mode"] == "observe"
-    # No review model: reviewers inherit the session model, nothing pinned or added.
-    assert "adversarial-reviewer" not in payload["agents"]
+    # 最終検証のモデルが無くても、レビュー役にはセッションのモデルを明示する（空だと呼んだ側のモデルを引き継ぐ。
+    # 2026-11-22 役割ごとのモデル）
+    assert payload["agents"]["adversarial-reviewer"]["model"] == payload["agents"]["reviewer"]["model"]
     provider.save_workflow({"adversarial_review": False, "auto_advisor": "off"})
     payload, advisor = _v2(isolated)
     assert "plugins" not in payload and advisor is None
@@ -250,7 +251,7 @@ def test_auto_review_is_on_by_default_and_adds_the_review_procedure(isolated):
     text = (provider.Path(provider.__file__).with_name("auto-review.md")).read_text()
     assert "reviewer" in text and "advisor()" in text
     # No review model chosen: the reviewer inherits the session model.
-    assert "model" not in payload["agents"]["reviewer"]
+    assert payload["agents"]["reviewer"]["model"]  # 役割のモデルを明示する（2026-11-22）
 
 
 def test_auto_review_can_be_turned_off(isolated):
