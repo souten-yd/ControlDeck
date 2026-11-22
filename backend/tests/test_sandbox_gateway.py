@@ -72,6 +72,26 @@ def test_only_allowed_calls_pass_and_load_needs_allow_load():
     assert ("POST", f"{API}/models") not in seen
 
 
+def test_models_response_passes_through_with_vision_and_loaded():
+    """目的: 中継は /models の応答の中身を変えない（vision・loaded がそのまま箱へ届く）。
+    根拠: 2026-11-22 の通し。箱の中の関門「画面の見た目」（visual_review）が中継経由でモデルを
+    選ぶのに、中継が項目を落とすと「画像を読めるモデルが無い」になり未実施になってしまう。"""
+    body = json.dumps({"data": [{"id": "m1", "runtime": "maya-s", "vision": True, "loaded": True},
+                                {"id": "m2", "runtime": "llama.cpp", "vision": False, "loaded": False}]})
+
+    def handler(request):
+        assert request.url.path == f"{API}/models"
+        return _resp(chunks=[body.encode()])
+
+    async def go():
+        async with _client(handler) as c:
+            r = await c.get(f"{API}/models")
+            assert r.status_code == 200
+            assert r.json() == json.loads(body), "中継は /models の応答の中身を変えない"
+
+    run(go())
+
+
 def test_headers_are_replaced_not_forwarded():
     captured = {}
 

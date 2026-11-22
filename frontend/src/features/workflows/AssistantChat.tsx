@@ -30,7 +30,7 @@ import { MessageActions, MessageEditor, type MessageAction } from "./MessageActi
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
 import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace } from "./DevWorkspace";
-import { targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
+import { LS_CONV, targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
 import { writeClipboard } from "../../lib/clipboard";
 import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
@@ -247,7 +247,6 @@ function readHistoryCollapsed(): boolean {
     return false;
   }
 }
-const LS_CONV = "cd-chat-conversation"; // 永続チャットの会話 ID（本文は DB に保存）
 const LS_TTS_REPLY = "cd-assistant-tts-reply"; // TTS 返答（回答を読み上げる）を端末ごとに覚える
 /** 会話モードの段階。話し終わりは、最後の声から TALK_TURN_END_MS 黙ったとき */
 type TalkPhase = "off" | "starting" | "listening" | "thinking" | "speaking";
@@ -2197,16 +2196,20 @@ export default function AssistantChat() {
                 onChange={(e) => setCodeProject(e.target.value)}
                 className={`rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${codeProject === "__new__" ? "w-32 shrink-0" : "min-w-0 flex-1"}`}
               >
+                {/* 入口は「➕ 新規作成」のすぐ下（2026-11-22 利用者の決定。選択欄の外に別のボタンは作らない）。
+                    CodeDEV は残るプロジェクト、作業場は一時の写しで寿命が違うので optgroup で分ける */}
                 <option value="__new__">➕ 新規作成</option>
-                {(codeProjects?.projects ?? []).map((p) => (
-                  <option key={p.name} value={p.name}>📚 {p.name}</option>
-                ))}
-                {codeFolderPath && <option value="__folder__">📁 {codeFolderPath}</option>}
-                <optgroup label="開発の作業場">
+                <option value={WS_NEW}>🧪 ＋ 新しい作業場（ControlDeck を直す・試す）</option>
+                <optgroup label="CodeDEV のプロジェクト">
+                  {(codeProjects?.projects ?? []).map((p) => (
+                    <option key={p.name} value={p.name}>📚 {p.name}</option>
+                  ))}
+                  {codeFolderPath && <option value="__folder__">📁 {codeFolderPath}</option>}
+                </optgroup>
+                <optgroup label="作業場（一時）">
                   {(workspaces ?? []).map((w) => (
                     <option key={w.name} value={workspaceValue(w.name)}>🧪 {w.name}（{w.source_label}{w.target ? `・${targetInfo(w.target)?.badge ?? ""}` : ""}）</option>
                   ))}
-                  <option value={WS_NEW}>🧪 ＋ 新しい作業場…</option>
                 </optgroup>
               </select>
               {codeProject === "__new__" && (

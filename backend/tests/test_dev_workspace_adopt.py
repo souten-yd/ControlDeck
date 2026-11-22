@@ -78,15 +78,54 @@ def run_check(name, monkeypatch=None, report=PASS_REPORT, passed=True):
     return workspaces.run_check(name)
 
 
-def test_changes_summarizes_files_commits_and_uncommitted(box):
+def test_changes_summarizes_files_commits_and_uncommitted(box, external):
+    """目的: changes の要約（ファイル数・増減）に未コミットの変更も数に入れること。
+    根拠: 2026-11-22 の通し。取り込んだ ref（コミット済み）の差分だけ数えていたので、
+    コミット前に「0 ファイル +0 −0・未コミット」と出て、結果のカードが役に立たなかった。
+    未コミットは箱の中の git で調べる（ホストの git を箱の作業ツリーで動かさない）。"""
     (box.repo / "b.txt").write_text("untracked\n")
+    (box.repo / "a.txt").write_text("one\ntwo\nthree\n")
     info = workspaces.changes(box)
     assert info["commit_count"] == 1 and info["commits"][0]["subject"] == "a を足す"
-    assert info["dirty"] is True and info["file_count"] == 1, "差分はコミット済みの分（export.git）。未コミットは印だけ"
+    assert info["dirty"] is True
+    assert info["file_count"] == 2 and info["uncommitted_files"] == 2, "未コミット（変更 1・未追跡 1）も数に入れる"
     files = {f["path"]: f for f in info["files"]}
-    assert files["a.txt"]["added"] == 2 and files["a.txt"]["removed"] == 0
-    assert info["added"] == 2 and info["check"] is None and info["adopted"] is None
+    assert files["a.txt"]["added"] == 3 and files["a.txt"]["removed"] == 0, "コミット済みと未コミットの増減は足し合わせる"
+    assert files["b.txt"]["untracked"] is True and files["b.txt"]["added"] == 0, "未追跡は増減 0 でファイルとして数える"
+    assert info["added"] == 3 and info["check"] is None and info["adopted"] is None
     assert "one" not in json.dumps(info), "ファイルの中身は返さない"
+
+
+def test_changes_counts_from_merge_base_with_main_not_the_original_revision(box, external):
+    """目的: 作業場が main を取り込んでも、結果のカードの差分は「PR の実際」（main との共通の祖先からの分）だけを数えること。
+    根拠: 2026-11-22 の通し（U16）。取り込んだ main の分まで数えて、PR は 10 ファイルなのにカードは 17 ファイルと出た。
+    元の revision との差ではなく merge-base との差で数える。ホストの git は箱の作業ツリーの外（export.git）で動かす。"""
+    source = workspaces.controldeck_repo()
+    (source / "m.txt").write_text("main only\n")
+    git(source, "add", "-A")
+    git(source, "commit", "-q", "-m", "main が進んだ")
+    git(source, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(box.repo, "fetch", "-q", str(source), "refs/remotes/origin/main")
+    git(box.repo, "merge", "-q", "--no-edit", "FETCH_HEAD")
+    info = workspaces.changes(box)
+    assert [f["path"] for f in info["files"]] == ["a.txt"], "取り込んだ main の分（m.txt）は数えない"
+    assert info["file_count"] == 1
+    assert "main が進んだ" not in [c["subject"] for c in info["commits"]], "コミットも main の分を数えない（merge commit は PR の分）"
+    assert info["base"] == git(source, "rev-parse", "HEAD")[:10], "起点は main との共通の祖先"
+    listed = workspaces.file_diff(box)
+    assert [f["path"] for f in listed["files"]] == ["a.txt"], "ファイル一覧の画面も同じ起点"
+    assert all(Path(c["cwd"]).resolve() == workspaces.export_repo().resolve()
+               for c in external["host"] if c["argv"][:1] in (["merge-base"], ["diff"])), "ホストの git は export.git で動かす"
+
+
+def test_changes_falls_back_to_revision_when_main_is_unreadable(box, external, monkeypatch):
+    """目的: main が読めなくても、結果のカードは元の revision との差で出る（落ちない・黙って 0 にしない）。
+    根拠: U16 の直しは export.git への fetch に頼るため、host の origin/main が無い場合の退路を確かめる。"""
+    monkeypatch.setattr(workspaces, "CONTROLDECK_REF", "origin/no-such-branch")
+    info = workspaces.changes(box)
+    assert info["file_count"] == 1 and info["files"][0]["path"] == "a.txt"
+    assert info["base"] == str(box.meta["revision"])[:10]
+
 
 
 def test_check_is_saved_with_items_and_goes_stale_after_a_change(box, monkeypatch):

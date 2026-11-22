@@ -159,6 +159,118 @@ def list_workspaces(user: User = Depends(require_permission("terminal.use"))):
         raise _workspace_error(exc) from exc
 
 
+def _workspace_progress(db, user_id: int | None, items: list[dict]) -> dict[str, dict]:
+    """作業場ごとの進み具合（Project Lab の「作業場」のタブ用）。会話の最新の OpenCode の回答の meta から組み立てる。
+
+    state: working（OpenCode が作業中）/ waiting（質問待ち）/ done（完了）/ stopped（止まった）。
+    生成中でも会話サーバーが止まっていたら stopped と出す（サーバーの再起動後に generating が
+    残るのを「作業中」と見せないため）。その作業場でまだ会話が無ければ進み具合は無い（None）。
+    アーカイブした会話・他人の会話は読まない（自分の会話だけ）。
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from app.integrations.opencode import chat_server
+    from app.maintenance import sandbox as sandbox_mod
+    from app.models import ChatMessage, Conversation
+
+    if not items or user_id is None:
+        return {}
+    by_repo = {str(item["repo_path"]): str(item["name"]) for item in items}
+    convs = dict(db.execute(select(Conversation.id, Conversation.title).where(
+        Conversation.owner_user_id == user_id, Conversation.archived_at.is_(None))).all())
+    if not convs:
+        return {}
+
+    def epoch(value) -> float:
+        """時刻を epoch 秒へ。DB（SQLite）からは tz 落ちの naive UTC が返るので、UTC として数える。
+        画面は文字列の日付をその場の時間帯で解釈してしまう（2026-11-22 レビュー: 約 9 時間古く出た）。"""
+        from datetime import timezone
+
+        if value is None:
+            return 0.0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
+    # 作業場の repo は <sandbox の root>/<名前>/work/repo（名前は英小文字・数字・ハイフンだけ）。like で一括して拾う
+    root = str(sandbox_mod.root().resolve())
+    escaped = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = '%"project_path": "' + escaped + '/%/work/repo"%'
+    rows = db.execute(
+        select(ChatMessage.conversation_id, ChatMessage.role, ChatMessage.status, ChatMessage.meta_json,
+               ChatMessage.created_at)
+        .where(ChatMessage.conversation_id.in_(convs), ChatMessage.meta_json.like(pattern, escape="\\"))
+        .order_by(ChatMessage.created_at.desc()).limit(600)
+    ).all()
+    progress: dict[str, dict] = {}
+    for conv_id, role, status, meta_json, created_at in rows:
+        try:
+            meta = _json.loads(meta_json or "{}") or {}
+        except ValueError:
+            continue
+        name = by_repo.get(str(meta.get("project_path") or ""))
+        if name is None or name in progress:
+            continue          # 新しい順に走るので、その作業場の最初の 1 件が最新
+        pending = [p for p in (meta.get("permissions") or [])
+                   if isinstance(p, dict) and p.get("status") == "pending"]
+        todos = [t for t in (meta.get("todos") or []) if isinstance(t, dict)]
+        if role == "user":
+            # user の行の meta には project_path が入らない（chat_persist の保存は assistant の行だけ）。
+            # 将来 user 行にも付く形の変化があっても、最新の 1 件として「送った直後」扱いにしておく
+            state = "working"
+        elif pending:
+            state = "waiting"
+        elif status == "generating":
+            state = "working"
+        elif status in ("failed", "interrupted", "canceled"):
+            state = "stopped"
+        else:
+            state = "done"
+        progress[name] = {
+            "state": state,
+            "todo": ({"done": sum(1 for t in todos if t.get("status") == "completed"), "total": len(todos)}
+                     if todos else None),
+            "last_active_at": epoch(created_at),
+            "conversation_id": conv_id,
+            "title": convs.get(conv_id, ""),
+        }
+    if any(p["state"] in ("working", "waiting") for p in progress.values()):
+        # 会話サーバーが止まっていないか、動いている（生成中・質問待ち）の作業場だけ確かめる（systemctl はその分だけ）。
+        # 質問待ちのままサーバーが死んでいると、会話を開いても回答は届かないので「止まった」と出す
+        servers = {s.workspace: s for s in chat_server._all() if s.workspace}
+        for name, state in progress.items():
+            if state["state"] not in ("working", "waiting"):
+                continue
+            server = servers.get(name)
+            if server is None or not chat_server._unit_active(server.unit):
+                state["state"] = "stopped"
+    return progress
+
+
+@router.get("/workspaces/progress")
+def workspaces_progress(
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """自分の作業場の一覧と進み具合（Project Lab の「作業場」タブ用の 1 本。既存の一覧と同じ形に progress を足す）。
+
+    一覧は list_for と同じ（AI アシスタントの選択欄は軽い既存の一覧 API をそのまま使う）。
+    active は動いている作業場（作業中・質問待ち）の数（タブの印に出す）。
+    """
+    from app.maintenance import workspaces
+
+    try:
+        items = workspaces.list_for(user.username)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    rows = _workspace_progress(db, user.id, items)
+    for item in items:
+        item["progress"] = rows.get(item["name"])
+    active = sum(1 for item in items if (item["progress"] or {}).get("state") in ("working", "waiting"))
+    return {"workspaces": items, "active": active}
+
+
 @router.post("/workspaces", status_code=201)
 def create_workspace(
     body: WorkspaceBody, request: Request,

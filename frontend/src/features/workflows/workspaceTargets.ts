@@ -23,6 +23,10 @@ export function targetInfo(id: string | undefined) {
   return TARGETS.find((t) => t.id === id);
 }
 
+/** 永続チャットの会話 ID を覚える localStorage の鍵。AssistantChat（読む・書く）と ProjectLab の
+ *  「会話を開く」（書く）が共有する（2026-11-22 レビュー: 3 箇所の重複を 1 か所へ） */
+export const LS_CONV = "cd-chat-conversation";
+
 /** 作業場の札の文字（「作業場・本体」など）。古い API で target が無いときは「作業場」だけ */
 export function badgeText(target: string | undefined): string {
   const info = targetInfo(target);

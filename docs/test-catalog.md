@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 223 ファイル、2064 テスト（目的の未記入 93 ファイル）
-- E2E: 110 spec、222 テスト
+- backend: 223 ファイル、2069 テスト（目的の未記入 93 ファイル）
+- E2E: 111 spec、224 テスト
 
 ## backend（backend/tests）
 
@@ -805,7 +805,9 @@
 
 目的: 開発の作業場 3 段目（結果の要約・関門・取り込む）。 目的: 作業場の結果（元からの差分）が要約でき、関門が保存され、「関門が合格で、その後に変更が無い」ときだけ取り込めること。 本体は GitHub に PR（push と gh pr create はホスト側・箱の中からではない。マージはしない）、CodeDEV は元のリポジトリへブランチとして 取り込むだけで元の作業中のブランチは変えない。本体の取り込みは settings.manage。差分の中身は監査へ残さない。 箱の中の AI が書ける .git/config・フック（fsmonitor・credential.helper・sshCommand・insteadOf など）が、ホストの処理 （一覧・状態・差分・関門・取り込み・削除）で動かない（ホストの git は box.repo の中で動かさず、export.git へ取り込んで比べる）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目。外部への push と権限に関わる L2）。 git は本物（一時のリポジトリ）、箱の中の実行・push・gh はモック（関門の結果は差し替え）。
 
-- `test_changes_summarizes_files_commits_and_uncommitted`
+- `test_changes_summarizes_files_commits_and_uncommitted` — 目的: changes の要約（ファイル数・増減）に未コミットの変更も数に入れること。
+- `test_changes_counts_from_merge_base_with_main_not_the_original_revision` — 目的: 作業場が main を取り込んでも、結果のカードの差分は「PR の実際」（main との共通の祖先からの分）だけを数えること。
+- `test_changes_falls_back_to_revision_when_main_is_unreadable` — 目的: main が読めなくても、結果のカードは元の revision との差で出る（落ちない・黙って 0 にしない）。
 - `test_check_is_saved_with_items_and_goes_stale_after_a_change`
 - `test_adopt_refuses_without_check_failed_check_changes_after_and_uncommitted`
 - `test_adopt_controldeck_pushes_from_export_repo_and_opens_pr_without_merging`
@@ -881,6 +883,8 @@
 - `test_delete_is_owner_only`
 - `test_workspace_api_list_create_delete_confirm_and_audit`
 - `test_workspace_api_requires_login_and_terminal_permission`
+- `test_workspace_progress_states_todo_and_server_from_latest_message` — 目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
+- `test_workspace_progress_with_no_workspaces` — 目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。
 
 ### backend/tests/test_diagnostics.py
 
@@ -2621,6 +2625,7 @@
 目的: サンドボックスの LLM 中継（app.maintenance.sandbox_gateway）。 目的と根拠: 箱から本番のモデル切り替え（POST .../models/{m}/load）を鍵なしで呼べた（2026-11-21 実測）。 中継は許した呼び出しだけを通し、Authorization・Cookie を上流へ渡さず、本文・同時実行に上限を持つ。 上流は httpx.MockTransport の偽物。 MCP の中継（P2a、2026-11-21）の目的と根拠: 箱の AI に ControlDeck の道具（Project Lab の実行など）を使わせたいが、 箱へ MCP のトークンは置けない。トークンは箱の外の中継だけが持ち、箱から来た Authorization は捨てて付け替える。 呼べる道具は許可の一覧だけに絞り、一覧（/tools）も同じ範囲にする。
 
 - `test_only_allowed_calls_pass_and_load_needs_allow_load`
+- `test_models_response_passes_through_with_vision_and_loaded` — 目的: 中継は /models の応答の中身を変えない（vision・loaded がそのまま箱へ届く）。
 - `test_headers_are_replaced_not_forwarded`
 - `test_body_over_32_mib_is_413`
 - `test_stream_chunks_arrive_separately`
@@ -3338,10 +3343,10 @@
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts
 
-目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
+目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 増減は未コミットの変更も数に入れて「N ファイル +A −R（うち未コミット M）」と出す（2026-11-22 の通し。 取り込んだ ref だけ数えて「0 ファイル +0 −0・未コミット」と出ていた）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
 
 - workspace result card: check then adopt creates a PR (${width}px)
-- workspace result card: failed check lists the failure and blocks adopt (dark, 320px)
+- workspace result card: failed check lists the failure and blocks adopt (dark, ${width}px)
 - workspace result card: visual-only failure can be skipped after a human check (320px)
 
 ### frontend/e2e/assistant-dev-workspace.spec.ts
@@ -3688,6 +3693,13 @@
 目的: **未記入**
 
 - starts, previews, and stops an isolated Project Lab Web profile
+
+### frontend/e2e/project-lab-workspaces.spec.ts
+
+目的: 目的: Project Lab の一覧の上の「プロジェクト｜作業場」の切り替えと、作業場のカード（元・開発対象の札・ 進み具合・ToDo・最後に動いた時刻・会話を開く）が正しく出る。AI アシスタントの作業フォルダの選択欄は 「CodeDEV のプロジェクト」と「作業場（一時）」に分かれ、「🧪 ＋ 新しい作業場（ControlDeck を直す・試す）」は選択欄の中の「➕ 新規作成」のすぐ下に出る（利用者の決定。選択欄の外の別のボタンは作らない）。 根拠: 2026-11-22 利用者「Project Lab で現在の進捗とかって確認できないんだったっけ…参照先がテンポラリーな フォルダなら、今あるドロップダウンの一覧とは別にした方がいい」「入口が選択欄のいちばん下に隠れて分からない」。 API は模擬する（箱・OpenCode を動かさない）。320・1280、ライト・ダークの撮影もこの中で行う。
+
+- project lab switches to workspaces and shows progress (${width}px ${scheme})
+- assistant folder select separates codedev and workspaces (${width}px ${scheme})
 
 ### frontend/e2e/project-lab.spec.ts
 
