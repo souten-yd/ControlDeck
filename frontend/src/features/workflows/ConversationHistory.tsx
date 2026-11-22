@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconCompose, IconSearch, IconX } from "../../components/icons";
+import { WorkspaceStateMark, type WorkspaceProgress } from "./DevWorkspace";
 
 export interface ConversationSummary { id: string; title: string; updated_at: string; archived?: boolean; confidential?: boolean }
 
@@ -63,11 +64,13 @@ interface HistoryProps {
   /** アーカイブした会話（開いたときだけ読む） */
   archivedConversations?: ConversationSummary[];
   onShowArchived?: (show: boolean) => void;
+  /** 作業場を使う OpenCode の会話の状態（会話の id から。無ければ印を出さない） */
+  workspaceStates?: Record<string, WorkspaceProgress>;
 }
 
 /** 履歴の中身（列とシートで共通）。 */
 export function ConversationHistory({ conversations, currentId, busy, onOpen, onNew, onRename, onDelete, onArchive,
-  onSwipeDelete, archivedConversations, onShowArchived, header }: HistoryProps & { header: ReactNode }) {
+  onSwipeDelete, archivedConversations, onShowArchived, workspaceStates, header }: HistoryProps & { header: ReactNode }) {
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const toggleArchived = () => {
@@ -127,6 +130,7 @@ export function ConversationHistory({ conversations, currentId, busy, onOpen, on
                 >
                   <HistoryRow
                     conversation={conversation}
+                    mark={workspaceStates?.[conversation.id]}
                     active={conversation.id === currentId}
                     busy={busy}
                     renaming={renamingId === conversation.id}
@@ -258,9 +262,10 @@ function SwipeRow({ children, label, left, right, disabled = false }: {
   );
 }
 
-function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRename, onRename, onDelete, onArchive }: {
+function HistoryRow({ conversation, mark, active, busy, renaming, onOpen, onStartRename, onRename, onDelete, onArchive }: {
   onArchive?: () => void;
   conversation: ConversationSummary;
+  mark?: WorkspaceProgress;
   active: boolean;
   busy: boolean;
   renaming: boolean;
@@ -295,6 +300,7 @@ function HistoryRow({ conversation, active, busy, renaming, onOpen, onStartRenam
       >
         {conversation.title}
       </button>
+      {mark && <WorkspaceStateMark progress={mark} />}
       <RowMenu
         label={`「${conversation.title}」の操作`}
         items={[

@@ -7,6 +7,12 @@
 - 質問があるプランでは、答え無しで始める単独の「このプランで作る」を出さない（答え無しで実装が始まっていた）。質問が無いプランでは従来どおり。
 - 送る文は `buildPlanAnswer` の 1 か所: 「決めたこと:\n1. 題 → 答え（推奨どおり）…\n補足: …\nこの答えでプランどおり実装してください。」。
 - テスト: E2E `assistant-question-buttons-model-pill.spec.ts`・`assistant-plan.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/question-buttons-*`）。
+## 2026-11-23 会話の一覧に作業場の状態の印（U9）
+
+- 会話の一覧（`ConversationHistory.tsx`）の各会話に、作業場を使う OpenCode の会話だけ「作業中・質問待ち・完了・中断」の小さな札を出す（失敗・サーバー停止は「止まった」）。色と文字の札で、題は先に切り詰める（320px でも読める）。
+- 出どころは Project Lab の作業場タブと同じ `GET /opencode/workspaces/progress`（同じ query キー＝キャッシュを共有。動いているものがあるときだけ 10 秒ごとに見張る）。会話との結び付きは進み具合の `conversation_id`（作業場ごとの最新の会話）。API には `interrupted`（#561 の interrupted。failed と区別）を 1 項目足しただけ。`WS_STATES` は ProjectLab から `DevWorkspace.tsx` へ移して共有。
+- テスト: `test_dev_workspaces.py`（interrupted の区別）、E2E `assistant-chat-list-workspace-badge.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/chat-list-ws-badge-*`）。
+- 注意: 印が出るのは各作業場の最新の会話だけ（作業場に結び付く会話が複数あっても、進み具合は作業場ごとに 1 件のため）。
 
 ## 2026-11-23 完了カードが短い答えを繰り返していた（#565 の直し）
 
