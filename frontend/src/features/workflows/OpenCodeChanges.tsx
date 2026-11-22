@@ -2,9 +2,10 @@
  *
  * 2026-11-18 利用者の依頼（OpenCode の機能のうち、AI アシスタントで使えない便利なものを出す）。
  * 何を変えたかを回答のすぐ下で確かめ、最新の回答なら取り消せる。 */
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { api } from "../../api/client";
 import { ConfirmDialog } from "../../components/ui";
+import { DiffAskContext, DiffAskForm, ReviewButton, askRowProps, unifiedLineNumbers, type AskTarget } from "./DiffAsk";
 
 export interface CodeChange { file: string; additions: number; deletions: number; status: "added" | "deleted" | "modified" }
 interface ChangeDetail extends CodeChange { patch: string; truncated?: boolean }
@@ -33,6 +34,8 @@ export function OpenCodeChanges({ conversationId, messageId, changes, reverted, 
   const [shown, setShown] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [reverting, setReverting] = useState(false);
+  const canAsk = useContext(DiffAskContext) !== null;
+  const [asking, setAsking] = useState<(AskTarget & { key: string }) | null>(null);
   const base = `/chat/conversations/${encodeURIComponent(conversationId)}/opencode`;
   const added = changes.reduce((sum, item) => sum + item.additions, 0);
   const removed = changes.reduce((sum, item) => sum + item.deletions, 0);
@@ -90,14 +93,26 @@ export function OpenCodeChanges({ conversationId, messageId, changes, reverted, 
                     <span className="shrink-0 tabular-nums text-emerald-700 dark:text-emerald-300">+{item.additions}</span>
                     <span className="shrink-0 tabular-nums text-red-700 dark:text-red-300">−{item.deletions}</span>
                   </button>
-                  {expanded && detail && (
-                    <div data-code-patch className="max-h-80 overflow-auto overscroll-contain border-t border-zinc-100 py-1 font-mono text-[11px] leading-5 dark:border-zinc-800">
-                      {patchLines(detail.patch).map((line, index) => (
-                        <div key={index} className={`min-w-max whitespace-pre px-3 ${lineTone(line)}`}>{line || " "}</div>
-                      ))}
-                      {detail.truncated && <p className="px-3 py-1 font-sans text-zinc-500">長いため途中までです</p>}
-                    </div>
-                  )}
+                  {expanded && detail && (() => {
+                    const lines = patchLines(detail.patch);
+                    const numbers = unifiedLineNumbers(lines);
+                    return (
+                      <>
+                        <div data-code-patch className="max-h-80 overflow-auto overscroll-contain border-t border-zinc-100 py-1 font-mono text-[11px] leading-5 dark:border-zinc-800">
+                          {lines.map((line, index) => {
+                            const at = numbers[index];
+                            const open = canAsk && at ? () => setAsking({ file: item.file, line: at.line, content: `${at.deleted ? "（削除）" : ""}${line.startsWith("@@") ? line : line.slice(1)}`, key: `${item.file}:${index}` }) : null;
+                            return (
+                              <div key={index} {...askRowProps(open)}
+                                className={`min-w-max whitespace-pre px-3 ${lineTone(line)} ${open ? "cursor-pointer hover:brightness-95 [@media(pointer:coarse)]:py-1.5" : ""} ${asking?.key === `${item.file}:${index}` ? "ring-1 ring-inset ring-accent-500" : ""}`}>{line || " "}</div>
+                            );
+                          })}
+                          {detail.truncated && <p className="px-3 py-1 font-sans text-zinc-500">長いため途中までです</p>}
+                        </div>
+                        {asking && asking.key.startsWith(`${item.file}:`) && <DiffAskForm key={asking.key} target={asking} onClose={() => setAsking(null)} />}
+                      </>
+                    );
+                  })()}
                 </li>
               );
             })}
@@ -167,6 +182,7 @@ export function CodeDoneCard({ content, todos, changeCount }: {
       <p className="num mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-zinc-600 dark:text-zinc-300">
         {!!todos?.length && <span>ToDo {done}/{todos.length} 完了</span>}
         {changeCount > 0 && <span>変更 {changeCount} ファイル</span>}
+        <ReviewButton />
         {hasResult && (
           <button type="button" data-code-done-result
             onClick={() => document.querySelector("[data-testid='workspace-result']")?.scrollIntoView({ block: "center", behavior: "smooth" })}

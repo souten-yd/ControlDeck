@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../../components/ui";
 import { useAuth, useToasts } from "../../stores";
 import { badgeText, targetInfo } from "./workspaceTargets";
 import { WorkspaceDiff } from "./WorkspaceDiff";
+import { ReviewButton } from "./DiffAsk";
 import { WorkspaceMergeButton } from "./WorkspaceMerge";
 
 export type DevWorkspace = {
@@ -295,6 +296,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
                 見た目は確かめた（外して流す）
               </button>
             )}
+            {info.file_count > 0 && <ReviewButton className="text-sm" />}
             {!adopted && (
               <button type="button" onClick={() => setAdopting(true)} disabled={!ready}
                 title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "関門が合格で、その後に変更が無いときに押せます" : ""}
