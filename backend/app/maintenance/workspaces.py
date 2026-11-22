@@ -15,6 +15,7 @@ integrations/opencode/chat_server.py。
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -315,7 +316,7 @@ def changes(box: Sandbox) -> dict:
         raise SandboxError("箱の中の状態を調べられませんでした。箱が動いているか確かめてください")
     summary_ = _diff_summary(box, import_head(box))
     summary_.update(dirty=bool(state["dirty"]), uncommitted=state["dirty"],
-                    check=check_state(box, state["tree"]), adopted=adopted_state(box))
+                    check=check_state(box, state["tree"]), adopted=adopted_state(box), merged=merged_state(box))
     return summary_
 
 
@@ -478,3 +479,167 @@ def _gh(*args: str) -> str:
             raise SandboxError("gh が GitHub にログインしていません。ホストで gh auth login をしてください")
         raise SandboxError(f"gh {' '.join(args[:2])} に失敗しました: {(result.stderr or result.stdout).strip()[:300]}")
     return result.stdout.strip()
+
+
+# ---- 4 段目: 行ごとの差分・マージ（2026-11-22 利用者「マージの判断を Claude に頼らず画面で行いたい」。L2: 外部の書き込みと権限） ----
+
+DIFF_LIMIT = 256 * 1024  # 1 ファイルの差分の最大（バイト）。超えたら打ち切りの印を付ける
+MERGE_L2_PHRASE = "L2 を理解した"
+_OID = re.compile(r"[0-9a-f]{40}")
+
+
+def _numstat_files(box: Sandbox, head: str) -> list[dict]:
+    """元の revision から head までのファイル一覧（export.git で取る。リネームは新しい側の名前）。"""
+    base = str(box.meta.get("revision") or "")
+    if not _OID.fullmatch(base):
+        raise SandboxError("この作業場には元の revision の記録がありません")
+    files = []
+    for line in _host_git("-c", "core.quotepath=false", "diff", "--numstat", "--no-renames", base, head,
+                          cwd=export_repo()).splitlines():
+        added, removed, path = (line.split("\t", 2) + ["", "", ""])[:3]
+        files.append({"path": path, "added": int(added) if added.isdigit() else 0,
+                      "removed": int(removed) if removed.isdigit() else 0, "binary": added == "-"})
+    files.sort(key=lambda item: item["path"])
+    return files
+
+
+def _uncommitted(box: Sandbox) -> dict | None:
+    """未コミットの変更のファイル名（箱の中の git で。ホストの git は箱の作業ツリーで動かさない）。箱が止まっていれば None。"""
+    try:
+        out = sandbox.in_box(box, ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], timeout=60)
+    except SandboxError:
+        return None
+    entries = []
+    for entry in out.split("\0"):
+        if len(entry) > 3 and entry[2] == " ":
+            code = entry[:2]
+            entries.append({"path": entry[3:], "status": "untracked" if code == "??" else "modified"})
+    return {"files": entries[:200], "count": len(entries)}
+
+
+def file_diff(box: Sandbox, path: str = "") -> dict:
+    """元からの差分。path が空ならファイルの一覧だけ、あればそのファイルの unified diff（1 ファイル DIFF_LIMIT まで）。"""
+    head = import_head(box)
+    files = _numstat_files(box, head)
+    result: dict = {"base": str(box.meta.get("revision") or "")[:10], "head": head[:10], "files": files,
+                    "file": None, "limit": DIFF_LIMIT, "uncommitted": _uncommitted(box)}
+    if not path:
+        return result
+    entry = next((item for item in files if item["path"] == path), None)
+    if entry is None:
+        raise SandboxError("そのファイルは差分にありません")
+    detail = {"path": path, "binary": entry["binary"], "truncated": False, "diff": "", "size": 0}
+    if not entry["binary"]:
+        try:
+            text = _host_git("-c", "core.quotepath=false", "diff", "-U3", "--no-color", "--no-ext-diff", "--no-textconv",
+                             "--no-renames", str(box.meta.get("revision")), head, "--", path, cwd=export_repo())
+        except UnicodeDecodeError:
+            detail["binary"] = True
+        else:
+            raw = text.encode("utf-8", errors="replace")
+            detail["size"] = len(raw)
+            if len(raw) > DIFF_LIMIT:
+                text = raw[:DIFF_LIMIT].decode("utf-8", errors="ignore")
+                text = text[:text.rfind("\n")] if "\n" in text else text
+                detail["truncated"] = True
+            detail["diff"] = text
+    result["file"] = detail
+    return result
+
+
+def merged_state(box: Sandbox) -> dict | None:
+    saved = sandbox._read_meta(box.path).get("merged")
+    return saved if isinstance(saved, dict) else None
+
+
+def _merge_facts(box: Sandbox) -> dict:
+    """マージの前提を確かめる。満たさない理由は problems に集める（ここでは何も書かない）。PR が無いなどの根本は AdoptRefused。"""
+    from app.maintenance import change_policy
+
+    if str(box.meta.get("workspace_source") or "") != CONTROLDECK:
+        raise AdoptRefused("ControlDeck 本体の作業場だけマージできます")
+    adopted = adopted_state(box)
+    if not adopted or adopted.get("kind") != "pr" or not adopted.get("pr_url"):
+        raise AdoptRefused("PR をまだ作っていません。先に取り込んでください")
+    slug = _origin_slug(_trusted_origin())
+    found = re.fullmatch(rf"https://github\.com/{re.escape(slug)}/pull/(\d+)", str(adopted["pr_url"]).strip(), re.IGNORECASE)
+    if not found:
+        raise AdoptRefused("PR の URL が取り込み先のリポジトリと一致しません")
+    number = int(found.group(1))
+    problems: list[str] = []
+    merged = merged_state(box)
+    if merged:
+        problems.append("この PR はすでにマージ済みです")
+    try:
+        view = json.loads(_gh("pr", "view", str(number), "-R", slug, "--json", "mergeable,state,headRefOid,headRefName"))
+    except json.JSONDecodeError as exc:
+        raise SandboxError("gh の PR の情報を読めませんでした") from exc
+    state = str(view.get("state") or "")
+    mergeable = str(view.get("mergeable") or "")
+    pr_head = str(view.get("headRefOid") or "")
+    if state != "OPEN":
+        problems.append(f"PR は開いていません（{state or '不明'}）")
+    elif mergeable == "CONFLICTING":
+        problems.append("PR に競合があり、マージできません")
+    elif mergeable != "MERGEABLE":
+        problems.append("GitHub がまだマージできるかを判定中です。少し待ってからもう一度確かめてください")
+    if view.get("headRefName") and view["headRefName"] != adopted.get("branch"):
+        problems.append("PR のブランチが、取り込んだブランチと違います")
+    exp = export_repo()
+    saved = sandbox._read_meta(box.path).get("last_check")
+    check = {"passed": bool(isinstance(saved, dict) and saved.get("passed")), "at": (saved or {}).get("at") if isinstance(saved, dict) else None}
+    if not isinstance(saved, dict) or not saved.get("at"):
+        problems.append("関門をまだ流していません")
+    elif not saved.get("passed"):
+        problems.append("最後の関門が不合格です")
+    tier, guarded, file_count = None, [], 0
+    export_head = ""
+    try:
+        export_head = _host_git("rev-parse", "--verify", ws_ref(box.name), cwd=exp)
+    except SandboxError:
+        problems.append("取り込んだ内容の記録（export）がありません。取り込み直してください")
+    if export_head and (not _OID.fullmatch(pr_head) or pr_head != export_head):
+        problems.append("PR の先頭の commit が、取り込んだ内容と違います（取り込み後に作業場が変わったか、PR に別の commit が足されました）。取り込み直してください")
+    elif export_head:
+        try:
+            tree = _host_git("rev-parse", f"{pr_head}^{{tree}}", cwd=exp)
+        except SandboxError:
+            tree = ""
+        if not tree or tree != (saved or {}).get("tree"):
+            problems.append("PR の内容が、関門で確かめた内容と違います。関門を流し直してください")
+        try:
+            base = str(box.meta.get("revision") or "")
+            _host_git("cat-file", "-e", f"{base}^{{commit}}", cwd=exp)  # 箱の外の export.git での確認（ここも箱の中では動かさない）
+            report = change_policy.classify(exp, base, pr_head, "controldeck")
+            tier, guarded, file_count = report["tier"], report["guarded"], len(report["files"])
+        except (change_policy.PolicyError, SandboxError):
+            problems.append("変更の区分（L0/L1/L2）を決められませんでした")
+    return {"pr": {"number": number, "url": adopted["pr_url"], "state": state, "mergeable": mergeable, "head": pr_head[:10], "slug": slug},
+            "check": check, "tier": tier, "file_count": file_count,
+            "guarded": [{"path": row["path"], "reasons": row["reasons"]} for row in guarded],
+            "phrase": MERGE_L2_PHRASE if tier == "L2" else "", "problems": problems, "ready": not problems,
+            "merged": merged, "_head": pr_head}
+
+
+def merge_preview(name: str, username: str) -> dict:
+    """マージの前に画面へ出す、前提の確認の結果（関門・区分・マージできるか）。何も書かない。"""
+    facts = _merge_facts(get(name, username))
+    facts.pop("_head")
+    return facts
+
+
+def merge(name: str, username: str, *, confirm_phrase: str = "") -> dict:
+    """取り込んだ PR を squash でマージする（前提を全部満たすときだけ）。Release はしない。"""
+    box = get(name, username)
+    facts = _merge_facts(box)
+    if facts["problems"]:
+        raise AdoptRefused("マージできません: " + " / ".join(facts["problems"]))
+    if facts["tier"] == "L2" and confirm_phrase.strip() != MERGE_L2_PHRASE:
+        raise AdoptRefused(f"この変更は L2 です。確認の文言「{MERGE_L2_PHRASE}」を入力してください")
+    pr = facts["pr"]
+    # 確認した head のままのときだけマージする（確認からマージの間に PR へ commit が足されても入れない）
+    _gh("pr", "merge", str(pr["number"]), "-R", pr["slug"], "--squash", "--delete-branch", "--match-head-commit", facts["_head"])
+    result = {"at": time.time(), "by": username, "pr_url": pr["url"], "tier": facts["tier"], "head": pr["head"],
+              "guarded": [row["path"] for row in facts["guarded"]][:50]}
+    _update_meta(name, merged=result)
+    return result

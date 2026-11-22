@@ -88,6 +88,7 @@
 | 開発の作業場 1 段目 | 関門 `./deck.sh dev-check`・開発のスキル `controldeck-development`・レビュー役を別のモデルに（作業がローカルなら最初の外部、外部ならローカル）・目録の道具が手書きの説明を残す／venv を作らない・箱の git の作者 | 実装・単体テスト済み（実機の箱でのレビュー役の動作は未確認） | 本 PR |
 | 開発の作業場 2 段目 | AI アシスタントの OpenCode の会話から作業場（箱）を選ぶ・作る・消す。箱の中で `opencode serve`（serve_port・pod の公開）・作業場の API・画面・持ち主の確認 | 実装・単体テスト・E2E 済み（実機の箱での会話は未確認。秘密の会話の network none は段 2 の別作業） | 本 PR |
 | 開発の作業場 3 段目 | 作業場の結果のカード（差分の要約・関門を Job で・取り込む）。本体は GitHub に PR（マージしない・settings.manage）、CodeDEV は元のリポジトリへ ws/<名前> のブランチ | 実装・単体テスト・E2E 済み（実機の push・gh・箱の中の関門は未確認）。安全: ホストでは box.repo の中で git を動かさない（箱の中で調べ、export.git へ fetch して比べる・push する）。設定（meta）は箱の外 `<sandboxes>/.meta/` へ移し、古い箱は検査して移す | 本 PR |
+| 開発の作業場 4 段目 | 行ごとの差分（export.git から・256KB で打ち切り）と、結果のカードの「マージ」（settings.manage。前提・区分 L0/L1/L2・L2 は確認の文言。`gh pr merge --squash --delete-branch --match-head-commit`。Release はしない） | 実装・単体テスト・E2E 済み（実機の `gh pr merge` は未確認・モック） | 本 PR |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
@@ -139,6 +140,12 @@
 
 - OpenRouter: 本番に鍵が登録済み、残高 3 ドル（利用者の言）。データ方針 deny。
 - GitHub: `souten-yd/ControlDeck`。マージと正式 Release は常設の承認あり。
+
+## Claude が要る部分を減らす: マージの判断（2026-11-22）
+
+- 目的: マージの判断を Claude（Opus）に頼らず、利用者が結果のカードで行う。実装済み（開発の作業場 4 段目、詳細は implementation-status.md の同日の項）。
+- できること: 「変更」で行ごとの差分（export.git から）、PR のリンクの横の「マージ」（settings.manage）。前提（PR が開いている・マージできる・PR の head が関門で確かめた tree と同じ・関門が合格）を満たすときだけ。L2 は確認の文言「L2 を理解した」。`gh pr merge --squash --delete-branch --match-head-commit`。Release はしない。
+- 残り: 実機で本物の PR をマージして確かめる（利用者）。Release を画面から出す仕組みは未着手（今は案内だけ）。
 
 ## 調査の記録（2026-11-21）
 

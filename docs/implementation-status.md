@@ -1,5 +1,21 @@
 # 実装状況
 
+## 2026-11-22 ＋メニューのモードと権限を左右に 1 行・見た目の道具は呼ばれたらロード（利用者の指摘）
+
+- 利用者「OpenCode のモードと権限は、横幅が半分になり、上下に並んでいるものが左右に並んで 1 行になるイメージ」。モード（ビルド／プラン）と権限（Auto／確認）を半分の幅で左右に並べた 1 行にした。押せる高さ 44px、320px では絵文字を外して文字を切らない（E2E で数値と文字切れを確かめる）。
+- 利用者「アンロードしていても呼ばれたらロードしてから答える方式は変えないでほしい」。#541 で見た目の道具（`ui-review`）を起動中のモデルだけにしていたのを戻し、ほかの呼び出しと同じく呼ばれたらロードする（ロードさせたくないときだけ `--no-load`）。AI アシスタントなどの動きは元から変えていない。
+- テストの直し: `test_dev_workspace_targets.py` を単独で流すと、本物の `ensure_gateway` を掴む前にほかの準備が差し替えていて落ちていた。読み込みの時に掴む。
+
+## 2026-11-22 開発の作業場 4 段目: 行ごとの差分と画面からの「マージ」
+
+- 目的（利用者）: マージの判断を Claude（Opus）に頼らず、利用者が画面で行えるようにする。外部（GitHub）への書き込みと権限に関わる変更（L2）。
+- 差分: `GET /opencode/workspaces/{name}/diff?path=`（terminal.use・持ち主のみ）。元の revision から export.git の ref `refs/ws/<名前>/head` までを `git diff` で取る（箱の作業ツリーでホストの git を動かさない。`_host_git` のガードを通る）。path なしはファイル一覧（増減・バイナリ）、ありはそのファイルの unified diff（1 ファイル 256KB で行の区切りまで打ち切って `truncated`、バイナリは中身を出さない）。差分にないパスは 422（オプション注入も同じ）。未コミットは箱の中の `git status` でファイル名だけ（「取り込む前にコミットされます」）。
+- マージ: `GET .../merge`（前提の確認。何も書かない）・`POST .../merge`（`confirm` 必須、**settings.manage**）。前提は全部満たすときだけ、満たさなければ 409 と理由: (1) 本体の作業場で PR を取り込み済み・PR の URL がホストの origin のリポジトリのもの、(2) PR が OPEN、(3) `mergeable` が MERGEABLE（CONFLICTING・UNKNOWN は別の理由）、(4) PR の `headRefOid` が export.git の ref と同じで、その tree が関門で確かめた tree と同じ（取り込み後に箱が動いた・PR に別の commit が足されたら不一致）、(5) 最後の関門が合格、(6) 未マージ。区分は `change_policy.classify(export.git, 元の revision, PR の head, controldeck)`（`./deck.sh change-class` と同じ仕組み）。**L2 は確認の文言「L2 を理解した」の一致が必要**（画面は強い警告と当たったファイルを出して入力させる）。マージは `gh pr merge <番号> -R <owner/repo> --squash --delete-branch --match-head-commit <確認した head>`（cwd は export.git のある所）。Release はしない（画面に案内だけ）。監査 `opencode.workspace.merge`（PR の URL・区分・head・L2 に当たったファイルのパス。差分の中身は残さない）。結果は meta の `merged` に保存し、`changes` に `merged` を足した。
+- 画面: `WorkspaceDiff.tsx`（新規。ファイル一覧 → 行ごとの差分: 追加は緑・削除は赤・新旧の行番号・横スクロール・打ち切り・バイナリ・未コミットの印）、`WorkspaceMerge.tsx`（新規。PR のリンクの横の「マージ」（管理者だけ）→ 前提の確認（PR・関門・区分・理由）→ 確認 → 結果）。`DevWorkspace.tsx` は import と 2 か所の差し込みだけ。CodeViewer.tsx は全文の表示用で差分の行の種類に合わないので使わず、差分専用の小さな表にした。
+- 設計から外れた点: (1) `gh pr merge` に `--match-head-commit` を足した（確認した head 以外はマージしない。確認からマージの間の競合対策）。(2) 区分は `./deck.sh change-class` を呼ばず、同じ `change_policy.classify` を export.git に対して直接呼ぶ（箱の外で動く・サブプロセスの二重起動を避ける）。(3) PR の head の比較は、ref を取り込み直さず今ある export.git の ref と比べる（作業場が取り込み後に変わっていれば 409。取り込み直しが要る）。(4) 差分は `--no-renames`（リネームは削除と追加）。(5) 未コミットは名前だけで、差分の中身は出さない。(6) `deck.sh e2e` は venv を作って pip する（元の venv を使う分岐が無い）ため、同じ手順を元の venv で手で流した。
+- 検証: `tests/test_dev_workspace_merge.py`（新規 15: 差分の取り方・箱の中でホストの git を動かさない・打ち切り・バイナリ・パス注入・マージの前提 6 種で 409・箱が動いた/関門が不合格/tree 不一致・URL のすり替え・L2 の文言・権限・監査・Release しない）、`test_dev_workspaces.py`（ルート数 10・merge だけ settings.manage）、E2E `assistant-dev-workspace-diff-merge.spec.ts`（差分 320/1280・マージ L1/L2 320/1280・前提不足のダーク 320）。
+- 確かめられなかった点: 実機の GitHub への `gh pr merge`（モック。実際のマージはしていない）、`gh pr view --json mergeable` の実際の値（UNKNOWN になる時間）、`--match-head-commit` と `--delete-branch` を cwd が git でない所で使ったときの gh の挙動。
+
 ## 2026-11-22 開発の作業場: 開発対象（機能の組み合わせ）と＋メニューのコンパクト化（L2: 権限と隔離）
 
 - 利用者の言葉: 「ControlDeck と普通の開発の違いを明確にして、＋ボタンのところに開発対象を記載して選択できるように。違いは特に LLM をメイン PC から借りるところ。汎用的にするには、ControlDeck の改修かどうかではなく、機能的な改修対象によって権限を分ける方がよい。プランとビルド・権限もトグルで、表示面積を小さく、＋メニューをコンパクトに」。

@@ -76,15 +76,14 @@ const AGENT_MODES = [
   ["plan", "📋", "プラン", "計画だけ。ファイルの編集や変更を伴うコマンドはしない", "計画だけ・変更なし"],
 ] as const;
 
-/** 1 行のトグル（左に名前と今の状態の短い説明、右に 2 択）。説明は 1 行まで */
-function ToggleRow({ label, aria, note, children }: { label: string; aria: string; note: string; children: ReactNode }) {
+/** 半分の幅のトグル（上に小さな名前、下に 2 択）。モードと権限を左右に並べて 1 行にする（2026-11-22 利用者） */
+function HalfToggle({ label, aria, note, children }: { label: string; aria: string; note: string; children: ReactNode }) {
   return (
-    <div role="group" aria-label={aria} className="flex min-h-11 items-center gap-2 px-1.5">
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-4 text-zinc-900 dark:text-zinc-50">{label}</span>
-        <span data-toggle-note className="block truncate text-[10px] leading-3 text-zinc-500 dark:text-zinc-400">{note}</span>
+    <div role="group" aria-label={aria} className="min-w-0">
+      <span className="block truncate px-0.5 text-[10px] leading-4 text-zinc-500 dark:text-zinc-400" title={note}>
+        {label}<span data-toggle-note className="sr-only">: {note}</span>
       </span>
-      <span className="grid shrink-0 grid-cols-2 gap-1">{children}</span>
+      <span className="grid grid-cols-2 gap-1 [&>button]:px-1">{children}</span>
     </div>
   );
 }
@@ -303,22 +302,24 @@ export function PlusMenu({
 
           {devTarget && <DevTargetSection state={devTarget} detail={detail} onDetail={setDetail} />}
           {(agent || permission) && <div role="separator" className={SEPARATOR} />}
+          {(agent || permission) && (
+            <div data-mode-row className="grid grid-cols-2 gap-2 px-1.5 pb-0.5">
           {agent && (
-            <ToggleRow label="プラン／ビルド" aria="OpenCode のモード" note={AGENT_MODES.find((m) => m[0] === agent.mode)?.[4] ?? ""}>
+            <HalfToggle label="OpenCode のモード" aria="OpenCode のモード" note={AGENT_MODES.find((m) => m[0] === agent.mode)?.[4] ?? ""}>
               {AGENT_MODES.map(([id, icon, label, hint]) => {
                 const selected = agent.mode === id;
                 return (
                   <button key={id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-agent-option={id} title={hint}
                     onClick={() => { agent.onChange(id); close(); }}
                     className={`${SEGMENT} ${!selected ? UNSELECTED : id === "plan" ? TONE.plan : TONE.accent}`}>
-                    <span aria-hidden>{icon}</span><span className="truncate">{label}</span>
+                    <span aria-hidden className="hidden sm:inline">{icon}</span><span className="truncate">{label}</span>
                   </button>
                 );
               })}
-            </ToggleRow>
+            </HalfToggle>
           )}
           {permission && (
-            <ToggleRow label="権限" aria="OpenCode の権限"
+            <HalfToggle label="OpenCode の権限" aria="OpenCode の権限"
               note={permission.editable ? PERMISSION_NOTE[permission.mode] : `${PERMISSION_NOTE[permission.mode]}・変更は管理者`}>
               {PERMISSION_MODES.map((option) => {
                 const selected = option.id === permission.mode;
@@ -331,7 +332,9 @@ export function PlusMenu({
                   </button>
                 );
               })}
-            </ToggleRow>
+            </HalfToggle>
+          )}
+            </div>
           )}
         </div>,
         document.body,

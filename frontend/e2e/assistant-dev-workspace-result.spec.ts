@@ -98,7 +98,7 @@ for (const width of [320, 1280]) {
     await dialog.getByRole("textbox").fill("x を直す");
     await page.screenshot({ path: `test-results/workspace-result-${width}-confirm.png` });
     await dialog.getByRole("button", { name: "取り込む" }).click();
-    await expect(card.getByTestId("workspace-adopted")).toContainText("確認とマージは");
+    await expect(card.getByTestId("workspace-adopted")).toContainText("PR を作りました");
     await expect(card.getByTestId("workspace-adopted").getByRole("link")).toHaveAttribute("href", PR);
     expect(state.adopts).toEqual([{ confirm: true, commit_message: "x を直す" }]);
     await noOverflow();

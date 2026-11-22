@@ -25,7 +25,7 @@ IMAGES_PER_CALL = 4
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_IMAGES = 16
 SEVERITIES = ("high", "medium", "low")
-NO_MODEL_MESSAGE = "起動中の、画像を読めるローカルのモデルがありません（起動していないモデルを使うなら --allow-load）"
+NO_MODEL_MESSAGE = "画像を読めるローカルのモデルがありません"
 GATEWAY_ENV = "CONTROL_DECK_GATEWAY_URL"
 DEFAULT_GATEWAY = "http://127.0.0.1:8765/api/v1/llm/v1"
 TIMEOUT_SECONDS = 600.0
@@ -65,11 +65,12 @@ class ReviewResult:
 
 
 # ---------------------------------------------------------------- 判定（純粋な関数）
-def pick_model(entries: list[dict], *, allow_load: bool = False) -> str | None:
+def pick_model(entries: list[dict], *, allow_load: bool = True) -> str | None:
     """画像を読めるローカルのモデルの id。cloud:・外部・auto は使わない。
 
-    既定では**起動中のものだけ**（関門のために本番のモデルを入れ替えない。2026-11-22 Opus の監査）。
-    起動していないものは allow_load（`--allow-load`）のときだけ選ぶ。
+    起動中のものを優先し、無ければ起動していないものも選ぶ（ゲートウェイが呼ばれたときにロードする。
+    ほかの呼び出しと同じ動き。2026-11-22 利用者「アンロードしていても呼ばれたらロードして答える方式は変えない」）。
+    ロードさせたくないときだけ allow_load=False（`--no-load`）。
     entries は `/v1/models` の項目（id・runtime・external・vision・loaded）。
     """
     candidates = []
@@ -199,7 +200,7 @@ def ask(client, model: str, names: list[str], images: list[bytes], spec: str) ->
 
 
 def review(paths: list[Path], spec: str = "", *, client=None, max_images: int = DEFAULT_MAX_IMAGES,
-           allow_load: bool = False) -> ReviewResult:
+           allow_load: bool = True) -> ReviewResult:
     """画像を見させる。モデルが無ければ未実施。答えが読めなければ ReviewError。"""
     import httpx
 
@@ -250,7 +251,7 @@ def render(result: ReviewResult) -> str:
 
 def main(argv: list[str]) -> int:
     paths: list[Path] = []
-    spec, max_images, allow_load = "", DEFAULT_MAX_IMAGES, False
+    spec, max_images, allow_load = "", DEFAULT_MAX_IMAGES, True
     args = list(argv)
     while args:
         arg = args.pop(0)
@@ -258,15 +259,15 @@ def main(argv: list[str]) -> int:
             spec = args.pop(0)
         elif arg == "--max-images" and args and args[0].isdigit():
             max_images = int(args.pop(0))
-        elif arg == "--allow-load":
-            allow_load = True
+        elif arg == "--no-load":
+            allow_load = False
         elif arg.startswith("--"):
-            print("使い方: ./deck.sh ui-review <png...> [--spec 説明] [--max-images N] [--allow-load]", file=sys.stderr)
+            print("使い方: ./deck.sh ui-review <png...> [--spec 説明] [--max-images N] [--no-load]", file=sys.stderr)
             return 2
         else:
             paths.append(Path(arg))
     if not paths:
-        print("使い方: ./deck.sh ui-review <png...> [--spec 説明] [--max-images N] [--allow-load]", file=sys.stderr)
+        print("使い方: ./deck.sh ui-review <png...> [--spec 説明] [--max-images N] [--no-load]", file=sys.stderr)
         return 2
     try:
         result = review(paths, spec, max_images=max_images, allow_load=allow_load)

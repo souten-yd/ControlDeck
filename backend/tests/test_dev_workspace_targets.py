@@ -20,6 +20,9 @@ from sqlalchemy import select
 
 from app.maintenance import sandbox, workspaces
 from app.maintenance import sandbox_gateway as gw
+
+# 読み込みの時に本物を掴む（単独で流すと、ほかの準備が先に ensure_gateway を差し替えていて、偽物を掴んでいた。2026-11-22）
+REAL_ENSURE_GATEWAY = sandbox.ensure_gateway
 from tests.conftest import CSRF_HEADERS
 from tests.test_sandbox_gateway import _resp
 from tests.test_dev_workspace_adopt import external_factory, git, run_check  # noqa: F401
@@ -194,7 +197,6 @@ def test_ensure_gateway_passes_capabilities_and_restarts_a_mismatched_relay(repo
     (repo / ".venv" / "bin").mkdir(parents=True)
     (repo / ".venv" / "bin" / "python").write_text("")
     monkeypatch.setattr(sandbox.time, "sleep", lambda s: None)
-    from tests.test_dev_sandbox import REAL_ENSURE_GATEWAY
 
     cases = [("app", ["--allow-tools"], ["--allow-llm"]),
              ("llm_app", ["--allow-llm", "--allow-tools"], []),
