@@ -447,6 +447,166 @@ def test_vision_flag_is_written_only_when_chosen_and_a_refusal_saves_nothing(eng
     assert maya_s.instance_settings("maya-deepseek-xs")["vision"] == "on"
 
 
+# ---- Hy4-Flash（Tencent、エンジン maya-hy4）: 別名・表示名・登録の引数・画像の判定 ----
+
+
+def _hy4_row(root: Path, *, vision_present: bool, tier: str = "Maya-XS",
+             setup_id: str = "hy4-flash-maya-xs", sub: str = "Maya-XS") -> dict:
+    """catalog の Hy4 の行（Maya 本体の hy4_entry が返す形: trunk・共通の n-gram 表・mmproj）。
+    trunk は <root>/<sub>/、n-gram 表と mmproj は全サイズ共通で <root>/Maya-XS/ に在る。"""
+    def f(name: str, size: int, what: str, required: bool, present: bool) -> dict:
+        folder = sub if what == "model" else "Maya-XS"
+        return {"name": name, "path": str(root / folder / name), "size": size, "present": present,
+                "required": required, "what": what, "sha256": ""}
+    return {"family": "hy4", "setup_id": setup_id, "tier": tier, "model": "Hy4-Flash",
+            "size_gb": 108.1, "memory_gb": 52, "published": True, "blockers": [],
+            "repo": "peasantsmith/Hy4-Flash-Maya-GGUF", "revision": "9d73294d", "folder_name": "",
+            "subfolder": sub, "repo_root": str(root), "model_dir": str(root / sub),
+            "models_dir": str(root), "files": [
+                f("Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf", 44_786_173_984, "model", True, True),
+                f("Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf", 63_360_616_160, "tables", True, True),
+                f("mmproj-Hy4-Flash-Maya-XS.gguf", 784_524_096, "vision", False, vision_present)]}
+
+
+def test_hy4_registers_its_alias_and_engine_arguments(engine, monkeypatch):
+    """Hy4-Flash の登録: 別名 maya-hy4-xs、表示名「Hy4-Flash · Maya-XS」、setup への引数
+    （--model hy4-flash-maya-xs・--model-dir・--models-dir）。画像の部品（mmproj）が在れば
+    --no-vision を付けず、無ければ付ける（文字だけの登録）。
+    根拠: 2026-11-22 の依頼「Maya の設定に hy4 の対応を追加して」。Maya 本体（v1.1.73）の
+    write_config_hy4 は mmproj を pack に入れたときだけ画像を読むので、登録時に付いているかで
+    決まる。ダウンロードはしない（--download-model を付けない、既存の流れと同じ）。"""
+    root = engine.root / "LLM"
+    root.mkdir()
+    row = _hy4_row(root, vision_present=False)
+    monkeypatch.setattr(maya_s, "_probe", lambda _f: {"quants": [row], "build": {}, "version": "1.1.73"})
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: root)
+    seen = {}
+
+    def setup(argv, **kwargs):
+        seen["argv"], seen["env"] = argv, kwargs["env"]
+        (engine.source / "maya-hy4-flash-maya-xs.json").write_text(json.dumps({"args": [], "port": 8080}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(maya_s.subprocess, "run", setup)
+    instance = maya_s.register("hy4-flash-maya-xs", str(root))
+    assert instance["alias"] == "maya-hy4-xs" and instance["family"] == "hy4"
+    assert instance["display_name"] == "Hy4-Flash · Maya-XS" and instance["size_gb"] == 108.1
+    assert maya_s.residency_key(instance) == "maya-s:hy4:maya-xs"
+    argv = seen["argv"]
+    assert argv[argv.index("--model") + 1] == "hy4-flash-maya-xs"
+    assert argv[argv.index("--model-dir") + 1] == str(root / "Maya-XS")
+    assert argv[argv.index("--models-dir") + 1] == str(root)
+    assert "--gguf-dir" not in argv and "--download-model" not in argv
+    assert "--parallel" not in argv                   # hy4 は 1 度に 1 要求: --parallel を渡すと本体の setup が fail
+    assert seen["env"]["HF_HUB_OFFLINE"] == "1"
+    assert "--no-vision" in argv                       # mmproj が無い: 文字だけの登録
+
+    # mmproj を置いて登録し直すと、画像を読む登録になる
+    maya_s.unregister("maya-hy4-xs")
+    row["files"][-1]["present"] = True
+    instance = maya_s.register("hy4-flash-maya-xs", str(root))
+    assert "--no-vision" not in seen["argv"]
+    cfg = json.loads((engine.source / "maya-hy4-flash-maya-xs.json").read_text())
+    assert cfg["port"] == instance["port"] and cfg["fit_max_tokens"] is True
+
+
+def test_hy4_vision_comes_from_the_pack_and_deepseek_settings_stay_away(engine, tmp_path):
+    """Hy4-Flash の画像の判定: pack（hy4.txt の vision.dim）に入っていて --vision off でないとき。
+    個別設定に DeepSeek 専用の鍵（dspark・vision の入/切）が出ない。
+    根拠: 2026-11-22 の hy4 対応。判定は Maya 本体（v1.1.73）の hy4_pack_has_vision・write_config_hy4
+    （--vision off だけが切）と同じ見方。DeepSeek 専用の分岐（instance_settings・get_instance の
+    vision_switched_off）に Hy4 が入ると、無い鍵を設定画面が出し、保存が壊れる。"""
+    pack = tmp_path / "maya-hy4"
+    pack.mkdir()
+    (pack / "hy4.txt").write_text("vision.dim 4096\n")
+    config = engine.source / "maya-hy4-flash-maya-xs.json"
+    config.write_text(json.dumps({"exe": "/x/build-hip/maya-hy4", "args": ["--pack", str(pack),
+                                                                          "--max-context", "65536"]}))
+    maya_s._save_registry(maya_s._registry() + [
+        {"alias": "maya-hy4-xs", "setup_id": "hy4-flash-maya-xs", "family": "hy4", "tier": "Maya-XS",
+         "config": "maya-hy4-flash-maya-xs.json", "port": 8100, "size_gb": 108.1}])
+    assert maya_s.get_instance("maya-hy4-xs")["vision"] is True
+    instance = maya_s.get_instance("maya-hy4-xs")
+    assert instance["vision_switched_off"] is False            # DeepSeek 専用の鍵は出ない
+    settings = maya_s.instance_settings("maya-hy4-xs")
+    assert "dspark" not in settings and "vision" not in settings and "vision_available" not in settings
+    # --vision off で切になる
+    args = json.loads(config.read_text())["args"] + ["--vision", "off"]
+    config.write_text(json.dumps({"exe": "/x/build-hip/maya-hy4", "args": args}))
+    assert maya_s.get_instance("maya-hy4-xs")["vision"] is False
+    # pack に vision が入っていなければ読めない（--vision off を外しても）
+    (pack / "hy4.txt").write_text("layers 42\n")
+    config.write_text(json.dumps({"exe": "/x/build-hip/maya-hy4", "args": ["--pack", str(pack),
+                                                                          "--max-context", "65536"]}))
+    assert maya_s.get_instance("maya-hy4-xs")["vision"] is False
+
+
+def test_hy4_download_plan_counts_the_shared_ngram_table(engine, monkeypatch):
+    """Hy4-Flash の「ダウンロードして登録」の見積もり: trunk と共通の n-gram 表（S・M・L も
+    XS のフォルダから取る）の合計 ≈ 110 GB。指示書の「約 110 GB 要る」の確認。"""
+    root = engine.root / "LLM"
+    root.mkdir()
+    row = _hy4_row(root, vision_present=False)
+    for f in row["files"]:
+        f["present"] = False
+    monkeypatch.setattr(maya_s, "_probe", lambda _f: {"quants": [row], "build": {}, "version": "1.1.73"})
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: root)
+    plan = maya_s._download_plan(row, root)
+    assert plan["download_gb"] == 108.1
+    assert plan["download_files"] == ["Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf",
+                                      "Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf"]
+    assert plan["download_root"] == str(root)
+    monkeypatch.setattr(maya_s.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1))
+    assert not maya_s._download_plan(row, root)["can_download"]   # 空きが足りなければ始められない
+
+
+def test_hy4_bigger_sizes_need_the_shared_ngram_placed_or_linked(engine, monkeypatch):
+    """S・M・L の n-gram 表（全サイズ共通、XS のフォルダに在り）: このサイズのフォルダにも在るか、
+    登録済みの Hy4（config の model_dir から本体の setup が hard-link する）が在るときだけ登録できる。
+    どちらでも無ければ、エンジンのビルド（10-30 分）の後で失敗するのではなく先に断る。
+    根拠: レビュー指摘（2026-11-22）。本体 v1.1.73 の hy4_places は登録済み Hy4 の config の model_dir か
+    --models-dir 直下の正式名フォルダ（Hy4-Flash-Maya-*）しか探さず、ダウンロードの <folder>/Maya-XS は
+    対象外 — XS を先に登録しておくのが最短。"""
+    root = engine.root / "LLM"
+    root.mkdir()
+    row = _hy4_row(root, vision_present=False, tier="Maya-S", setup_id="hy4-flash-maya-s", sub="Maya-S")
+    monkeypatch.setattr(maya_s, "_probe", lambda _f: {"quants": [row], "build": {}, "version": "1.1.73"})
+    monkeypatch.setattr(maya_s, "_folder", lambda folder: root)
+    ran = []
+    monkeypatch.setattr(maya_s.subprocess, "run", lambda *a, **k: ran.append(a))
+
+    def setup(argv, **kwargs):
+        (engine.source / "maya-hy4-flash-maya-s.json").write_text(json.dumps({"args": [], "port": 8080}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    # XS が未登録で S のフォルダにも n-gram 表が無い: setup を走らせず先に断る
+    with pytest.raises(maya_s.MayaError, match="先に Maya-XS を登録するか"):
+        maya_s.register("hy4-flash-maya-s", str(root))
+    assert ran == []
+    # XS を登録すれば（config の model_dir が残る）、S はそこから hard-link されるので通る
+    maya_s._save_registry(maya_s._registry() + [
+        {"alias": "maya-hy4-xs", "setup_id": "hy4-flash-maya-xs", "family": "hy4", "tier": "Maya-XS",
+         "config": "maya-hy4-flash-maya-xs.json", "port": 8100, "size_gb": 108.1}])
+    (engine.source / "maya-hy4-flash-maya-xs.json").write_text(json.dumps({"args": []}))
+    monkeypatch.setattr(maya_s.subprocess, "run", setup)
+    assert maya_s.register("hy4-flash-maya-s", str(root))["alias"] == "maya-hy4-s"
+    # XS を消しても、n-gram 表を S のフォルダへ手で置けば通る
+    maya_s.unregister("maya-hy4-s")
+    maya_s.unregister("maya-hy4-xs")
+    seen = []
+
+    def setup2(argv, **kwargs):
+        seen.append(argv)
+        (engine.source / "maya-hy4-flash-maya-s.json").write_text(json.dumps({"args": [], "port": 8080}))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(maya_s.subprocess, "run", setup2)
+    (root / "Maya-S").mkdir(exist_ok=True)
+    (root / "Maya-S" / "Hy4-Flash-Maya-XS-IQ2_XXS-00002-of-00002.gguf").write_bytes(b"x")
+    assert maya_s.register("hy4-flash-maya-s", str(root))["alias"] == "maya-hy4-s"
+    assert "--no-vision" in seen[0] and "--parallel" not in seen[0]
+
+
 def test_selftest_warns_when_the_running_engine_and_the_vision_judgement_disagree(monkeypatch):
     """同じ食い違い（エンジンは読めるのに判定は読めない）が起きたら、自己診断で気付けるように。"""
     import httpx

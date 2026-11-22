@@ -13,6 +13,20 @@
 - 確かめられなかった点: 実機の指での操作感（E2E の実ブラウザ 320px で代用）。既知の既存失敗（変更前の HEAD でも同じことを stash で確認）: `assistant-claude-layout` の「thinking split」1 件・`assistant-plan` 4 件 — 検証用インスタンスに CodeDEV の app が無い（2026-11-22 の記録どおり）。box の中では `./deck.sh e2e` が venv 作成で止まるため、元の venv（app-strata）と `PLAYWRIGHT_BROWSERS_PATH` で同じ流れを手動で回した。
 - main の視覚ゲートの中継（428bafa）を merge して dev-check を再実行（--base origin/main）: 「画面の見た目」は中継経由で走った（qwen-flash-next・12 枚）が high 3 件を指摘。うち 2 件（320px でチップが画面幅を超える・モード行が下端と重なる）は E2E の幾何検査（メニューは 320px に収まる・はみ出し無し）と ui-verifier の実ブラウザ確認に反する。1 件（「コーディングエージェントが作業」などの長い補助ラベルが「…」で切れる）は 288px 化での切り詰めが実態。対応は次の判断待ち。
 
+## 2026-11-22 Maya の設定に Hy4-Flash（Tencent）の対応（L1）
+
+- 利用者「Maya の設定に hy4 の対応を追加して」。Hy4-Flash（Tencent の `tencent/Hy4-flash`、220B・最大 1M コンテキスト・画像対応・AMD Linux の R9700 で動く）を Maya の登録の一覧・登録・個別設定へ足した。
+- Maya 本体（v1.1.73、GitHub の mw00/project-maya を読んで確かめた。この箱からは実機のエンジンが見えない）:
+  - family `hy4`、setup id `hy4-flash-maya-xs/s/m/l`（QUANTS に 4 サイズ）、config 名 `maya-hy4-flash-maya-xs.json`、専用エンジン `maya-hy4`（setup が自動でビルドする。ControlDeck 側の引数は不要）
+  - VRAM の余裕は `--reserve-gb`、**GB = 10^9 バイト**（本体 set_vram_reserve: `mib * 1048576 / 1e9`。MiniMax と同じフラグで単位が違う。#1026）。`_apply_vram_margin` に hy4 の分岐と `with_margin_arg` に gb10 モードを足した
+  - **1 度に 1 要求**: 本体 check_parallel の PARALLEL_FAMILIES は (glm, deepseek, minimax) で、hy4 に `--parallel` を渡すと setup が fail する → `_register` の argv で hy4 のときだけ `--parallel` を付けない
+  - 登録は `--model hy4-flash-maya-xs` 型（ds4/mm3 と同じ）、manifest は `tools/hy4/download.json`（`maya.HY4_MANIFEST`）。サイズ（trunk 44.8〜89.5 GB）＋共通の n-gram テーブル 63.4 GB（全サイズで同じ 1 ファイル）。S・M・L の setup は本体の hy4_places（--models-dir 直下の正式名フォルダ `Hy4-Flash-Maya-*` か登録済み Hy4 の config の model_dir）から hard-link するので、**XS を先に登録しておくのが最短**（XS 未登録で S を登録するときは n-gram をモデルのフォルダへ手で置く）
+  - 画像は mmproj 1 個（全サイズ共通、XS のフォルダ、Maya 自身の Q8_0）。pack の `hy4.txt` の `vision.dim` で判定し `--vision off` だけが切（`_config_vision` に hy4 の分岐を追加）。メモリの目安（manifest の memory_gb）: XS 52・S 64・M 76・L 100 GB。ライセンス Tencent Hy License（画面の説明に、n-gram の大きさと一緒に 1 行）
+- 変えた所: `maya_probe.py` に `hy4_entry`（mm3 型 + 共通テーブルの所在どおり）を足し maker map へ登録（Hy4 は GLM/DeepSeek/MiniMax と違い maker が無いと一覧から黙って落ちる）。`maya_s.py` は FAMILY_LABEL・別名 `maya-hy4-<tier>`（_NEW_ALIAS）・`_register` の hy4 分岐（--parallel を外し、mmproj が在れば --no-vision 無し）・`_hy4_pack_has_vision`。画面（MayaRegisterPanel）は family に hy4・ライセンスの 1 行。取得は既存の「利用者の明示の操作で」に乗せ、空きの確認（XS で trunk+テーブル ≈ 108 GB）は `_download_plan` のまま。
+- レビュー（別のモデルの reviewer）: critical 2 件（hy4 に `--parallel 1` を渡すと本体 setup が fail・余白の引数が `--vram-reserve-mib` ではなく `--reserve-gb` GB 単位）を指摘され、一次資料（本体の check_parallel・set_vram_reserve・hy4_main.cpp）で裏を取って直した。再レビューで解消を確認（partial 判定: 残るはこの箱で流せない pytest・dev-check・実エンジン）。major（S・M・L の n-gram の hard-link は XS 先登録が前提）と minor（登録までの早期ヒント）は: `_register` で「n-gram 表がこのサイズのフォルダに在るか、登録済みの Hy4 から hard-link できるか」を先に確かめ、どちらでも無ければビルド（10-30 分）の前に「先に Maya-XS を登録するか、テーブルをこのフォルダへ」で断るようにした。
+- テスト: `test_maya_probe.py`（新規・pytest に依らず流せる構造で 3 個この箱でも合格）、`test_maya_register.py`（登録の引数〔--parallel 無しを含む〕・別名・表示名・画像の判定・DeepSeek 専用の設定に出ないこと・ダウンロードの見積もり）、`test_vram_margin.py` の parametrize に hy4（`--reserve-gb`・GB 単位の変換）、E2E `maya-register.spec.ts`（320・1280、Hy4 の 4 サイズ・ライセンス行・不足の案内）。
+- 確かめられなかった点: この箱に Python 依存（venv）が無いため `test_maya_register.py`・`test_vram_margin.py` は実行していない（コードを精査しただけ。実機で `cd backend && env -u CONTROL_DECK_CONFIG ../.venv/bin/python -m pytest -q -p no:cacheprovider tests/test_maya_register.py tests/test_vram_margin.py tests/test_maya_probe.py` を流す）。E2E・dev-check も同じ理由で未実施（フロントエンドの tsc と npm run build は合格）。実際の登録と起動（`--model hy4-flash-maya-xs`・--parallel 無しでの setup・n-gram テーブルの hard-link・mmproj の読み取り）は Opus が利用者の了承を得て本番で確かめる。
+
 ## 2026-11-23 特許のテストの順番依存を直す
 
 - `test_patents.py::test_search_and_claim_chart_use_the_shared_knowledge` が「検索の 1 件目が特許の文書」と決めつけていて、関門が選んだ順（先に `test_knowledge_rebuild`）で流すと、残った一般の文書が 1 件目に来て落ちていた（全体で流すと通る）。入れた特許の文書が結果に含まれることを確かめる形に直した。#561 は、この揺れで関門が不合格のまま Opus の手順の誤りでマージされた（変更そのものとは無関係と確かめた）。

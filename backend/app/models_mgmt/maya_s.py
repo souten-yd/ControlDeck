@@ -441,10 +441,11 @@ async def prepare_model_stream(job=None, *, gpu_index: int = 0, download_dir: st
 # ---- instances: the first model (alias maya-s, port 8099, its settings) and the ones registered
 # beside it (instances.json). One Maya model holds the card at a time.
 
-FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash"}
+FAMILY_LABEL = {"glm": "GLM-5.3-Flash", "deepseek": "DeepSeek-V4.1-Flash", "minimax": "MiniMax-M3.1-Flash",
+                "hy4": "Hy4-Flash"}
 _PORTS = range(8100, 8140)
 _CONFIG_NAME = re.compile(r"^maya-[a-z0-9._-]{1,120}\.json$")
-_NEW_ALIAS = re.compile(r"^maya-(glm|deepseek|minimax)-[a-z0-9-]{1,40}$")
+_NEW_ALIAS = re.compile(r"^maya-(glm|deepseek|minimax|hy4)-[a-z0-9-]{1,40}$")
 
 
 def _registry_path() -> Path:
@@ -507,7 +508,10 @@ def _apply_vram_margin(record: dict) -> Path:
     path = Path(record["config"])
     cfg = json.loads(path.read_text(encoding="utf-8"))
     family = record.get("family", "glm")
-    flag = {"deepseek": "--reserve-mib", "minimax": "--reserve-gb"}.get(family, "--vram-reserve-mib")
+    # 各エンジンが受け取る余白の引数（Maya v1.1.73 の set_vram_reserve と同じ）: GLM/Qwen は MiB、DeepSeek は
+    # MiB、MiniMax は GiB、Hy4 は GB（10^9 バイト）— どちらもフラグは --reserve-gb で単位が違う。
+    flag = {"deepseek": "--reserve-mib", "minimax": "--reserve-gb", "hy4": "--reserve-gb"}.get(
+        family, "--vram-reserve-mib")
     args = list(cfg.get("args") or [])
 
     def reserve_value(values: list[str]) -> str | None:
@@ -537,7 +541,7 @@ def _apply_vram_margin(record: dict) -> Path:
                 restored.append(args[index])
                 index += 1
         args = restored + ([flag, original] if original is not None else [])
-    cfg["args"] = with_margin_arg(args, flag, gib=family == "minimax")
+    cfg["args"] = with_margin_arg(args, flag, gib=family == "minimax", gb10=family == "hy4")
     cfg["control_deck_vram_margin"] = {"flag": flag, "original": original, "applied": cfg["args"][-1]}
     temp = path.with_suffix(".tmp")
     temp.touch(mode=0o600, exist_ok=True)
@@ -680,6 +684,22 @@ def _ds4_pack_has_vision(cfg: dict) -> bool:
         return False
 
 
+def _hy4_pack_has_vision(cfg: dict) -> bool:
+    """Hy4-Flash（maya-hy4）: pack に vision tower が入っているか（Maya の hy4_pack_has_vision と同じ見方:
+    hy4.txt の vision.dim）。相対の --pack はエンジンの作業フォルダから見る。"""
+    pack = _flag(list(cfg.get("args") or []), "--pack")
+    if not pack:
+        return False
+    path = Path(pack)
+    if not path.is_absolute():
+        path = Path(str(cfg.get("cwd") or source())) / path
+    try:
+        return any(line.startswith("vision.dim ") for line in
+                    (path / "hy4.txt").read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return False
+
+
 def _read_config(config: Path | str | None) -> dict:
     try:
         return json.loads(Path(config).read_text(encoding="utf-8")) if config else {}
@@ -688,9 +708,10 @@ def _read_config(config: Path | str | None) -> dict:
 
 
 def _config_vision(config: Path | None, family: str = "") -> bool:
-    """Maya が画像を読めるか。GLM は config の "vision"（画像エンコーダー）で、DeepSeek（maya-ds4）は pack に
-    vision tower が入っていて `--vision off` でないとき（engine が tower を自分で動かす。Maya #416）。
-    以前は GLM の見方だけで、DeepSeek は画像を読めても「読めない」扱いだった（2026-11-18）。"""
+    """Maya が画像を読めるか。GLM は config の "vision"（画像エンコーダー）で、DeepSeek（maya-ds4）と
+    Hy4-Flash（maya-hy4）は pack に vision tower が入っていて `--vision off` でないとき（engine が tower を
+    自分で動かす。Maya #416・write_config_hy4）。以前は GLM の見方だけで、DeepSeek は画像を読めても
+    「読めない」扱いだった（2026-11-18）。"""
     try:
         cfg = json.loads(config.read_text(encoding="utf-8")) if config else {}
     except (OSError, ValueError):
@@ -698,8 +719,11 @@ def _config_vision(config: Path | None, family: str = "") -> bool:
     if isinstance(cfg.get("vision"), dict):
         return True
     args = list(cfg.get("args") or [])
-    if family == "deepseek" or (not family and Path(str(cfg.get("exe") or "")).name.startswith("maya-ds4")):
+    exe = Path(str(cfg.get("exe") or "")).name
+    if family == "deepseek" or (not family and exe.startswith("maya-ds4")):
         return _flag(args, "--vision") != "off" and _ds4_pack_has_vision(cfg)
+    if family == "hy4" or (not family and exe.startswith("maya-hy4")):
+        return _flag(args, "--vision") != "off" and _hy4_pack_has_vision(cfg)
     return False
 
 
@@ -1173,10 +1197,33 @@ def _register(setup_id: str, folder: str, *, context: int = 65536, gpu_index: in
     legacy_env = _config_env() if legacy else {}
     model_dir = Path(item["model_dir"])
     argv = ["bash", str(entrypoint()), "--setup", "--backend", "hip", "--gpu", str(int(gpu_index)),
-            "--context", str(int(context)), "--parallel", "1", "--no-speed-calibration",
+            "--context", str(int(context)), "--no-speed-calibration",
             "--yes", "--plain", "--no-start", "--port", str(port), "--host", "127.0.0.1"]
+    if item["family"] != "hy4":
+        argv += ["--parallel", "1"]   # Hy4-Flash は 1 度に 1 要求: --parallel を渡すと本体の setup が fail する
     if item["family"] == "glm":
         argv += ["--gguf-dir", str(model_dir), "--models-dir", str(models_dir())]
+        vision = [f for f in item.get("files") or [] if f.get("what") == "vision"]
+        if not vision or not all(f.get("present") for f in vision):
+            argv.append("--no-vision")
+    elif item["family"] == "hy4":
+        # Hy4-Flash: mmproj（画像の部品）がそろっていれば画像を読む（Maya 本体の setup と同じ見方）。
+        # n-gram 表は全サイズで同じ 1 ファイルで XS のフォルダに在り、このサイズのフォルダへは本体の
+        # hy4_places（登録済み Hy4 の config の model_dir か --models-dir 直下の正式名フォルダ）から
+        # hard-link される — XS を先に登録しておくのが最短。どちらにも無いなら、長いビルドの後に
+        # setup が表を見つけられず失敗するので、先に断る（レビュー指摘 2026-11-22）。
+        tables = [f for f in item.get("files") or [] if f.get("what") == "tables"]
+        # 表がこのサイズのフォルダに在るか（Maya 本体の目録の present と path で見る。XS は自分のフォルダに在る）
+        # （利用者が手で置いた場合は目録に出ないので、このフォルダに実際に在るかも見る）
+        in_dir = tables and all((f.get("present") and Path(str(f.get("path") or "")).parent == model_dir)
+                                or (model_dir / str(f.get("name") or "")).is_file() for f in tables)
+        linked = tables and all(f.get("present") for f in tables) \
+            and any(r.get("family") == "hy4" for r in _registry())
+        if tables and not (in_dir or linked):
+            raise MayaError(f"Hy4 の n-gram テーブル（全サイズで同じ 1 ファイル）は XS のフォルダに在ります。"
+                            f"先に Maya-XS を登録するか、テーブル（{', '.join(str(f.get('name')) for f in tables)}）"
+                            f"を {model_dir} へ置いてください")
+        argv += ["--model", setup_id, "--model-dir", str(model_dir), "--models-dir", str(item["models_dir"])]
         vision = [f for f in item.get("files") or [] if f.get("what") == "vision"]
         if not vision or not all(f.get("present") for f in vision):
             argv.append("--no-vision")
