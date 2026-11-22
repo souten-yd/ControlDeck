@@ -120,3 +120,55 @@ export function OpenCodeChanges({ conversationId, messageId, changes, reverted, 
     </section>
   );
 }
+
+/** 本文から要約を抜く（LLM は使わない）。「結果・まとめ・要約…」の見出しの節、無ければ最初の見出しと続きの段落。 */
+export function extractSummary(content: string): string {
+  const lines = content.split("\n");
+  const heading = (line: string) => /^ {0,3}#{1,4}\s+/.test(line);
+  const section = (from: number) => {
+    const body: string[] = [];
+    for (const line of lines.slice(from + 1)) {
+      if (heading(line)) break;
+      if (!line.trim() && body.length) break;
+      if (line.trim() && !/^ {0,3}(```|~~~)/.test(line)) body.push(line.trim().replace(/^[-*]\s+/, ""));
+      if (body.length >= 3) break;
+    }
+    return body.join(" ");
+  };
+  const named = lines.findIndex((line) => heading(line) && /(結果|まとめ|要約|概要|完了|やったこと|Summary|Result)/i.test(line));
+  const first = lines.findIndex(heading);
+  const at = named >= 0 ? named : first;
+  const text = at >= 0 ? section(at) : "";
+  const plain = text || (at < 0 ? lines.find((line) => line.trim() && !/^ {0,3}(```|~~~)/.test(line))?.trim() ?? "" : "");
+  return plain.length > 160 ? `${plain.slice(0, 159)}…` : plain;
+}
+
+/** OpenCode の回が終わったときの小さなカード: 要約・ToDo の完了数・変更の数・作業場の結果への入口。
+ *  変更のファイル一覧・差分は、すぐ下の OpenCodeChanges（既存）を使う。
+ *  2026-11-23 利用者の通し: 完了の要約が無く、長い本文を読まないと何をしたか分からなかった。 */
+export function CodeDoneCard({ content, todos, changeCount }: {
+  content: string; todos?: { status: string }[]; changeCount: number;
+}) {
+  const summary = extractSummary(content);
+  const done = (todos ?? []).filter((t) => t.status === "completed").length;
+  const hasResult = typeof document !== "undefined" && Boolean(document.querySelector("[data-testid='workspace-result']"));
+  if (!summary && !todos?.length && !changeCount) return null;
+  return (
+    <section data-code-done aria-label="この回のまとめ"
+      className="min-w-0 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs dark:border-emerald-900 dark:bg-emerald-950/30">
+      <p className="font-semibold text-emerald-800 dark:text-emerald-300">完了</p>
+      {summary && <p data-code-done-summary className="mt-0.5 line-clamp-3 break-words leading-relaxed text-zinc-700 dark:text-zinc-200">{summary}</p>}
+      <p className="num mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-zinc-600 dark:text-zinc-300">
+        {!!todos?.length && <span>ToDo {done}/{todos.length} 完了</span>}
+        {changeCount > 0 && <span>変更 {changeCount} ファイル</span>}
+        {hasResult && (
+          <button type="button" data-code-done-result
+            onClick={() => document.querySelector("[data-testid='workspace-result']")?.scrollIntoView({ block: "center", behavior: "smooth" })}
+            className="min-h-11 font-semibold text-sky-700 underline underline-offset-2 dark:text-sky-300">
+            関門の結果を見る
+          </button>
+        )}
+      </p>
+    </section>
+  );
+}

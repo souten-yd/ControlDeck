@@ -566,6 +566,7 @@ AGENTS = ("build", "plan")
 FOLLOW_UP_SECONDS = 20.0   # 親のターンが終わってから、裏の子の結果で続きを始めるまで待つ長さ
 BACKGROUND_CHECK_SECONDS = 15.0   # イベントを取りこぼしても止まらないよう、裏の子の状態を確かめる間隔
 BACKGROUND_MAX_SECONDS = 4 * 3600.0   # 裏の子を待つ上限
+CHILD_TOUCH_SECONDS = 10.0   # 子のイベントを受けても、画面へ「最後に動いた時刻」を送る間隔の下限
 _BACKGROUND_RE = re.compile(r"working in the background \(sessionID:\s*(ses_[A-Za-z0-9]+)\)")
 
 
@@ -574,6 +575,20 @@ def _background_child(tool: dict) -> str | None:
         return None
     found = _BACKGROUND_RE.search(str(tool.get("output") or ""))
     return found.group(1) if found else None
+
+
+def child_activity(tool: dict | None, now: float) -> bool:
+    """子エージェントのイベントを受けたとき、道具の行に「最後に動いた時刻」を書く。書いたら True（画面へ送る）。
+
+    イベントは文字ごとに届くので、送るのは CHILD_TOUCH_SECONDS ごとにする。止まって見える子を画面で見分けるため
+    （2026-11-23 利用者の通し: ローカルの遅い子が 1 時間近く動き、動いているのか分からなかった）。"""
+    if tool is None or tool.get("status") != "running":
+        return False
+    last = float(tool.get("last_active_at") or 0)
+    if last and now - last < CHILD_TOUCH_SECONDS:
+        return False
+    tool["last_active_at"] = now
+    return True
 
 
 def _agent_model_ref(server: Server, agent: str) -> dict | None:
@@ -846,6 +861,8 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 else:
                     ended_children.add(str(sid))
                 continue
+            if sid != session_id and sid in background and child_activity(tools.get(background[sid]), time.time()):
+                await on_tool(tools[background[sid]])
             if kind.startswith("permission."):
                 if sid not in family:
                     continue
@@ -879,6 +896,11 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 await status("tool", str(data.get("name") or ""), force=True)
             elif kind == "session.tool.called" and data.get("id") in tools:
                 tools[data["id"]]["input"] = data.get("input") or {}
+                spec = tools[data["id"]]["input"]
+                role = str(spec.get("subagent_type") or "") if isinstance(spec, dict) and tools[data["id"]]["name"] in ("subagent", "task") else ""
+                ref = await asyncio.to_thread(_agent_model_ref, server, role) if role else None
+                if ref:
+                    tools[data["id"]]["model"] = f"{ref['providerID']}/{ref['id']}"
                 await on_tool(tools[data["id"]])
             elif kind in ("session.tool.success", "session.tool.failed") and data.get("id") in tools:
                 tool = tools[data["id"]]

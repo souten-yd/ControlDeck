@@ -699,3 +699,53 @@ def test_switching_agent_also_switches_the_session_model_to_the_role(monkeypatch
     models = [body["model"] for method, path, body in calls if path.endswith("/model")]
     assert models == [{"providerID": "opencode-go", "id": "glm-5.3"},
                       {"providerID": "controldeck", "id": "qwen-flash-next"}]
+
+
+def test_child_activity_is_stamped_on_the_running_task_row_at_most_every_ten_seconds():
+    """目的: 裏の子エージェントが動いている印（最後に動いた時刻）を道具の行に載せ、送りすぎない。
+    根拠: 2026-11-23 利用者の通し。子が 1 時間近く動いても画面から動いているか分からなかった（U5）。"""
+    from app.integrations.opencode.chat_server import CHILD_TOUCH_SECONDS, child_activity
+
+    tool = {"status": "running"}
+    assert child_activity(tool, 100.0) and tool["last_active_at"] == 100.0
+    assert not child_activity(tool, 100.0 + CHILD_TOUCH_SECONDS - 1) and tool["last_active_at"] == 100.0
+    assert child_activity(tool, 100.0 + CHILD_TOUCH_SECONDS) and tool["last_active_at"] == 110.0
+    assert not child_activity({"status": "completed"}, 1.0) and not child_activity(None, 1.0)
+
+
+def test_a_subagent_row_gets_the_role_model_and_the_childs_last_activity(monkeypatch, tmp_path):
+    """目的: task の道具の行に、係のモデル（設定の agents.<係>.model）と子の最後に動いた時刻が付く。
+    根拠: U5。係・モデル・動きが見えず、遅いローカルの子を待ち続けた（2026-11-23）。"""
+    from app.integrations.opencode import chat_server
+
+    (tmp_path / "opencode").mkdir()
+    (tmp_path / "opencode" / "opencode.json").write_text(json.dumps({
+        "model": "controldeck/main", "agents": {"reviewer": {"model": "controldeck/slow-local"}}}), encoding="utf-8")
+
+    def tail(sid, child):
+        return [{"type": "session.text.delta", "data": {"sessionID": child, "delta": "子の出力"}},
+                {"type": "session.execution.succeeded", "data": {"sessionID": child}},
+                {"type": "session.execution.succeeded", "data": {"sessionID": sid}}]
+    sid, child = "ses_parent", "ses_child1"
+    head = [{"type": "session.execution.started", "data": {"sessionID": sid}},
+            {"type": "session.created", "data": {"id": child, "parentID": sid}},
+            {"type": "session.tool.input.started", "data": {"sessionID": sid, "id": "c1", "name": "subagent"}},
+            {"type": "session.tool.called", "data": {"sessionID": sid, "id": "c1", "input": {"subagent_type": "reviewer"}}},
+            {"type": "session.tool.success", "data": {"sessionID": sid, "id": "c1", "content": [
+                {"type": "text", "text": f"working in the background (sessionID: {child})."}]}}]
+    calls: list = []
+    _fake_events(monkeypatch, head + tail(sid, child), calls)
+    monkeypatch.setattr(chat_server, "FOLLOW_UP_SECONDS", 0.2)
+    monkeypatch.setattr(chat_server, "BACKGROUND_CHECK_SECONDS", 0.0)
+    tools: list = []
+
+    async def noop(_):
+        return None
+
+    async def keep(item):
+        tools.append(json.loads(json.dumps(item)))
+
+    asyncio.run(asyncio.wait_for(chat_server.run_turn(
+        _server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop, on_tool=keep, on_permission=noop), 5))
+    assert tools[-1]["model"] == "controldeck/slow-local"
+    assert any(t.get("last_active_at") for t in tools)

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 226 ファイル、2119 テスト（目的の未記入 93 ファイル）
-- E2E: 112 spec、229 テスト
+- backend: 226 ファイル、2121 テスト（目的の未記入 93 ファイル）
+- E2E: 113 spec、231 テスト
 
 ## backend（backend/tests）
 
@@ -1967,6 +1967,8 @@
 - `test_the_follow_up_window_starts_when_the_parent_turn_ends` — 子が先に終わり親がその後も動いていても、親の終わりから続きを待つ（レビュー指摘）。
 - `test_a_failed_parent_stops_background_children`
 - `test_switching_agent_also_switches_the_session_model_to_the_role` — 役割ごとのモデル: プランへ切り替えたら計画のモデル、ビルドへ戻したら開発のモデルへ、セッションのモデルも切り替える。
+- `test_child_activity_is_stamped_on_the_running_task_row_at_most_every_ten_seconds` — 目的: 裏の子エージェントが動いている印（最後に動いた時刻）を道具の行に載せ、送りすぎない。
+- `test_a_subagent_row_gets_the_role_model_and_the_childs_last_activity` — 目的: task の道具の行に、係のモデル（設定の agents.<係>.model）と子の最後に動いた時刻が付く。
 
 ### backend/tests/test_opencode_chat_timeline.py
 
@@ -3419,6 +3421,13 @@
 目的: 目的: AI アシスタントの OpenCode で「開発の作業場」を選べること。一覧に自分の作業場が出て、選ぶと作業場の印が出る。 「新しい作業場」で元を選んで作ると選ばれる。送ると作業場の作業ツリーのパスが code_project_path で渡る。 消す操作は確認つき（未保存の変更があれば警告し、確認の印つきで消す）。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「Claude なしで、AI アシスタントに要望を出せば OpenCode が開発を進められる状態に」 （開発の作業場 2 段目）。API と WebSocket は模擬する（箱・OpenCode を動かさない）。
 
 - dev workspaces can be listed, created, used and deleted (${width}px)
+
+### frontend/e2e/assistant-live-status.spec.ts
+
+目的: 目的: OpenCode の生成中に「いま: 作業中の項目 · 経過 · 段」が 1 行で出て 320px でも横にあふれないこと、道具の羅列が 段ごとに畳まれること、子エージェントの行に係・モデル・経過が出て 10 分動きが無ければ止める入口が出ること、 完了したら要約・ToDo の完了数・変更の数のカードが本文の下に出ること。 根拠: 2026-11-23 利用者の通し（評価 U4・U5・U6）。道具の羅列が長く今の作業が分からない、子が 1 時間近く動いても様子が 見えない、完了の要約が無く長い本文を読まないと分からなかった。
+
+- now line, folded tools and subagent row while generating (${width}px ${scheme})
+- done card after an OpenCode turn (${width}px ${scheme})
 
 ### frontend/e2e/assistant-message-actions.spec.ts
 
