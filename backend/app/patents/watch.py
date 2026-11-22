@@ -2,8 +2,8 @@
 
 - ウォッチ: 案件ごとに「取得先・検索語・間隔（6 時間以上）」を登録し、期限が来たら公開データを取得して**新しく入った文献だけ**を
   案件の請求項（無ければ課題・解決手段）に近い順に並べ、ヒットとして残す。利用者がヒットを X / Y / A で先行文献に登録するか、対象外にする。
-- 外へ送る検索語は、利用者が「公開してよい語（未公開の発明の内容を含まない）」と確認したものだけ（approved_public）。
-  確認の無いウォッチは動かさない。検索語を変えたら確認をやり直す。
+- 外へ送る検索語は、保存時と実行のたびに egress.check で自動に検査する（案件の未公開の文章を 25 文字以上連続で写した
+  塊があれば送らず、last_status に理由を残す）。手動の確認（approved_public）は要らない（列は互換のため残す）。
 - 期限の通知: 1 日 1 回、各案件の期限の目安が 60 / 30 / 7 日前に入ったら、しきい値ごとに 1 回だけ。**本文に案件名や内容を書かない**
   （Web Push は外部のサーバーを通るため）。件数と「Patent で確認」だけ。
 - 起動は既存の保守の周期（maintenance_loop）から tick() を呼ぶ。常駐を増やさない。重い処理は Jobs。
@@ -64,8 +64,8 @@ def list_watches(case_id: int) -> list[dict]:
         conn.close()
 
 
-def save_watch(case_id: int, *, source: str, query: str, interval_hours: int, approved_public: bool,
-               watch_id: int | None = None, enabled: bool = True) -> dict:
+def save_watch(case_id: int, *, source: str, query: str, interval_hours: int, approved_public: bool = True,
+               watch_id: int | None = None, enabled: bool = True, check: bool = True) -> dict:
     if source not in sources.SOURCES:
         raise pstore.PatentError("知らない取得先です")
     query = (query or "").strip()
@@ -73,7 +73,12 @@ def save_watch(case_id: int, *, source: str, query: str, interval_hours: int, ap
         raise pstore.PatentError("検索語（1〜500 文字）を入れてください")
     if interval_hours < MIN_INTERVAL_HOURS or interval_hours > 24 * 30:
         raise pstore.PatentError(f"間隔は {MIN_INTERVAL_HOURS} 時間〜30 日です")
+    from app.patents import egress
+
     pstore.get_case(case_id)
+    if check:
+        egress.check(query, case_id)        # 未公開の文章を写した塊は保存の時点で断る（実行のたびにも検査する）
+    approved_public = True                  # 手動の確認は廃止（自動の検査に置き換え）
     now = time.time()
     conn = connect()
     try:
@@ -88,7 +93,7 @@ def save_watch(case_id: int, *, source: str, query: str, interval_hours: int, ap
                 raise pstore.NotFound("ウォッチがありません")
             # 検索語・取得先が変わったら、公開してよいかの確認をやり直す
             same = old["query"] == query and old["source"] == source
-            approved = bool(approved_public) if not same or approved_public else bool(old["approved_public"])
+            approved = True
             conn.execute("UPDATE patent_watches SET source=?, query=?, interval_hours=?, enabled=?, approved_public=?, approved_at=? "
                          "WHERE id=?", (source, query, int(interval_hours), int(enabled), int(approved),
                                         now if approved and (not same or not old["approved_public"]) else old["approved_at"], int(watch_id)))
@@ -157,10 +162,22 @@ async def run_watch(job, watch_id: int) -> dict:
         conn.close()
     if row is None:
         raise pstore.NotFound("ウォッチがありません")
-    if not row["approved_public"] or not row["enabled"]:
-        raise pstore.PatentError("検索語を公開してよいか確認されていない（または無効な）ウォッチは動かしません")
+    if not row["enabled"]:
+        raise pstore.PatentError("無効なウォッチは動かしません")
     status = "ok"
+    from app.patents import egress
+
     try:
+        try:
+            # 案件の請求項は後から変わることがあるので、実行のたびに検査する
+            await asyncio.to_thread(egress.check, row["query"], int(row["case_id"]))
+        except egress.QueryBlocked as blocked:
+            status = f"止めました: {blocked.reason}"[:300]
+            egress.audit_background("patents.watch_blocked", result="denied", resource_id=str(row["case_id"]),
+                                    metadata=egress.blocked_metadata(row["query"], row["source"], int(row["case_id"]), blocked))
+            raise
+        egress.audit_background("patents.watch_run", result="success", resource_id=str(row["case_id"]),
+                                metadata=egress.sent_metadata(row["query"], row["source"], int(row["case_id"])))
         job.set_progress("公開データを取得しています", 0, 3)
         records = await asyncio.to_thread(sources.fetch, row["source"], row["query"], 50)
         job.set_progress("取り込んでいます", 1, 3)
@@ -182,6 +199,8 @@ async def run_watch(job, watch_id: int) -> dict:
             conn.close()
         status = f"新しく {len(new_refs)} 件（取得 {len(records)} 件）"
         return {"fetched": len(records), "new": len(new_refs)}
+    except egress.QueryBlocked:
+        raise
     except Exception as exc:
         status = f"失敗: {exc}"[:200]
         raise
@@ -198,7 +217,7 @@ def due_watches(now: float | None = None) -> list[int]:
     now = now or time.time()
     conn = connect()
     try:
-        rows = conn.execute("SELECT id, interval_hours, last_run FROM patent_watches WHERE enabled=1 AND approved_public=1").fetchall()
+        rows = conn.execute("SELECT id, interval_hours, last_run FROM patent_watches WHERE enabled=1").fetchall()
     finally:
         conn.close()
     return [int(r["id"]) for r in rows if (r["last_run"] or 0) + int(r["interval_hours"]) * 3600 <= now]

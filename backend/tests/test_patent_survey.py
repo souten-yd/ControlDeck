@@ -7,8 +7,8 @@
   前後の空白を取り、重複を除き、1 構成要素につき各 20 個まで。IPC は ^[A-H]\\d{2}[A-Z] ?\\d{1,4}/\\d{1,6}$ に
   合うものだけ（合わないものは捨てて、捨てた数を記録）。
 - 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録の文章と 8 文字以上重なっていたら
-  （一部分が写されている場合も）risk を付け、外へ送る語の確認（approve）で選べないこと。
-  確認（approved_public）の無い保存は断ること。
+  （一部分が写されている場合も）risk を付けること。risk は参考表示で、選択・送信は止めない（2026-11-22 に変更）。
+  止めるのは 25 文字以上の連続した写し（egress）だけ。確認（approved_public）は要らない。安全な語は最初から選ばれる。
 - 権限の無い利用者は API を使えないこと。案件を消したら案も消えること（案件番号は使い回される）。
 
 根拠: docs/PLAN-web-collector.md P1「テーマ/文言 → 検索語の案（ローカル LLM）→ 外へ送る語の確認」、
@@ -151,31 +151,34 @@ def test_partially_copied_terms_are_also_flagged(monkeypatch):
     assert out["risks"]["薄膜状のゲート絶縁膜であって"] == "unpublished"   # 請求項の「〜絶縁膜と、」の一部を写す
 
 
-def test_approve_needs_public_flag_refuses_risky_and_unknown_terms(monkeypatch):
+def test_approve_needs_no_flag_allows_risky_keywords_and_refuses_long_copies_and_unknown_terms(monkeypatch):
     from app.patents import store as pstore
     from app.patents import survey
 
     case_id = _case("確認の試験")
-    _fake_model(monkeypatch, ANSWER, {})
+    long_copy = "薄膜状のゲート絶縁膜と前記ゲート絶縁膜上のチャネル層とを備える半導体装置"    # 請求項の写し（25 字超）
+    answer = json.loads(json.dumps(ANSWER))
+    answer["concepts"][0]["ja"].append(long_copy)
+    _fake_model(monkeypatch, answer, {})
     survey_id = survey.start(case_id, "")
     asyncio.run(survey.run(Job(), case_id, survey_id))
 
     pending = survey.start(case_id, "まだ終わっていない")
-    with pytest.raises(pstore.PatentError, match="まだ"):          # 出来上がる前の案は確認できない
-        survey.approve(case_id, pending, [], approved_public=True)
+    with pytest.raises(pstore.PatentError, match="まだ"):          # 出来上がる前の案は選べない
+        survey.approve(case_id, pending, [])
 
-    safe = ["gate insulating film", "H01L 21/02"]
-    with pytest.raises(pstore.PatentError, match="確認"):            # approved_public が無い
-        survey.approve(case_id, survey_id, safe, approved_public=False)
-    with pytest.raises(pstore.PatentError, match="未公開"):           # risk の付いた語
-        survey.approve(case_id, survey_id, ["薄膜状のゲート絶縁膜", *safe], approved_public=True)
+    detail = survey.get(case_id, survey_id)
+    assert detail["risks"]["薄膜状のゲート絶縁膜"] == "unpublished"      # 参考表示の印は残る
+    assert "薄膜状のゲート絶縁膜" in detail["default_selected"]           # でも最初から選ばれ、送れる
+    assert long_copy not in detail["default_selected"]                    # 長い写しだけは最初から外れる
+    assert "gate insulating film" in detail["default_selected"]
     with pytest.raises(pstore.PatentError, match="案"):               # 案に無い語
-        survey.approve(case_id, survey_id, ["手で作った語"], approved_public=True)
-    out = survey.approve(case_id, survey_id, safe + ["H01L 21/02"], approved_public=True)
-    assert out["approved"] == ["gate insulating film", "H01L 21/02"]  # 選んだ語だけ（重複を除く）
+        survey.approve(case_id, survey_id, ["手で作った語"])
+    with pytest.raises(pstore.PatentError, match="未公開"):           # 25 字以上の写し
+        survey.approve(case_id, survey_id, [long_copy])
+    out = survey.approve(case_id, survey_id, ["薄膜状のゲート絶縁膜", "H01L 21/02", "H01L 21/02"])
+    assert out["approved"] == ["薄膜状のゲート絶縁膜", "H01L 21/02"]   # approved_public の指定なしで、重複を除いて保存
     assert out["approved_public"] and out["approved_at"]
-    again = survey.approve(case_id, survey_id, ["絶縁膜"], approved_public=True)
-    assert again["approved"] == ["絶縁膜"]                            # 選び直したら置き換わる
 
 
 def test_survey_api_start_list_and_detail(admin_client, monkeypatch):
@@ -216,14 +219,11 @@ def test_survey_api_approve_flow(admin_client, monkeypatch):
     asyncio.run(survey.run(Job(), case_id, survey_id))
 
     url = f"{API}/cases/{case_id}/surveys/{survey_id}/approve"
+    r = admin_client.post(url, json={"terms": ["薄膜状のゲート絶縁膜"]}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["approved"] == ["薄膜状のゲート絶縁膜"]   # 確認の指定なしで通る
     r = admin_client.post(url, json={"terms": ["gate insulating film"], "approved_public": False},
                           headers=CSRF_HEADERS)
-    assert r.status_code == 422 and "確認" in r.json()["detail"]
-    r = admin_client.post(url, json={"terms": ["薄膜状のゲート絶縁膜"], "approved_public": True}, headers=CSRF_HEADERS)
-    assert r.status_code == 422 and "未公開" in r.json()["detail"]
-    r = admin_client.post(url, json={"terms": ["gate insulating film"], "approved_public": True},
-                          headers=CSRF_HEADERS)
-    assert r.status_code == 200 and r.json()["approved"] == ["gate insulating film"]
+    assert r.status_code == 200 and r.json()["approved"] == ["gate insulating film"]   # 受けても無視する
 
 
 def test_viewer_cannot_read_or_approve_surveys(client):

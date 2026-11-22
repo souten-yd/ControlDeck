@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 216 ファイル、1994 テスト（目的の未記入 93 ファイル）
+- backend: 217 ファイル、2001 テスト（目的の未記入 93 ファイル）
 - E2E: 109 spec、220 テスト
 
 ## backend（backend/tests）
@@ -2063,6 +2063,18 @@
 - `test_similarity_map_places_documents_with_vectors`
 - `test_api_analytics_manual_biblio_and_similar`
 
+### backend/tests/test_patent_egress.py
+
+目的: 外部の検索サービスへ送る前の自動の検査（手動の確認 approved_public の置き換え）。 目的: - 検索語・検索式が案件の未公開の文章（請求項・claims_draft・hearing）と **連続で 25 文字以上** 一致するときだけ止め（422・理由・ 重なった部分は 20 字まで・言い換えの案）、キーワード・短い句は止めないこと。境目（24 字は通る・25 字は止まる）。 - 入口を全部覆うこと: 取得の手動実行（案件が無ければ全案件と照らす）・ウォッチの保存と実行のたび（止めたら last_status に理由）。 - approved_public が無くても動くこと。監査には長さと理由だけを残し、検索語の本文を残さないこと。 根拠: 2026-11-22 利用者「ユーザー側に余計な操作はさせずに自動で適用」「特許の検索自体はインターネット」 「制限で検索が不十分になることは避けたい」。検索語は請求項から取る言葉なので、8 文字の重なりで止めると 「冷却ファンの回転数」のような普通のキーワードまで止まる。backend/app/patents/egress.py。
+
+- `test_keywords_pass_and_the_boundary_is_25_chars`
+- `test_blocked_query_gets_a_keyword_suggestion_that_passes`
+- `test_hearing_and_claims_draft_are_checked_too`
+- `test_no_case_checks_all_cases`
+- `test_fetch_api_blocks_long_copy_audits_without_text_and_sends_keywords`
+- `test_watch_save_and_every_run_are_checked`
+- `test_watch_api_blocks_with_suggestion_but_can_still_be_stopped`
+
 ### backend/tests/test_patent_judge.py
 
 目的: AI クレームチャートの判定（R3-3）。 目的: - 構成要件ごとの ○/△/×/? を、ローカル専用のモデルでだけ作ること（ローカルが無ければ 503 で止まり、記録も作らない）。 - ○/△ の引用が原文に無ければ「?」に落とすこと（モデルの作った引用を根拠に残さない）。OCR の改行・全角半角の揺れは許すこと。 - モデルが判定しなかった構成要件も「?」で必ず行に出すこと。 - 人が行の判定を直せ、直したら未確認へ戻ること。確認済み・却下の状態を持つこと。 - 請求項の版・文献の原文が変わったら stale を出すこと。案件を消したら判定も消えること。 - AI に渡せない文献（規格の利用条件など）は判定を始めないこと。 根拠: docs/PLAN-knowledge-platform.md §10 R3-3「引用が原文に無ければ ? に落とす」。PatentBuddy Draft #10。
@@ -2075,13 +2087,13 @@
 
 ### backend/tests/test_patent_survey.py
 
-目的: 特許の調査（P1）の最初の部分: 調査テーマ → 検索語の案 → 外へ送る語の確認。 目的: - 案件と調査テーマ（空なら請求項 1）から、ローカル専用のモデルで検索語の案（構成要素ごとの ja/en・IPC・ 各取得先の検索式）を JSON で作り、judge と同じ専用 sqlite に保存すること。 - モデルの答えをそのまま信用しないこと: 読めない JSON・形違いは失敗として記録する。語は 1〜80 文字で 前後の空白を取り、重複を除き、1 構成要素につき各 20 個まで。IPC は ^[A-H]\d{2}[A-Z] ?\d{1,4}/\d{1,6}$ に 合うものだけ（合わないものは捨てて、捨てた数を記録）。 - 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録の文章と 8 文字以上重なっていたら （一部分が写されている場合も）risk を付け、外へ送る語の確認（approve）で選べないこと。 確認（approved_public）の無い保存は断ること。 - 権限の無い利用者は API を使えないこと。案件を消したら案も消えること（案件番号は使い回される）。 根拠: docs/PLAN-web-collector.md P1「テーマ/文言 → 検索語の案（ローカル LLM）→ 外へ送る語の確認」、 同 §6「外へ出す検索語・URL は、未公開の発明の内容を含まないことを利用者が確かめたものだけ」。 2026-11-21 の作業指示（trial/instruction.md）。手本は judge.py（start → Job でローカル LLM → 出力を検めて 保存 → 人の確認）と watch.py（approved_public の決まり）で、同じ観点の既存テストは docs/test-catalog.md で 確認した（test_patent_judge.py は判定の引用検査、test_patent_watch.py は取得語の確認。本件は案の作成と 語ごとの risk 検出で、重複しない新しい観点）。
+目的: 特許の調査（P1）の最初の部分: 調査テーマ → 検索語の案 → 外へ送る語の確認。 目的: - 案件と調査テーマ（空なら請求項 1）から、ローカル専用のモデルで検索語の案（構成要素ごとの ja/en・IPC・ 各取得先の検索式）を JSON で作り、judge と同じ専用 sqlite に保存すること。 - モデルの答えをそのまま信用しないこと: 読めない JSON・形違いは失敗として記録する。語は 1〜80 文字で 前後の空白を取り、重複を除き、1 構成要素につき各 20 個まで。IPC は ^[A-H]\d{2}[A-Z] ?\d{1,4}/\d{1,6}$ に 合うものだけ（合わないものは捨てて、捨てた数を記録）。 - 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録の文章と 8 文字以上重なっていたら （一部分が写されている場合も）risk を付けること。risk は参考表示で、選択・送信は止めない（2026-11-22 に変更）。 止めるのは 25 文字以上の連続した写し（egress）だけ。確認（approved_public）は要らない。安全な語は最初から選ばれる。 - 権限の無い利用者は API を使えないこと。案件を消したら案も消えること（案件番号は使い回される）。 根拠: docs/PLAN-web-collector.md P1「テーマ/文言 → 検索語の案（ローカル LLM）→ 外へ送る語の確認」、 同 §6「外へ出す検索語・URL は、未公開の発明の内容を含まないことを利用者が確かめたものだけ」。 2026-11-21 の作業指示（trial/instruction.md）。手本は judge.py（start → Job でローカル LLM → 出力を検めて 保存 → 人の確認）と watch.py（approved_public の決まり）で、同じ観点の既存テストは docs/test-catalog.md で 確認した（test_patent_judge.py は判定の引用検査、test_patent_watch.py は取得語の確認。本件は案の作成と 語ごとの risk 検出で、重複しない新しい観点）。
 
 - `test_valid_json_is_cleaned_saved_and_unpublished_terms_flagged`
 - `test_unparsable_or_wrong_shape_answers_fail_the_survey`
 - `test_theme_validation_and_claim1_fallback`
 - `test_partially_copied_terms_are_also_flagged` — 語が請求項の一部を 8 文字以上写していても（全体としては含まれなくても）risk が付くこと。
-- `test_approve_needs_public_flag_refuses_risky_and_unknown_terms`
+- `test_approve_needs_no_flag_allows_risky_keywords_and_refuses_long_copies_and_unknown_terms`
 - `test_survey_api_start_list_and_detail`
 - `test_survey_api_approve_flow`
 - `test_viewer_cannot_read_or_approve_surveys`
@@ -2089,14 +2101,14 @@
 
 ### backend/tests/test_patent_watch.py
 
-目的: 公開データの取得・特許ウォッチ・期限の通知（統合後の再設計 R3-2）。 目的: - 外へ送る検索語は利用者が「公開してよい」と確認したものだけ。確認の無い取得・ウォッチは動かさず、検索語を変えたら確認をやり直す。 - 取得は https の公開アドレスだけ。内部アドレス・リダイレクトを拒む（SSRF）。鍵は暗号化して保存し、応答に出さない。 - EPO OPS の書誌を統合ストアの書誌の形（meta["biblio"]）にそろえる。 - ウォッチは新しく入った文献だけをヒットにし、2 回目は同じ文献を出さない。ヒットから X/Y/A で先行文献に登録できる。 - 期限の通知はしきい値ごとに 1 回だけで、本文に案件名を書かない（通知は外部のサーバーを通る）。 根拠: ResearchDataHub v0.2 にあった機能（watch.py・notify.py・connectors.py）で、v0.102 の統合で抜けていた。 2026-11-21 利用者「各リポジトリの計画を ControlDeck 側に反映して進める」。docs/PLAN-knowledge-platform.md §10。
+目的: 公開データの取得・特許ウォッチ・期限の通知（統合後の再設計 R3-2）。 目的: - 外へ送る検索語の検査は自動（2026-11-22 に手動の確認から置き換え。詳細は test_patent_egress.py）。確認（approved_public）が無くてもウォッチは動く。 - 取得は https の公開アドレスだけ。内部アドレス・リダイレクトを拒む（SSRF）。鍵は暗号化して保存し、応答に出さない。 - EPO OPS の書誌を統合ストアの書誌の形（meta["biblio"]）にそろえる。 - ウォッチは新しく入った文献だけをヒットにし、2 回目は同じ文献を出さない。ヒットから X/Y/A で先行文献に登録できる。 - 期限の通知はしきい値ごとに 1 回だけで、本文に案件名を書かない（通知は外部のサーバーを通る）。 根拠: ResearchDataHub v0.2 にあった機能（watch.py・notify.py・connectors.py）で、v0.102 の統合で抜けていた。 2026-11-21 利用者「各リポジトリの計画を ControlDeck 側に反映して進める」。docs/PLAN-knowledge-platform.md §10。
 
 - `test_epo_records_use_the_shared_biblio_shape`
 - `test_internal_addresses_plain_http_and_redirects_are_refused`
 - `test_keys_are_encrypted_and_never_returned`
-- `test_watch_needs_public_approval_and_only_new_documents_become_hits`
+- `test_watch_runs_without_manual_approval_and_only_new_documents_become_hits`
 - `test_deadline_notices_once_per_threshold_without_case_names`
-- `test_api_refuses_unapproved_queries`
+- `test_api_accepts_queries_without_manual_approval`
 - `test_deleting_a_case_removes_its_watches_hits_and_notices` — 案件の番号は使い回される。消した案件のウォッチ・候補・通知の記録が次の案件に出てはいけない（2026-11-21 E2E で発見）。
 - `test_jpo_needs_registration_and_ten_digit_application_numbers` — 特許庁 API は利用登録の後に通知されるトークン取得の URL・ID・パスワードで使う。番号で引くだけ（言葉では探せない）。
 
@@ -3557,11 +3569,11 @@
 
 ### frontend/e2e/patents.spec.ts
 
-目的: Patent（特許調査・検討）画面。案件の作成 → 案件のページ（/patents/:id）→ 概要 → ヒアリング → 期限 → 請求項 → AI 支援 → 分析、 一覧の「分析」（グラフ）と「公報」を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」、同日「新しい特許の開発フローがフローティング ウィンドウになっている。コントロールデックと統合してほしい」（案件はシートではなくページで開く・戻るで一覧へ）と 「特許の分析をグラフで（推移・書誌・請求項・類似・バブル）」。 検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、 グラフの見た目は分析の API の応答を差し替えて撮る。 ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるので、確認のチェックを入れるまで保存・取得できないこと、 鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。 AI クレームチャートの判定（R3-3）: 判定の結果（○ △ × ?、引用を確かめられず ? にした行、古い判定の注意）の見え方を、 判定の一覧の応答を差し替えて確かめる。検証用インスタンスにはローカルのモデルが無いので「判定」は押せないこと。 */
+目的: Patent（特許調査・検討）画面。案件の作成 → 案件のページ（/patents/:id）→ 概要 → ヒアリング → 期限 → 請求項 → AI 支援 → 分析、 一覧の「分析」（グラフ）と「公報」を、PC 幅と 320px で通す。 根拠: 2026-11-21 利用者「PatentBuddy のアドオンは不要。Patent 機能をつけて」、同日「新しい特許の開発フローがフローティング ウィンドウになっている。コントロールデックと統合してほしい」（案件はシートではなくページで開く・戻るで一覧へ）と 「特許の分析をグラフで（推移・書誌・請求項・類似・バブル）」。 検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、 グラフの見た目は分析の API の応答を差し替えて撮る。 ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるが、確認のチェックは無く（2026-11-22 に自動の検査へ置き換え）、案件の未公開の文章を 25 文字以上そのまま写した検索語だけをサーバーが止めて言い換えの案を出すこと、 鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。 AI クレームチャートの判定（R3-3）: 判定の結果（○ △ × ?、引用を確かめられず ? にした行、古い判定の注意）の見え方を、 判定の一覧の応答を差し替えて確かめる。検証用インスタンスにはローカルのモデルが無いので「判定」は押せないこと。 */
 
 - Patent: 案件のページで期限と請求項を扱う（${width}px）
 - Patent: 分析のグラフ（応答を差し替え・${width}px）
-- Patent: ウォッチは確認のチェックが要る（${width}px）
+- Patent: ウォッチは確認のチェックが無く、写した検索語だけ止まる（${width}px）
 - Patent: AI クレームチャートの判定の表示（応答を差し替え・${width}px）
 - Patent: 公報が無いときの分析と公報の画面（1280px）
 

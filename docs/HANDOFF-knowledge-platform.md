@@ -116,7 +116,7 @@ data_dir 配下: `knowledge/{general,patents,standards}.sqlite3`、`knowledge/gr
 |---|---|---|
 | R3-0 | 両リポジトリの計画の棚卸しと整合性の決まり（計画 §10.1・10.2） | ☑ |
 | R3-1 | 文献ごとの AI 分析・分類辞書と審査基準・MCP の読み取りの道具 | ☑ `knowledge/analysis.py`、コレクションの種類（law・classification）、`agent_mcp` の `control_deck.knowledge_search`（cloud 扱い） |
-| R3-2 | 収集元・検索語の承認・特許ウォッチ・期限の通知 | ☑ backend（`knowledge/sources.py`・`patents/watch.py`）と画面（案件の「ウォッチ」、公報タブの「公開データを取得」「取得先の設定」）。EPO・USPTO の鍵は利用者が登録 |
+| R3-2 | 収集元・検索語の自動検査（2026-11-22 に手動の承認から置き換え。`patents/egress.py`: 未公開の文章と 25 字以上連続で一致する塊だけ止め、言い換えの案を返す）・特許ウォッチ・期限の通知 | ☑ backend（`knowledge/sources.py`・`patents/watch.py`）と画面（案件の「ウォッチ」、公報タブの「公開データを取得」「取得先の設定」）。EPO・USPTO の鍵は利用者が登録 |
 | R3-3 | AI クレームチャートの判定（`patents/judge.py`・`ClaimJudge.tsx`。○△×?、引用の実在確認で ? に落とす、人の行ごとの修正と確認済み、請求項・原文の版で stale） | ☑ 実装（本番での評価は `~/ControlDeck-評価/`） |
 | R3-4 | 知識エッセンス（抽出・レビュー）。PatentBuddy の K1a〜K2（#29〜#33）を作り直す。段 K1 | ☑ K1a・K1b・K2（横断検索・比較）完了 |
 | R3-5 | 知識マップ・横断比較・Idea Canvas。PatentBuddy の K3〜K5・3 段の画面（#34〜#38、#23 の関係の保存）を作り直す。段 K2〜K5 | ◐ 横断比較（K2）・知識マップ・技術仮説のリンク（K3）は済み。Idea Canvas・3 段の画面は未 |

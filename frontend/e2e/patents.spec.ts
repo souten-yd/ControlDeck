@@ -8,7 +8,7 @@ import { establishSession, hasSession } from "./support/session";
  *  「特許の分析をグラフで（推移・書誌・請求項・類似・バブル）」。
  *  検証用インスタンスにはローカルのモデルも公報も無いので、AI 支援は「外部へ送らない」案内、分析は空の案内が出ることを確かめ、
  *  グラフの見た目は分析の API の応答を差し替えて撮る。
- *  ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるので、確認のチェックを入れるまで保存・取得できないこと、
+ *  ウォッチ・公開データの取得（R3-2）: 検索語は外部へ送られるが、確認のチェックは無く（2026-11-22 に自動の検査へ置き換え）、案件の未公開の文章を 25 文字以上そのまま写した検索語だけをサーバーが止めて言い換えの案を出すこと、
  *  鍵の無い取得先（EPO）は選べないことを、本物の API の取得先一覧で確かめる。外部へは実際には送らない（「いま取得」は押さない）。
  *  AI クレームチャートの判定（R3-3）: 判定の結果（○ △ × ?、引用を確かめられず ? にした行、古い判定の注意）の見え方を、
  *  判定の一覧の応答を差し替えて確かめる。検証用インスタンスにはローカルのモデルが無いので「判定」は押せないこと。 */
@@ -75,6 +75,7 @@ for (const width of [1280, 320]) {
     await pane.getByLabel("課題", { exact: true }).fill("スイッチング損失が大きい");
     await pane.getByRole("button", { name: "保存", exact: true }).click();
     await expect(page.getByText("保存しました")).toBeVisible();
+    await expect(page.getByRole("button", { name: /保存しました/ })).toHaveCount(0, { timeout: 15_000 });   // 撮影にトーストを入れない
     await shootWhole(page, `test-results/patents-case-summary-${width}.png`);
 
     await open("ヒアリング");
@@ -100,6 +101,7 @@ for (const width of [1280, 320]) {
     await open("AI 支援");
     await expect(pane.getByText("ローカル専用のモデルが使えないため実行できません。案件の内容はクラウドへ送りません。")).toBeVisible();
     await page.waitForTimeout(400);   // タブの色の切り替え（transition）が済んでから撮る
+    await expect(page.getByRole("button", { name: /保存しました/ })).toHaveCount(0, { timeout: 15_000 });   // 撮影にトーストを入れない
     await shootWhole(page, `test-results/patents-case-${width}.png`);
     await noHorizontalOverflow(page);
 
@@ -154,7 +156,7 @@ for (const width of [1280, 320]) {
 }
 
 for (const width of [1280, 320]) {
-  test(`Patent: ウォッチは確認のチェックが要る（${width}px）`, async ({ page, context }) => {
+  test(`Patent: ウォッチは確認のチェックが無く、写した検索語だけ止まる（${width}px）`, async ({ page, context }) => {
     test.skip(!hasSession(), "ログイン情報がありません");
     await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
     await establishSession(page, context);
@@ -165,8 +167,14 @@ for (const width of [1280, 320]) {
     await page.getByRole("button", { name: "作成", exact: true }).click();
     await expect(page).toHaveURL(/\/patents\/\d+$/);
     const pane = page.locator('section[aria-labelledby="patent-section-title"]');
+    const copied = "冷却ファンの回転数を温度に応じて制御する制御部を備える";
+    await page.getByRole("button", { name: "請求項", exact: true }).click();
+    await pane.locator("textarea").first().fill(`【請求項１】\n${copied}電源装置。`);
+    await pane.getByRole("button", { name: "新しい版で保存" }).click();
+    await expect(page.getByText("版として保存しました")).toBeVisible();
     await page.getByRole("button", { name: "ウォッチ", exact: true }).click();
     await expect(pane.getByRole("heading", { level: 2, name: "ウォッチ" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /保存しました/ })).toHaveCount(0, { timeout: 15_000 });   // 撮影にトーストを入れない
 
     await pane.getByRole("button", { name: "ウォッチを追加" }).click();
     const sheet = page.getByRole("dialog");
@@ -175,9 +183,23 @@ for (const width of [1280, 320]) {
     await sheet.getByRole("combobox").first().selectOption("openalex");
     await sheet.getByRole("textbox", { name: "検索語" }).fill(`common mode noise inverter ${width}`);
     const add = sheet.getByRole("button", { name: "追加", exact: true });
-    await expect(add).toBeDisabled();
-    await sheet.getByLabel(/外部の検索サービスへ送られます/).check();
+    await expect(sheet.getByRole("checkbox")).toHaveCount(0);          // 確認のチェックボックスは無い
+    await expect(sheet.getByText("案件の未公開の文章と重なる語は、自動で止めます")).toBeVisible();
     await expect(add).toBeEnabled();
+    // 請求項を写した長い検索語は止まり、理由と言い換えの案が出る
+    await sheet.getByRole("textbox", { name: "検索語" }).fill(copied);
+    await add.click();
+    const alert = sheet.getByRole("alert");
+    await expect(alert).toContainText("未公開の文章をそのまま写した部分");
+    await expect(alert).toContainText("重なった部分");
+    await expect(alert).toContainText("言い換えの案");
+    await page.setViewportSize({ width, height: 1100 });             // シートの下の「この言い換えで送る」まで撮る
+    await page.screenshot({ path: `test-results/patents-watch-blocked-${width}.png` });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({ path: `test-results/patents-watch-blocked-dark-${width}.png` });
+    await page.emulateMedia({ colorScheme: "light" });
+    await sheet.getByRole("textbox", { name: "検索語" }).fill(`common mode noise inverter ${width}`);
+    await expect(alert).toBeVisible();
     // 保存の後の読み直しから、見つかった公報（候補）だけ差し替える。ウォッチの一覧は本物
     await page.route(/\/api\/v1\/patents\/cases\/\d+\/watches$/, async (route) => {
       const real = await (await route.fetch()).json();
@@ -192,6 +214,7 @@ for (const width of [1280, 320]) {
     await expect(pane.getByText("インバータのコモンモード雑音を抑える回路")).toBeVisible();
     await expect(pane.getByRole("button", { name: /先行文献に登録/ }).first()).toBeVisible();
     await expect(pane.getByRole("button", { name: "処理済み（2）" })).toBeVisible();
+    await expect(page.getByText("ウォッチを追加しました")).toBeHidden({ timeout: 15_000 });
     await shootWhole(page, `test-results/patents-watch-${width}.png`);
     await noHorizontalOverflow(page);
 
@@ -258,10 +281,26 @@ test("Patent: 公報が無いときの分析と公報の画面（1280px）", asy
   await expect(sheet.locator("option", { hasText: "EPO" })).toHaveJSProperty("disabled", true);
   await sheet.getByRole("textbox", { name: "検索語" }).fill("power semiconductor");
   const go = sheet.getByRole("button", { name: "取得する" });
-  await expect(go).toBeDisabled();
-  await sheet.getByLabel(/外部の検索サービスへ送られます/).check();
+  await expect(sheet.getByRole("checkbox")).toHaveCount(0);          // 確認のチェックボックスは無い
+  await expect(sheet.getByText("案件の未公開の文章と重なる語は、自動で止めます")).toBeVisible();
   await expect(go).toBeEnabled();
-  await page.keyboard.press("Escape");
+  // 止められたときの表示（応答を差し替え。言い換えの案は 1 タップで送る）
+  const sent: string[] = [];
+  await page.route(/\/api\/v1\/patents\/sources\/[a-z]+\/fetch$/, async (route) => {
+    const q = route.request().postDataJSON().query as string;
+    sent.push(q);
+    if (q.includes("長い")) {
+      await route.fulfill({ status: 422, json: { detail: { blocked: true, overlap: "冷却ファンの回転数を温度に応じて", suggestion: "冷却ファン 回転数 温度",
+        message: "検索語に、案件「試験」の未公開の文章をそのまま写した部分（25 文字以上の連続）があるため、外部へは送りませんでした。重なった部分: 「冷却ファンの回転数を温度に応じて」。キーワードに分けて入れ直してください" } } });
+    } else await route.fulfill({ status: 201, json: { job_id: "j" } });
+  });
+  await sheet.getByRole("textbox", { name: "検索語" }).fill("長い写し");
+  await go.click();
+  await expect(sheet.getByRole("alert")).toContainText("言い換えの案: 冷却ファン 回転数 温度");
+  await page.screenshot({ path: "test-results/patents-fetch-blocked-1280.png" });
+  await sheet.getByRole("button", { name: "この言い換えで送る" }).click();
+  await expect.poll(() => sent).toEqual(["長い写し", "冷却ファン 回転数 温度"]);
+  await expect(sheet).toBeHidden();                                  // 送れたのでシートは閉じる
 
   // 鍵の設定は Settings の「API キー」にまとめた。公報のタブからはそこへ移る
   await page.getByRole("link", { name: "取得先のキー（Settings）" }).click();
