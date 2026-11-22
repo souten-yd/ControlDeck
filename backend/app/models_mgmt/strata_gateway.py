@@ -611,7 +611,7 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 420) -> bool:
     if cfg.get("activated") and not (await asyncio.to_thread(get_instance, alias))["loaded"]:
         # Maya-S and Strata cannot both be resident; the requested model wins.
         try:
-            await large_model_lifecycle.release_for(large_model_lifecycle.STRATA)
+            await large_model_lifecycle.release_for(large_model_lifecycle.STRATA, keep=alias)
         except RuntimeError:
             return False
     ok, _error = await asyncio.to_thread(_start, alias, explicit=False)

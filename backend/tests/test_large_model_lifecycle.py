@@ -135,8 +135,14 @@ def test_release_for_strata_stops_running_maya_only(monkeypatch):
     monkeypatch.setattr(maya_s, "is_running", lambda: True)
     monkeypatch.setattr(strata, "installed", lambda: True)
     monkeypatch.setattr(strata_gateway, "list_instances", lambda: [{"alias": "qwen", "loaded": True}])
-    asyncio.run(large_model_lifecycle.release_for("strata"))
+    # 頼まれた Strata（keep）は残し、Maya-S を降ろす
+    asyncio.run(large_model_lifecycle.release_for("strata", keep="qwen"))
     assert stopped == [("maya", "maya-s")]
+    # 別の Strata を頼まれたら、動いている Strata も降ろす（2026-11-22: Strata 同士の載せ替えで誰も降ろさず、
+    # 起動が失敗して 300 秒後に 503 になっていた。役割を全部違うモデルにした実機で qwen-flash-next → -uc）
+    stopped.clear()
+    asyncio.run(large_model_lifecycle.release_for("strata", keep="qwen-uc"))
+    assert ("strata", "qwen") in stopped
 
 
 @pytest.mark.parametrize("value,ok", [("8k", True), ("256k", True), ("1024k", True),
@@ -160,7 +166,7 @@ def test_release_for_keeps_a_resident_model(monkeypatch):
 def test_gateway_switch_frees_the_other_large_model_only_when_target_is_stopped(monkeypatch):
     from app.models_mgmt import local_llm
     calls = []
-    async def release(runtime):
+    async def release(runtime, **kw):
         calls.append(runtime)
     async def idle(seconds=60.0):
         return True
@@ -178,7 +184,7 @@ def test_gateway_switch_frees_the_other_large_model_only_when_target_is_stopped(
 def test_gateway_switch_never_cuts_a_running_request(monkeypatch):
     from app.models_mgmt import local_llm
     calls = []
-    async def release(runtime):
+    async def release(runtime, **kw):
         calls.append(runtime)
     async def busy(seconds=60.0):
         return False
@@ -237,7 +243,7 @@ def test_reconcile_points_selection_at_the_only_loaded_runtime(policy_file, monk
 def test_llama_chat_model_start_frees_a_resident_large_model(policy_file, monkeypatch):
     from app.models_mgmt import llama, local_llm
     calls = []
-    async def release(runtime):
+    async def release(runtime, **kw):
         calls.append(runtime)
     async def idle(seconds=60.0):
         return True

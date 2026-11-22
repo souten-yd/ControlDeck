@@ -274,7 +274,7 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
         # llama.cpp chat models) first, so the load limit counts what will actually remain.
         from app.models_mgmt import large_model_lifecycle
         try:
-            await large_model_lifecycle.release_for(kind)
+            await large_model_lifecycle.release_for(kind, keep=str(model_id))
         except RuntimeError as exc:
             raise ProviderError(str(exc)) from exc
     reservation = (kind, model_id)

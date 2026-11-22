@@ -528,24 +528,24 @@ def _workflow(runtime: str, model: str, *, local_only: bool = False) -> dict:
     advisor: dict | None = None
     if settings.get("superpowers") and specs.get("superpowers"):
         plugins.append(specs["superpowers"])
-    # 役割ごとのモデル（roles.py）。秘密なら全部ローカル。同じ段のローカルは 1 つに揃える。
+    # 役割ごとのモデル（roles.py）。秘密なら全部ローカル。どの組み合わせでもよい（制限しない）。
     resolved = role_resolution(settings, model, local_only=local_only)
     for note in resolved.notes:
         logger.info("OpenCode の役割: %s", note)
     role_models = resolved.models
+    # 全ての役割にモデルを明示する（空だと子エージェントは呼んだ側のモデルを引き継ぐ。計画から調査を呼ぶと
+    # 調査が計画のモデルで動いてしまう）。主のエージェントは chat_server.switch_agent がセッションのモデルも切り替える
     for name in ("plan", "build"):
-        if role_models[name] != model:
-            agents[name] = {"model": f"controldeck/{role_models[name]}"}
+        agents[name] = {"model": f"controldeck/{role_models[name]}"}
     for role in roles_mod.SUBAGENT_NAMES:
-        agents[roles_mod.SUBAGENT_NAMES[role]] = _role_agent(role, role_models[role] if role_models[role] != model else None)
+        agents[roles_mod.SUBAGENT_NAMES[role]] = _role_agent(role, role_models[role])
     models.extend(m for m in role_models.values() if m != model)
     review = role_models["final_check"]
-    reviewer_model = review if review != model else None
+    reviewer_model = review   # 同じモデルでも明示する（空だと呼んだ側のモデルを引き継ぐ）
     if settings.get("adversarial_review") and specs.get("adversarial_review"):
         plugins.append(specs["adversarial_review"])
-        if reviewer_model:
-            for name in ("adversarial-reviewer", "constructive-reviewer"):
-                agents[name] = {"model": f"controldeck/{review}"}
+        for name in ("adversarial-reviewer", "constructive-reviewer"):
+            agents[name] = {"model": f"controldeck/{review}"}
     mode = str(settings.get("auto_advisor") or "off")
     if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
