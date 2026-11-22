@@ -12,6 +12,20 @@
 - 最終回帰: `assistant-dev-targets`・`assistant-claude-layout` 25 通過（失敗は上の既知 1 件のみ）。
 - 確かめられなかった点: 実機の指での操作感（E2E の実ブラウザ 320px で代用）。既知の既存失敗（変更前の HEAD でも同じことを stash で確認）: `assistant-claude-layout` の「thinking split」1 件・`assistant-plan` 4 件 — 検証用インスタンスに CodeDEV の app が無い（2026-11-22 の記録どおり）。box の中では `./deck.sh e2e` が venv 作成で止まるため、元の venv（app-strata）と `PLAYWRIGHT_BROWSERS_PATH` で同じ流れを手動で回した。dev-check の「画面の見た目」は箱からゲートウェイへ届かないため未実施（ui-verifier の実ブラウザ検証と E2E 撮影で代用）。
 
+## 2026-11-22 作業場の中から画面の見た目の検査が流れない（Q2）
+
+- 利用者として作業場から＋メニューの作り直しを頼んだ通しで、関門が「画面の見た目: ゲートウェイへ届きません（Connection refused）」で不合格になり、画面を変えた作業を取り込めなかった。箱から届くのは中継だけ。
+- 直し: `visual_review._gateway` は、明示の `CONTROL_DECK_GATEWAY_URL` → 箱の中（`CONTROL_DECK_SANDBOX`）なら中継（`OPENAI_BASE_URL`）→ 本番の既定、の順。ローカル LLM を借りない作業場（中継が無い）は未実施（不合格にしない）。
+- 気づいた設計の課題: 関門は作業場の中のコード（作業場を作ったときの main の写し）で流れるので、関門の直しは既存の作業場に効かない。作業場で main を取り込む段（U8・resil）で扱う。
+- テスト `test_visual_review_in_box.py`。
+
+## 2026-11-22 既定のランタイムが要求の載せ替えで書き換わる不具合（P1）
+
+- 利用者（画面の写真つき）「モデルを一旦 FlashNext に切り替えるがまた Maya-XS の DS に戻ってる。競合しないようにうまくハンドリングできないか」。
+- 原因: 各ランタイムの起動（4 か所）と 60 秒ごとの `reconcile_selection` が、要求による載せ替えのたびに利用者の既定の選択（selected_runtime）を動いているランタイムへ書き換えていた。既定（auto）の要求の行き先が最後に載ったモデルで揺れ、Maya-S と Strata の間を行き来した（本番のログで 90 分に 5 回）。
+- 直し: 共通の起動の入口 `local_llm.ensure_ready` を「要求による起動」の区間（`large_model_lifecycle.on_demand_start`、contextvar）で包み、その中では `follow_selection` が選択を変えない。60 秒ごとの合わせ込みは回さない。選択が変わるのは、利用者が Models の画面でロードしたときだけ。
+- テスト `test_selection_only_explicit.py`。
+
 ## 2026-11-22 AI アシスタントの調査: サイト指定・依頼の理解・今日の日付の確認（L2）
 
 - 利用者「Reddit の中で〜、公式ページの機能の使い方、GIGAZINE の記事をもとに調べて」「『調べて』でいきなり検索して関係ないものを選ぶ」「『今日の横浜の天気』で過去の天気を調べる」「検索が不十分にならないよう幅と件数を担保」。

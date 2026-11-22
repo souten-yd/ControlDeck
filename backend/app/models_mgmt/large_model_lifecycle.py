@@ -90,6 +90,25 @@ async def _wait_idle_requests(seconds: float = 60.0) -> bool:
     return True
 
 
+import contextlib as _contextlib
+import contextvars as _contextvars
+
+# 要求による起動（ゲートウェイ・載せ替えの調停役・役割ごとのモデル）の間は、利用者の既定の選択を変えない。
+# 2026-11-22: 役割で Maya-S を呼ぶたびに選択が Maya-S へ移り、既定（auto）の要求が Maya-S と Strata の間を
+# 行き来した（90 分で 5 回書き換わった）。選択を変えるのは、利用者が画面でロードを押したときだけ。
+_ON_DEMAND: _contextvars.ContextVar[bool] = _contextvars.ContextVar("on_demand_start", default=False)
+
+
+@_contextlib.contextmanager
+def on_demand_start():
+    """要求による起動の区間。この中の起動は follow_selection で選択を変えない。"""
+    token = _ON_DEMAND.set(True)
+    try:
+        yield
+    finally:
+        _ON_DEMAND.reset(token)
+
+
 def follow_selection(runtime: str) -> None:
     """In exclusive mode the runtime that actually started becomes the selected one.
 
@@ -100,6 +119,8 @@ def follow_selection(runtime: str) -> None:
     """
     from app.models_mgmt.runtime_policy import get_policy, save_policy
 
+    if _ON_DEMAND.get():
+        return
     try:
         policy = get_policy()
         if policy.coexistence != "exclusive" or policy.selected_runtime == runtime:
@@ -332,11 +353,11 @@ def reconcile_selection() -> str | None:
 
 
 async def idle_unload_loop() -> None:
-    await asyncio.to_thread(reconcile_selection)
+    # 動いているランタイムに選択を合わせる処理（reconcile_selection）は回さない。要求による載せ替えのたびに
+    # 利用者の既定の選択が書き換わっていた（2026-11-22）。選択は利用者が画面で変える。
     while True:
         try:
             await asyncio.sleep(60)
-            await asyncio.to_thread(reconcile_selection)
             await idle_unload_once()
         except asyncio.CancelledError:
             raise

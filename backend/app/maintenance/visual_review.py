@@ -28,6 +28,7 @@ SEVERITIES = ("high", "medium", "low")
 NO_MODEL_MESSAGE = "画像を読めるローカルのモデルがありません"
 GATEWAY_ENV = "CONTROL_DECK_GATEWAY_URL"
 DEFAULT_GATEWAY = "http://127.0.0.1:8765/api/v1/llm/v1"
+NO_RELAY_MESSAGE = "この作業場はローカル LLM を借りないので、画像を読めるモデルへ届きません（借りる作業場で流れます）"
 TIMEOUT_SECONDS = 600.0
 
 CRITERIA = """見る観点（ControlDeck の UI/UX ガイドラインから）:
@@ -162,7 +163,12 @@ def _headers() -> dict[str, str]:
 
 
 def _gateway() -> str:
-    return os.environ.get(GATEWAY_ENV, DEFAULT_GATEWAY).rstrip("/")
+    # 箱の中（開発の作業場）は本番のゲートウェイへ届かず、届くのは中継だけ（箱の環境の OPENAI_BASE_URL。
+    # ローカル LLM を借りる作業場で入る）。2026-11-22: 作業場の関門が「ゲートウェイへ届きません」で不合格になり、
+    # 画面を変えた作業を取り込めなかった。明示の CONTROL_DECK_GATEWAY_URL → 中継 → 本番の既定、の順で使う。
+    explicit = os.environ.get(GATEWAY_ENV, "").strip()
+    relay = os.environ.get("OPENAI_BASE_URL", "").strip() if os.environ.get("CONTROL_DECK_SANDBOX") else ""
+    return (explicit or relay or DEFAULT_GATEWAY).rstrip("/")
 
 
 def list_entries(client) -> list[dict]:
@@ -204,6 +210,10 @@ def review(paths: list[Path], spec: str = "", *, client=None, max_images: int = 
     """画像を見させる。モデルが無ければ未実施。答えが読めなければ ReviewError。"""
     import httpx
 
+    if (client is None and os.environ.get("CONTROL_DECK_SANDBOX") and not os.environ.get(GATEWAY_ENV)
+            and not os.environ.get("OPENAI_BASE_URL")):
+        # ローカル LLM を借りない作業場: 画像を読めるモデルへ届く口が無い（不合格にはしない）
+        return ReviewResult("skipped", NO_RELAY_MESSAGE)
     owned = client is None
     client = client or httpx.Client(timeout=TIMEOUT_SECONDS)
     try:

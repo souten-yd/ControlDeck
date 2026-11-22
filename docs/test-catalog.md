@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 220 ファイル、2055 テスト（目的の未記入 93 ファイル）
+- backend: 222 ファイル、2061 テスト（目的の未記入 93 ファイル）
 - E2E: 110 spec、221 テスト
 
 ## backend（backend/tests）
@@ -2636,6 +2636,14 @@
 - `test_ensure_running_noop_for_remote_and_unregistered` — リモート URL は何もしない。未登録環境でも例外を出さない（検索側のエラーに任せる）。
 - `test_idle_check_stops_regardless_of_starter` — 起動元を問わずアイドル停止する。利用時刻不明時は猶予を仕切り直す。
 
+### backend/tests/test_selection_only_explicit.py
+
+目的: 利用者の既定の選択（selected_runtime）は、要求による載せ替えでは変わらない。 目的: ゲートウェイ・載せ替えの調停役・役割ごとのモデルの要求で別のランタイムが起きても、選択はそのまま。 利用者が画面でロード（各ランタイムの start）したときだけ、選択がそのランタイムへ移る。60 秒ごとの合わせ込みも回さない。 根拠: 2026-11-22 本番。役割で Maya-S を呼ぶたびに選択が Maya-S へ移り、既定（auto）の要求が Maya-S と Strata の間を 行き来した（90 分で 5 回書き換わった）。利用者「モデルを一旦 FlashNext に切り替えるがまた Maya-XS の DS に戻ってる」。
+
+- `test_on_demand_start_does_not_change_the_selection`
+- `test_explicit_start_still_follows`
+- `test_idle_loop_no_longer_reconciles_the_selection`
+
 ### backend/tests/test_session_lifetime.py
 
 目的: **未記入**
@@ -2932,6 +2940,14 @@
 - `test_check_visual_high_fails_medium_warns`
 - `test_check_visual_no_model_is_skipped_not_failed`
 - `test_check_visual_skip_option_and_error`
+
+### backend/tests/test_visual_review_in_box.py
+
+目的: 開発の作業場（箱）の中から、画面の見た目の検査が中継を通って流れること。 目的: 箱の中では本番のゲートウェイへ届かないので、箱の環境の OPENAI_BASE_URL（中継）を使う。ローカル LLM を借りない 作業場（中継が無い）では、不合格にせず未実施にする。明示の CONTROL_DECK_GATEWAY_URL があればそれを優先する。 根拠: 2026-11-22、利用者として作業場から＋メニューの作り直しを頼んだ通しで、関門が「画面の見た目: ゲートウェイへ 届きません（Connection refused）」で不合格になり、画面を変えた作業を取り込めなかった。
+
+- `test_box_uses_the_relay`
+- `test_explicit_gateway_wins_and_host_ignores_openai_base_url`
+- `test_box_without_the_llm_relay_is_skipped_not_failed`
 
 ### backend/tests/test_vram_margin.py
 

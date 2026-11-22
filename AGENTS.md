@@ -135,6 +135,19 @@ scripts/ 配下は deck.sh への互換ラッパーのみ。新しい運用操�
 - 子への指示には、目的・触ってよいファイル・守ること（この文書の安全の決まり）・完了の条件・「報告は日本語で」を書く。
 - 子の成果は Opus が差分を読み、テストを自分で走らせ、必要なら実画面・本番で確かめてからマージする。
 
+## 誰が作るか: コード生成の部分は Claude、Patent はローカル LLM（必須）
+
+利用者の決まり（2026-11-22）。「ControlDeck 本体のコードを作成する部分の改修はクロードでメインでやってほしい。下働きとしてローカル LLM・DeepSeek（OpenRouter）・OpenCode の LLM を使ってよいが、計画はクロード。Patent の開発はローカル LLM でぜひ。コード生成のループの部分が最も根幹に関わるので、品質を落としたくない」。
+
+| 対象 | 計画 | 実装の主 | 下働き（使ってよい） |
+|---|---|---|---|
+| **コード生成の部分**（AI 開発環境: `integrations/opencode/`・`maintenance/sandbox*.py`・`workspaces.py`・`dev_check.py`・`visual_review.py`・`models_mgmt/gateway.py`・`swap_scheduler.py`・`large_model_lifecycle.py`・`workflows/chat_persist.py`・`chat_tools.py`・`research_*`・AI アシスタントと作業場の画面） | Claude（Opus） | Claude（Opus か Sonnet） | ローカル LLM・OpenRouter の DeepSeek・OpenCode の LLM（調べもの・テストの下書き・機械的な直し） |
+| **Patent**（`app/patents/`・`/patents` の画面） | Claude（指示書） | 作業場の OpenCode とローカル LLM | — |
+| それ以外 | Claude | 費用に見合うもの（OpenCode・ローカル LLM を優先、Sonnet は必要な所） | — |
+
+- コード生成の部分を OpenCode に作らせた場合は、Claude が全ての差分を書き直す前提で読み、関門と実機で確かめてから取り込む。
+- 上の司令塔の決まり（Opus が計画・最終レビュー・品質の関門）は全ての対象に当てはまる。
+
 ## 結果は日本語で（必須）
 
 利用者の決まり（2026-11-21）。AI（子エージェント・OpenCode・Codex など別の AI を含む）が利用者に見せるものは日本語で書く。
