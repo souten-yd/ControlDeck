@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 228 ファイル、2144 テスト（目的の未記入 93 ファイル）
+- backend: 228 ファイル、2146 テスト（目的の未記入 93 ファイル）
 - E2E: 119 spec、244 テスト
 
 ## backend（backend/tests）
@@ -824,6 +824,8 @@
 - `test_hostile_box_git_config_never_runs_on_the_host` — 箱の中の AI が .git/config に仕込んだ実行（fsmonitor・credential.helper・sshCommand・フック）が、ホスト側の
 - `test_api_check_job_changes_and_adopt_with_audit_and_permissions`
 - `test_api_controldeck_adopt_needs_settings_manage`
+- `test_suggested_title_skips_autosaves_and_falls_back_to_the_conversation` — U18: PR の題に「作業途中の保存 #N」を使わない。名前の付いたコミットが無ければ、自動保存に記録された会話の題。
+- `test_suggested_title_without_conversation_uses_workspace_name`
 
 ### backend/tests/test_dev_workspace_merge.py
 
