@@ -1,3 +1,9 @@
+// 目的: LLM 共通設定の「Add-on への GPU の譲り方」パネル（方針の説明と連動、載せ直し制御、
+// 譲り合いの目安）がモバイル（320px・横溢れなし）と PC の両幅で出ることを確かめる。
+// 根拠: 退避(yield)機構は 2026-09-04 の 4deb560「画像生成をRAMへ載せてLLMと共存させ、退避(yield)機構を廃止する」で
+// 廃止され、この spec が確かめていた cold/warm 実測・今すぐ退避の UI は GPU Broker パネルごと画面から無くなった。
+// 2026-11-22 の監査で本 spec が main で落ちていることを確認（HANDOFF-opencode-dev-environment 不具合と課題 14）。
+// 保証していた「退避の根拠の説明」は対象の機能が製品から削除されたため立て直せず、後継パネルの説明に読み替えた。
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
@@ -16,9 +22,8 @@ const json = (route: Route, body: unknown) => route.fulfill({
   contentType: "application/json", body: JSON.stringify(body),
 });
 
-test("explains cold bootstrap, warm threshold, and suppression at mobile and desktop widths", async ({ page }) => {
+test("explains the add-on GPU policy and reload controls at mobile and desktop widths", async ({ page }) => {
   await login(page);
-  let basis: "cold" | "warm" = "cold";
   await page.route("**/api/v1/models/runtime-environment", (route) => json(route, {
     platform: "linux", gpu: "fixture", runtimes: [{
       id: "llama.cpp-rocm", runtime: "llama.cpp", backend: "rocm", label: "llama.cpp / ROCm",
@@ -27,45 +32,34 @@ test("explains cold bootstrap, warm threshold, and suppression at mobile and des
     policy: {
       selected_runtime: "llama.cpp", selected_backend: "rocm", coexistence: "exclusive",
       idle_unload_enabled: false, idle_unload_minutes: 30, max_loaded_models: 1,
-      supervision: "managed", gateway_only: true, warm_idle_sec: 600,
-      min_uptime_sec: 120, drain_timeout_sec: 120, yield_max_level: 4,
       assistant_name: "Assistant", chat: { timeout_seconds: 300 },
       deep_research: { evidence_context_chars: 90000, max_report_tokens: 32768, timeout_seconds: 1800 },
+      addon_gpu: { mode: "auto", restore: true, restore_delay_sec: 15, max_lend_sec: 1800 },
       amd_gpu: { enabled: false, profile: "quiet", power_limit_watts: 210,
         memory_clock_mode: "auto", memory_clock_level: 0, core_clock_mode: "auto", core_clock_level: 0 },
     },
   }));
-  await page.route("**/api/v1/resources", (route) => json(route, {
-    telemetry: {
-      recent_events: [{ at: 1, event: "yield.suppressed", reason: "runtime_unknown" }],
-      load_profiles: [{
-        residency_key: "llama:model", measured_at: 2,
-        cold_load_cost_sec: { p50: 82, p90: 83, count: 5 },
-        warm_reload_cost_sec: { p50: 7.5, p90: 8, count: basis === "warm" ? 4 : 2 },
-        yield_basis: basis,
-        yield_threshold_sec: basis === "warm" ? 16 : 166,
-      }],
-    },
-  }));
 
-  await page.setViewportSize({ width: 320, height: 700 });
-  await page.goto("/models");
-  await page.getByRole("button", { name: "LLM 共通設定" }).click();
-  let settings = page.getByRole("dialog", { name: "LLM 共通設定" });
-  await expect(settings.getByText("cold 実測（暫定）")).toBeVisible();
-  await expect(settings.getByText(/初回読み込みの実測値を暫定で使っています/)).toBeVisible();
-  await expect(settings.getByRole("button", { name: "今すぐ退避" })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
-  await settings.getByRole("button", { name: "閉じる" }).click();
+  for (const viewport of [{ width: 320, height: 700 }, { width: 1280, height: 800 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/models");
+    await page.getByRole("button", { name: "LLM 共通設定" }).click();
+    const settings = page.getByRole("dialog", { name: "LLM 共通設定" });
+    await expect(settings.getByRole("heading", { name: "Add-on への GPU の譲り方" })).toBeVisible();
+    await expect(settings.getByRole("combobox", { name: "方針" })).toHaveValue("auto");
+    await expect(settings.getByText(/LLM が推論していなければ降ろして/)).toBeVisible();
+    await expect(settings.getByRole("checkbox", { name: /生成が終わったら LLM を載せ直す/ })).toBeChecked();
+    await expect(settings.getByRole("combobox", { name: "載せ直すまでの間" })).toBeVisible();
+    await expect(settings.getByRole("combobox", { name: "貸す時間の上限" })).toBeVisible();
+    await expect(settings.getByText(/画像 1 枚（FLUX\.2 Klein）/)).toBeVisible();
+    await expect(settings.getByText(/載せ直し: 約10秒/)).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 
-  basis = "warm";
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/models");
-  await page.getByRole("button", { name: "LLM 共通設定" }).click();
-  settings = page.getByRole("dialog", { name: "LLM 共通設定" });
-  await expect(settings.getByText("warm 実測", { exact: true })).toBeVisible();
-  await expect(settings.getByText(/8\.0 秒（warm p90、サンプル 4 件）/)).toBeVisible();
-  await expect(settings.getByText(/推定実行時間が 16\.0 秒を超えるジョブ/)).toBeVisible();
-  await expect(settings.getByText("処理時間が未申告", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+    // 方針を「LLM 優先」にすると、載せ直し制御は出ておらず（降ろさない）旨の説明に切り替わる
+    await settings.getByRole("combobox", { name: "方針" }).selectOption("llm_first");
+    await expect(settings.getByText(/LLM は降ろしません/)).toBeVisible();
+    await expect(settings.getByRole("checkbox", { name: /生成が終わったら LLM を載せ直す/ })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+    await settings.getByRole("button", { name: "閉じる" }).click();
+  }
 });

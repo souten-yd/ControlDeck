@@ -63,7 +63,8 @@ test("uses the common provider routes for pull and model configuration", async (
     await expect(page.getByText("このモデルの個別設定")).toBeVisible();
     await page.getByRole("button", { name: "保存のみ" }).click();
     await expect.poll(() => configRequests.filter((method) => method === "PUT").length).toBeGreaterThan(0);
-    await page.getByRole("button", { name: "閉じる" }).click();
+    // 「閉じる」は ☰ サイドバーの切替（「サイドバーを閉じる」）とも部分一致するため、開いている sheet で絞る
+    await page.getByRole("dialog", { name: "fake-model" }).getByRole("button", { name: "閉じる" }).click();
 
     await page.getByRole("button", { name: /モデル取得/ }).click();
     await page.getByPlaceholder(/llama3\.2/).fill("fake-model");
@@ -71,7 +72,7 @@ test("uses the common provider routes for pull and model configuration", async (
     await expect.poll(() => pullRequests).toBeGreaterThan(0);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
-    await page.getByRole("button", { name: "閉じる" }).click();
+    await page.getByRole("dialog", { name: "モデル取得" }).getByRole("button", { name: "閉じる" }).click();
   }
   expect(configRequests).toContain("GET");
   expect(configRequests).toContain("PUT");

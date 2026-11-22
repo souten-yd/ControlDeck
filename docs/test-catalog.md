@@ -3535,9 +3535,9 @@
 
 ### frontend/e2e/resource-load-profile-ui.spec.ts
 
-目的: **未記入**
+目的: 目的: LLM 共通設定の「Add-on への GPU の譲り方」パネル（方針の説明と連動、載せ直し制御、 譲り合いの目安）がモバイル（320px・横溢れなし）と PC の両幅で出ることを確かめる。 根拠: 退避(yield)機構は 2026-09-04 の 4deb560「画像生成をRAMへ載せてLLMと共存させ、退避(yield)機構を廃止する」で 廃止され、この spec が確かめていた cold/warm 実測・今すぐ退避の UI は GPU Broker パネルごと画面から無くなった。 2026-11-22 の監査で本 spec が main で落ちていることを確認（HANDOFF-opencode-dev-environment 不具合と課題 14）。 保証していた「退避の根拠の説明」は対象の機能が製品から削除されたため立て直せず、後継パネルの説明に読み替えた。
 
-- explains cold bootstrap, warm threshold, and suppression at mobile and desktop widths
+- explains the add-on GPU policy and reload controls at mobile and desktop widths
 
 ### frontend/e2e/runtime-preferred-model.spec.ts
 
