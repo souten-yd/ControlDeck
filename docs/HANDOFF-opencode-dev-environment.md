@@ -159,3 +159,5 @@
 - 2026-11-21（Sonnet、開発の作業場 1 段目）: `dev-check`・スキル `controldeck-development`・別モデルのレビュー役・目録の道具の修正・箱の git の作者を実装（設計は Opus）。自分の差分に `dev-check` を流して確かめた。
 - 2026-11-21（Opus）: ルール（Opus が司令塔）の確認。既存の箱・ミラー・ゲートウェイ・broker・Project Lab の調査（Haiku）と外部の調査（Sonnet）。pasta と pod を実機で確かめ、P1 の設計を決めた。P1 の実装を Sonnet に回した。全体計画 `ROADMAP.md` とこの引き継ぎを書いた。
 - 2026-11-21（Sonnet、P2a）: MCP に `control_deck.lab_*` 5 道具、中継に MCP の 2 パス（トークンは箱の外・許可の道具だけ）、箱の持ち主 `--owner` と環境変数ファイル、箱の bridge を実装。単体テストは通った。実機（箱の OpenCode から lab_run_start → preview の URL）は未確認。
+
+- 2026-11-22 作業場からの「取り込む → マージ」を実機で確認した（Opus）。この 1 行は、その確認で作業場から入れたもの。
