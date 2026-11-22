@@ -13,6 +13,7 @@ async function mock(page: Page) {
   const state = {
     dirty: true, check: null as null | { passed: boolean; stale: boolean },
     running: false, adopted: false, checks: 0, adopts: [] as Record<string, unknown>[],
+    visualOnly: false, checkBodies: [] as unknown[],
   };
   await page.route(/\/api\/v1\/meta$/, async (route) => {
     const response = await route.fetch();
@@ -31,12 +32,15 @@ async function mock(page: Page) {
       { path: "docs/very/long/path/that/should/truncate/instead/of/overflowing/the/card/note.md", added: 10, removed: 0, binary: false, untracked: false }],
     commits: [{ sha: "def7654321", author: "ControlDeck Sandbox", at: 1, subject: "x を直す" }], commit_count: 1,
     check: state.check ? { ...state.check, at: 1, head: "def7654321", items: state.check.passed
-      ? [{ status: "ok", name: "テスト", message: "3 件" }] : [{ status: "ng", name: "テスト", message: "1 件落ちた" }] } : null,
+      ? [{ status: "ok", name: "テスト", message: "3 件" }]
+      : state.visualOnly ? [{ status: "ok", name: "テスト", message: "3 件" }, { status: "ng", name: "画面の見た目", message: "重大 3 件" }]
+      : [{ status: "ng", name: "テスト", message: "1 件落ちた" }] } : null,
     adopted: state.adopted ? { kind: "pr", branch: `ws/${NAME}`, pr_url: PR, head: "def7654321" } : null,
   } }));
   await page.route(new RegExp(`/api/v1/opencode/workspaces/${NAME}/check$`), (route) => {
     if (route.request().method() === "POST") {
       state.checks += 1;
+      state.checkBodies.push(route.request().postDataJSON());
       state.running = true;
       setTimeout(() => { state.running = false; state.check = { passed: true, stale: false }; }, 1200);
       return route.fulfill({ status: 202, json: { job_id: "j9", already_running: false } });
@@ -121,4 +125,36 @@ test("workspace result card: failed check lists the failure and blocks adopt (da
   await expect(card.getByTestId("workspace-check-failures")).toContainText("テスト: 1 件落ちた");
   await expect(card.getByRole("button", { name: "取り込む" })).toBeDisabled();
   await page.screenshot({ path: "test-results/workspace-result-320-dark-failed.png" });
+});
+
+// 目的: 関門が「画面の見た目」だけで落ちたとき、管理者に「見た目は確かめた（外して流す）」が出て、skip_visual 付きで流し直せる。
+//       見た目以外も落ちているときは出ない。
+// 根拠: 2026-11-22、画像を読むモデルの誤検出（重大 3 件。Opus が撮影を見て誤検出と判断）で、正しい変更が取り込めなかった。
+test("workspace result card: visual-only failure can be skipped after a human check (320px)", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  const state = await mock(page);
+  state.check = { passed: false, stale: false };
+  state.visualOnly = true;
+  await page.evaluate(() => { localStorage.setItem("cd-chat-conversation", "w1"); });
+  await page.goto("/assistant");
+  const card = page.locator('[data-testid="workspace-result"]');
+  await card.getByRole("button", { name: /作業場の結果/ }).click();
+  const skip = card.getByTestId("workspace-check-skip-visual");
+  await expect(skip).toBeVisible();
+  expect((await skip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: "test-results/workspace-result-320-visual-skip.png" });
+  await skip.click();
+  await expect.poll(() => state.checkBodies.length).toBe(1);
+  expect(state.checkBodies[0]).toMatchObject({ skip_visual: true });
+  await expect(card.getByTestId("workspace-check-label")).toHaveText("関門 合格", { timeout: 15_000 });
+
+  // 見た目以外も落ちていれば出ない
+  state.visualOnly = false;
+  state.check = { passed: false, stale: false };
+  await page.reload();
+  await page.locator('[data-testid="workspace-result"]').getByRole("button", { name: /作業場の結果/ }).click();
+  await expect(page.getByTestId("workspace-check-skip-visual")).toHaveCount(0);
 });

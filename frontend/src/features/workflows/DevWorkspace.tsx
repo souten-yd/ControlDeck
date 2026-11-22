@@ -110,9 +110,12 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const ready = Boolean(check?.passed && !check.stale) && !adopted && !running && canAdoptHere;
   const target = isBody ? "GitHub に PR を作ります（マージはしません）" : `元のリポジトリに ws/${name} のブランチとして取り込みます`;
 
-  const runCheck = async () => {
+  // 最後の関門が「画面の見た目」だけで落ちたか（画像を読むモデルの目の誤検出を、管理者が人の目で確かめて外せる）
+  const onlyVisualFailed = Boolean(check && !check.passed && !check.stale && check.items.some((i) => i.status === "ng")
+    && check.items.filter((i) => i.status === "ng").every((i) => i.name.includes("見た目")));
+  const runCheck = async (skipVisual = false) => {
     try {
-      await api(`${base}/check`, { method: "POST" });
+      await api(`${base}/check`, { method: "POST", ...(skipVisual ? { json: { skip_visual: true } } : {}) });
       await qc.invalidateQueries({ queryKey: ["workspace-check", name] });
     } catch (e) {
       show(e instanceof Error ? e.message : "関門を流せませんでした", "error");
@@ -186,6 +189,13 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             <button type="button" onClick={() => void runCheck()} disabled={running || busy} className={BTN}>
               {running ? "関門を流しています…" : "関門を流す"}
             </button>
+            {onlyVisualFailed && can("settings.manage") && !running && (
+              <button type="button" data-testid="workspace-check-skip-visual" onClick={() => void runCheck(true)} disabled={busy}
+                title="画像を読むモデルの指摘を、撮影を見て人が確かめた場合に。この項目だけ外して関門を流し直し、外したことは記録に残ります"
+                className={BTN}>
+                見た目は確かめた（外して流す）
+              </button>
+            )}
             {!adopted && (
               <button type="button" onClick={() => setAdopting(true)} disabled={!ready}
                 title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "関門が合格で、その後に変更が無いときに押せます" : ""}

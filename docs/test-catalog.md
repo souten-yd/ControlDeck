@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 222 ファイル、2061 テスト（目的の未記入 93 ファイル）
-- E2E: 110 spec、221 テスト
+- backend: 223 ファイル、2064 テスト（目的の未記入 93 ファイル）
+- E2E: 110 spec、222 テスト
 
 ## backend（backend/tests）
 
@@ -853,6 +853,14 @@
 - `test_adopt_branch_for_non_controldeck_target_never_opens_a_pr`
 - `test_adopt_pr_only_for_controldeck_source_and_branch_never_pushes`
 - `test_api_adopt_permission_follows_the_adopt_mode`
+
+### backend/tests/test_dev_workspace_visual_override.py
+
+目的: 作業場の関門で、画面の見た目（画像を読むモデルの目）の誤検出を、管理者が人の目で確かめて外せること。 目的: 最後の関門が「画面の見た目」だけで落ちたとき、その項目だけ外して流し直せる（--skip-visual）。外したことは結果に残る。 見た目以外も落ちているときは外せない。 根拠: 2026-11-22、利用者として作業場から＋メニューの作り直しを頼んだ通しで、画像を読むモデルが重大の指摘を 3 件出した （撮影を Opus が見て 3 件とも誤検出と判断）。人が確かめた後も外す口が無く、正しい変更が取り込めなかった。
+
+- `test_only_visual_failed`
+- `test_run_check_passes_skip_visual_and_records_who`
+- `test_other_failures_cannot_be_skipped`
 
 ### backend/tests/test_dev_workspaces.py
 
@@ -3334,6 +3342,7 @@
 
 - workspace result card: check then adopt creates a PR (${width}px)
 - workspace result card: failed check lists the failure and blocks adopt (dark, 320px)
+- workspace result card: visual-only failure can be skipped after a human check (320px)
 
 ### frontend/e2e/assistant-dev-workspace.spec.ts
 
