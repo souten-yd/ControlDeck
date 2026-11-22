@@ -58,13 +58,19 @@ def admin_client(client):
 
 
 @pytest.fixture(autouse=True)
-def _notify_at_noon(monkeypatch):
-    """通知のお休みモード（既定 22:00〜07:00）で、夜に流した試験だけ落ちないよう、時計を昼に固定する。"""
+def _notify_at_noon():
+    """通知のお休みモード（既定 22:00〜07:00）で、夜に流した試験だけ落ちないよう、時計を昼に固定する。
+
+    monkeypatch を使わない: autouse で monkeypatch を先に作ると、片付けの順が変わり、os.fstat などを差し替えた
+    試験の tmp_path の削除が差し替えたままの関数で走って壊れる（test_remote_desktop_toggle・test_system_services）。"""
     from datetime import datetime
 
     from app.alerts import events
 
-    monkeypatch.setattr(events, "local_now", lambda: datetime(2026, 11, 23, 12, 0))
+    original = events.local_now
+    events.local_now = lambda: datetime(2026, 11, 23, 12, 0)
+    yield
+    events.local_now = original
 
 
 @pytest.fixture(autouse=True)
