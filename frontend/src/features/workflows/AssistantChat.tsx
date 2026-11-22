@@ -25,7 +25,7 @@ import { useUxPrefs } from "../../stores/uxPrefs";
 import { getSpeechEngines } from "../../api/speech";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
-import { OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
+import { CodeDoneCard, OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
@@ -66,7 +66,7 @@ function uploadWithProgress(url: string, form: FormData, onProgress: (ratio: num
   });
 }
 import {
-  OpenCodeActivity, PERMISSION_MODES,
+  OpenCodeActivity, PERMISSION_MODES, StopContext,
   CODE_STEPS_CARD, ToolRow,
   type OpenCodePermission, type OpenCodeTool, type PermissionMode,
 } from "./OpenCodeActivity";
@@ -1888,6 +1888,7 @@ export default function AssistantChat() {
   const canRetry = !busy && !input.trim() && attachments.length === 0;
 
   return (
+    <StopContext.Provider value={runningJob ? () => void stopRunning() : null}>
     <section
       data-assistant-shell
       aria-label={assistantName}
@@ -2136,7 +2137,7 @@ export default function AssistantChat() {
           className="min-h-0 min-w-0 flex-1 touch-pan-y space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-5 [-webkit-overflow-scrolling:touch] sm:px-5"
         >
           {/* いまの回答のリストだけ。動いている間か、終わっていない項目があるときに出す */}
-          <TodoFloat todos={latestAssistant?.todos} tools={latestAssistant?.tools}
+          <TodoFloat todos={latestAssistant?.todos} tools={latestAssistant?.tools} agent={latestAssistant?.agent}
             active={busy || Boolean(latestAssistant?.todos?.some((t) => t.status !== "completed" && t.status !== "cancelled"))} />
           {messages.length === 0 && (
             <div data-assistant-empty className="mx-auto max-w-md pt-[12vh] text-center">
@@ -2523,6 +2524,7 @@ export default function AssistantChat() {
         </div>
       </div>
     </section>
+    </StopContext.Provider>
   );
 }
 
@@ -2672,6 +2674,9 @@ function inlineTextEnd(msg: Msg): number {
   return at;
 }
 
+/** 道具の羅列を畳む 1 段の件数 */
+const FOLD_STEPS = 8;
+
 /** OpenCode の回答を届いた順に並べる。続く思考と道具は 1 枚のカードに、本文は作業の前後の位置に出す
  *  （2026-11-18 利用者「チャットウィンドウの視認性を向上させて」。段階ごとの文が 1 段落につながっていた）。
  *  許可の確認は最後に出す。 */
@@ -2689,8 +2694,29 @@ function CodeTimeline({ msg, textEnd, onAnswer }: {
     if (!steps.length) stepsFrom = i;
     steps.push(step);
   };
-  const flushSteps = () => {
-    if (steps.length) blocks.push(<div key={`steps-${stepsFrom}`} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
+  // 長い道具の羅列は FOLD_STEPS 件ごとの段に畳む（開いているのは、いま動いている最後の段だけ）。
+  // 2026-11-23 利用者の通し: 道具の呼び出しが長く、いま何をしているか一目で分からない
+  const flushSteps = (live = false) => {
+    if (steps.length <= FOLD_STEPS) {
+      if (steps.length) blocks.push(<div key={`steps-${stepsFrom}`} data-code-steps className={CODE_STEPS_CARD}>{steps}</div>);
+    } else {
+      for (let at = 0; at < steps.length; at += FOLD_STEPS) {
+        const chunk = steps.slice(at, at + FOLD_STEPS);
+        const last = at + FOLD_STEPS >= steps.length;
+        if (last && live) {
+          blocks.push(<div key={`steps-${stepsFrom}-${at}`} data-code-steps className={CODE_STEPS_CARD}>{chunk}</div>);
+        } else {
+          blocks.push(
+            <details key={`steps-${stepsFrom}-${at}`} data-code-steps-folded className={CODE_STEPS_CARD}>
+              <summary className="flex min-h-11 cursor-pointer items-center px-3 text-xs text-zinc-600 dark:text-zinc-300">
+                作業 {at + 1}〜{at + chunk.length} 件目（{chunk.length} 件・タップで開く）
+              </summary>
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800">{chunk}</div>
+            </details>,
+          );
+        }
+      }
+    }
     steps = [];
   };
   segments.forEach((seg, i) => {
@@ -2723,7 +2749,7 @@ function CodeTimeline({ msg, textEnd, onAnswer }: {
     const active = Boolean(msg.streaming) && i === lastThinking && i === segments.length - 1;
     addStep(i, <ThinkingBlock key={`think-${i}`} text={text} thinking={active} flat />);
   });
-  flushSteps();
+  flushSteps(Boolean(msg.streaming));
   // 並びに載っていない道具（古い記録・途中から購読）も落とさない
   const listed = new Set(segments.flatMap((seg) => (seg.k === "u" ? [seg.id] : [])));
   const rest = (msg.tools ?? []).filter((t) => !listed.has(t.id));
@@ -2926,6 +2952,9 @@ function MessageBubble({
         {/* 本文を作業の間に出した後も、続いていることが分かるように（道具の後で長く考えている間など） */}
         {msg.streaming && msg.content && !restText && <span aria-hidden data-streaming-cursor className="block h-3.5 w-1.5 animate-pulse bg-accent-500" />}
 
+        {!msg.streaming && msg.messageId && msg.answeredBy === "code" && !unsettled && (
+          <CodeDoneCard content={msg.content} todos={msg.todos} changeCount={msg.changes?.length ?? 0} />
+        )}
         {!msg.streaming && msg.messageId && conversationId && (msg.changes?.length ?? 0) > 0 && (
           <OpenCodeChanges conversationId={conversationId} messageId={msg.messageId} changes={msg.changes!} reverted={msg.reverted}
             canRevert={canRevertChanges} onReverted={() => onChangesReverted?.(msg.messageId!)} />

@@ -2,7 +2,7 @@
  *
  * OpenCode v2 のサーバー（opencode serve）から流れてくる道具の実行と許可の問い合わせを、
  * Claude Code のように 1 行ずつ出す。携帯で押しやすいよう、押せる所は高さ 44px（h-11）以上にする。 */
-import { useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 export interface OpenCodeTool {
   id: string;
@@ -12,6 +12,56 @@ export interface OpenCodeTool {
   output?: string;
   started_at?: number;
   ended_at?: number;
+  /** 子エージェント（task）だけ。会話サーバーが子のイベントを受けた最後の時刻と、係のモデル */
+  last_active_at?: number;
+  model?: string;
+}
+
+/** 「止めるかもしれません」から出す、既存の停止（会話の生成を止める）。AI アシスタントの画面が渡す */
+export const StopContext = createContext<(() => void) | null>(null);
+
+/** この秒数、子から何も届かなければ止まっているかもしれないと出す */
+export const SUBAGENT_STALL_SECONDS = 600;
+const isSubagent = (tool: OpenCodeTool) => tool.name === "subagent" || tool.name === "task";
+
+/** 子エージェントの 1 行: 係・モデル・経過・最後に動いた時刻。止まって見えたら止める入口を出す。
+ *  2026-11-23 利用者の通し: ローカルの遅いモデルの子が 1 時間近く「裏のエージェント作業中」のままで、様子が見えなかった。 */
+function SubagentInfo({ tool }: { tool: OpenCodeTool }) {
+  const stop = useContext(StopContext);
+  const running = tool.status === "running";
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  const role = String(tool.input?.subagent_type ?? tool.input?.agent ?? "");
+  const started = tool.started_at;
+  const elapsed = started ? Math.max(0, (tool.ended_at ?? now) - started) : null;
+  const idle = running ? now - (tool.last_active_at ?? started ?? now) : 0;
+  const stalled = running && idle >= SUBAGENT_STALL_SECONDS;
+  if (!role && !tool.model && elapsed === null) return null;
+  return (
+    <div data-subagent className="flex min-w-0 flex-col gap-0.5 px-3 pb-2 pl-7 text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
+      <p className="num flex min-w-0 flex-wrap gap-x-2">
+        {role && <span data-subagent-role className="font-semibold text-zinc-800 dark:text-zinc-100">{role}</span>}
+        {tool.model && <span data-subagent-model className="min-w-0 break-all">{tool.model}</span>}
+        {elapsed !== null && <span>{running ? "経過" : "所要"} {formatDuration(elapsed)}</span>}
+        {running && tool.last_active_at && <span>最後に動いた {clock(tool.last_active_at)}</span>}
+      </p>
+      {stalled && (
+        <p data-subagent-stalled role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-amber-800 dark:text-amber-200">
+          <span>{Math.floor(idle / 60)} 分動きがありません。止まっているかもしれません。</span>
+          {stop && (
+            <button type="button" onClick={stop}
+              className="min-h-11 rounded-lg border border-amber-400 px-3 text-xs font-semibold hover:bg-amber-50 dark:border-amber-600 dark:hover:bg-amber-950/40">
+              止める
+            </button>
+          )}
+        </p>
+      )}
+    </div>
+  );
 }
 
 const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString("ja-JP", { hour12: false });
@@ -109,6 +159,7 @@ export function ToolRow({ tool }: { tool: OpenCodeTool }) {
           </span>
         )}
       </button>
+      {isSubagent(tool) && <SubagentInfo tool={tool} />}
       {open && (
         <div className="pb-2.5 pl-7 pr-3 font-mono text-[11px] leading-snug">
           {tool.started_at && (

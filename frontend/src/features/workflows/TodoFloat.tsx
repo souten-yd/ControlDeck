@@ -3,7 +3,7 @@
  *  2026-11-18 利用者「いつ終わるのかわからん」「有効な時だけ表示するなど工夫して」。
  *  リストはモデルが書いたものなので、更新されないと実際の進み具合とずれる。ずれていそうなら正直に出す
  *  （同日 本番: 最初の 1 回の後、91 回の操作の間更新されず、1 番目が作業中のままに見えた）。 */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatDuration } from "./OpenCodeActivity";
 
 export interface OpenCodeTodo {
@@ -20,10 +20,28 @@ const isOpen = (todo: OpenCodeTodo) => todo.status === "pending" || todo.status 
 
 const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString("ja-JP", { hour12: false, hour: "2-digit", minute: "2-digit" });
 
-export function TodoFloat({ todos, active, tools = [] }: {
-  todos?: OpenCodeTodo[]; active: boolean; tools?: Array<{ started_at?: number }>;
+/** いまの作業の段（計画・実装・確認）。プランの回は計画、項目の言葉に確認系があれば確認、それ以外は実装。
+ *  モデルが書いた ToDo の文から推す目安なので、断定しない（段の名前だけを短く出す）。 */
+export function workStage(agent: string | undefined, content: string): "計画" | "実装" | "確認" {
+  if (agent === "plan") return "計画";
+  if (/(テスト|確認|検証|レビュー|撮影|関門|dev-check|E2E)/i.test(content)) return "確認";
+  if (/(計画|設計|調査|調べ|読む|読み込)/.test(content)) return "計画";
+  return "実装";
+}
+
+const mmss = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+
+export function TodoFloat({ todos, active, tools = [], agent }: {
+  todos?: OpenCodeTodo[]; active: boolean; tools?: Array<{ started_at?: number }>; agent?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const ticking = active && Boolean(todos?.some((t) => t.status === "in_progress"));
+  useEffect(() => {
+    if (!ticking) return;
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
   if (!todos?.length || !active) return null;
   const done = todos.filter((t) => t.status === "completed").length;
   const current = todos.find((t) => t.status === "in_progress");
@@ -39,10 +57,18 @@ export function TodoFloat({ todos, active, tools = [] }: {
           className="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 text-left text-xs">
           <span aria-hidden>📋</span>
           <span className="num shrink-0 font-semibold">{done}/{todos.length}</span>
-          <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+          <span className="hidden h-1 w-10 shrink-0 sm:block overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <span className="block h-full rounded-full bg-accent-500" style={{ width: `${percent}%` }} />
           </span>
-          <span className="min-w-0 max-w-52 truncate text-zinc-500 dark:text-zinc-400">{stale ? `更新後 ${toolsSince} 操作` : current?.content ?? (done === todos.length ? "すべて完了" : "次の作業を待っています")}</span>
+          {current && !stale ? (
+            <span data-now-line className="flex min-w-0 flex-1 items-center gap-1 whitespace-nowrap text-zinc-500 dark:text-zinc-400">
+              <span className="shrink-0">いま:</span>
+              <span className="min-w-0 truncate text-zinc-800 dark:text-zinc-100">{current.content}</span>
+              <span className="num shrink-0">· {current.started_at ? `${mmss(Math.max(0, now - current.started_at))} · ` : ""}{workStage(agent, current.content)}</span>
+            </span>
+          ) : (
+            <span className="min-w-0 max-w-52 truncate text-zinc-500 dark:text-zinc-400">{stale ? `更新後 ${toolsSince} 操作` : done === todos.length ? "すべて完了" : "次の作業を待っています"}</span>
+          )}
         </button>
         {open && stale && (
           <p data-todo-stale className="border-t border-zinc-100 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-zinc-800 dark:text-amber-200">
