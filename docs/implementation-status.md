@@ -1,5 +1,15 @@
 # 実装状況
 
+## 2026-11-22 開発の作業場: 開発対象（機能の組み合わせ）と＋メニューのコンパクト化（L2: 権限と隔離）
+
+- 利用者の言葉: 「ControlDeck と普通の開発の違いを明確にして、＋ボタンのところに開発対象を記載して選択できるように。違いは特に LLM をメイン PC から借りるところ。汎用的にするには、ControlDeck の改修かどうかではなく、機能的な改修対象によって権限を分ける方がよい。プランとビルド・権限もトグルで、表示面積を小さく、＋メニューをコンパクトに」。
+- 決めたこと: 作業場の meta（`.meta`）に `capabilities`（`llm` ローカル LLM を借りる・`tools` ControlDeck の道具＝MCP・`mirror` ControlDeck の複製・`gpu` P4 未実装で受け付けるだけ）・`target`・`adopt`（`pr`/`branch`）。開発対象 `app`（tools・branch）・`llm_app`（llm・tools・branch）・`controldeck`（llm・tools・mirror・pr）。`controldeck`・`mirror`・`pr` は元が ControlDeck 本体のときだけ。古い作業場（capabilities 無し）は、元が本体なら controldeck、それ以外は llm_app 相当。作成 API は `target` と任意の `capabilities`。権限は controldeck の作成と gpu が `settings.manage`、他は `terminal.use`。監査に target・capabilities。
+- 強制（画面で隠すだけにしない）: 中継 `sandbox_gateway` の起動引数 `--allow-llm`（models・chat・load）/`--allow-tools`（MCP）が無いと該当パスは 403（healthz に llm/tools を出し、機能が違う古い中継は `_gateway_healthy` で作り直す）。`llm` 無しは `model_chain` からローカルを外し、外部も無ければ「使えるモデルがありません」で断る。`llm` ありは箱の環境に `OPENAI_BASE_URL=http://127.0.0.1:<port>/api/v1/llm/v1`・`OPENAI_API_KEY=sandbox`。`tools` 無しは箱の OpenCode の MCP 設定も入れない。`mirror` 無しは `mirror_start` を断る。取り込みは branch なら元へのブランチだけ（PR は作らない）、pr は本体のときだけ。meta の capabilities/target/adopt は改ざん検査の対象。
+- 画面: ＋メニューに「開発対象」（3 つの切り替え・1 行の違いの説明・「詳しく」で機能の一覧）。作るときだけ選べて、作業場を選んでいるときは表示だけ。権限の無いもの・元に合わないもの・gpu（準備中）は押せず理由を出す。「プラン／ビルド」「権限」は 1 行ずつのトグル（Shift+Tab・`PUT permission-mode` は変えない）。行の高さ・余白を詰めた（押せる範囲は 44px）。作業場の札は「作業場・本体」「作業場・LLM アプリ」「作業場・開発」。取り込みの文言は開発対象（adopt）で決まる。
+- 検証: pytest `tests/test_dev_workspace_targets.py`（新規。preset・組み合わせ・権限・監査・中継の 403・環境変数・順番・mirror・取り込みの振り分け・古い作業場）、E2E `assistant-dev-targets.spec.ts`（1280/320・ライト/ダーク・撮影）。
+- 設計から外れた点: ＋メニューの高さの目安（320px で画面の 60% 以下）は、会話の引き継ぎなど「そのときだけ出す行」（各 44px）を除いて測る（含めると 700px の画面で約 500px）。
+- 確かめられなかった点: 実機の箱（podman）の中での OPENAI_BASE_URL の効き・中継の再起動（モック）。E2E の `assistant-plan`（4 件）・`assistant-claude-layout`（1 件）・`assistant-dev-workspace`（時々）の失敗は、この変更の前の HEAD でも同じに起きる（e2e 環境に CodeDEV の app が無い・既存のフレーキー）。
+
 ## 2026-11-22 画面の見た目の関門（画像を読めるローカルのモデルに撮影を見せる）
 
 - 目的: OpenCode（GLM は画像を読めない）が作った画面を、Claude が目で見なくても仕組みで確かめる。設計は Opus。

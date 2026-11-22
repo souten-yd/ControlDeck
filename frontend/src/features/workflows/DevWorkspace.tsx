@@ -5,10 +5,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../api/client";
 import { ConfirmDialog } from "../../components/ui";
 import { useAuth, useToasts } from "../../stores";
+import { badgeText, targetInfo } from "./workspaceTargets";
 
 export type DevWorkspace = {
   name: string; source: string; source_label: string; branch: string;
   dirty: boolean; unpushed: number; created_at: number; last_used: number; repo_path: string;
+  /** 開発対象と機能（古い API では無い）。adopt は取り込み先（pr は GitHub の PR、branch は元へのブランチ） */
+  target?: string; target_label?: string; capabilities?: string[]; adopt?: "pr" | "branch";
 };
 
 export type WorkspaceCheck = {
@@ -36,11 +39,11 @@ export function selectedWorkspace(value: string, list: DevWorkspace[] | undefine
 }
 
 /** 作業場の小さな印（作業場で動いていることが分かる）。 */
-export function WorkspaceBadge({ className = "" }: { className?: string }) {
+export function WorkspaceBadge({ className = "", target }: { className?: string; target?: string }) {
   return (
-    <span data-testid="workspace-badge" title="開発の作業場（隔離した箱の中で動きます）"
+    <span data-testid="workspace-badge" title={`開発の作業場（隔離した箱の中で動きます）${targetInfo(target) ? `・開発対象: ${targetInfo(target)!.label}` : ""}`}
       className={`inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 ${className}`}>
-      <span aria-hidden>🧪</span>作業場
+      <span aria-hidden>🧪</span>{badgeText(target)}
     </span>
   );
 }
@@ -71,7 +74,12 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const wasBusy = useRef(busy);
   const changesKey = ["workspace-changes", name];
   const { data: info, error } = useQuery({
-    queryKey: changesKey, queryFn: () => api<WorkspaceChanges>(`${base}/changes`), staleTime: 15_000,
+    queryKey: changesKey, staleTime: 15_000,
+    // 応答が欠けていても画面ごと落とさない（2026-11-22: 形の違う応答で files.length が落ちた）
+    queryFn: async () => {
+      const raw = await api<Partial<WorkspaceChanges>>(`${base}/changes`);
+      return { ...raw, files: Array.isArray(raw?.files) ? raw.files : [], commits: Array.isArray(raw?.commits) ? raw.commits : [] } as WorkspaceChanges;
+    },
   });
   const { data: checkState } = useQuery({
     queryKey: ["workspace-check", name],
@@ -91,7 +99,8 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const check = info?.check ?? null;
-  const isBody = workspace.source === "controldeck";
+  // 取り込み先は開発対象で決まる（pr は GitHub の PR、branch は元へのブランチ）。古い API は元から決める
+  const isBody = (workspace.adopt ?? (workspace.source === "controldeck" ? "pr" : "branch")) === "pr";
   const adopted = info?.adopted && info.adopted.head === info.head && !info.dirty ? info.adopted : null;
   const canAdoptHere = !isBody || can("settings.manage");
   const ready = Boolean(check?.passed && !check.stale) && !adopted && !running && canAdoptHere;
@@ -202,8 +211,14 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
 }
 
 export function WorkspaceBar({
-  value, workspaces, projects, onCreated, onDeleted, busy = false,
+  value, workspaces, projects, onCreated, onDeleted, busy = false, source, onSource, target, capabilities,
 }: {
+  /** 作る元（controldeck / codedev:<名前>）。＋メニューの「開発対象」と合わせるため親が持つ */
+  source: string;
+  onSource: (source: string) => void;
+  /** 作るときに選んだ開発対象と機能の上書き（＋メニューで選ぶ） */
+  target: string;
+  capabilities: string[] | null;
   busy?: boolean;
   value: string;
   workspaces: DevWorkspace[];
@@ -213,7 +228,6 @@ export function WorkspaceBar({
 }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [source, setSource] = useState("controldeck");
   const [working, setWorking] = useState(false);
   const [deleting, setDeleting] = useState<DevWorkspace | null>(null);
   const current = selectedWorkspace(value, workspaces);
@@ -222,7 +236,7 @@ export function WorkspaceBar({
     if (working) return;
     setWorking(true);
     try {
-      const made = await api<DevWorkspace>("/opencode/workspaces", { method: "POST", json: { source } });
+      const made = await api<DevWorkspace>("/opencode/workspaces", { method: "POST", json: { source, target, ...(capabilities ? { capabilities } : {}) } });
       await qc.invalidateQueries({ queryKey: ["opencode-workspaces"] });
       show(`作業場 ${made.name} を作りました`);
       onCreated(made.name);
@@ -261,8 +275,8 @@ export function WorkspaceBar({
   if (value === WS_NEW) {
     return (
       <div data-testid="workspace-create" className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50/60 p-2 dark:border-sky-900 dark:bg-sky-950/20">
-        <WorkspaceBadge />
-        <select aria-label="作業場の元" value={source} onChange={(e) => setSource(e.target.value)}
+        <WorkspaceBadge target={target} />
+        <select aria-label="作業場の元" value={source} onChange={(e) => onSource(e.target.value)}
           className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
           <option value="controldeck">ControlDeck 本体（origin/main）</option>
           {projects.filter((p) => p.git).map((p) => (
@@ -274,6 +288,7 @@ export function WorkspaceBar({
           {working ? "作っています…" : "作る"}
         </button>
         <p className="w-full text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          開発対象: {targetInfo(target)?.label ?? target}（＋メニューの「開発対象」で変えられます）。
           元の履歴から隔離した作業ツリーを作ります。元のフォルダの未コミットの変更は入りません。
         </p>
       </div>
@@ -284,7 +299,7 @@ export function WorkspaceBar({
   return (
     <>
     <div data-testid="workspace-info" className="mb-2 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-      <WorkspaceBadge />
+      <WorkspaceBadge target={current.target} />
       <span className="min-w-0 flex-1 truncate">
         {current.source_label}・{current.branch || "ブランチ不明"}・{ago(current.last_used)}
         {unsaved && <span className="ml-1 text-amber-600 dark:text-amber-400">・未保存の変更あり</span>}

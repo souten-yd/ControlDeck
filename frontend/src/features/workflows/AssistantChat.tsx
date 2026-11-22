@@ -30,6 +30,7 @@ import { MessageActions, MessageEditor, type MessageAction } from "./MessageActi
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
 import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace } from "./DevWorkspace";
+import { targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
 import { writeClipboard } from "../../lib/clipboard";
 import {
   ConversationHistory, HistoryCloseButton, HistoryHeader, HistorySheet, IconHistoryPanel, TitleEditor,
@@ -310,6 +311,10 @@ export default function AssistantChat() {
   const [runTarget, setRunTarget] = useState<number | "">("");
   // OpenCodeモード: 新規（既定）/ CodeDEV既存 / 📁フォルダ（CodeDEV外はコピー取込）
   const [codeProject, setCodeProject] = useState("__new__");
+  // 新しい作業場の元・開発対象・機能の上書き（＋メニューの「開発対象」と作業場の作成欄で共有する）
+  const [wsSource, setWsSource] = useState("controldeck");
+  const [wsTarget, setWsTarget] = useState("");                       // 空は元から決める（本体なら controldeck）
+  const [wsCaps, setWsCaps] = useState<string[] | null>(null);        // null は開発対象の既定
   const [codeNewName, setCodeNewName] = useState("");
   const [codeFolderPath, setCodeFolderPath] = useState("");
   const [codePicker, setCodePicker] = useState(false);
@@ -1772,6 +1777,26 @@ export default function AssistantChat() {
   const latestCodeTurnId = [...messages].reverse().find((m) => m.role === "assistant" && m.answeredBy === "code" && m.messageId)?.messageId;
   const canSteer = busy && Boolean(latestAssistant?.streaming && latestAssistant.messageId && latestAssistant.answeredBy === "code");
   // 前回の OpenCode の回答より後に、チャット・調査の発言があるか（引き継ぐものがあるか）
+  // ＋メニューの「開発対象」: 作業場を作るときは選べる・作業場を選んでいるときは表示だけ
+  const wsIsBody = wsSource === "controldeck";
+  const wsCanManage = can("settings.manage");
+  const wsEffectiveTarget = wsTarget && !(wsTarget === "controldeck" && !(wsIsBody && wsCanManage)) ? wsTarget
+    : wsIsBody && wsCanManage ? "controldeck" : "llm_app";
+  const chosenWorkspace = selectedWorkspace(codeProject, workspaces);
+  const devTarget: DevTargetState | null = effectiveMode !== "code" ? null
+    : codeProject === WS_NEW ? {
+      mode: "create", target: wsEffectiveTarget,
+      capabilities: wsCaps ?? [...(targetInfo(wsEffectiveTarget)?.capabilities ?? [])],
+      isBody: wsIsBody, canManage: wsCanManage,
+      onTarget: (id) => { setWsTarget(id); setWsCaps(null); },
+      onCapability: (id: CapabilityId, on) => {
+        const base = wsCaps ?? [...(targetInfo(wsEffectiveTarget)?.capabilities ?? [])];
+        setWsCaps(on ? [...new Set([...base, id])] : base.filter((c) => c !== id));
+      },
+    } : chosenWorkspace ? {
+      mode: "view", target: chosenWorkspace.target ?? "", capabilities: chosenWorkspace.capabilities ?? [],
+      isBody: chosenWorkspace.source === "controldeck", canManage: wsCanManage, onTarget: () => {}, onCapability: () => {},
+    } : null;
   const plusActions: PlusAction[] = [
     {
       id: "talk", icon: <IconConversation />, label: "会話モード", hint: "声で話して、声で聞く",
@@ -2179,7 +2204,7 @@ export default function AssistantChat() {
                 {codeFolderPath && <option value="__folder__">📁 {codeFolderPath}</option>}
                 <optgroup label="開発の作業場">
                   {(workspaces ?? []).map((w) => (
-                    <option key={w.name} value={workspaceValue(w.name)}>🧪 {w.name}（{w.source_label}）</option>
+                    <option key={w.name} value={workspaceValue(w.name)}>🧪 {w.name}（{w.source_label}{w.target ? `・${targetInfo(w.target)?.badge ?? ""}` : ""}）</option>
                   ))}
                   <option value={WS_NEW}>🧪 ＋ 新しい作業場…</option>
                 </optgroup>
@@ -2207,7 +2232,11 @@ export default function AssistantChat() {
               workspaces={workspaces ?? []}
               busy={busy}
               projects={codeProjects?.projects ?? []}
-              onCreated={(name) => setCodeProject(workspaceValue(name))}
+              source={wsSource}
+              onSource={(next) => { setWsSource(next); if (next !== "controldeck") { setWsTarget((t) => (t === "controldeck" ? "" : t)); setWsCaps((c) => (c ? c.filter((x) => x !== "mirror") : c)); } }}
+              target={wsEffectiveTarget}
+              capabilities={wsCaps}
+              onCreated={(name) => { setCodeProject(workspaceValue(name)); setWsTarget(""); setWsCaps(null); }}
               onDeleted={() => setCodeProject("__new__")}
             />
           )}
@@ -2359,6 +2388,7 @@ export default function AssistantChat() {
                 permission={opencodeAvailable ? { mode: permissionMode, editable: canChangePermissionMode, onChange: (m) => void changePermissionMode(m) } : null}
                 agent={opencodeAvailable ? { mode: codeAgent, onChange: changeCodeAgent } : null}
                 actions={plusActions}
+                devTarget={devTarget}
               />
               <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
                 {modeChoice === "auto" ? (

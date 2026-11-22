@@ -39,9 +39,15 @@ SERVE_PORT_BASE = 19000
 SERVE_PORT_SPAN = 100
 # 開発役のモデルの順番（使い切ったら次へ。利用者 2026-11-21「GLM を使い切り、無料で高性能なものを順次」）。
 # 最後はローカル LLM（ゲートウェイの中継経由）。Zen のキーが無い・箱で allow_zen が off なら opencode* は飛ばす。
+NO_MODEL_MESSAGE = "使えるモデルがありません（この作業場はローカル LLM を借りない設定で、外部のモデルのキーもありません）"
 DEFAULT_MODEL_CHAIN = ["opencode-go/glm-5.3", "opencode/hy4-flash-free", "opencode/deepseek-v4.1-flash-free",
                        "controldeck/auto"]
 LOCAL_MODEL = "controldeck/auto"
+# 作業場の機能（2026-11-22）。meta の capabilities（文字列の集合）で持ち、中継・設定・mirror-start が強制する。
+#   llm: ローカル LLM を借りる / tools: ControlDeck の道具（MCP）/ mirror: ControlDeck の複製 / gpu: GPU を借りる（P4 未実装）
+CAPABILITIES = ("llm", "tools", "mirror", "gpu")
+ADOPT_MODES = ("pr", "branch")
+TARGETS = ("app", "llm_app", "controldeck")
 # 使用量の上限・残高切れ・レート制限の印。語の区切りで見る（"rate" だけだと generate・accurate に当たり、
 # ふつうのエラーで誤って次のモデルへ移る）
 LIMIT_PATTERN = re.compile(
@@ -162,6 +168,42 @@ class Sandbox:
     def allow_zen(self) -> bool:
         return bool(self.meta.get("allow_zen", True))
 
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """この箱の機能。meta に無い古い箱は、元が ControlDeck 本体なら全部、それ以外は llm・tools（今までどおり）。"""
+        saved = self.meta.get("capabilities")
+        if isinstance(saved, list):
+            return frozenset(str(x) for x in saved if x in CAPABILITIES)
+        return LEGACY_CONTROLDECK_CAPS if self.is_controldeck_source else LEGACY_APP_CAPS
+
+    @property
+    def is_controldeck_source(self) -> bool:
+        source = str(self.meta.get("workspace_source") or "")
+        if source:
+            return source == "controldeck"
+        try:
+            return Path(str(self.meta.get("source") or "")).resolve() == Path(__file__).resolve().parents[3]
+        except OSError:
+            return False
+
+    @property
+    def target(self) -> str:
+        saved = self.meta.get("target")
+        if saved in TARGETS:
+            return str(saved)
+        return "controldeck" if self.is_controldeck_source else "llm_app"
+
+    @property
+    def adopt_mode(self) -> str:
+        saved = self.meta.get("adopt")
+        if saved in ADOPT_MODES:
+            return str(saved)
+        return "pr" if self.is_controldeck_source else "branch"
+
+
+LEGACY_CONTROLDECK_CAPS = frozenset({"llm", "tools", "mirror"})
+LEGACY_APP_CAPS = frozenset({"llm", "tools"})
+
 
 def _pick_port(key: str, base: int, span: int, what: str) -> int:
     used = set()
@@ -204,7 +246,7 @@ TAMPERED = "この箱の設定は改ざんの恐れがあるので使えませ�
 # 古い箱から移すときに信用して引き継ぐ項目（これ以外、関門の結果・取り込みの記録・調べた状態などは捨てる）
 _MIGRATE_KEYS = ("name", "source", "git_common_dir", "revision", "origin", "port", "gateway_port", "serve_port",
                  "allow_load", "allow_zen", "owner", "github", "created_at", "overlays", "workspace_source",
-                 "last_model", "last_used", "model_chain")
+                 "last_model", "last_used", "model_chain", "capabilities", "target", "adopt")
 
 
 def meta_dir() -> Path:
@@ -276,6 +318,13 @@ def _validated(name: str, path: Path, meta: dict, *, strict: bool = True) -> dic
     for key in ("owner", "origin", "revision", "workspace_source", "last_model"):
         if key in meta and not isinstance(meta[key], str):
             raise _tampered(f"{key} が文字列ではありません")
+    if "capabilities" in meta and not (isinstance(meta["capabilities"], list)
+                                       and all(x in CAPABILITIES for x in meta["capabilities"])):
+        raise _tampered("capabilities が正しくありません")
+    if "target" in meta and meta["target"] not in TARGETS:
+        raise _tampered("target が正しくありません")
+    if "adopt" in meta and meta["adopt"] not in ADOPT_MODES:
+        raise _tampered("adopt が正しくありません")
     if "model_chain" in meta and not (isinstance(meta["model_chain"], list) and all(isinstance(x, str) for x in meta["model_chain"])):
         raise _tampered("model_chain が正しくありません")
     source = Path(str(meta.get("source") or "")).expanduser()
@@ -350,7 +399,8 @@ def box_owner(box: Sandbox) -> str:
 
 
 def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_load: bool = False,
-           allow_zen: bool = True, owner: str = "") -> Sandbox:
+           allow_zen: bool = True, owner: str = "", capabilities: list[str] | None = None,
+           target: str = "", adopt: str = "") -> Sandbox:
     """作業ツリーを複製してサンドボックスを作る。数秒で終わる（オブジェクトは複製しない）。"""
     path = _dir(name)
     if path.exists():
@@ -385,6 +435,8 @@ def create(name: str, repo: str, ref: str = "", *, github: bool = False, allow_l
             # .venv は中に絶対パスを持つので元と同じ場所へ、node_modules は複製の中の同じ位置へ。
             "overlays": [pair for pair in overlay_pairs(top, work) if Path(pair[0]).exists()],
         }
+        if capabilities is not None:      # 無ければ古い箱と同じ扱い（Sandbox.capabilities が元から決める）
+            meta.update(capabilities=sorted(set(capabilities)), target=target, adopt=adopt)
         _save_meta(path, meta)
     except Exception:
         shutil.rmtree(path, ignore_errors=True)
@@ -540,13 +592,19 @@ def gateway_unit(box: Sandbox) -> str:
     return f"{CONTAINER_PREFIX}{box.name}-gateway"
 
 
-def _gateway_healthy(port: int) -> bool:
+def _gateway_healthy(port: int, *, llm: bool = True, tools: bool = True) -> bool:
+    """中継が動いていて、箱の機能（llm・tools）と同じ設定で動いているか。違えば作り直す（機能を変えた・古い中継）。"""
     import urllib.request
 
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
-            # MCP のトークンを持たない古い中継は動いていても作り直す（箱から道具が呼べない）
-            return response.status == 200 and bool(json.loads(response.read()).get("mcp"))
+            data = json.loads(response.read())
+            if response.status != 200:
+                return False
+            # MCP のトークンを持たない古い中継は動いていても作り直す（箱から道具が呼べない）。
+            # llm・tools の印が無い古い中継は「全部許す」中継なので、機能が足りない箱では作り直す
+            return (bool(data.get("llm", True)) == llm and bool(data.get("tools", bool(data.get("mcp")))) == tools
+                    and (bool(data.get("mcp")) or not tools))
     except Exception:  # noqa: BLE001
         return False
 
@@ -595,7 +653,8 @@ def gateway_stop(box: Sandbox) -> None:
 
 def ensure_gateway(box: Sandbox) -> None:
     """箱の外（ホスト）で LLM ゲートウェイの中継を動かす。動いていて health が通れば使い回す。"""
-    if _gateway_healthy(box.gateway_port):
+    llm, tools = "llm" in box.capabilities, "tools" in box.capabilities
+    if _gateway_healthy(box.gateway_port, llm=llm, tools=tools):
         return
     systemd_run = shutil.which("systemd-run")
     if not systemd_run:
@@ -608,7 +667,12 @@ def ensure_gateway(box: Sandbox) -> None:
     backend = Path(__file__).resolve().parents[2]
     command = [str(venv_python), "-m", "app.maintenance.sandbox_gateway", "--name", box.name,
                "--port", str(box.gateway_port), "--upstream", _upstream_url()]
-    if box.allow_load:
+    # 機能の強制は中継で行う（画面で隠すだけにしない）。付けない機能のパスは 403
+    if llm:
+        command.append("--allow-llm")
+    if tools:
+        command.append("--allow-tools")
+    if box.allow_load and llm:
         command.append("--allow-load")
     if box.meta.get("allow_cloud"):
         # 既定は外部のモデルを断る（箱の OpenCode はローカル LLM だけ。2026-11-21 利用者）
@@ -623,7 +687,7 @@ def ensure_gateway(box: Sandbox) -> None:
     if result.returncode != 0:
         raise SandboxError(f"ゲートウェイの中継を起こせませんでした: {(result.stderr or result.stdout).strip()[:300]}")
     for _ in range(30):
-        if _gateway_healthy(box.gateway_port):
+        if _gateway_healthy(box.gateway_port, llm=llm, tools=tools):
             return
         time.sleep(0.5)
     raise SandboxError("ゲートウェイの中継が起動しませんでした（journalctl --user -u "
@@ -649,6 +713,11 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
         # 箱の OpenCode が `npx tsc` で npm からパッケージを取ってきた）。手元に無いものは失敗する
         "npm_config_offline": "true", "PIP_NO_INDEX": "1",
         "PATH": tool_path(),
+        **({
+            # 作るアプリがローカル LLM を ControlDeck 専用の書き方なしで使えるよう、OpenAI 互換の標準の変数を渡す。
+            # キーは意味の無い値（本物は渡さない。中継が上流へ通すだけ）
+            "OPENAI_BASE_URL": f"http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1", "OPENAI_API_KEY": "sandbox",
+        } if "llm" in box.capabilities else {}),
         **(env or {}),
     }
     gh = Path.home() / ".config" / "gh"
@@ -690,6 +759,8 @@ def mirror_container(box: Sandbox) -> str:
 
 def mirror_start(box: Sandbox) -> dict:
     """箱の中でミラーの ControlDeck を起こす。機械全体に効く処理は CONTROL_DECK_ISOLATED で止める。"""
+    if "mirror" not in box.capabilities:
+        raise SandboxError("この作業場には ControlDeck の複製（mirror）の機能がありません（開発対象が ControlDeck 本体の作業場だけ）")
     mirror_stop(box)
     config = mirror_config(box)
     venv_python = Path(box.meta["source"]) / ".venv" / "bin" / "python"
@@ -743,7 +814,7 @@ def reviewer_model_for(box: Sandbox, work_model: str) -> str | None:
     work = normalize_model(work_model)
     if "/" not in work or work.startswith("controldeck/"):
         return next((m for m in model_chain(box) if not m.startswith("controldeck/")), None)
-    return LOCAL_MODEL
+    return LOCAL_MODEL if "llm" in box.capabilities else None
 
 
 def _set_git_identity(work: Path, name: str) -> None:
@@ -777,6 +848,7 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
         payload["model"] = opencode_model(normalize_model(default_model))
     servers = dict(payload.get("mcp") or {})
     servers.pop("controldeck_addons", None)
+    with_tools = "tools" in box.capabilities
     copied = box.home / ".controldeck"
     copied.mkdir(parents=True, exist_ok=True)
     bridge = copied / "addon_mcp_bridge.py"
@@ -785,15 +857,16 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
 
     results = copied / "mcp-results"
     results.mkdir(exist_ok=True)
-    servers["controldeck_addons"] = {
-        "type": "local", "command": ["/usr/bin/python3", str(bridge)], "enabled": True,
-        "timeout": MCP_CLIENT_TIMEOUT_MS,
-        "environment": {
-            "CONTROL_DECK_ADDON_MCP_URL": f"http://127.0.0.1:{box.gateway_port}/api/v1/addons/agent-mcp",
-            "CONTROL_DECK_ADDON_MCP_TOKEN": "sandbox",  # 意味の無い値。本物は中継が付ける
-            "CONTROL_DECK_ADDON_MCP_RESULT_DIR": str(results),
-        },
-    }
+    if with_tools:
+        servers["controldeck_addons"] = {
+            "type": "local", "command": ["/usr/bin/python3", str(bridge)], "enabled": True,
+            "timeout": MCP_CLIENT_TIMEOUT_MS,
+            "environment": {
+                "CONTROL_DECK_ADDON_MCP_URL": f"http://127.0.0.1:{box.gateway_port}/api/v1/addons/agent-mcp",
+                "CONTROL_DECK_ADDON_MCP_TOKEN": "sandbox",  # 意味の無い値。本物は中継が付ける
+                "CONTROL_DECK_ADDON_MCP_RESULT_DIR": str(results),
+            },
+        }
     payload["mcp"] = servers
     shots = box.path / "ui-verify"
     shots.mkdir(exist_ok=True)
@@ -903,6 +976,9 @@ def model_chain(box: Sandbox) -> list[str]:
     chain = [normalize_model(str(m)) for m in configured] if configured else list(DEFAULT_MODEL_CHAIN)
     if not _zen_available(box):
         chain = [m for m in chain if not m.startswith("opencode")]
+    if "llm" not in box.capabilities:
+        # ローカル LLM を借りない作業場は、外部のモデルだけ。無ければ空（会話は「使えるモデルがありません」で断る）
+        return [m for m in chain if not m.startswith("controldeck/")]
     return chain or [LOCAL_MODEL]
 
 
@@ -1151,8 +1227,13 @@ def main(argv: list[str]) -> int:
             box = load(args.name)
             if args.run:
                 models = [normalize_model(args.model)] if args.model else model_chain(box)
+                if not models:
+                    raise SandboxError(NO_MODEL_MESSAGE)
                 return run_with_chain(box, args.run, models, args.session)
-            chosen = normalize_model(args.model) if args.model else model_chain(box)[0]
+            chain = model_chain(box)
+            if not args.model and not chain:
+                raise SandboxError(NO_MODEL_MESSAGE)
+            chosen = normalize_model(args.model) if args.model else chain[0]
             argv = opencode_argv(box, message=args.run, session=args.session, model=chosen, interactive=True)
             try:
                 # execv だと使い終わりの後始末ができない（env-file を消せない）ので、子として動かす

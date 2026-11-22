@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import { IconChat, IconPaperclip, IconPlay, IconPlus, IconSearch, IconSettings, IconSparkle, IconTerminal } from "../../components/icons";
 import { AUTO_MODE_OPTION, type ModeOption } from "./ModeChip";
 import { PERMISSION_MODES, type PermissionMode } from "./OpenCodeActivity";
+import { CAPABILITIES, TARGETS, targetInfo, type DevTargetState } from "./workspaceTargets";
 
 /** 機能のアイコン。＋のタイルと入力欄の札は線のアイコンでそろえる（2026-11-20 利用者「スタイリッシュに」）。
  *  回答の見出しなど他の場所の絵文字はそのまま */
@@ -31,10 +32,10 @@ export interface PlusAction { id: string; icon: ReactNode; label: string; hint: 
 
 const FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/50 disabled:opacity-40";
 // 行はどれも「アイコン・名前・その下に短い説明」で揃える（2026-11-20 利用者「添付の説明が右にずれている。他と合わせて」）
-const ROW = `flex h-12 w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-zinc-100 dark:hover:bg-white/[0.06] ${FOCUS}`;
-const ICON = "grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-[17px] text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300";
-const HEADING = "flex min-w-0 items-baseline gap-2 px-2 pb-1.5 pt-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400";
-const SEPARATOR = "mx-1 my-1.5 border-t border-zinc-100 dark:border-white/[0.06]";
+const ROW = `flex h-11 w-full items-center gap-2.5 rounded-xl px-1.5 text-left transition-colors hover:bg-zinc-100 dark:hover:bg-white/[0.06] ${FOCUS}`;
+const ICON = "grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-zinc-100 text-[17px] text-zinc-600 dark:bg-white/[0.06] dark:text-zinc-300";
+const HEADING = "flex min-w-0 items-baseline gap-2 px-1.5 pb-1 pt-1 text-[11px] font-medium text-zinc-500 dark:text-zinc-400";
+const SEPARATOR = "mx-1 my-1 border-t border-zinc-100 dark:border-white/[0.06]";
 /** 選択中の色。メニューと入力欄の札で揃える */
 const TONE = {
   plan: "border-sky-400 bg-sky-100 text-sky-800 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-100",
@@ -42,8 +43,7 @@ const TONE = {
   amber: "border-amber-500/40 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300",
 };
 const UNSELECTED = "border-transparent bg-zinc-50 text-zinc-700 hover:bg-zinc-100 dark:bg-white/[0.03] dark:text-zinc-200 dark:hover:bg-white/[0.07]";
-const SEGMENT = `flex h-12 min-w-0 flex-col items-center justify-center rounded-xl border px-1.5 ${FOCUS}`;
-const SEGMENT_NOTE = "block max-w-full truncate text-[10px] font-normal leading-tight opacity-75";
+const SEGMENT = `flex h-11 min-w-0 items-center justify-center gap-1 rounded-xl border px-2 text-sm font-medium ${FOCUS}`;
 const PERMISSION_NOTE: Record<PermissionMode, string> = { auto: "箱の中は確認なし", ask: "実行・編集は毎回確認" };
 
 /** 矢印の向きで、見た目どおり隣の項目を選ぶ（上下は端で反対側へ回る） */
@@ -76,8 +76,97 @@ const AGENT_MODES = [
   ["plan", "📋", "プラン", "計画だけ。ファイルの編集や変更を伴うコマンドはしない", "計画だけ・変更なし"],
 ] as const;
 
+/** 1 行のトグル（左に名前と今の状態の短い説明、右に 2 択）。説明は 1 行まで */
+function ToggleRow({ label, aria, note, children }: { label: string; aria: string; note: string; children: ReactNode }) {
+  return (
+    <div role="group" aria-label={aria} className="flex min-h-11 items-center gap-2 px-1.5">
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium leading-4 text-zinc-900 dark:text-zinc-50">{label}</span>
+        <span data-toggle-note className="block truncate text-[10px] leading-3 text-zinc-500 dark:text-zinc-400">{note}</span>
+      </span>
+      <span className="grid shrink-0 grid-cols-2 gap-1">{children}</span>
+    </div>
+  );
+}
+
+/** 開発対象（作業場の機能の組み合わせ）。作るときは選べ、選んだ作業場は表示だけ。
+ *  違いは 1 行の説明で読める。「詳しく」で機能の一覧（作るときだけ個別に入切）。 */
+function DevTargetSection({ state, detail, onDetail }: { state: DevTargetState; detail: boolean; onDetail: (v: boolean) => void }) {
+  const editable = state.mode === "create";
+  const info = targetInfo(state.target);
+  const caps = new Set(state.capabilities);
+  const targetReason = (id: string): string => {
+    if (id === "controldeck" && !state.isBody) return "元が ControlDeck 本体のときだけ選べます";
+    if (id === "controldeck" && !state.canManage) return "ControlDeck 本体の作業場には設定の権限（settings.manage）が要ります";
+    return "";
+  };
+  const capReason = (id: string): string => {
+    if (id === "gpu") return "準備中";
+    if (id === "mirror" && !state.isBody) return "元が ControlDeck 本体のときだけ";
+    return "";
+  };
+  return (
+    <>
+      <div role="separator" className={SEPARATOR} />
+      <div role="group" aria-label="開発対象" data-dev-target>
+        <p aria-hidden className={HEADING}>
+          <span className="shrink-0">開発対象</span>
+          <span className="min-w-0 flex-1 truncate text-right text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+            {editable ? "作るときに選ぶ" : "この作業場（変えられません）"}
+          </span>
+        </p>
+        <div className="grid grid-cols-3 gap-1">
+          {TARGETS.map((t) => {
+            const selected = t.id === state.target;
+            const reason = editable ? targetReason(t.id) : "";
+            return (
+              <button key={t.id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-target-option={t.id}
+                disabled={!editable || Boolean(reason)} title={reason || t.label}
+                onClick={() => state.onTarget(t.id)}
+                className={`flex h-11 min-w-0 flex-col items-center justify-center rounded-xl border px-1 ${FOCUS} ${selected ? TONE.accent : UNSELECTED} ${!editable && selected ? "disabled:opacity-100" : ""}`}>
+                <span className="block max-w-full truncate text-[12px] font-medium leading-tight">{t.short}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p data-target-note className="line-clamp-2 px-1.5 pt-1 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400" title={info?.note}>
+          {info?.note ?? "この作業場の開発対象は不明です（古い作業場）"}
+        </p>
+        <button type="button" data-plus-item data-target-detail aria-expanded={detail} onClick={() => onDetail(!detail)}
+          className={`flex h-11 w-full items-center gap-1 rounded-lg px-1.5 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-white/[0.06] ${FOCUS}`}>
+          <span aria-hidden>{detail ? "▾" : "▸"}</span>詳しく（機能の一覧）
+        </button>
+        {detail && (
+          <ul data-target-capabilities className="space-y-0.5 pb-1">
+            {CAPABILITIES.map((c) => {
+              const on = caps.has(c.id);
+              const reason = capReason(c.id);
+              const locked = !editable || Boolean(reason);
+              return (
+                <li key={c.id}>
+                  <button type="button" role="switch" aria-checked={on} data-plus-item data-capability={c.id} disabled={locked}
+                    title={reason || c.note} onClick={() => state.onCapability(c.id, !on)}
+                    className={`flex h-11 w-full items-center gap-2 rounded-lg px-1.5 text-left hover:bg-zinc-100 disabled:hover:bg-transparent dark:hover:bg-white/[0.06] ${FOCUS} ${locked && !reason ? "disabled:opacity-100" : ""}`}>
+                    <span aria-hidden className={`grid h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors ${on ? "bg-accent-600" : "bg-zinc-300 dark:bg-zinc-600"}`}>
+                      <span className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium leading-4 text-zinc-900 dark:text-zinc-50">{c.label}</span>
+                      <span className="block truncate text-[10px] leading-3 text-zinc-500 dark:text-zinc-400">{reason || c.note}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
 export function PlusMenu({
-  disabled, onAttach, attachDisabled, mode, modeOptions, detectedLabel, routing, onModeChange, permission, agent, actions = [],
+  disabled, onAttach, attachDisabled, mode, modeOptions, detectedLabel, routing, onModeChange, permission, agent, actions = [], devTarget = null,
 }: {
   disabled?: boolean;
   onAttach: () => void;
@@ -94,8 +183,11 @@ export function PlusMenu({
   agent?: { mode: "build" | "plan"; onChange: (mode: "build" | "plan") => void } | null;
   /** 会話の引き継ぎなど、そのときだけ出す操作 */
   actions?: PlusAction[];
+  /** OpenCode の「開発の作業場」を使うときだけ（作るときは選べる・選んだ作業場は表示だけ） */
+  devTarget?: DevTargetState | null;
 }) {
   const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState(false);
   const [pos, setPos] = useState<{ left: number; bottom: number; maxHeight: string } | null>(null);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -174,7 +266,7 @@ export function PlusMenu({
       </button>
       {open && pos && createPortal(
         <div ref={menu} role="menu" aria-label="添付・機能・権限" style={{ left: pos.left, bottom: pos.bottom, maxHeight: pos.maxHeight }}
-          className="fixed z-[100] w-[min(21rem,calc(100vw-1.5rem))] touch-pan-y overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200/80 bg-white/95 p-1.5 shadow-xl shadow-black/10 backdrop-blur-xl dark:border-white/10 dark:bg-zinc-900/95 dark:shadow-black/60">
+          className="fixed z-[100] w-[min(21rem,calc(100vw-1.5rem))] touch-pan-y overflow-y-auto overscroll-contain rounded-2xl border border-zinc-200/80 bg-white/95 p-1 shadow-xl shadow-black/10 backdrop-blur-xl dark:border-white/10 dark:bg-zinc-900/95 dark:shadow-black/60">
           {[{ id: "attach", icon: <IconPaperclip />, label: "ファイルを添付", hint: "画像・コード・文書・PDF", disabled: attachDisabled,
             title: "画像は VLM へ、コード・文書・PDF は会話の資料へ", onSelect: onAttach }, ...actions].map((action) => (
             <button key={action.id} type="button" role="menuitem" data-plus-item data-plus-action={action.id} disabled={action.disabled}
@@ -200,7 +292,7 @@ export function PlusMenu({
                 return (
                   <button key={option.id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-mode-option={option.id}
                     title={option.id === "auto" ? autoHint : option.hint} onClick={() => { onModeChange(option.id); close(); }}
-                    className={`flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl border px-1 ${FOCUS} ${selected ? TONE.accent : UNSELECTED}`}>
+                    className={`flex h-11 min-w-0 flex-col items-center justify-center rounded-xl border px-1 ${FOCUS} ${selected ? TONE.accent : UNSELECTED}`}>
                     <span aria-hidden className="text-base leading-none">{modeIcon(option.id, option.icon)}</span>
                     <span className="block max-w-full truncate text-[11px] font-medium leading-tight">{option.label}</span>
                   </button>
@@ -209,56 +301,37 @@ export function PlusMenu({
             </div>
           </div>
 
+          {devTarget && <DevTargetSection state={devTarget} detail={detail} onDetail={setDetail} />}
+          {(agent || permission) && <div role="separator" className={SEPARATOR} />}
           {agent && (
-            <>
-              <div role="separator" className={SEPARATOR} />
-              <div role="group" aria-label="OpenCode のモード">
-                <p aria-hidden className={HEADING}>OpenCode のモード<span className="ml-auto hidden text-[10px] font-normal text-zinc-400 sm:inline">Shift+Tab でも切替</span></p>
-                <div className="grid grid-cols-2 gap-1">
-                  {AGENT_MODES.map(([id, icon, label, hint, note]) => {
-                    const selected = agent.mode === id;
-                    const tone = !selected ? UNSELECTED : id === "plan" ? TONE.plan : TONE.accent;
-                    return (
-                      <button key={id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-agent-option={id} title={hint}
-                        onClick={() => { agent.onChange(id); close(); }} className={`${SEGMENT} ${tone}`}>
-                        <span className="flex max-w-full items-center gap-1 text-sm font-medium leading-tight"><span aria-hidden>{icon}</span><span className="truncate">{label}</span></span>
-                        <span className={SEGMENT_NOTE}>{note}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
+            <ToggleRow label="プラン／ビルド" aria="OpenCode のモード" note={AGENT_MODES.find((m) => m[0] === agent.mode)?.[4] ?? ""}>
+              {AGENT_MODES.map(([id, icon, label, hint]) => {
+                const selected = agent.mode === id;
+                return (
+                  <button key={id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item data-agent-option={id} title={hint}
+                    onClick={() => { agent.onChange(id); close(); }}
+                    className={`${SEGMENT} ${!selected ? UNSELECTED : id === "plan" ? TONE.plan : TONE.accent}`}>
+                    <span aria-hidden>{icon}</span><span className="truncate">{label}</span>
+                  </button>
+                );
+              })}
+            </ToggleRow>
           )}
           {permission && (
-            <>
-              <div role="separator" className={SEPARATOR} />
-              <div role="group" aria-label="OpenCode の権限">
-                <p aria-hidden className={HEADING}>
-                  OpenCode の権限
-                  {permission.editable
-                    ? <span className="ml-auto hidden text-[10px] font-normal text-zinc-400 sm:inline">Shift+Tab でも切替</span>
-                    : <span className="ml-auto text-[10px] font-normal text-zinc-400">変更は管理者</span>}
-                </p>
-                <div className="grid grid-cols-2 gap-1">
-                  {PERMISSION_MODES.map((option) => {
-                    const selected = option.id === permission.mode;
-                    return (
-                      <button key={option.id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item
-                        data-permission-option={option.id} disabled={!permission.editable && !selected} title={option.hint}
-                        onClick={() => { if (permission.editable) permission.onChange(option.id); close(); }}
-                        className={`${SEGMENT} ${!selected ? UNSELECTED : option.id === "auto" ? TONE.accent : TONE.amber}`}>
-                        <span className="flex max-w-full items-center gap-1.5 text-sm font-medium leading-tight">
-                          <span aria-hidden className="font-mono text-xs font-semibold tracking-[-0.2em]">{option.icon}</span>
-                          <span className="truncate">{option.label}</span>
-                        </span>
-                        <span className={SEGMENT_NOTE}>{PERMISSION_NOTE[option.id]}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
+            <ToggleRow label="権限" aria="OpenCode の権限"
+              note={permission.editable ? PERMISSION_NOTE[permission.mode] : `${PERMISSION_NOTE[permission.mode]}・変更は管理者`}>
+              {PERMISSION_MODES.map((option) => {
+                const selected = option.id === permission.mode;
+                return (
+                  <button key={option.id} type="button" role="menuitemradio" aria-checked={selected} data-plus-item
+                    data-permission-option={option.id} disabled={!permission.editable && !selected} title={option.hint}
+                    onClick={() => { if (permission.editable) permission.onChange(option.id); close(); }}
+                    className={`${SEGMENT} ${!selected ? UNSELECTED : option.id === "auto" ? TONE.accent : TONE.amber}`}>
+                    <span className="truncate">{option.label}</span>
+                  </button>
+                );
+              })}
+            </ToggleRow>
           )}
         </div>,
         document.body,

@@ -363,7 +363,10 @@ def _start_workspace(box, owner_user_id: int | None, key: str, *, network: str =
         raise ChatServerError("systemd user manager を利用できません")
     _, binary = provider.active_binary()
     try:
-        chosen = sandbox.model_chain(box)[0]
+        chain = sandbox.model_chain(box)
+        if not chain:
+            raise ChatServerError(sandbox.NO_MODEL_MESSAGE)
+        chosen = chain[0]
         sandbox.opencode_config(box, model="auto" if "/" in chosen else chosen, work_model=chosen,
                                 chat_server=True, default_model=chosen)
     except sandbox.SandboxError as exc:

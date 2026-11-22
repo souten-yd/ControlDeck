@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 211 ファイル、1925 テスト（目的の未記入 93 ファイル）
-- E2E: 105 spec、212 テスト
+- backend: 212 ファイル、1943 テスト（目的の未記入 93 ファイル）
+- E2E: 106 spec、214 テスト
 
 ## backend（backend/tests）
 
@@ -815,6 +815,29 @@
 - `test_hostile_box_git_config_never_runs_on_the_host` — 箱の中の AI が .git/config に仕込んだ実行（fsmonitor・credential.helper・sshCommand・フック）が、ホスト側の
 - `test_api_check_job_changes_and_adopt_with_audit_and_permissions`
 - `test_api_controldeck_adopt_needs_settings_manage`
+
+### backend/tests/test_dev_workspace_targets.py
+
+目的: 開発の作業場の「開発対象」と機能（capabilities）。 目的: 作業場を「ControlDeck の改修か」ではなく機能（llm・tools・mirror・gpu）で分け、機能のない作業場では その機能が本当に使えないことを保つ（画面で隠すだけにしない）。 - 開発対象 app / llm_app / controldeck の既定の機能と取り込み先、元との組み合わせの検査 - 権限: controldeck と gpu の作業場の作成は settings.manage、それ以外は terminal.use。監査に target と capabilities - 強制: 中継（llm 無しで models・chat・load が 403、tools 無しで MCP が 403）・箱の環境の OPENAI_*・ モデルの順番からローカルが消える・mirror 無しで mirror-start を断る・adopt の branch / pr の振り分け - 古い作業場（capabilities 無し）は今までどおり（本体なら controldeck、それ以外は llm_app 相当） 根拠: 2026-11-22 利用者「汎用的にするには、ControlDeck の改修かどうかではなく、機能的な改修対象によって権限を分ける方がよい」 （権限と隔離に関わる L2）。中継・podman・systemd は呼ばない（モック）、git は本物。
+
+- `test_presets_give_capabilities_and_adopt_and_default_target_follows_source`
+- `test_combination_checks_controldeck_and_mirror_only_for_controldeck_source`
+- `test_required_permission_is_manage_for_controldeck_and_gpu_only`
+- `test_old_workspace_without_capabilities_behaves_as_before`
+- `test_tampered_capabilities_in_meta_are_refused`
+- `test_api_permissions_audit_and_listing`
+- `test_relay_without_llm_denies_models_chat_and_load_but_keeps_tools`
+- `test_relay_without_tools_denies_mcp_but_keeps_llm`
+- `test_relay_cli_flags_decide_the_capabilities`
+- `test_ensure_gateway_passes_capabilities_and_restarts_a_mismatched_relay`
+- `test_gateway_health_must_match_the_boxes_capabilities`
+- `test_llm_box_gets_standard_openai_env_and_others_do_not`
+- `test_box_without_llm_drops_local_models_and_conversation_is_refused_without_external`
+- `test_opencode_config_has_no_controldeck_tools_without_the_tools_capability`
+- `test_mirror_start_is_refused_without_the_mirror_capability`
+- `test_adopt_branch_for_non_controldeck_target_never_opens_a_pr`
+- `test_adopt_pr_only_for_controldeck_source_and_branch_never_pushes`
+- `test_api_adopt_permission_follows_the_adopt_mode`
 
 ### backend/tests/test_dev_workspaces.py
 
@@ -3120,6 +3143,13 @@
 目的: 会話のコードブロックの右上のコピーボタンが、コード全体（``` の行を除く）をクリップボードへ写し、「コピーしました」を出すこと。押せる範囲が 44px 程度で、横スクロールしても動かず、コードに重ならないこと。 根拠: 2026-11-21 利用者「コードブロックの右上ぐらいにコピーボタンを付けて、押すと全体がコピーできるように」。
 
 - code block copy button copies the whole code (${width}px)
+
+### frontend/e2e/assistant-dev-targets.spec.ts
+
+目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。プラン／ビルドと権限は 1 行のトグルで、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
+
+- plus menu shows the dev target, details and compact toggles (${width}px ${scheme})
+- target controldeck and mirror cannot be chosen when the source is a CodeDEV project
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts
 

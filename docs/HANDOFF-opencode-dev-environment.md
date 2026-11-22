@@ -19,6 +19,12 @@
 - P1（安全）: 完了（実機で確認）。箱ごとの pod と中継。箱の開発役のモデルは順番方式で実装済み（実機の確認待ち）。次は P2a。
 - P2〜P6: 未着手。
 
+## 開発対象と機能（2026-11-22）
+
+作業場は「ControlDeck の改修か」ではなく**機能**で分ける。meta の `capabilities`: `llm`（ローカル LLM を借りる）・`tools`（ControlDeck の道具＝MCP）・`mirror`（ControlDeck の複製）・`gpu`（P4 未実装）。開発対象 preset: `app`（tools・branch）、`llm_app`（llm・tools・branch）、`controldeck`（llm・tools・mirror・pr。元が本体のときだけ）。強制は中継の起動引数（`--allow-llm`/`--allow-tools`）、`model_chain`、箱の環境、`mirror_start`、`adopt` で行い、画面は選ぶだけ。作成権限は controldeck と gpu が settings.manage。実装は `maintenance/workspaces.py`（PRESETS・plan・required_permission）と `sandbox.py`（Sandbox.capabilities）。
+
+**作るアプリがローカル LLM を使う標準の変数**: `llm` のある箱の中には `OPENAI_BASE_URL`（`http://127.0.0.1:<中継のポート>/api/v1/llm/v1`）と `OPENAI_API_KEY=sandbox`（意味の無い値。本物は渡さない）が入る。作るアプリは OpenAI 互換の標準の書き方でそのまま呼べばよい（ControlDeck 専用の書き方は不要）。`llm` が無い箱は中継が 403 を返す。
+
 ## 実機で確かめた事実（2026-11-21、podman 4.9.3）
 
 - 今の箱は `podman run --network host`（`sandbox.py::container_argv`）。箱の 127.0.0.1 はホストと同じ。

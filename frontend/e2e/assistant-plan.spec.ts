@@ -214,7 +214,7 @@ test("the plus menu stays on a short screen, scrolls inside and follows the arro
   await shell.locator("[data-assistant-plus]").click();
   const menu = page.getByRole("menu", { name: "添付・機能・権限" });
   expect((await menu.boundingBox())!.y).toBeGreaterThanOrEqual(0);
-  await expect(menu.locator('[data-permission-option="auto"]')).toContainText("箱の中は確認なし");   // 選ぶ前に読める
+  await expect(menu.getByRole("group", { name: "OpenCode の権限" })).toContainText("箱の中は確認なし");   // 選ぶ前に読める
   // 会話の欄の自動スクロールでは閉じない（生成中に触っている最中に消えていた）
   await shell.getByText("作りました").evaluate((el) => el.dispatchEvent(new Event("scroll")));
   await expect(menu).toBeVisible();
