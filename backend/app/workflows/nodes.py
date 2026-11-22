@@ -2127,6 +2127,10 @@ async def node_web_search(config: dict, ctx: dict) -> dict:
         cat = str(config.get("categories", "") or "").strip()
         if cat:
             params["categories"] = cat
+        if str(config.get("time_range") or "") in ("day", "week", "month", "year"):
+            params["time_range"] = str(config["time_range"])
+        if int(config.get("pageno") or 1) > 1:
+            params["pageno"] = int(config["pageno"])
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "ControlDeck/1.0"}) as client:
                 r = await client.get(base + "/search", params=params)

@@ -327,9 +327,15 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
         async def cancel(self, request_id):
             return False
 
-    async def web_results(sb, query, pages):
-        assert query == "横浜 天気 明日"
+    queries = []
+
+    async def fake_searx(query, limit, time_range, pageno):
+        queries.append(query)
         return [{"title": "横浜の天気", "url": "https://example.invalid/w", "snippet": "明日は晴れ"}]
+
+    async def fake_read(url, focus="", max_chars=6000, **kwargs):   # 時期が大事な依頼（明日の天気）は本文の日付を確かめる
+        return {"ok": True, "url": url, "title": "横浜の天気", "date": "", "text": "2026年11月23日 横浜 晴れ " * 15, "links": [],
+                "total_chars": 20, "truncated": False}
 
     async def register(conv, text, source, basis="source_fact"):
         saved.append(source)
@@ -339,7 +345,13 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
         return 32768
 
     monkeypatch.setattr("app.models_mgmt.runtime_provider.provider_for_base_url", lambda base: Provider())
-    monkeypatch.setattr(cr, "_web_results", web_results)
+    import datetime as dt
+
+    from app.workflows import research_time, research_tools
+
+    monkeypatch.setattr(research_tools, "searx_for", lambda params, base_url, model: fake_searx)
+    monkeypatch.setattr(research_tools, "read_page", fake_read)
+    monkeypatch.setattr(research_time, "now_jst", lambda: dt.datetime(2026, 11, 22, 15, 40, tzinfo=research_time.TZ))
     monkeypatch.setattr(cp, "register_chat_document", register)
     monkeypatch.setattr(cp, "_context_max", fake_ctx)
     monkeypatch.setattr(rag, "collection_exists", lambda name: False)
@@ -358,9 +370,12 @@ def test_auto_mode_lets_the_model_search_the_web_and_cites_sources(client, monke
 
     job = asyncio.run(scenario())
     assert job.status == "succeeded", job.error
-    assert [t["function"]["name"] for t in requests[0].tools] == [chat_tools.WEB_SEARCH, chat_tools.HF_MODELS]   # 資料が無いので Web と Hugging Face だけ
+    assert [t["function"]["name"] for t in requests[0].tools] == [chat_tools.WEB_SEARCH, chat_tools.READ_PAGE, chat_tools.HF_MODELS]   # 資料が無いので Web の 2 つと Hugging Face
     tool_msg = [m for m in requests[1].messages if m.get("role") == "tool"][0]["content"]
     assert "横浜の天気" in tool_msg and "[R" in tool_msg
+    assert "2026-11-23" in tool_msg and "依頼の期間に合う" in tool_msg   # 明日（11/23）の天気は、本文の日付で確かめた
+    assert any("11月23日" in q for q in queries)   # 「明日」は絶対の日付の検索語でも探す
+    assert "2026年11月22日（日）15時40分" in "".join(str(m.get("content")) for m in requests[0].messages)   # 今の日時を渡す
     events = [e for e in job.events if e.get("message") == "sources"]
     assert events and events[-1]["sources"][0]["url"] == "https://example.invalid/w"
     assert saved and saved[0].startswith("web回答")

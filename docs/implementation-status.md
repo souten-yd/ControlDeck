@@ -1,5 +1,17 @@
 # 実装状況
 
+## 2026-11-22 AI アシスタントの調査: サイト指定・依頼の理解・今日の日付の確認（L2）
+
+- 利用者「Reddit の中で〜、公式ページの機能の使い方、GIGAZINE の記事をもとに調べて」「『調べて』でいきなり検索して関係ないものを選ぶ」「『今日の横浜の天気』で過去の天気を調べる」「検索が不十分にならないよう幅と件数を担保」。
+- 新規 `backend/app/workflows/research_tools.py`（道具 `web_search` の拡張＝sites・time_range・limit 既定 10/最大 30、新しい道具 `read_page`）、`research_intent.py`（依頼の理解 → 検索語 → 選別 → 本文を読む → 足りない観点だけ追加）、`research_time.py`（今の日時・「今日」の解決・ページの日付の照合）。`chat_tools.py` は道具の登録と MAX_ROUNDS 4→12 だけ、`chat_persist.py` は呼び出しの配線。
+- サイトごとの入口: Reddit（search.json → 拒否されたら search.rss → SearXNG `site:`。スレッドは thread.json → .rss）、GitHub（search/issues・repositories・README・issue・blob）、Hacker News（Algolia）、Hugging Face は `huggingface_models` を勧める文だけ、その他は SearXNG の `site:` ＋ `read_page`。
+- 件数の担保: 少なければ ページ送り → 語の言い換え（引用符・短い語・前半・長い 2 語）→ 期間の解除の順に、`site:` を保ったまま再検索。複数サイトは交互に合わせる。
+- `read_page`: 既存の `collect`（SSRF・PDF・文字コード）。長ければ段落に分け、focus に近い段落（reranker＝既存の再ランク、無ければ語の一致）を上位から。題名・日付・リンク一覧（同じサイト先に最大 30）。ロボット確認・本文がほぼ空のページは「読めない」と返す（回避しない）。robots.txt は 1 ページずつの取得では見ない（既存の収集の決まり。巡回は未実装）。
+- 依頼の理解（LLM 1 回・思考なし）: 観点 2〜4・検索語（日英）・時（今日→日付）・sites・simple・clarify。発言の文そのものは検索語にしない。`rule_plan` の「調べて」の近道は検索語を作らず mode だけ決める。web・academic・research のモードは全部この流れを通り、調査の進みに「調べること」「検索語」を出す。
+- 今の日時は `research_time.now_text`（Asia/Tokyo）1 か所から、理解・十分か判定・答えの資料・チャットの道具の指示へ。時期が大事な依頼（時の言葉・天気・価格・ニュースなど）は上位を読んでページの日付を依頼の期間と照合し、合わないものを捨て、合うものが無ければ語を変えて探し直す（簡単 1・通常 3・深い 5 回まで）。チャットの `web_search` も同じ部品（日付つきの語での再検索と本文の日付の確認）を通る。
+- 安全: 通信は `guarded_client` だけ、通信の直前に `ensure_external_allowed`、取得した文は「資料」の注意書き付き。
+- テスト `test_research_tools.py`（19）ほか。限界: この機械からは Reddit の JSON・RSS が 403/429 で、スレッドの本文・コメントは取れず検索の要約で扱う（SearXNG 経由の検索は可）。
+
 ## 2026-11-22 ゲートウェイの「載せ替えの調停役」（L2）
 
 - 利用者「モデルの載せ替え機能をインテリジェントにして…載せ替えの待ち時間は最短に、安全に。載せ替えなくていいタスクを先に、次に載せ替えの回数が最少になるように」。同日の追加「断ると要求が消える。待ち時間で優先度が少しずつ上がるように」「並列は Radiance だけ」。

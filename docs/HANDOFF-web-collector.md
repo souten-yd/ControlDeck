@@ -12,6 +12,7 @@
 | W2 ブラウザ（中継プロキシ） | ☐（ブラウザはこの PC の Chrome を使うと決定） | — |
 | W3 巡回 | ☐ | — |
 | P1 Patent の調査 | ☐ | — |
+| AI アシスタントのサイト指定の調査・依頼の理解・日付の確認（`research_tools.py`・`research_intent.py`・`research_time.py`） | ☑ 2026-11-22（実機評価済み・Reddit は取得制限あり） | — |
 
 ## 2. W1 で作ったもの
 
@@ -60,6 +61,8 @@
 - EPO OPS・USPTO ODP の鍵（無料の登録）。
 
 ## 7. 作業記録（新しい順に追記）
+
+- 2026-11-22 Claude: AI アシスタントの調査を作り直した（詳細は `implementation-status.md` の同日の項）。`collect` を使う `read_page`（本文の抜粋・リンク一覧）、サイトごとの入口、依頼の理解、今日の日付の確認。W1 の取得は変えず、`fetch._CAPTCHA` に Reddit の「Prove your humanity」を、`extract.fallback` に相対リンクの絶対化を足しただけ。robots.txt は 1 ページずつの取得では見ない（巡回 W3 で Protego を使う）。次にやること: Reddit は未認証の JSON・RSS が拒否されるので、認証つきの API（利用者の許可が要る）か別の取得を検討。
 
 - 2026-11-22 Claude: AI アシスタントの道具 `huggingface_models`（`models_mgmt/hf_search.py`）を追加。Hugging Face のモデルを語の揺れ・GGUF 別作者・ベースの派生で広く検索し、Strata 対応をファイル名から判定して表で返す。秘密の会話は通信の直前で止める。続き: 画面での表示と、Models 画面への「Strata 対応で探す」の口は未着手。
 - 2026-11-21 Claude: 利用者「モデルのダウンロードと Workflow のシークレットは設定不要」→ Settings「API キー」から Hugging Face と Workflow のシークレットを外した（クラウドの AI と特許の公開データだけ）。

@@ -9,7 +9,8 @@ def test_rule_plan_combines_web_and_academic():
     plan = rule_plan("最新のLLM論文とWebニュースを横断して比較して")
     assert plan is not None
     assert plan.mode == "research"
-    assert [step.tool for step in plan.steps] == ["web", "academic"]
+    # 発言の文をそのまま検索語にしない（検索語は依頼の理解の段が作る）
+    assert plan.steps == []
     assert plan.decided_by == "rule"
 
 
@@ -71,32 +72,36 @@ def test_send_rejects_mismatched_plan(admin_client):
 
 
 def test_research_combines_sources_and_deduplicates(monkeypatch):
-    import app.workflows.assistant_planner as planner
+    """research は、依頼の理解 → 検索 → 本文 → 論文を 1 つの流れで集め、同じ URL を 1 つにまとめる。"""
     import app.workflows.chat_persist as chat
-    from app.workflows import chat_router, external_search
+    from app.workflows import external_search, research_intent as ri, research_tools
 
-    async def fake_web(body, query, limit):
-        return [
-            {"title": "共通資料", "url": "https://example.test/shared", "snippet": "Web側"},
-            {"title": "最新情報", "url": "https://example.test/web", "snippet": "新しい情報"},
-        ]
+    async def fake_understand(query, recent, base_url, model, **kwargs):
+        return ri.Intent(goal="g", subjects=["x"], aspects=[ri.Aspect("観点1", ["x usage"])], simple=True)
+
+    async def fake_searx(query, limit, time_range, pageno):
+        return [{"title": "共通資料", "url": "https://example.test/shared", "snippet": "x の Web側"},
+                {"title": "最新情報", "url": "https://example.test/web", "snippet": "x の新しい情報"}]
+
+    async def fake_read(url, focus="", max_chars=3500, **kwargs):
+        return {"ok": True, "url": url, "title": "t", "date": "", "text": "x の本文", "links": [], "total_chars": 5, "truncated": False}
 
     async def fake_academic(query, limit):
         return {"results": [
             {"title": "共通資料", "url": "https://example.test/shared", "snippet": "論文側", "source": "OpenAlex"},
-            {"title": "研究結果", "url": "https://example.test/paper", "snippet": "検証結果", "source": "arXiv"},
-        ]}
+            {"title": "研究結果", "url": "https://example.test/paper", "snippet": "x の検証結果", "source": "arXiv"}]}
 
-    async def fake_evaluate(*args, **kwargs):
-        return planner.ResearchEvaluation(sufficient=True, reason="十分")
+    async def no_rank(*a, **k):
+        return None
 
-    monkeypatch.setattr(chat_router, "_web_results", fake_web)
+    monkeypatch.setattr(ri, "understand", fake_understand)
+    monkeypatch.setattr(research_tools, "searx_for", lambda params, b, m: fake_searx)
+    monkeypatch.setattr(research_tools, "read_page", fake_read)
+    monkeypatch.setattr(research_tools, "rerank_scores", no_rank)
+    monkeypatch.setattr(ri, "select_results", lambda aspect, subjects, results, keep, **k: _async(results[:keep]))
     monkeypatch.setattr(external_search, "federated", fake_academic)
-    monkeypatch.setattr(planner, "evaluate", fake_evaluate)
-    monkeypatch.setattr(
-        chat, "_register_conversation_sources",
-        lambda _conv_id, sources: [dict(source, reference_id=f"R{i:X}") for i, source in enumerate(sources, 1)],
-    )
+    monkeypatch.setattr(chat, "_register_conversation_sources",
+                        lambda _c, sources: [dict(source, reference_id=f"R{i:X}") for i, source in enumerate(sources, 1)])
 
     class FakeJob:
         def __init__(self):
@@ -105,20 +110,17 @@ def test_research_combines_sources_and_deduplicates(monkeypatch):
         def log(self, message, **data):
             self.events.append((message, data))
 
-    plan = planner.AssistantPlan(
-        mode="research", reason="横断調査", max_iterations=3,
-        steps=[planner.ResearchStep(tool="web", query="q"), planner.ResearchStep(tool="academic", query="q")],
-    )
-    job = FakeJob()
-    buf = {"meta": {"plan": plan.model_dump(), "progress": []}}
-    history = asyncio.run(chat._server_research(
-        job, buf, "conversation", "q",
-        {"base_url": "http://local/v1", "model": "m", "engine": "duckduckgo"}, plan,
-    ))
-    assert len(buf["meta"]["sources"]) == 3
-    assert len({source["url"] for source in buf["meta"]["sources"]}) == 3
-    assert "[R1]" in history[0]["content"]
-    assert any(message == "progress" and data["phase"] == "sufficient" for message, data in job.events)
+    job, buf = FakeJob(), {"meta": {"progress": []}}
+    history = asyncio.run(chat._server_research(job, buf, "conversation", "x について調べて",
+                                                {"base_url": "http://local/v1", "model": "m"}, None))
+    urls = [s["url"] for s in buf["meta"]["sources"]]
+    assert sorted(urls) == sorted(set(urls)) and len(urls) == 3
+    assert "[R1]" in history[0]["content"] and "今日は" in history[0]["content"]
+    assert any(m == "progress" and "調べること" in d["label"] for m, d in job.events)   # 調査の進みに「調べること」を出す
+
+
+async def _async(value):
+    return value
 
 
 def _routing_cases():

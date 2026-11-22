@@ -25,7 +25,7 @@ MAX_REDIRECTS = 5
 TIMEOUT_S = 30
 PDF_MAX_PAGES = 80
 UA = "Mozilla/5.0 (X11; Linux x86_64) ControlDeck-WebCollector/1.0"
-_CAPTCHA = re.compile(r"captcha|cf-chl-|challenge-platform|are you a robot|ロボットではありません|hcaptcha|recaptcha", re.I)
+_CAPTCHA = re.compile(r"captcha|cf-chl-|challenge-platform|are you a robot|ロボットではありません|hcaptcha|recaptcha|prove your humanity", re.I)
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([A-Za-z0-9_\-]+)""", re.I)
 _META = re.compile(r"""<meta\s+[^>]*?(?:name|property)\s*=\s*["']([^"']+)["'][^>]*?content\s*=\s*["']([^"']*)["']""", re.I)
 # 書誌のメタデータ（Highwire Press の citation_*・Dublin Core の DC.*・Open Graph）。Google Patents・Google Scholar に載る論文・

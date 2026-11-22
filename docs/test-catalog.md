@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 219 ファイル、2036 テスト（目的の未記入 93 ファイル）
+- backend: 220 ファイル、2055 テスト（目的の未記入 93 ファイル）
 - E2E: 110 spec、221 テスト
 
 ## backend（backend/tests）
@@ -449,7 +449,7 @@
 - `test_invalid_llm_plan_falls_back_to_chat`
 - `test_route_api_returns_validated_plan`
 - `test_send_rejects_mismatched_plan`
-- `test_research_combines_sources_and_deduplicates`
+- `test_research_combines_sources_and_deduplicates` — research は、依頼の理解 → 検索 → 本文 → 論文を 1 つの流れで集め、同じ URL を 1 つにまとめる。
 - `test_rule_plan_matches_routing_cases_and_sets_depth` — ルールで決まるべき依頼はルールで正しく決まる（LLM に回してチャットにしない）。
 - `test_frontend_and_backend_share_the_routing_words` — 画面とサーバーが同じ語の表を読む（ずれると判定が食い違う）。
 - `test_llm_plan_can_choose_deep`
@@ -2417,6 +2417,30 @@
 - `test_builtin_catalog_defines_both_xrdp_units` — `./deck.sh service` が書く一覧に xrdp と sesman が入る。
 - `test_helper_accepts_enable_disable_and_rejects_unknown` — 補助が enable/disable を受け付け、一覧に無い id・不正な action を断る（subprocess はモック）。
 - `test_isolated_instance_never_touches_the_machine_service` — 検証用インスタンスは機械の xrdp を操作しない。
+
+### backend/tests/test_research_tools.py
+
+目的: サイト指定の調査・依頼の理解・時の解決・本文での日付の確認のテスト（HTTP・LLM・SearXNG はすべてモック）。 目的と根拠: 2026-11-22 利用者の依頼（Reddit・GIGAZINE・公式ページの中を調べる／『なんとかについて調べて』で関係ないものを選ぶ／ 『今日の横浜の天気』で過去の天気を拾う）。守ること: 検索の件数が足りること（語を広げても site を保つ）、ページは focus に近い段落が上に来て リンクを辿れること、今日がいつかを全部の段へ渡し「今日」を日付に直すこと、日付の合わないページを捨てて探し直すこと、 秘密の会話・社内のアドレスへは通信しないこと。
+
+- `test_now_text_and_relative_dates`
+- `test_page_date_is_checked_against_the_requested_period`
+- `test_sites_are_normalized_and_queries_widen_while_keeping_the_site`
+- `test_search_limit_is_clamped_and_multiple_sites_are_merged`
+- `test_reddit_search_and_thread_comments`
+- `test_reddit_falls_back_to_rss_then_searxng`
+- `test_github_and_hacker_news_entrances`
+- `test_excerpt_puts_relevant_paragraphs_first_and_links_prefer_same_site`
+- `test_read_page_reads_html_with_links_and_pdf`
+- `test_internal_addresses_and_confidential_conversations_never_connect`
+- `test_tools_register_sources_and_wrap_text_as_material`
+- `test_chat_web_search_tool_checks_dates_in_the_body` — チャットの web_search も同じ流れ: 「今日の天気」は日付つきの語でも探し、本文の日付が合わないものは捨てる。
+- `test_guidance_has_the_current_time_from_the_single_function`
+- `test_understanding_builds_short_queries_per_aspect_and_never_the_raw_sentence`
+- `test_simple_requests_get_one_query_and_ambiguous_ones_ask_back`
+- `test_understanding_falls_back_to_rules_when_the_llm_fails`
+- `test_selection_drops_irrelevant_results_with_reranker_or_words`
+- `test_investigation_drops_stale_pages_and_searches_again_only_for_gaps`
+- `test_investigation_stops_at_the_round_limit_and_says_when_nothing_matches`
 
 ### backend/tests/test_resource_api.py
 
