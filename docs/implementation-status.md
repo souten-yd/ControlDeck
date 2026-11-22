@@ -3,6 +3,12 @@
 ## 2026-11-23 完了カードが短い答えを繰り返していた（#565 の直し）
 
 - #565 の完了カードは、「結果・まとめ」の節が無いと本文の最初の行をまとめにしていたので、短い答え（「作りました」）に同じ文が 2 つ出た。E2E（assistant-plan・assistant-claude-layout の 14 件）も同じ文が 2 つで落ちた（#566 のマージの時点で Opus が E2E の結果を見落とした）。まとめは「結果・まとめ」の節があるときか本文が 400 字以上のときだけ出す。
+## 2026-11-23 AI アシスタント: 推奨どおりで進めるボタン・ヘッダの auto に実モデル名（U13・U11）
+
+- U13: 完了した OpenCode の回の本文に「決めてもらいたいこと」の見出しと番号付きの質問（すべてに「推奨：」）があれば、本文の下に推奨の一覧と「推奨どおりで進める」を出す。押すと「推奨どおりでお願いします（1: …、2: …）」を同じ会話・同じ agent（プラン/ビルド）へ送る（既存の `send`）。検出は `planQuestions.ts`（本文の書き方だけ、LLM 不使用。推奨の無い質問が 1 つでもあれば出さない）。SKILL.md の「利用者に決めてもらうこと」に書き方を 1 行足した。OpenCode の question の道具は従来どおり deny。
+- U11: `/workflows/llm-endpoints` の managed の項目に `auto_resolves_to`（`gateway.resolve_instance` と同じ解き方）を足し、ヘッダの札を「auto（モデル名）」に（長ければ省略、title に全体、押すと既存の設定＝モデルの選択）。OpenCode の会話では設定に「役割ごとのモデル」（既存の `/opencode/workflow` の `role_info`。`RolesPanel` の `ROLE_LABELS` を共有）の一覧。
+- テスト: `test_assistant_auto_model.py`、E2E `assistant-question-buttons-model-pill.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/question-buttons-*`・`model-pill-roles-*`）。
+- 注意: 320px 未満 360px の札は既存の仕様で文字を隠す（アイコンと title のみ）。
 
 ## 2026-11-23 AI アシスタント: いまの作業の 1 行・子エージェントの見える化・完了カード（U4・U5・U6、L1）
 

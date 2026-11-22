@@ -37,6 +37,9 @@ const STAGES: { n: number; title: string; hint: string; roles: { key: RoleKey; l
   ] },
 ];
 
+/** 役割の表示名（AI アシスタントのヘッダの「役割ごとのモデル」一覧もこれを使う） */
+export const ROLE_LABELS: [RoleKey, string][] = STAGES.flatMap((stage) => stage.roles.map((r): [RoleKey, string] => [r.key, r.label]));
+
 export function RolesPanel({ value, onChange, editable, onProblem, defaultModel }: {
   value: Workflow; onChange: (next: Workflow) => void; editable: boolean; onProblem?: (message: string | null) => void;
   /** 既定のモデル（役割でモデルを選ばなければ、このモデルで動く）。 */

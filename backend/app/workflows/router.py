@@ -50,7 +50,21 @@ async def llm_endpoints(user: User = Depends(require_permission("workflows.edit"
     for endpoint in result:
         if endpoint.get("managed"):
             endpoint["model_labels"] = {m: labels[m] for m in endpoint.get("models", []) if m in labels}
+            endpoint["auto_resolves_to"] = await asyncio.to_thread(_auto_target, labels)
     return result
+
+
+def _auto_target(labels: dict[str, str]) -> dict | None:
+    """「auto」が今解かれるモデル（ゲートウェイの転送と同じ resolve_instance の結果）。解けなければ None。"""
+    from app.models_mgmt import gateway
+
+    try:
+        item = gateway.resolve_instance(gateway.AUTO_MODEL)
+    except HTTPException:
+        return None
+    alias = str(item.get("alias") or "")
+    return {"alias": alias, "name": labels.get(alias, alias), "runtime": str(item.get("runtime") or ""),
+            "loaded": bool(item.get("loaded"))}
 
 
 def _model_labels() -> dict[str, str]:

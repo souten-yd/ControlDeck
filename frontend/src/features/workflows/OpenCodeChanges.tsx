@@ -133,7 +133,7 @@ export function extractSummary(content: string): string {
     for (const line of lines.slice(from + 1)) {
       if (heading(line)) break;
       if (!line.trim() && body.length) break;
-      if (line.trim() && !/^ {0,3}(```|~~~)/.test(line)) body.push(line.trim().replace(/^[-*]\s+/, ""));
+      if (line.trim() && !/^ {0,3}(```|~~~)/.test(line)) body.push(line.trim().replace(/^[-*]\s+/, "").replace(/(\*\*|__|`)/g, ""));
       if (body.length >= 3) break;
     }
     return body.join(" ");
