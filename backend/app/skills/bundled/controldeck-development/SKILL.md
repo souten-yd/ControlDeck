@@ -1,15 +1,33 @@
 ---
 name: controldeck-development
-description: Use when you implement, fix or change code in a repository — especially ControlDeck. Gives the order of work (read, find a model to copy, implement, test, gate, report), the rules to obey, the completion condition (`./deck.sh dev-check` passes and the reviewer's findings are fixed) and the report format. Triggers on "実装して", "直して", "機能を足して", "開発", "指示書", implement, fix, refactor.
+description: Use when you implement, fix or change code in a repository — especially ControlDeck. Starts by writing a plan (指示書) from the user's short request and showing it before building. Gives the order of work (plan, read, find a model to copy, implement, test, gate, report), the rules to obey, the completion condition (`./deck.sh dev-check` passes and the reviewer's findings are fixed) and the report format. Triggers on "実装して", "直して", "機能を足して", "開発", "指示書", implement, fix, refactor.
 license: MIT
 metadata:
   author: ControlDeck
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # 開発の作業の進め方
 
 間違いの少ない開発は、書く前の読み方と、終わる前の機械的な確かめで決まる。この順に進める。
+
+## 0. 要望から指示書（計画）を書く（最初に必ず）
+
+利用者の要望は短い（「◯◯を足して」）。成功を一番左右するのは、書き始める前の指示書の質である（2026-11-22 の試験: 指示書が具体的なら、ローカル LLM でも GLM でも 25〜60 分で仕上がった）。
+指示書が渡されていないときは、作業の前に **`.controldeck/plan.md`**（作業ツリーの中。コミットしない）へ次の型で書く。
+
+1. **目的** — 利用者の言葉をそのまま引用し、何ができれば完了かを 1〜2 行で。
+2. **まず読むもの** — 規約（AGENTS.md・CLAUDE.md）、関係する HANDOFF・計画の節、**手本のファイルと関数の名前**（`grep -rn` で探して実在を確かめたもの）。
+3. **作るもの** — 番号付きで、保存（表・ファイル）・API（メソッドとパス・権限・監査）・画面（どの画面のどこに何）・強制の場所（画面で隠すだけにしない）を具体的に。手本と同じ形にする所と、変える所。
+4. **守ること** — このリポジトリの決まり（下の「守ること」）と、この仕事に固有の注意（秘密・外部送信・既存の挙動を変えない所）。
+5. **テスト** — 何を確かめるか（正しい場合・断る場合・境目）。画面なら E2E の手順と、320・1280、ライト・ダークの撮影。
+6. **完了の条件** — 関門の合格、確かめられないもの（実機・外部・画面の見た目）を先に書いておく。
+7. **利用者に決めてもらうこと** — 利用者の判断が要る分かれ道だけ（無ければ「無し」）。技術の選択は自分で決め、理由を書く。
+
+書いたら:
+- **プランのモード**なら、指示書の要点（作るもの・決めてもらうこと）を利用者に見せて止まる。利用者がビルドへ切り替えたら、その指示書どおりに進める。
+- **ビルドのモード**で、決めてもらうことが「無し」なら、そのまま進める（最後の報告の先頭に指示書の要点を付ける）。決めてもらうことがあれば、聞いてから進める。
+- 作業が大きい（ファイル 10 を超える・画面と backend の両方・移行がある）ときは、段に分けて指示書に段を書き、段ごとに関門を通してコミットする。
 
 ## 共通の進め方（どのリポジトリでも）
 
@@ -33,6 +51,7 @@ metadata:
 
 ### 4. 報告の型
 
+0. 指示書の要点（`.controldeck/plan.md` から。作るもの・決めたこと）
 1. 変えたファイル（一覧と 1 行ずつの理由）
 2. テスト（足したもの・流したコマンド・結果）
 3. 手本から変えた点（無ければ「無し」）

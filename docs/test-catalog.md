@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 208 ファイル、1903 テスト（目的の未記入 93 ファイル）
+- backend: 209 ファイル、1904 テスト（目的の未記入 93 ファイル）
 - E2E: 105 spec、212 テスト
 
 ## backend（backend/tests）
@@ -794,6 +794,12 @@
 - `test_legacy_sandbox_json_is_migrated_once_after_inspection_and_extra_overlays_are_dropped`
 - `test_tampered_legacy_meta_is_refused`
 - `test_git_common_dir_of_a_stored_meta_is_checked_on_every_load`
+
+### backend/tests/test_dev_skill_planning.py
+
+目的: 開発のスキル（controldeck-development）が、作業の前に指示書（計画）を書かせること。 目的: 要望から `.controldeck/plan.md` に指示書を書き、プランのモードでは見せて止まる段が、スキルから消えないこと。 根拠: 2026-11-22 の試験で、成果を一番左右したのは指示書の質だった（Opus が書いた指示書なら、ローカル LLM でも GLM でも 25〜60 分で仕上がった）。Claude が要る部分を減らすため、指示書の型をスキルに入れた（利用者「Claude が要る部分の開発にまず注力」）。
+
+- `test_skill_asks_for_a_plan_before_building`
 
 ### backend/tests/test_dev_workspace_adopt.py
 
