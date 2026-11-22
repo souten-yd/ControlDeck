@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 217 ファイル、2006 テスト（目的の未記入 93 ファイル）
+- backend: 218 ファイル、2015 テスト（目的の未記入 93 ファイル）
 - E2E: 109 spec、220 テスト
 
 ## backend（backend/tests）
@@ -1243,6 +1243,20 @@
 - `test_download_saves_under_repo_directory_and_can_register`
 - `test_download_skips_files_already_present`
 - `test_presets_find_files_across_libraries` — 既定ライブラリが変わっても、別の場所にある既存GGUFを再取得しない。
+
+### backend/tests/test_hf_search.py
+
+目的: Hugging Face のモデル検索（AI アシスタントの道具 huggingface_models）。 目的: 「Qwen の最新で Strata に対応しているモデル」を、取りこぼさず・誤判定せず答えられること。 根拠: 2026-11-22 利用者の依頼「検索の幅・十分な件数を担保して」。Strata は ISTA-DASLab の GSQ-RCO・Unsloth の UD-*・Q8_0 だけを 動かし、Q4_K_S などは動かない（strata_gateway.check_runnable、2026-11-21 本番の起動失敗）。秘密の会話は通信の直前で止める （app.security.offline）。HTTP はすべてモック。
+
+- `test_strata_judgement`
+- `test_variants_and_params`
+- `test_official_first_with_ordered_placements_and_derivatives_below`
+- `test_derivatives_can_be_excluded_and_tts_hidden_by_default`
+- `test_runtime_strata_keeps_only_rows_with_strata_placement`
+- `test_pagination_follows_cursor`
+- `test_cache_and_registered_mark`
+- `test_confidential_scope_never_connects`
+- `test_tool_registered_and_answer_shape`
 
 ### backend/tests/test_inline_code.py
 
