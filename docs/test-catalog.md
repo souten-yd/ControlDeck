@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 227 ファイル、2123 テスト（目的の未記入 93 ファイル）
-- E2E: 114 spec、234 テスト
+- E2E: 114 spec、236 テスト
 
 ## backend（backend/tests）
 
@@ -3482,11 +3482,13 @@
 
 ### frontend/e2e/assistant-question-buttons-model-pill.spec.ts
 
-目的: 目的: (U13) OpenCode の回の本文に「決めてもらいたいこと」の番号付きの質問（推奨つき）があれば、本文の下に推奨の一覧と 「推奨どおりで進める」が出て、押すと「推奨どおりでお願いします（1: …、2: …）」を同じ会話・同じモードへ送ること。 見つからない・推奨の無い質問があるときは何も出さないこと（検出は本文の書き方だけ。LLM は使わない）。 (U11) ヘッダの札が「auto（実際のモデル名）」になり、320px でも札が切れて崩れず（長ければ省略・title に全体）、 OpenCode の会話では設定に「役割ごとのモデル」の一覧が出ること。 根拠: 2026-11-23 利用者の通し（評価 U13・U11）。推奨つきの質問に「両方推奨どおり」と打っていた／「auto」では何のモデルが動くか分からなかった。 API は page.route で模擬する（OpenCode と LLM を動かさない）。
+目的: 目的: (U13) OpenCode の回の本文に「決めてもらいたいこと」の質問があれば、本文の下に答えの画面（選択肢のラジオ／チェックボックス・ 「推奨」の札・推奨は最初から選択・「その他」の自由入力・全体の補足）が出て、「この答えで作る」はビルドで、 「答えてプランを直す」はプランのまま、答えを付けて送ること。答えの無い質問があれば押せないこと。 質問があるプランでは、答え無しの単独「このプランで作る」を出さないこと。 抜き出しは、新しい書き方・古い書き方（→ 推奨：○○）・複数可・選択肢の無い質問・見出しの無い本文を扱い、LLM は使わない。 (U11) ヘッダの札が「auto（実際のモデル名）」になり、320px でも札が切れて崩れず（長ければ省略・title に全体）、 OpenCode の会話では設定に「役割ごとのモデル」の一覧が出ること。 根拠: 2026-11-23 利用者の通し（評価 U13・U11）。「Claude みたいにチェックボックスと自由入力で答えたい。選択肢にも推奨が出てほしい。 推奨どおりに進めると『このプランで作る』が同時に出ていて、答え無しで始めてよいのか分からない」。 API は page.route で模擬する（OpenCode と LLM を動かさない）。
 
-- extractPlanQuestions: found / none / recommendation text / all-or-nothing
+- extractPlanQuestions: new format / old format / multi / free-only / no heading
 - proceed-with-recommendations button and model pill (${width}px ${scheme})
-- no buttons when the body has no recommended questions
+- the primary button builds with the answers, a free answer replaces the choice, old-style recommendation still works
+- the recommended answers are sent as they are, and in a build turn only one button is shown
+- no answer form when there are no questions, and the plain build button stays
 
 ### frontend/e2e/assistant-queue-voice.spec.ts
 
