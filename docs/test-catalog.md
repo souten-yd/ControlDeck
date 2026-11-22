@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 228 ファイル、2136 テスト（目的の未記入 93 ファイル）
-- E2E: 118 spec、243 テスト
+- backend: 228 ファイル、2144 テスト（目的の未記入 93 ファイル）
+- E2E: 119 spec、244 テスト
 
 ## backend（backend/tests）
 
@@ -870,6 +870,13 @@
 - `test_fetch_main_refuses_unsafe_sources` — 実行を伴うリモート補助（ext::・fd::）とオプションに読める先頭の `-` は fetch しない（git も動かさない）。
 - `test_autosave_runs_one_at_a_time_per_workspace` — 2 つのターンの終わり・起動時の立て直しが重なっても、番号が重ならず index.lock を取り合わない。
 - `test_restore_interrupted_does_not_wake_untouched_workspaces` — 止まっていた作業場まで全部起こさない（podman の起動）。中断にした・lock の残った作業場だけを保存する。
+- `test_autosave_returns_the_committed_head`
+- `test_restore_resets_code_keeps_before_ref_records_meta_and_note_once`
+- `test_checkpoints_list_saves_newest_first_with_count_and_conversation`
+- `test_restore_rejects_malformed_sha`
+- `test_restore_rejects_commits_outside_this_workspace_history`
+- `test_restore_refuses_when_unsaved_changes_cannot_be_saved`
+- `test_restore_api_404_409_and_audit`
 
 ### backend/tests/test_dev_workspace_targets.py
 
@@ -1927,7 +1934,7 @@
 
 ### backend/tests/test_notify_events.py
 
-目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」が有効なら送る。無効なら送らない。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
+目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」を有効にしたときだけ送る（既定は無効）。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
 
 - `test_disabled_kind_is_not_sent_and_defaults_apply`
 - `test_quiet_hours_cross_midnight_and_boundaries`
@@ -2165,6 +2172,7 @@
 - `test_model_index_is_not_carried_into_a_new_session` — セッションを作り直した（前のが無い）ときのモデルは既定へ戻っている。前の回の chain の位置を引きずらない
 - `test_resume_cannot_be_done_twice_for_the_same_turn`
 - `test_resume_refuses_while_the_session_still_runs` — ControlDeck の再起動の後も OpenCode のセッションが箱の中で動き続けていれば、続きからは送らずに 409 で知らせる
+- `test_turn_records_checkpoint_and_sends_restore_note_to_the_agent`
 
 ### backend/tests/test_passkeys.py
 
@@ -3529,6 +3537,12 @@
 
 - requests sent during a run wait, can be edited, removed and restored, then arrive (${width}px)
 - voice input shows a waveform, keeps listening through silence and types each phrase (${width}px)
+
+### frontend/e2e/assistant-restore-checkpoint.spec.ts
+
+目的: **未記入**
+
+- restore the code to the checkpoint of an autosaved turn
 
 ### frontend/e2e/assistant-secret-lock-topbar.spec.ts
 

@@ -9,6 +9,7 @@ import { badgeText, targetInfo } from "./workspaceTargets";
 import { WorkspaceDiff } from "./WorkspaceDiff";
 import { ReviewButton } from "./DiffAsk";
 import { WorkspaceMergeButton } from "./WorkspaceMerge";
+import { WorkspaceCheckpoints } from "./RestoreDialog";
 
 export type DevWorkspace = {
   name: string; source: string; source_label: string; branch: string;
@@ -280,6 +281,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             変更{diff ? "を閉じる" : "（行ごとの差分）を見る"}
           </button>
           {diff && <WorkspaceDiff name={name} />}
+          <WorkspaceCheckpoints name={name} busy={busy} onRestored={() => void qc.invalidateQueries({ queryKey: changesKey })} />
           {check && !check.passed && !check.stale && (
             <ul data-testid="workspace-check-failures" className="list-disc pl-4 text-red-700 dark:text-red-400">
               {check.items.filter((i) => i.status === "ng").map((i) => <li key={i.name}>{i.name}: {i.message}</li>)}
