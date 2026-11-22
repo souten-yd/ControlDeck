@@ -413,10 +413,50 @@ def changes(box: Sandbox) -> dict:
     summary_.update(dirty=bool(state["dirty"]), uncommitted=state["dirty"],
                     check=check_state(box, state["tree"]), adopted=adopted_state(box), merged=merged_state(box))
     summary_["behind"] = main_progress(box)
+    summary_["suggested_title"] = suggest_title(box)
     summary_["merge_conflict"] = merge_conflict_state(box)
     summary_["disk_free_gib"] = round(disk_free_gib(), 1)
     summary_["disk_low"] = disk_free_gib() < min_free_gib() * 2
     return summary_
+
+
+AUTOSAVE_SUBJECT = re.compile(r"^作業途中の保存 #\d+(?:（会話 (\S+) のターン）)?")
+DEFAULT_CONVERSATION_TITLES = {"新しい会話", "新しいチャット", ""}
+
+
+def suggest_title(box: Sandbox) -> str:
+    """取り込み（PR）の題の候補（U18）。前は最後のコミットの件名だったので、自動保存が入ると
+    「作業途中の保存 #3（会話 … のターン）」が PR の題になっていた。
+
+    1. 自動保存・マージ以外のコミットの件名（新しいもの。AI か利用者が付けた名前）
+    2. 自動保存に記録された会話の題（最後に作業した会話）
+    3. 「作業場 <名前> からの変更」
+    件名は箱の中で AI が書いたものなので、1 行に畳んで 120 字に切る（gh へは引数で渡す）。"""
+    fallback = f"作業場 {box.name} からの変更"
+    try:
+        # 起点は差分と同じ change_base（途中で取り込んだ main の他の PR の件名を拾わない）
+        exp = export_repo()
+        head = _host_git("rev-parse", ws_ref(box.name), cwd=exp)
+        subjects = _host_git("log", "--no-merges", "-n", "100", "--format=%s", f"{change_base(box, head)}..{head}",
+                             cwd=exp).splitlines()
+    except SandboxError:
+        return fallback
+    conversation = ""
+    for subject in subjects:
+        saved = AUTOSAVE_SUBJECT.match(subject)
+        if saved is None:
+            return " ".join(subject.split())[:120] or fallback
+        conversation = conversation or (saved.group(1) or "")
+    if conversation:
+        from app.database import SessionLocal
+        from app.models import Conversation
+
+        with SessionLocal() as db:
+            row = db.get(Conversation, conversation)
+            title = " ".join((row.title if row is not None else "").split())
+        if title not in DEFAULT_CONVERSATION_TITLES:
+            return title[:120]
+    return fallback
 
 
 def check_state(box: Sandbox, current_tree: str | None = None) -> dict | None:
@@ -574,8 +614,7 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
             url = str(previous["pr_url"])
         else:
             summary_ = _diff_summary(box, head)
-            subject = commit_message.strip().splitlines()[0] if commit_message.strip() else (
-                _host_git("log", "-1", "--format=%s", head, cwd=exp) or f"作業場 {name} からの変更")
+            subject = commit_message.strip().splitlines()[0] if commit_message.strip() else suggest_title(box)
             url = _gh("pr", "create", "-R", slug, "--base", "main", "--head", branch,
                       "--title", (title.strip() or subject)[:120],
                       "--body", _body_of(summary_, name, saved, username, box)

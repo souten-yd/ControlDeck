@@ -39,6 +39,8 @@ export type WorkspaceChanges = {
   merge_conflict?: { conflicts: string[]; at: number } | null;
   /** data のある所のディスクの空き（GiB）と、下限の 2 倍未満か */
   disk_free_gib?: number; disk_low?: boolean;
+  /** PR の題の候補（自動保存の件名ではなく、名前の付いたコミットか会話の題。U18） */
+  suggested_title?: string;
 };
 
 /** 作業場の進み具合（GET /opencode/workspaces/progress。Project Lab の「作業場」のタブ用） */
@@ -127,6 +129,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const [working, setWorking] = useState(false);
   const [asking, setAsking] = useState(false);
   const [message, setMessage] = useState("");
+  const [title, setTitle] = useState("");
   const wasBusy = useRef(busy);
   const changesKey = ["workspace-changes", name];
   const { data: info, error } = useQuery({
@@ -198,7 +201,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
     if (working) return;
     setWorking(true);
     try {
-      await api(`${base}/adopt`, { method: "POST", json: { confirm: true, commit_message: info?.dirty ? message.trim() : "" } });
+      await api(`${base}/adopt`, { method: "POST", json: { confirm: true, commit_message: info?.dirty ? message.trim() : "", ...(isBody && title.trim() ? { title: title.trim() } : {}) } });
       await qc.invalidateQueries({ queryKey: changesKey });
       setAdopting(false);
       show(isBody ? "PR を作りました" : `ブランチ ws/${name} として取り込みました`);
@@ -300,7 +303,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             )}
             {info.file_count > 0 && <ReviewButton className="text-sm" />}
             {!adopted && (
-              <button type="button" onClick={() => setAdopting(true)} disabled={!ready}
+              <button type="button" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdopting(true); }} disabled={!ready}
                 title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "関門が合格で、その後に変更が無いときに押せます" : ""}
                 className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:bg-sky-600/15 disabled:text-sky-700 dark:disabled:text-sky-400">
                 取り込む
@@ -324,6 +327,13 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
       {adopting && (
         <ConfirmDialog title="取り込む" danger={false} message={target} confirmLabel="取り込む" busy={working}
           disabled={Boolean(info?.dirty) && !message.trim()} onConfirm={() => void adopt()} onClose={() => setAdopting(false)}>
+          {isBody && (
+            <label className="mt-3 block text-xs text-zinc-600 dark:text-zinc-400">
+              PR の題
+              <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} data-testid="adopt-title"
+                className="mt-1 min-h-11 w-full rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+            </label>
+          )}
           {info?.dirty && (
             <label className="mt-3 block text-xs text-zinc-600 dark:text-zinc-400">
               コミットメッセージ（未コミットの変更をここでコミットします）

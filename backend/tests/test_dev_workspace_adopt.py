@@ -332,3 +332,35 @@ def test_api_controldeck_adopt_needs_settings_manage(box, api, monkeypatch, exte
     monkeypatch.setattr(deps, "user_permissions", lambda user: {"terminal.use", "settings.manage"})
     assert api.post(f"/api/v1/opencode/workspaces/{box.name}/adopt", json={"confirm": True},
                     headers=CSRF_HEADERS).status_code == 200
+
+
+def test_suggested_title_skips_autosaves_and_falls_back_to_the_conversation(repo, monkeypatch):  # noqa: F811
+    """U18: PR の題に「作業途中の保存 #N」を使わない。名前の付いたコミットが無ければ、自動保存に記録された会話の題。
+    根拠: 前は最後のコミットの件名を題にしていたので、ターンの終わりの自動保存が PR の題になっていた（2026-11-22 の通し）。"""
+    from app.database import SessionLocal
+    from app.models import Conversation
+
+    with SessionLocal() as db:
+        db.add(Conversation(id="convtitle1", title="ログイン画面の文言を直す"))
+        db.commit()
+    made = workspaces.create("admin", "controldeck", "ws2")
+    box = sandbox.load(made["name"])
+    (box.repo / "b.txt").write_text("x")
+    git(box.repo, "add", "-A")
+    git(box.repo, "commit", "-q", "-m", "作業途中の保存 #1（会話 convtitle1 のターン）")
+    workspaces.import_head(box)
+    assert workspaces.suggest_title(sandbox.load(box.name)) == "ログイン画面の文言を直す"
+
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "ボタンの\t色を  直す")
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "作業途中の保存 #2（会話 convtitle1 のターン）")
+    workspaces.import_head(box)
+    assert workspaces.suggest_title(sandbox.load(box.name)) == "ボタンの 色を 直す", "名前の付いたコミットを優先し 1 行に畳む"
+    assert workspaces.changes(sandbox.load(box.name))["suggested_title"] == "ボタンの 色を 直す"
+
+
+def test_suggested_title_without_conversation_uses_workspace_name(repo):  # noqa: F811
+    made = workspaces.create("admin", "controldeck", "ws3")
+    box = sandbox.load(made["name"])
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "作業途中の保存 #1（起動時の立て直し）")
+    workspaces.import_head(box)
+    assert workspaces.suggest_title(sandbox.load(box.name)) == f"作業場 {box.name} からの変更"

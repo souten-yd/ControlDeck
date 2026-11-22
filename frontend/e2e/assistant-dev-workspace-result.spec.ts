@@ -36,6 +36,7 @@ async function mock(page: Page) {
       { path: "docs/very/long/path/that/should/truncate/instead/of/overflowing/the/card/note.md", added: 10, removed: 0, binary: false, untracked: false },
       { path: "frontend/src/new.ts", added: 0, removed: 0, binary: false, untracked: true }],
     commits: [{ sha: "def7654321", author: "ControlDeck Sandbox", at: 1, subject: "x を直す" }], commit_count: 1,
+    suggested_title: "ログイン画面の文言を直す",
     check: state.check ? { ...state.check, at: 1, head: "def7654321", items: state.check.passed
       ? [{ status: "ok", name: "テスト", message: "3 件" }]
       : state.visualOnly ? [{ status: "ok", name: "テスト", message: "3 件" }, { status: "ng", name: "画面の見た目", message: "重大 3 件" }]
@@ -105,12 +106,15 @@ for (const width of [320, 1280]) {
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("GitHub に PR を作ります");
     await expect(dialog.getByRole("button", { name: "取り込む" })).toBeDisabled();
-    await dialog.getByRole("textbox").fill("x を直す");
+    // PR の題は候補（会話の題など）が入っていて書き換えられる（U18）
+    await expect(dialog.getByTestId("adopt-title")).toHaveValue("ログイン画面の文言を直す");
+    await dialog.getByTestId("adopt-title").fill("ログインの文言を直す");
+    await dialog.getByRole("textbox", { name: /コミットメッセージ/ }).fill("x を直す");
     await page.screenshot({ path: `test-results/workspace-result-${width}-confirm.png` });
     await dialog.getByRole("button", { name: "取り込む" }).click();
     await expect(card.getByTestId("workspace-adopted")).toContainText("PR を作りました");
     await expect(card.getByTestId("workspace-adopted").getByRole("link")).toHaveAttribute("href", PR);
-    expect(state.adopts).toEqual([{ confirm: true, commit_message: "x を直す" }]);
+    expect(state.adopts).toEqual([{ confirm: true, commit_message: "x を直す", title: "ログインの文言を直す" }]);
     await noOverflow();
     await page.screenshot({ path: `test-results/workspace-result-${width}-adopted.png` });
   });
