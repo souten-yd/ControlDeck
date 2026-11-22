@@ -28,7 +28,9 @@ test("extractPlanQuestions: new format / old format / multi / free-only / no hea
   expect(picks).toEqual([{ picked: [0], other: "" }, { picked: [0, 2], other: "" }, { picked: [], other: "" }]);   // 推奨は最初から選ぶ。自由入力だけは空
   expect(answerOf(found[0], picks[0])).toBe("揃える（推奨どおり）");
   expect(answerOf(found[1], { picked: [2, 1], other: "" })).toBe("日付、場所");                                     // 推奨どおりでなければ付けない
-  expect(answerOf(found[1], { picked: [1], other: " 全部 " })).toBe("全部");                                       // 自由入力があればそれを使う
+  expect(answerOf(found[1], { picked: [1], other: " 全部 " })).toBe("日付、全部");                                  // 複数可では自由入力を選んだものに足す
+  expect(answerOf(found[1], { picked: [], other: "全部" })).toBe("全部");
+  expect(answerOf(found[0], { picked: [0], other: "半分だけ" })).toBe("半分だけ");                                   // 1 つだけ選ぶ質問では自由入力が選択の代わり
   expect(buildPlanAnswer(found, [picks[0], picks[1], { picked: [], other: "tag" }], "急がない", false)).toBe(
     "決めたこと:\n1. ＋の隣の札もアイコンに揃えますか？ → 揃える（推奨どおり）\n2. 出す項目 → 名前、場所（推奨どおり）\n3. 新しい札の名前は？ → tag\n補足: 急がない\nこの答えでプランどおり実装してください。");
   expect(buildPlanAnswer(found.slice(2), [{ picked: [], other: "x" }], "", true)).toMatch(/この答えでプランを直してください。$/);

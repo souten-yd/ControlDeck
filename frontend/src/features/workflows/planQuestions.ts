@@ -71,12 +71,14 @@ export function initialPicks(questions: PlanQuestion[]): PlanPick[] {
 /** 質問 1 つの答えの文（無ければ空）。自由入力があればそれを使う */
 export function answerOf(q: PlanQuestion, pick: PlanPick): string {
   const other = pick.other.trim();
-  if (other) return other;
+  // 1 つだけ選ぶ質問では「その他」が選択の代わり。複数可では選んだものに足す（Claude の質問の画面と同じ）
+  if (other && !q.multi) return other;
   const picked = [...pick.picked].sort((a, b) => a - b);
-  if (!picked.length) return "";
+  if (!picked.length) return other;
   const labels = picked.map((i) => q.options[i].label).join("、");
   const rec = q.options.flatMap((o, i) => (o.recommended ? [i] : []));
-  return rec.length && rec.length === picked.length && rec.every((i, k) => i === picked[k]) ? `${labels}（推奨どおり）` : labels;
+  const asRecommended = !other && rec.length && rec.length === picked.length && rec.every((i, k) => i === picked[k]);
+  return asRecommended ? `${labels}（推奨どおり）` : other ? `${labels}、${other}` : labels;
 }
 
 /** 答えていない質問の番号 */
