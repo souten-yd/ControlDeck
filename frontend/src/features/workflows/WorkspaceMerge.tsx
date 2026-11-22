@@ -14,7 +14,6 @@ export type MergePreview = {
   merged: { at: number; by: string; pr_url: string; tier: string } | null;
 };
 
-export const L2_PHRASE = "L2 を理解した";
 const TIER_TEXT: Record<string, string> = {
   L0: "L0（文書・テスト・CodeDEV のアプリ）", L1: "L1（通常の変更。関門を通れば自動で進められます）", L2: "L2（利用者の承認が要る変更）",
 };
@@ -34,7 +33,6 @@ function WorkspaceMergeDialog({ name, onClose }: { name: string; onClose: () => 
   const base = `/opencode/workspaces/${encodeURIComponent(name)}/merge`;
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [phrase, setPhrase] = useState("");
   const [working, setWorking] = useState(false);
   const [done, setDone] = useState(false);
   const [failure, setFailure] = useState("");
@@ -42,15 +40,14 @@ function WorkspaceMergeDialog({ name, onClose }: { name: string; onClose: () => 
     queryKey: ["workspace-merge", name], queryFn: () => api<MergePreview>(base), staleTime: 0, gcTime: 0, retry: false, refetchOnWindowFocus: false,
   });
   const l2 = data?.tier === "L2";
-  const phraseOk = !l2 || phrase.trim() === (data?.phrase || L2_PHRASE);
-  const ready = Boolean(data?.ready) && phraseOk && !done;
+  const ready = Boolean(data?.ready) && !done;
 
   const merge = async () => {
     if (working) return;
     setWorking(true);
     setFailure("");
     try {
-      await api(base, { method: "POST", json: { confirm: true, l2_phrase: l2 ? phrase.trim() : "" } });
+      await api(base, { method: "POST", json: { confirm: true, acknowledge_l2: l2 } });
       setDone(true);
       show("マージしました");
       await qc.invalidateQueries({ queryKey: ["workspace-changes", name] });
@@ -64,7 +61,7 @@ function WorkspaceMergeDialog({ name, onClose }: { name: string; onClose: () => 
 
   const loadError = error instanceof Error ? error.message : "";
   return (
-    <ConfirmDialog title="マージ" danger={l2} confirmLabel="マージする" busy={working}
+    <ConfirmDialog title="マージ" danger={l2} confirmLabel={l2 ? "L2 を確かめてマージ" : "マージする"} busy={working}
       message={done ? "" : `PR #${data?.pr.number ?? ""} を squash でマージし、ブランチを消します（Release はしません）。`}
       disabled={!ready} onConfirm={() => void merge()} onClose={onClose}>
       <div data-testid="workspace-merge" className="mt-3 space-y-2 text-xs text-zinc-700 dark:text-zinc-300">
@@ -89,11 +86,7 @@ function WorkspaceMergeDialog({ name, onClose }: { name: string; onClose: () => 
               {data!.guarded.slice(0, 8).map((g) => <li key={g.path} className="break-all">{g.path}</li>)}
               {data!.guarded.length > 8 && <li>ほか {data!.guarded.length - 8} 件</li>}
             </ul>
-            <label className="block text-red-900 dark:text-red-200">
-              内容を確かめた上でマージするなら「{data!.phrase || L2_PHRASE}」と入力
-              <input value={phrase} onChange={(e) => setPhrase(e.target.value)} data-testid="workspace-merge-phrase"
-                className="mt-1 min-h-11 w-full rounded-lg border border-red-400 bg-white px-2 text-sm text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100" />
-            </label>
+            <p className="text-red-900 dark:text-red-200">内容を確かめた上で、下の「L2 を確かめてマージ」を押してください（押した人は記録に残ります）。</p>
           </div>
         )}
         {failure && <p data-testid="workspace-merge-failure" className="text-red-700 dark:text-red-400">{failure}</p>}
