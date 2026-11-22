@@ -132,6 +132,10 @@ class WorkspaceBody(BaseModel):
     # "controldeck"（ControlDeck 本体の origin/main）か "codedev:<プロジェクト名>"
     source: str = Field(min_length=1, max_length=96)
     name: str = Field(default="", max_length=32)
+    # 開発対象（app / llm_app / controldeck）。省くと元から決める（今までどおり）
+    target: str = Field(default="", max_length=24)
+    # 機能の上書き（llm / tools / mirror / gpu）。省くと開発対象の既定
+    capabilities: list[str] | None = Field(default=None, max_length=8)
 
 
 def _workspace_error(exc: Exception) -> HTTPException:
@@ -157,12 +161,23 @@ def create_workspace(
     """作業場を作る（ControlDeck 本体の origin/main、または CodeDEV の git のプロジェクトから）。"""
     from app.maintenance import workspaces
 
+    from app.security.deps import user_permissions
+
+    source = body.source.strip()
     try:
-        result = workspaces.create(user.username, body.source.strip(), body.name)
+        target, caps, _ = workspaces.plan(source, body.target, body.capabilities)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    needed = workspaces.required_permission(target, caps)
+    if needed not in user_permissions(user):
+        raise HTTPException(status_code=403, detail=f"権限がありません: {needed}")
+    try:
+        result = workspaces.create(user.username, source, body.name, target=target, capabilities=caps)
     except workspaces.SandboxError as exc:
         raise _workspace_error(exc) from exc
     audit.record(db, "opencode.workspace.create", user=user, resource_type="opencode_workspace",
-                 resource_id=result["name"], request=request, metadata={"source": result["source"]})
+                 resource_id=result["name"], request=request,
+                 metadata={"source": result["source"], "target": result["target"], "capabilities": result["capabilities"]})
     return result
 
 
@@ -281,8 +296,7 @@ async def workspace_adopt(
     if not body.confirm:
         raise HTTPException(status_code=422, detail="取り込むには確認（confirm）が必要です")
     box = _owned_box(name, user)
-    source = str(box.meta.get("workspace_source") or "")
-    if source == workspaces.CONTROLDECK and "settings.manage" not in user_permissions(user):
+    if box.adopt_mode == "pr" and "settings.manage" not in user_permissions(user):
         raise HTTPException(status_code=403, detail="権限がありません: settings.manage")
     try:
         result = await asyncio.to_thread(workspaces.adopt, name, user.username,
@@ -293,7 +307,8 @@ async def workspace_adopt(
         raise _workspace_error(exc) from exc
     audit.record(db, "opencode.workspace.adopt", user=user, resource_type="opencode_workspace",
                  resource_id=name, request=request,
-                 metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"]})
+                 metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"],
+                           "target": box.target, "capabilities": sorted(box.capabilities)})
     return result
 
 

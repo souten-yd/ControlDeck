@@ -35,6 +35,10 @@ async function mock(page: Page) {
       state.list = state.list.filter((w) => !request.url().includes(w.name));
       return route.fulfill({ json: { ok: true } });
     }
+    if (/\/workspaces\/[^/?]+\/[^/?]+/.test(request.url())) {
+      // 一覧ではない取得（変更・関門など）は一覧の形にしない（形の違う応答で結果のカードが落ちていた）
+      return route.fulfill({ json: { files: [], commits: [], commit_count: 0, uncommitted: false } });
+    }
     return route.fulfill({ json: { workspaces: state.list } });
   });
   await page.route(/\/api\/v1\/chat\/conversations\/w1\/messages$/, (route) => route.fulfill({ json: {

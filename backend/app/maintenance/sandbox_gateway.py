@@ -10,7 +10,10 @@ MCP（ControlDeck の道具）も同じ口で中継する（P2a）。箱の持�
 プロセスだけが持ち（環境変数 CONTROL_DECK_SANDBOX_MCP_TOKEN。systemd の EnvironmentFile で渡す）、上流へ
 `Authorization: Bearer` を付ける。箱から来た Authorization は捨てる。箱から呼べる道具は MCP_ALLOWED_TOOLS だけ。
 
-起動: python -m app.maintenance.sandbox_gateway --name N --port P --upstream http://127.0.0.1:8765 [--allow-load]
+作業場の機能（2026-11-22）: 起動の引数で LLM（--allow-llm: models・chat・load）と道具（--allow-tools: MCP）を許す。
+付けない機能のパスは 403（画面で隠すだけにしない）。
+
+起動: python -m app.maintenance.sandbox_gateway --name N --port P --upstream http://127.0.0.1:8765 [--allow-llm] [--allow-tools] [--allow-load]
 """
 from __future__ import annotations
 
@@ -66,27 +69,30 @@ def _wants_cloud(body: bytes) -> bool:
 
 def create_app(*, name: str, upstream: str, allow_load: bool = False, allow_cloud: bool = False,
                transport: httpx.AsyncBaseTransport | None = None,
-               max_concurrent: int = MAX_CONCURRENT, mcp_token: str = "") -> Starlette:
+               max_concurrent: int = MAX_CONCURRENT, mcp_token: str = "",
+               allow_llm: bool = True, allow_tools: bool = True) -> Starlette:
     base = upstream.rstrip("/")
+    if not allow_tools:
+        mcp_token = ""            # 道具を許さない作業場は、MCP のトークンを中継も使わない
     state = {"active": 0}
 
     def allowed(method: str, path: str) -> str | None:
         """通してよい呼び出しなら上流のパスを返す。"""
-        if method == "GET" and path == f"{API}/models":
+        if allow_llm and method == "GET" and path == f"{API}/models":
             return path
-        if method == "POST" and path == f"{API}/chat/completions":
+        if allow_llm and method == "POST" and path == f"{API}/chat/completions":
             return path
         if mcp_token and method == "GET" and path == f"{MCP_API}/tools":
             return path
         if mcp_token and method == "POST" and path == f"{MCP_API}/call":
             return path
         match = _LOAD.fullmatch(path)
-        if allow_load and method == "POST" and match and match.group(1) not in {".", ".."}:
+        if allow_llm and allow_load and method == "POST" and match and match.group(1) not in {".", ".."}:
             return f"{API}/models/{quote(match.group(1), safe='')}/load"
         return None
 
     async def healthz(request: Request) -> Response:
-        return JSONResponse({"status": "ok", "sandbox": name, "mcp": bool(mcp_token)})
+        return JSONResponse({"status": "ok", "sandbox": name, "mcp": bool(mcp_token), "llm": allow_llm, "tools": allow_tools})
 
     async def relay(request: Request) -> Response:
         started = time.monotonic()
@@ -94,6 +100,10 @@ def create_app(*, name: str, upstream: str, allow_load: bool = False, allow_clou
         upstream_path = allowed(method, path)
         if upstream_path is None:
             logger.info("%s %s 403 %.0fms", method, path[:120], (time.monotonic() - started) * 1000)
+            if not allow_llm and path.startswith(API):
+                return _deny("この作業場にはローカル LLM を借りる機能がありません")
+            if not allow_tools and path.startswith(MCP_API):
+                return _deny("この作業場には ControlDeck の道具を使う機能がありません")
             return _deny("このサンドボックスの中継は、モデル一覧・チャット・許可した ControlDeck の道具（・許可した場合のモデル読み込み）だけを通します")
         if state["active"] >= max_concurrent:
             logger.info("%s %s 429 %.0fms", method, path[:120], (time.monotonic() - started) * 1000)
@@ -214,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream", default="")
     parser.add_argument("--allow-load", action="store_true")
     parser.add_argument("--allow-cloud", action="store_true")
+    parser.add_argument("--allow-llm", action="store_true", help="ローカル LLM（models・chat・load）を通す")
+    parser.add_argument("--allow-tools", action="store_true", help="ControlDeck の道具（MCP）を通す")
     args = parser.parse_args(argv)
     mcp_token = os.environ.get(MCP_TOKEN_ENV, "")
     upstream = args.upstream
@@ -225,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     uvicorn.run(create_app(name=args.name, upstream=upstream, allow_load=args.allow_load,
-                           allow_cloud=args.allow_cloud, mcp_token=mcp_token),
+                           allow_cloud=args.allow_cloud, mcp_token=mcp_token,
+                           allow_llm=args.allow_llm, allow_tools=args.allow_tools),
                 host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
     return 0
 

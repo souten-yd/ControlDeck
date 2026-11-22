@@ -327,7 +327,7 @@ def test_relay_env_file_is_0600_outside_the_box_and_token_stays_out_of_argv(repo
     calls = []
     # 起動前は動いていない、systemd-run を呼んだ後は動いている
     monkeypatch.setattr(sandbox, "_gateway_healthy",
-                        lambda port: any(c[0].endswith("systemd-run") for c in calls))
+                        lambda port, **kw: any(c[0].endswith("systemd-run") for c in calls))
     monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
     (repo / ".venv" / "bin").mkdir(parents=True)
     (repo / ".venv" / "bin" / "python").write_text("")

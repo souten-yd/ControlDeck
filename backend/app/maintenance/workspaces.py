@@ -27,6 +27,18 @@ from app.maintenance.sandbox import Sandbox, SandboxError
 CONTROLDECK = "controldeck"
 CODEDEV_PREFIX = "codedev:"
 CONTROLDECK_REF = "origin/main"
+# 開発対象（2026-11-22）: 「ControlDeck の改修か」ではなく、機能的な改修対象で権限と取り込み先を分ける。
+# adopt: pr は元が ControlDeck 本体のときだけ。branch は元のリポジトリへブランチとして取り込むだけ（PR は作らない）。
+PRESETS: dict[str, dict] = {
+    "app": {"label": "普通の開発", "short": "普通の開発", "capabilities": ["tools"], "adopt": "branch"},
+    "llm_app": {"label": "ローカル LLM を使うアプリ", "short": "LLM アプリ", "capabilities": ["llm", "tools"], "adopt": "branch"},
+    "controldeck": {"label": "ControlDeck 本体", "short": "本体", "capabilities": ["llm", "tools", "mirror"], "adopt": "pr"},
+}
+CAPABILITY_LABELS = {"llm": "ローカル LLM を借りる", "tools": "ControlDeck の道具", "mirror": "ControlDeck の複製",
+                     "gpu": "GPU を借りる"}
+# 作るのに settings.manage が要る機能と開発対象。ほかは今の OpenCode の権限（terminal.use）
+MANAGE_CAPABILITIES = frozenset({"gpu"})
+MANAGE_TARGETS = frozenset({"controldeck"})
 AUTO_NAME = re.compile(r"^ws-(\d{8})-(\d+)$")
 
 
@@ -91,6 +103,35 @@ def unsaved(box: Sandbox, *, fresh: bool = False) -> dict:
     return {"dirty": bool(state["dirty"]), "unpushed": state["unpushed"], "unknown": bool(state.get("unknown"))}
 
 
+def plan(source: str, target: str = "", capabilities: list[str] | None = None) -> tuple[str, list[str], str]:
+    """(開発対象, 機能, 取り込み先)。target 省略は今までどおり（元が本体なら controldeck、それ以外は llm_app）。
+    capabilities は preset の上書き。元との組み合わせが合わなければ SandboxError。"""
+    is_controldeck = source == CONTROLDECK
+    target = target.strip() or ("controldeck" if is_controldeck else "llm_app")
+    if target not in PRESETS:
+        raise SandboxError(f"開発対象は {' / '.join(PRESETS)} のどれかを指定してください")
+    if target == "controldeck" and not is_controldeck:
+        raise SandboxError("開発対象 controldeck は、元が ControlDeck 本体のときだけ選べます")
+    preset = PRESETS[target]
+    if capabilities is None:
+        caps = list(preset["capabilities"])
+    else:
+        unknown = [c for c in capabilities if c not in sandbox.CAPABILITIES]
+        if unknown:
+            raise SandboxError(f"知らない機能です: {', '.join(map(str, unknown))}")
+        caps = [c for c in sandbox.CAPABILITIES if c in set(capabilities)]
+    if "mirror" in caps and not is_controldeck:
+        raise SandboxError("ControlDeck の複製（mirror）は、元が ControlDeck 本体のときだけ使えます")
+    return target, caps, str(preset["adopt"])
+
+
+def required_permission(target: str, capabilities: list[str]) -> str:
+    """作業場を作るのに要る権限。controldeck の作業場と gpu は settings.manage、それ以外は terminal.use。"""
+    if target in MANAGE_TARGETS or MANAGE_CAPABILITIES & set(capabilities):
+        return "settings.manage"
+    return "terminal.use"
+
+
 def summary(box: Sandbox) -> dict:
     probed = sandbox.probe(box)
     state, branch = {"dirty": bool(probed["dirty"]), "unpushed": probed["unpushed"]}, probed["branch"]
@@ -104,6 +145,8 @@ def summary(box: Sandbox) -> dict:
         "created_at": float(box.meta.get("created_at") or 0),
         "last_used": float(box.meta.get("last_used") or box.meta.get("created_at") or 0),
         "repo_path": str(box.repo),
+        "target": box.target, "target_label": PRESETS[box.target]["short"],
+        "capabilities": [c for c in sandbox.CAPABILITIES if c in box.capabilities], "adopt": box.adopt_mode,
     }
 
 
@@ -144,8 +187,13 @@ def _codedev_repo(project: str) -> Path:
     return folder
 
 
-def create(username: str, source: str, name: str = "") -> dict:
-    """作業場を作る。source は "controldeck" か "codedev:<プロジェクト名>"。"""
+def create(username: str, source: str, name: str = "", *, target: str = "",
+           capabilities: list[str] | None = None) -> dict:
+    """作業場を作る。source は "controldeck" か "codedev:<プロジェクト名>"。target は開発対象（PRESETS）、
+    capabilities は機能の上書き。権限の確認（required_permission）は呼ぶ側（router）が済ませる。"""
+    if source != CONTROLDECK and not source.startswith(CODEDEV_PREFIX):
+        raise SandboxError("元は controldeck か codedev:<プロジェクト名> を指定してください")
+    target, caps, adopt_mode = plan(source, target, capabilities)
     if source == CONTROLDECK:
         repo, ref = controldeck_repo(), CONTROLDECK_REF
     elif source.startswith(CODEDEV_PREFIX):
@@ -153,7 +201,7 @@ def create(username: str, source: str, name: str = "") -> dict:
     else:
         raise SandboxError("元は controldeck か codedev:<プロジェクト名> を指定してください")
     name = name.strip() or _auto_name()
-    box = sandbox.create(name, str(repo), ref, owner=username)
+    box = sandbox.create(name, str(repo), ref, owner=username, capabilities=caps, target=target, adopt=adopt_mode)
     box.meta["workspace_source"] = source
     sandbox._save_meta(box.path, box.meta)
     result = summary(box)
@@ -381,13 +429,16 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
     source = str(box.meta.get("workspace_source") or "")
     if source != CONTROLDECK and not source.startswith(CODEDEV_PREFIX):
         raise AdoptRefused("この作業場の元は取り込みに対応していません")
+    mode = box.adopt_mode
+    if mode == "pr" and source != CONTROLDECK:
+        raise AdoptRefused("PR で取り込めるのは、元が ControlDeck 本体の作業場だけです")
     saved = _require_adoptable(box, commit_message)
     head = import_head(box)
     if _host_git("rev-parse", f"{head}^{{tree}}", cwd=export_repo()) != saved.get("tree"):
         raise AdoptRefused("関門で確かめた内容と取り込む内容が違います。関門を流し直してください")
     branch = f"{BRANCH_PREFIX}{name}"
     exp = export_repo()
-    if source == CONTROLDECK:
+    if mode == "pr":
         origin = _trusted_origin()
         slug = _origin_slug(origin)
         if not shutil.which("gh"):
@@ -406,9 +457,11 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
                       ).splitlines()[-1].strip()
         result = {"kind": "pr", "branch": branch, "pr_url": url, "slug": slug}
     else:
-        repo = _codedev_repo(source[len(CODEDEV_PREFIX):])
+        # 元のリポジトリへのブランチだけ（PR は作らない・外へは出さない）
+        repo = controldeck_repo() if source == CONTROLDECK else _codedev_repo(source[len(CODEDEV_PREFIX):])
         _host_git("fetch", "--no-tags", "--quiet", str(exp), f"{ws_ref(name)}:refs/heads/{branch}", cwd=repo)
-        result = {"kind": "branch", "branch": branch, "pr_url": "", "project": source[len(CODEDEV_PREFIX):]}
+        result = {"kind": "branch", "branch": branch, "pr_url": "",
+                  "project": "ControlDeck" if source == CONTROLDECK else source[len(CODEDEV_PREFIX):]}
     result.update(at=time.time(), head=head[:10], by=username)
     _update_meta(name, adopted=result)
     return result
