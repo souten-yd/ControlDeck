@@ -514,6 +514,8 @@ test("an OpenCode answer shows thinking split around its tools and reopening kee
   });
   await page.route(/\/api\/v1\/opencode\/projects$/, (route) => route.fulfill({ json: { root: "/CodeDEV", projects: [
     { name: "other", path: "/CodeDEV/other", git: true }, { name: "app", path: "/CodeDEV/app", git: true }] } }));
+  // 作業場の一覧も要る。届かないと「フォルダ指定」のまま名前（app）に直らない
+  await page.route(/\/api\/v1\/opencode\/workspaces$/, (route) => route.fulfill({ json: { workspaces: [] } }));
   await page.route(/\/api\/v1\/chat\/opencode\/permission-mode$/, (route) => route.fulfill({ json: { mode: "auto" } }));
   await page.route(/\/api\/v1\/chat\/conversations\/today1\/messages$/, (route) => route.fulfill({ json: {
     conversation: { id: "today1", title: "今日の献立の相談", updated_at: new Date().toISOString().replace("Z", "") },
