@@ -17,6 +17,19 @@
 - **U16 「17 ファイル」が取り込んだ main の分まで数える**: 起点を作った時の revision から、今の main との共通の祖先（merge-base。`change_base`）に変えた。export.git へ本体の origin/main を fetch して取る（箱の作業ツリーは触らない）。main が読めない・CodeDEV の作業場は元の revision に戻す。マージの前提の区分判定（L0/L1/L2）は、関門を狭めないよう元の revision のまま（広い側）。
 - テスト `test_dev_workspace_adopt.py`（未コミットを含む数・main を取り込んだ作業場は merge-base から数える・main が読めないときの退路）、`test_sandbox_gateway.py`（中継が /models の vision・loaded を通す）、E2E `assistant-dev-workspace-result.spec.ts`（320・1280、ライト・ダーク）。
 - 確かめられなかった点: ホストの origin/main が古いと、取り込んだ main の新しい分が数に混ざる（自動更新が保つ前提）。実機の箱での通し。
+## 2026-11-22 作業場の「保存と中断・再開」のルール整備
+
+- 利用者「作業場のコードはどういうタイミングで実際に保存されるのか。開発が終わってから移動されるのか、ルールは適切に整備されているのか。途中で停電や再起動した場合はどうなるのか。中断して再開できるのか。他にも考えられる割り込みのシチュエーションを想定した上で、問題がないように実装してほしい」。
+- **自動保存（区切り）**: 作業場の OpenCode の回が終わるたび（成功・失敗・止めた・例外、どれでも）に箱の中の箱の git でコミット（`workspaces.autosave`・`chat_persist` から呼ぶ）。メッセージ「作業途中の保存 #n（会話 <id> のターン）」・変更が無ければしない・作者は箱の設定済みの作者・保存したら export.git へ取り込み結果のカードの差分に見える。PR の本文に途中の保存の回数。取り込み（adopt）は今までどおり 1 つの PR にまとめる（squash）。
+- **起動時の立て直し**（`workspaces.restore_interrupted`、起動時に 1 回裏で）: 残った `.git/index.lock` を箱の中に git の process が無ければ消す（pod top で確認）。生成中のまま止まった作業場の会話のメッセージを「中断（ControlDeck の再起動）」へ（`interrupt_unfinished` と同じ形）。未保存の変更があれば自動保存。
+- **続きから**: 中断・止めた・失敗した OpenCode の回のメニューに「続きから」（44px）。`POST /chat/conversations/{id}/opencode/resume` が同じセッションへ「前回は中断されました（理由）。git log・git status と ToDo を確かめて、残りを続けてください」を送る（セッションが無ければ新規で前回の ToDo を本文へ。会話サーバーは ensure が起こし直す）。
+- **ディスクの空き**: 新しい作業場を作る前・自動保存の前に `data` のある所の空き（`statvfs`）。下限（設定 `workspace_min_free_gib`・既定 15 GiB）を下回れば作るのを断り、自動保存は飛ばして会話へ「ディスクの空きが少ないので保存できません（残り n GiB）」。下限の 2 倍（30 GiB）未満は結果のカードに注意。
+- **main の進み**: 結果のカードに「元の main が n 件進んでいます」（export.git で元の origin/main と差、10 分キャッシュ・fetch は外へ出る）。取り込みの前に箱の中で main を取り込む段（export.git から bundle を箱の /tmp へ置き箱の中で fetch+merge・ホストの git は export.git で動かすだけ）。ぶつかったら merge --abort で取り込みを止め、カードに「OpenCode に直させる」ボタン（同じ会話へぶつかったファイル一覧つきで送る・bundle は /tmp/main.bundle に残す）。merge できたら関門を流し直させる。
+- **モデルの切り替わり**: 使用量の上限・残高切れ・レート制限（`sandbox.LIMIT_PATTERN`）で回が失敗したら、モデルの順番（chain）の次へセッションを切り替え（`chat_server.switch_model`）、会話に「glm-5.3 が使えなくなったので hy4-flash-free で続けます（理由）」の 1 行を出して同じ依頼を再送（chain が尽きるまで・前の回で進めた所から）。
+- **作業中の作業場を消す**: 一覧に「・OpenCode が作業中」の印（会話サーバーの unit）。消すときの確認の文言を強く（止めてから消す）。
+- テスト: `test_dev_workspace_persist.py`（21）・`test_opencode_workspace_persist.py`（14）・E2E `assistant-workspace-resume.spec.ts`（7・320/1280/ダーク）。目録に載せた。レビュー（reviewer）の major 指摘「merge の bundle の置き場所が箱の AI に書ける場所で、symlink を仕込まれるとホストの git がそれを辿る」に対応: bundle は export.git の隣（ホストだけが書く）へ作り、`in_box_result` の readonly マウントで箱へ読み取り専用に見せる。minor も対応（マージの解決中は自動保存しない・fetch と merge を分けて必ず abort・origin の `ext::` 拒否・model_index の常時保存・再送へ「状態を確かめて」の注記・resolve-conflict の権限を送信と同じ workflows.run に・起動後の新しい回は「中断」にしない・再開し終えた回へ印）。既知の制限: 全体実行でだけ落ちるフレーキー（test_patents の 1 件、単独では合格・HANDOFF 課題 4 に記録）が今回も出た。画面の見た目の LLM での確認は本番ゲートウェイへ箱から中継で届かず未実施（E2E の撮影は 7 枚取れている）。
+- 未確認（Opus が実機で確かめる）: ControlDeck の再起動をまたいだ起動時の立て直し（index.lock・生成中の中断・未保存の保存）・停電相当・実際の GitHub への fetch（main の進み）・本番のモデルでの切り替わりの 1 行・実サーバーの OpenCode の `POST /api/session/{id}/model` の挙動。
+- Claude による見直しで直した点: ① ぶつかりを OpenCode に直させる指示が、常駐の OpenCode の箱には見えない bundle のパスを伝えていた → 取り込んだ main を箱の中の `refs/controldeck/main` へ残し、それを merge させる（bundle は fetch の間だけ readonly で見せて必ず消す） ② 取得元（meta の origin）の `ext::`・`-` 始まりを拒む ③ 取り込みの前の main の進みは覚えた値でなく都度取る ④ 同じ作業場の自動保存を 1 つずつに（番号の重なり・index.lock の取り合い） ⑤ 起動時の立て直しを別スレッドにし（サービスの起動復旧を待たせない）、中断にした・lock の残った作業場だけ保存する（止まった箱を全部起こさない） ⑥ モデルの順番の位置は同じセッションのときだけ引き継ぐ ⑦ 同じ回の「続きから」の二重を 409 で断る ⑧ merge --abort の失敗を伝える。テストを追加（readonly の bundle・取得元の拒否・保存の直列・起動時に触らない・二重の再開・セッション違いの位置）。
 
 ## 2026-11-22 作業場の関門: 画面の見た目の誤検出を、管理者が人の目で確かめて外せる
 

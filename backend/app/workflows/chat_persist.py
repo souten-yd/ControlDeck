@@ -1031,6 +1031,106 @@ async def opencode_revert(conv_id: str, body: OpenCodeRevertBody, request: Reque
     return {"reverted": True}
 
 
+def _meta_of(message) -> dict:
+    """メッセージの meta_json を読む（壊れていたら空）。"""
+    try:
+        return json.loads(message.meta_json or "{}")
+    except ValueError:
+        return {}
+
+
+class ResumeBody(BaseModel):
+    # 中断・止めた回のメッセージの ID。空なら最新の中断・止めた・失敗した OpenCode の回
+    message_id: str = Field(default="", max_length=32)
+
+
+def _resumed_reason(row) -> str:
+    status = str(row.status or "")
+    if status == "canceled":
+        return "利用者が止めました"
+    if status == "interrupted":
+        return "サーバーが再起動しました"
+    return (str(row.error or "").strip() or "失敗しました")[:100]
+
+
+@router.post("/conversations/{conv_id}/opencode/resume", status_code=201)
+async def opencode_resume(conv_id: str, body: ResumeBody,
+                          user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db)):
+    """中断・止めた OpenCode の回を「続きから」再開する。
+
+    同じ OpenCode のセッションへ「前回は中断されました（理由）。git log・git status と ToDo を確かめて、
+    残りを続けてください」を送る。セッションが見つからなければ新しいセッションで同じ文と、直前の会話の
+    引き継ぎ・前回の ToDo を渡す（本文へ埋める）。会話サーバーが止まっていれば ensure が起こし直す。"""
+    conv = db.get(Conversation, conv_id)
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(status_code=404, detail="会話が見つかりません")
+    if conv.confidential_at is not None:
+        from app.security import offline
+
+        raise HTTPException(status_code=409, detail=offline.OPENCODE_REFUSAL)
+    rows = db.execute(select(ChatMessage).where(
+        ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant",
+        ChatMessage.status.in_(("canceled", "interrupted", "failed")),
+    ).order_by(ChatMessage.created_at.desc())).scalars().all()
+    if body.message_id:
+        row = db.get(ChatMessage, body.message_id)
+        if row is None or row.conversation_id != conv_id:
+            raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    else:
+        row = next((r for r in rows if _meta_of(r).get("mode") == "code"), None)
+        if row is None:
+            raise HTTPException(status_code=409, detail="中断・停止・失敗した OpenCode の回がありません")
+    meta = _meta_of(row)
+    if row.conversation_id != conv_id or row.role != "assistant":
+        raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    if row.status not in ("canceled", "interrupted", "failed"):
+        raise HTTPException(status_code=409, detail="この回は中断・停止・失敗していません")
+    if meta.get("mode") != "code" or not meta.get("project_path"):
+        raise HTTPException(status_code=409, detail="この回は OpenCode の回ではありません")
+    if meta.get("resumed"):
+        raise HTTPException(status_code=409, detail="この回はすでに続きから再開しました")
+    # 再起動の後も OpenCode のセッションが箱の中で動き続けていることがある（会話サーバーは別のユニット）。
+    # そのまま送ると同じセッションへ二重に頼むので、動いていれば送らずに知らせる（2026-11-22 Opus の監査）。
+    if meta.get("server_key") and str(meta.get("opencode_session") or "").startswith("ses_"):
+        from app.integrations.opencode import chat_server
+
+        server = await asyncio.to_thread(chat_server.load, str(meta["server_key"]))
+        if server is not None:
+            try:
+                still = await chat_server.session_is_active(server, str(meta["opencode_session"]))
+            except chat_server.ChatServerError:
+                still = False
+            if still:
+                raise HTTPException(status_code=409, detail=(
+                    "OpenCode はまだこの作業を続けています（ControlDeck の再起動の後も動いていました）。"
+                    "終わるのを待つか、止めてから「続きから」を押してください"))
+    todo_lines = [f"- [{t.get('status')}] {t.get('content')}" for t in (meta.get("todos") or [])
+                  if isinstance(t, dict) and str(t.get("content") or "").strip()][:30]
+    content = (f"前回は中断されました（{_resumed_reason(row)}）。"
+               "git log・git status と ToDo を確かめて、残りを続けてください。")
+    if todo_lines:
+        content += "\n\n## 前回の ToDo\n" + "\n".join(todo_lines)
+    send = SendBody(content=content, mode="code", code_project_path=str(meta["project_path"]))
+    result = await _start_send(db, conv, send, user.id)
+
+    def mark_resumed() -> None:
+        """再開し終えた回へ印を付ける（画面が「続きから」を二重に出さないため）。"""
+        with SessionLocal() as session:
+            target = session.get(ChatMessage, row.id)
+            if target is None:
+                return
+            try:
+                saved = json.loads(target.meta_json or "{}")
+            except ValueError:
+                saved = {}
+            saved["resumed"] = True
+            target.meta_json = json.dumps(saved, ensure_ascii=False)
+            session.commit()
+
+    await asyncio.to_thread(mark_resumed)
+    return result
+
+
 class RouteBody(BaseModel):
     content: str = Field(min_length=1, max_length=32000)
     conversation_id: str = Field(default="", max_length=64)   # 添付資料を判定の材料にする
@@ -1488,6 +1588,30 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 db.close()
             return {}
 
+        def _previous_model_index(current_session: str) -> int:
+            """同じセッションの前の回答で、モデルの順番（chain）をどこまで進めたか（このターンで同じ切り替えを
+            やり直さない）。別のセッション（作り直した）なら、モデルは既定へ戻っているので 0。"""
+            db = SessionLocal()
+            try:
+                rows = db.execute(select(ChatMessage).where(
+                    ChatMessage.conversation_id == conv_id, ChatMessage.role == "assistant", ChatMessage.id != assistant_id,
+                ).order_by(ChatMessage.created_at.desc()).limit(10)).scalars().all()
+                for row in rows:
+                    try:
+                        meta = json.loads(row.meta_json or "{}")
+                    except ValueError:
+                        continue
+                    if meta.get("mode") == "code" and meta.get("opencode_session"):
+                        if meta.get("opencode_session") != current_session:
+                            return 0
+                        try:
+                            return max(0, int(meta.get("model_index") or 0))
+                        except (TypeError, ValueError):
+                            return 0
+            finally:
+                db.close()
+            return 0
+
         todo_state: dict[str, dict] = await asyncio.to_thread(_previous_todos)
 
         async def on_todos(items: list) -> None:
@@ -1659,23 +1783,90 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                     logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
 
+            async def autosave_turn(status: str) -> None:
+                """1 ターンの終わりに、作業場の未コミットの変更を箱の中でコミットする（成功・失敗・止めた、どれでも）。
+                保存に失敗しても回答の保存は止めない。ディスクの空きが下回れば会話へ 1 行出す。"""
+                if not server.workspace:
+                    return
+                from app.maintenance import sandbox as _sandbox, workspaces
+
+                def run() -> dict:
+                    try:
+                        return workspaces.autosave(_sandbox.load(server.workspace), conv_id)
+                    except _sandbox.SandboxError:
+                        return {"committed": False, "count": 0, "skipped": "error", "free_gib": 0.0,
+                                "error": "箱の状態を調べられません"}
+
+                try:
+                    saved = await asyncio.to_thread(run)
+                except Exception as exc:  # noqa: BLE001 - 保存の失敗で回答を止めない
+                    logger.warning("作業場 %s の自動保存に失敗しました: %s", server.workspace, type(exc).__name__)
+                    return
+                job.log("autosave", saved=saved, status=status)
+                if saved["skipped"] == "disk":
+                    await on_text(f"\n\n（ディスクの空きが少ないので保存できません。残り {saved['free_gib']:.0f} GiB）")
+
             _steer_targets[assistant_id] = steer
             # 添付した画像は OpenCode の発言に付ける（OpenCode が画像を読めるモデルへそのまま渡す）
             image_files = await asyncio.to_thread(_image_files, conv_id, params.get("attachments") or [])
             if image_files:
                 buf["meta"]["images"] = len(image_files)
+            # 作業場なら、使用量の上限で失敗したときモデルの順番（chain）の次へ切り替えて同じ依頼を再送する。
+            # 前の回でどこまで進めたかは直前の回答の meta から（切り替えをやり直さない）
+            from app.maintenance import sandbox as _sandbox
+
+            chain: list[str] = []
+            if server.workspace:
+                def box_chain() -> list[str]:
+                    try:
+                        return _sandbox.model_chain(_sandbox.load(server.workspace))
+                    except _sandbox.SandboxError:
+                        return []
+
+                chain = await asyncio.to_thread(box_chain)
+                model_index = await asyncio.to_thread(_previous_model_index, session_id)
+            else:
+                model_index = 0
             try:
-                result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
-                                                    on_reasoning=on_reasoning, on_tool=on_tool,
-                                                    on_permission=on_permission,
-                                                    agent=params.get("code_agent", "build"), on_status=on_status,
-                                                    **({"files": image_files} if image_files else {}))
+                original_query = query
+                resend_note = ("\n\n（注意: 前のモデルでこの依頼を始めていた可能性があります。"
+                              "git status・git log で今の状態を確かめて、重複した適用を避けて続けてください。）")
+                while True:
+                    result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
+                                                        on_reasoning=on_reasoning, on_tool=on_tool,
+                                                        on_permission=on_permission,
+                                                        agent=params.get("code_agent", "build"), on_status=on_status,
+                                                        **({"files": image_files} if image_files else {}))
+                    if result["status"] != "failed" or not chain or model_index + 1 >= len(chain):
+                        break
+                    error_text = str(result["error"] or "")
+                    if not _sandbox.LIMIT_PATTERN.search(error_text):
+                        break            # 上限・残高切れ・レート制限以外の失敗は切り替えない
+                    previous = chain[model_index]
+                    model_index += 1
+                    next_model = chain[model_index]
+                    try:
+                        await chat_server.switch_model(server, session_id, next_model)
+                    except chat_server.ChatServerError as exc:
+                        logger.warning("OpenCode のモデルを %s へ切り替えられませんでした: %s", next_model, exc)
+                        model_index -= 1
+                        break            # 切り替えられなければ元の失敗のまま
+                    buf["meta"]["model_index"] = model_index
+                    query = original_query + resend_note   # 元の文から作り直す（注記が積まないように）
+                    await on_text(f"\n\n（{previous.split('/', 1)[-1]} が使えなくなったので "
+                                  f"{next_model.split('/', 1)[-1]} で続けます（{error_text[:80]}））\n\n")
+                    await asyncio.to_thread(checkpoint)
             except BaseException:
                 await record_changes()
+                await autosave_turn("failed")
                 raise
             finally:
                 _steer_targets.pop(assistant_id, None)
             await record_changes()
+            if chain:
+                # この回がモデルの順番をどこまで使ったか（次の回で切り替えをやり直さない・常に書く）
+                buf["meta"]["model_index"] = model_index
+            await autosave_turn(result["status"])
         except asyncio.CancelledError:
             expire_pending()
             await asyncio.to_thread(checkpoint, True, "canceled", "キャンセルされました")

@@ -17,7 +17,23 @@
 
 - 計画: 確定（`PLAN-opencode-dev-environment.md` 第 2 段階、`ROADMAP.md`）。
 - P1（安全）: 完了（実機で確認）。箱ごとの pod と中継。箱の開発役のモデルは順番方式で実装済み（実機の確認待ち）。次は P2a。
+- 作業場の「保存と中断・再開」のルール: 実装・単体テスト・E2E 済み（2026-11-22。実機の再起動・停電相当・本番のモデルでの確認は Opus が行う）。
 - P2〜P6: 未着手。
+
+## 作業場の保存と中断・再開のルール（2026-11-22 実装）
+
+利用者「作業場のコードはどういうタイミングで実際に保存されるのか。途中で停電や再起動した場合はどうなるのか。中断して再開できるのか」。実装は `maintenance/workspaces.py`（autosave・restore_interrupted・main_progress・merge_main）と `workflows/chat_persist.py`（ターンの終わりの呼び出し・モデルの切り替え・resume）と `integrations/opencode/chat_server.py`（switch_model）。
+
+| 場面 | 何が起きるか |
+|---|---|
+| いつ保存されるか | OpenCode の回が終わるたび（成功・失敗・止めた、どれでも）に箱の中でコミット。変更が無ければしない。メッセージ「作業途中の保存 #n（会話 <id> のターン）」。取り込みは今までどおり 1 つの PR（squash・本文に保存の回数） |
+| ディスクの空き | 下限（設定 `workspace_min_free_gib`・既定 15 GiB）を下回ると自動保存を飛ばして会話に「ディスクの空きが少ないので保存できません（残り n GiB）」。新しい作業場も断る。下限の 2 倍未満はカードに注意 |
+| ControlDeck の再起動・停電 | 起動時に 1 回裏で: ① 残った `.git/index.lock` を箱の中に git の process が無ければ消す ② 生成中のまま止まった作業場の会話を「中断（ControlDeck の再起動）」にする ③ 中断にした会話の作業場と lock が残っていた作業場だけ、未保存の変更を保存する（止まっている箱を全部は起こさない）。別スレッドで動かし、サービスの起動復旧を待たせない。同じ作業場の保存は 1 つずつ |
+| 中断した回の続き | 中断・止めた・失敗した回のメニュー「続きから」で同じ OpenCode セッションへ（同じ回の二重の再開は 409）「前回は中断されました（理由）。git log・git status と ToDo を確かめて、残りを続けてください」を送る。セッションが無ければ新規で前回の ToDo を渡す |
+| モデルが使えなくなった | 上限・残高切れ・レート制限で失敗したら、順番（chain）の次のモデルで同じ依頼を続ける（会話に 1 行） |
+| main が進んでいた | カードに「元の main が n 件進んでいます」（export.git で数える・10 分キャッシュ）。取り込むとき箱の中で main を取り込み、ぶつかったら merge を中止して「OpenCode に直させる」ボタン（bundle は export.git の隣へ作り、fetch の間だけ箱へ readonly で見せて必ず消す。取り込んだ main は箱の中の `refs/controldeck/main` に残り、OpenCode にはそれを merge させる。取得元は `ext::`・`-` 始まりを拒む） |
+| 作業中に消すとき | 「OpenCode が今も作業中です。止めてから消してください」（一覧に「・OpenCode が作業中」の印） |
+
 
 ## 開発対象と機能（2026-11-22）
 
@@ -96,6 +112,7 @@
 | 開発の作業場 3 段目 | 作業場の結果のカード（差分の要約・関門を Job で・取り込む）。本体は GitHub に PR（マージしない・settings.manage）、CodeDEV は元のリポジトリへ ws/<名前> のブランチ | 実装・単体テスト・E2E 済み（実機の push・gh・箱の中の関門は未確認）。安全: ホストでは box.repo の中で git を動かさない（箱の中で調べ、export.git へ fetch して比べる・push する）。設定（meta）は箱の外 `<sandboxes>/.meta/` へ移し、古い箱は検査して移す | 本 PR |
 | 開発の作業場 4 段目 | 行ごとの差分（export.git から・256KB で打ち切り）と、結果のカードの「マージ」（settings.manage。前提・区分 L0/L1/L2・L2 は確認の文言。`gh pr merge --squash --delete-branch --match-head-commit`。Release はしない） | 実装・単体テスト・E2E 済み（実機の `gh pr merge` は未確認・モック） | 本 PR |
 | 開発の作業場 5 段目 | Project Lab へ「プロジェクト｜作業場」の切り替えと作業場のカード（進み具合の API を 1 本: 会話の meta と会話サーバーから。変更の数は U2 の `changes`）。AI アシスタントの選択欄は「➕ 新規作成」のすぐ下に「🧪 ＋ 新しい作業場」（利用者の決定。外のボタンは作らない）、その下に optgroup「CodeDEV のプロジェクト」「作業場（一時）」（値 `__ws_new__` は不変） | 実装・単体テスト・E2E 済み（実機の箱での会話サーバーは未確認・meta と状態ファイルで代用） | 本 PR |
+| 保存と中断・再開 | ターンの終わりの自動保存・起動時の立て直し（index.lock・生成中のまま・未保存）・続きから・ディスクの下限・main の進みと取り込み前の merge（ぶつかりは OpenCode に直させる）・モデルの切り替わりの 1 行・作業中の削除の確認 | 実装・単体テスト・E2E 済み（実機の再起動・停電・本番のモデルでの確認は Opus が行う） | 本 PR |
 | P2a | ControlDeck の MCP に Project Lab の実行の道具（開始・状態・ログ・停止・preview の URL）。中継で箱にも見せる | 実装・単体テスト済み（実機は未確認）。`lab_projects/run_start/run_status/run_logs/run_stop`、中継に MCP の 2 パスと許可の道具、箱の持ち主 `--owner`、環境変数ファイル、箱の bridge | 本 PR |
 | P2b | 箱の作業ツリーを Project Lab の run として開く。podman の `--cgroups=split` で preview のポートの確認が通るか実機で | 未着手 | — |
 | P2c | 見張りモード（Vite 以外にも）。manifest の `watch`（paths・ignore・build・mode: restart/rerun/native・debounce）、見張り役 `live.py`（watchfiles → build → command を unit の中で）、鍵付き入口の HTML への `live.js` 差し込み、WS `__cd/live`（status・reload・note、画面の記録を `.controldeck/feedback/<run_id>.jsonl` へ）、AI の知らせは `.controldeck/live/<run_id>.notes` に 1 行書く。実行のメモリ上限は設定 `run_memory_max_mb`。Vite は native（HMR はアプリ自身）で、記録だけ使う | 実装済み（単体テスト 43 件）。実機（systemd・Vite・iPhone・C++）は未確認 | — |
@@ -123,7 +140,7 @@
 | 1 | AI アシスタントの OpenCode の「プロジェクトの箱」（`provider.py` が `container_argv` を pod 無しで使う）は今も `--network host`。箱の中から本番のゲートウェイへ鍵なしで届き、`/load` も呼べる | 開発用の箱と同じ穴。ただしこちらはゲートウェイを使うのが本来の用途 | 中 | 未着手。P1 の中継（許可のパスを絞る）をプロジェクトの箱にも使うかを決める |
 | 2 | （済み: 9 を参照）本番 data の `sandboxes/` に、過去の作業の箱が約 30 個残っている（`cite`・`diag`・`vp`〜`vp6` など）。OpenCode のプロジェクトの箱の一時フォルダ（`project-tmp` など）も同じ場所 | ディスクと見通し。古い箱は中継のポートを割り当て直す | 低 | 未着手。中身（未 push のコミット）を確かめてから片付ける。`sandbox list` に最終使用日と未 push の有無を出す |
 | 3 | `opencode_config` は `provider._config_payload` を通すので、鍵が未発行だと本番に鍵を新しく作る（設定ファイルには入れない） | 副作用だけ | 低 | 未着手 |
-| 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー（今回 2 件、2 回目は 0 件） | 判定が揺れる | 低 | 既知（メモ） |
+| 4 | backend の全体テストで、回ごとに顔ぶれの変わるフレーキー。2026-11-22 の保存と中断・再開の開発では 3 回連続で `test_patents.py::test_search_and_claim_chart_use_the_shared_knowledge` が選択テストの中でだけ落ちた（単独では合格・順序依存。開発した領域とは無関係） | 判定が揺れる | 低 | 既知（メモ） |
 | 5 | OpenCode Zen の無料モデル（`opencode/deepseek-v4.1-flash-free` など。保存・学習なしと公式に明記）は「OpenCode の中からしか使えず、他の道具は 403」（opencode.ai/docs/console/harnesses）。ControlDeck のゲートウェイを通せず、箱の OpenCode から opencode.ai へ直接繋ぎ、Console の API キー（`OPENCODE_API_KEY`）を箱へ渡すことになる | 「箱に秘密を置かない」と衝突。コードが外部へ出る（ControlDeck は公開リポジトリなので本体の開発なら影響は小さい。特許などの未公開情報は不可） | 中 | 登録欄を用意（設定 → API キー →「開発」、`sandbox new --no-zen` / `zen <名前> on|off`、`opencode --model opencode/deepseek-v4.1-flash-free`）。利用者がキーを登録したら箱で使える（Console のアカウント作成と、無料の範囲だけのキーが要る） |
 | 6 | 中継のログに httpx の INFO（要求の URL）が 1 行ずつ重なる | 見た目だけ | 低 | 未着手 |
 | 7 | （済み: souten 以外の 12 個を無効化・セッション取り消し・監査あり、2026-11-21）本番の DB に管理者のアカウントが 13 個ある。ほとんどは過去の E2E・試験の使い捨て（`codex-*`・`e2e-*`・`mf-e2e`・`strata-acceptance-*`・`pb-analysis-test-*` など）。`sandbox new` は管理者が複数だと `--owner` を求める | 使い捨ての管理者が残るのは安全上よくない。E2E が本番に向いていた頃の名残 | 高 | 利用者の判断待ち（無効化か削除）。持ち主は `--owner souten` で指定して進める |

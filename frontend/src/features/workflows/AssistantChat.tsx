@@ -137,7 +137,7 @@ interface PersistMsg {
   model: string;
   /** 失敗・中断の理由（成功した回答では空）。 */
   error?: string;
-  meta?: { changes?: CodeChange[]; reverted?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
+  meta?: { changes?: CodeChange[]; reverted?: boolean; resumed?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode; confidential?: boolean };
 }
@@ -148,6 +148,8 @@ interface Msg {
   /** OpenCode がこの回で変えたファイル */
   changes?: CodeChange[];
   reverted?: boolean;
+  /** 中断・止めた・失敗した OpenCode の回を「続きから」で再開し終えた（ボタンを二重に出さない） */
+  resumed?: boolean;
   /** 送った画像（表示用の URL） */
   images?: string[];
   /** 送った圧縮ファイルの名前（OpenCode のプロジェクトへ展開した） */
@@ -214,6 +216,7 @@ function restoreMessage(convId: string, m: PersistMsg): Msg {
     todos: m.meta?.todos,
     changes: m.meta?.changes,
     reverted: m.meta?.reverted,
+    resumed: m.meta?.resumed,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     confidentialAnswer: m.meta?.confidential,
@@ -1049,6 +1052,28 @@ export default function AssistantChat() {
       return;
     }
     if (!msg.messageId) return;
+    if (action === "resume") {
+      // 中断・止めた・失敗した OpenCode の回を、同じセッションの続きとして再開する
+      if (busy) return;
+      try {
+        const cid = await ensureConversation();
+        const res = await api<{ assistant_message_id: string; user_message_id?: string; job_id?: string }>(
+          `/chat/conversations/${cid}/opencode/resume`, { method: "POST", json: { message_id: msg.messageId } });
+        setBusy(true);
+        // 再開した回は「続きから」を引っ込める（サーバーも resumed を覚える。二重に再開させない）
+        setMessages((prev) => prev.map((m) => (m.messageId === msg.messageId ? { ...m, resumed: true } : m)));
+        ownRepliesRef.current.add(res.assistant_message_id);
+        append({ role: "assistant", content: "", streaming: true, messageId: res.assistant_message_id,
+                 persistStatus: "generating", jobId: res.job_id ?? null, answeredBy: "code" });
+        await streamMessage(res.assistant_message_id);
+      } catch (e) {
+        show(e instanceof Error ? e.message : "続きからを始められませんでした", "error");
+      } finally {
+        setBusy(false);
+        qc.invalidateQueries({ queryKey: ["chat-conversations"] });
+      }
+      return;
+    }
     if (action === "fork") {
       const fork = await forkAt(msg.messageId, true);
       if (fork && !fork.opencode_context_reset) show("ここから分岐しました（元の会話は履歴に残っています）");
@@ -2794,6 +2819,11 @@ function MessageBubble({
   const restText = msg.content.slice(textEnd);
   const assistantActions: MessageAction[] = (msg.messageId && !msg.streaming ? ["copy", "fork", "delete"] as MessageAction[] : ["copy"] as MessageAction[])
     .filter((action) => action !== "copy" || !!msg.content);
+  // 中断・止めた・失敗した OpenCode の回だけ「続きから」を出す（同じセッションで残りを続けさせる）。
+  // 再開し終えた回（resumed）には出さない — 続け直すときは新しい回の「続きから」を使う
+  if (!msg.streaming && msg.messageId && msg.answeredBy === "code" && unsettled && !msg.resumed) {
+    assistantActions.splice(1, 0, "resume");
+  }
   return (
     <div data-assistant-message={msg.persistStatus ?? ""} className="flex min-w-0 flex-col items-start gap-0.5">
     <div className="flex w-full min-w-0 justify-start">

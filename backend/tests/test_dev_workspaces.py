@@ -25,6 +25,7 @@ FAKE_KEY = "production-" + "gateway-key-" + "value"
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     data = tmp_path / "data"
+    data.mkdir(parents=True, exist_ok=True)   # 空きの確認（statvfs）はディレクトリが在ることが前提
     monkeypatch.setattr(sandbox, "_data_dir", lambda: data)
     ports = iter(range(18800, 18900))
     monkeypatch.setattr(sandbox, "_free_port", lambda: next(ports))
@@ -57,7 +58,7 @@ def repo(tmp_path, monkeypatch):
     (fakebin / "git").chmod(0o755)
     BOX_CHECK["result"] = (0, "[合格] テスト: 3 件\n[未実施] 依存: なし\n\n合格", "")
 
-    def in_box_result(box, command, *, timeout=120, env=None):
+    def in_box_result(box, command, *, timeout=120, env=None, readonly=()):
         if "app.maintenance.dev_check" in " ".join(command):
             return BOX_CHECK["result"]
         done = subprocess.run(command, cwd=box.repo, capture_output=True, text=True, timeout=60, check=False,
@@ -360,9 +361,11 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 11  # 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST） + 進み具合
+    assert len(routes) == 12  # 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる
     for route in routes.values():
-        wanted = "settings.manage" if route.path.endswith("/merge") else "terminal.use"  # マージだけは管理者
+        # マージだけは管理者、直させる（会話へ送る）は送信と同じ workflows.run、ほかは terminal.use
+        wanted = ("settings.manage" if route.path.endswith("/merge")
+                  else "workflows.run" if route.path.endswith("/resolve-conflict") else "terminal.use")
         assert wanted in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path
 
 
