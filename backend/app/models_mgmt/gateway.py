@@ -582,6 +582,14 @@ class SwapLoadError(RuntimeError):
     pass
 
 
+def _announce_load_failed(alias: str) -> None:
+    """モデルを起動できなかったことを管理者へ知らせる（同じモデルは 10 分に 1 回）。"""
+    from app.alerts.events import notify_event
+
+    notify_event("model_error", title="モデルを起動できませんでした", body=f"{alias} の読み込みに失敗しました",
+                 url="/models", tag=f"model-error-{alias}", permission="settings.manage", cooldown=600)
+
+
 async def _swap_load(alias: str, request=None) -> None:
     """調停役が呼ぶ載せ替え: 他の大きなモデルを降ろし（prepare_switch）、GPU の lease の中で起動する。
 
@@ -600,6 +608,7 @@ async def _swap_load(alias: str, request=None) -> None:
         finally:
             await _release_gateway_lease(adapter, lease_id, renew)
     if not ready:
+        _announce_load_failed(alias)
         raise SwapLoadError("モデルの起動に失敗しました（起動の操作が通らなかったか、時間内に応答しませんでした）")
 
 
@@ -665,6 +674,7 @@ async def gateway_load_model(model: str, request: Request):
                     asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=900)), request)
             if not ready:
                 logger.warning("モデルの起動に失敗したため 503 を返します（/load）: model=%s", alias)
+                _announce_load_failed(alias)
                 raise HTTPException(status_code=503, detail=f"モデル {alias} の起動に失敗しました",
                                     headers={"Retry-After": "10"})
     finally:

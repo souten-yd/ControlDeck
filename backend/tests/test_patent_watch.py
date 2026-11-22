@@ -128,7 +128,7 @@ def test_deadline_notices_once_per_threshold_without_case_names(monkeypatch):
     pstore.add_event(case["id"], "filing", filing)
     sent = []
 
-    async def notify(title, message):
+    async def notify(title, message, **_):
         sent.append(title + message)
 
     monkeypatch.setattr(auto_update, "notify", notify)

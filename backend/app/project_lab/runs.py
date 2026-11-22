@@ -403,11 +403,11 @@ def _announce_finished(row: ProjectRun) -> None:
         _announced.add(row.id)
     from urllib.parse import quote
 
-    from app.alerts import webpush
+    from app.alerts.events import notify_event
 
     detail = f"終了コード {row.exit_code}" if row.status == "FAILED" and row.exit_code is not None else ""
-    webpush.send_in_background(
-        title=f"{row.project_name}: {row.profile_id} が{label}",
+    notify_event(
+        "project_run", title=f"{row.project_name}: {row.profile_id} が{label}",
         body=detail or f"実行 #{row.id}",
         url=f"/project-lab?project={quote(row.project_id)}&run={row.id}",
         tag=f"project-run-{row.id}", user_ids=[row.created_by],

@@ -333,7 +333,7 @@ export default function AssistantChat() {
     progress?: number; size?: number;
   }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [convId, setConvId] = useState<string>(() => localStorage.getItem(LS_CONV) || "");
+  const [convId, setConvId] = useState<string>(() => new URLSearchParams(window.location.search).get("conversation") || localStorage.getItem(LS_CONV) || "");   // 通知から開くとその会話
   const [conversationTitle, setConversationTitle] = useState(NEW_CHAT_TITLE);
   const [resolvedDecision, setResolvedDecision] = useState<AssistantPlan | null>(null);
   const [routing, setRouting] = useState(false);

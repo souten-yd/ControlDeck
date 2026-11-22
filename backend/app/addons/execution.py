@@ -689,6 +689,17 @@ async def create_agent_tool_job(
     validate(tool_schema, arguments, label="agent tool input")
     grant_ids = tuple(_delegated_grant_ids(arguments))
 
+    activity = agent_tool_activity(contribution_id, arguments)
+    generating = bool(activity and activity.split()[0] in ("Generating", "Editing"))
+
+    def announce(done: bool) -> None:
+        # 画像・音楽・3D などの生成・編集の終わりを、起動した人へ知らせる（調べる・状態を見るだけの道具は知らせない）
+        if generating and owner_user_id:
+            from app.alerts.events import notify_event
+
+            notify_event("media_done", title="生成が完了しました" if done else "生成に失敗しました", body=str(activity),
+                         url="/assistant", tag=f"media-{contribution_id}", user_ids=[owner_user_id])
+
     async def runner(job) -> dict[str, Any]:
         job.log("Add-on agent toolを実行しています")
         try:
@@ -703,14 +714,15 @@ async def create_agent_tool_job(
             # The existing Job service persists this result while keeping failed
             # status. It is diagnostic context, never a successful output asset.
             job.result = {"error": exc.public_detail()}
+            announce(False)
             raise
+        announce(True)
         return {
             "job_id": job.id,
             "asset_id": f"job-result:{job.id}",
             "output": output,
         }
 
-    activity = agent_tool_activity(contribution_id, arguments)
     return jobs.create(
         f"addon.agent_tool.{addon_id}.{contribution_id}",
         activity or f"{addon_id}: {contribution_id}",

@@ -118,7 +118,7 @@ def busy_reasons() -> list[str]:
     return reasons
 
 
-async def notify(title: str, message: str) -> None:
+async def notify(title: str, message: str, *, kind: str = "update") -> None:
     """有効な通知先すべてへ送る。届かなくても更新は止めない。"""
     try:
         from app.alerts.notify import send_notification
@@ -138,7 +138,7 @@ async def notify(title: str, message: str) -> None:
                 return result
 
         for channel_type, url in await asyncio.to_thread(channels):
-            await send_notification(channel_type, url, title, message)
+            await send_notification(channel_type, url, title, message, kind=kind)
     except Exception:  # noqa: BLE001 - 通知の失敗で更新を止めない
         logger.exception("更新の通知を送れませんでした")
 

@@ -158,6 +158,8 @@ METRIC_LABELS = {
 }
 APP_METRICS = {"app_down", "app_health_failed", "app_restart_loop", LOG_ERROR_METRIC}
 BOOLEAN_METRICS = {"app_down", "app_health_failed", LOG_ERROR_METRIC}
+# お休み中でも送る「緊急」の警報（アプリの停止・ヘルスチェック失敗・高温）。ほかは朝まで待ってよい
+URGENT_METRICS = {"app_down", "app_health_failed", "gpu_temp_c", "cpu_temp_c"}
 
 
 async def _dispatch(rule: AlertRule, value: float | None, db) -> bool:
@@ -184,7 +186,8 @@ async def _dispatch(rule: AlertRule, value: float | None, db) -> bool:
         except Exception:
             all_sent = False
             continue
-        if not await send_notification(ch.channel_type, url, title, message):
+        if not await send_notification(ch.channel_type, url, title, message, kind="alert",
+                                       urgent=rule.metric in URGENT_METRICS):
             all_sent = False
     return attempted and all_sent
 
