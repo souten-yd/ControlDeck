@@ -143,6 +143,19 @@ llama.cppの起動保証（`ensure_ready_by_base_url`）、KVの受け入れ制�
 アイドル判定も従来どおり通る。Add-on の MCP は既存の `addon_mcp_bridge.py` を
 そのまま使う（v2 の MCP client から `connected` を確認済み）。
 
+### 載せ替えの調停（2026-11-22）
+
+ローカル LLM の chat と `/v1/models/{m}/load` は、モデルを載せる前に調停役（`models_mgmt/swap_scheduler.py`）に並ぶ。
+載せ替え（`prepare_switch` による解放と、GPU の lease の中での `ensure_ready`）は調停役が、載っているモデルの実行中が 0 の
+ときに 1 回だけ行う。載っているモデルの要求は待たずに通す（同じモデルの並列は Radiance の `max_num_seqs` まで、
+Strata・Maya-S・llama.cpp の chat は 1 本ずつ）。別のモデルの要求は待ち行列へ入れ、断らない。次に載せるモデルと
+「続ける」かは同じ点数で比べる: 点数 = (待っている数 + 最古の待ち秒 / aging) ÷ 載せ替えの見込み秒
+（続ける点数は載せ替え 0 なので下限 10 秒で割る）。待つほど点数が上がるので、やがて必ず実行される。載せ替えが失敗したら
+そのモデルの待ちに理由つきの 503（2 回続けば 30 秒の間を置く）。次のモデルの重みは、メモリに余裕があれば
+`POSIX_FADV_WILLNEED` で先読みする。状態は `GET /api/v1/models/swap-queue`・Models 画面の「切り替え待ち」。
+理由: Ollama・llama-swap は到着順に載せ替えるので、開発と調査が交互に来ると要求のたびに載せ替わる。ServerlessLLM は読み込みの
+近いモデルを先にし、JointServe は載せ替えの回数そのものを減らす。ここは両方を点数に入れ、aging で飢餓を防いだ。
+
 ### 画面（v1 / v2 で1枚ずつ）
 
 `/opencode` が v1、`/opencode-v2` が v2。中身は同じ `OpenCodePage` で、`runtime`

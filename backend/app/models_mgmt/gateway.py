@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.config import data_dir
 from app.security.crypto import decrypt_text, encrypt_text
@@ -305,6 +306,7 @@ ASSISTANT_CLIENT = "assistant"
 # 必ず拒否する。二重の守りの最後の層で、呼び出し元の許可（egress）より優先する。
 CONFIDENTIAL_HEADER = "x-control-deck-confidential"
 CONFIDENTIAL_REFUSAL = "発明の内容を含むため、外部のモデルへは送れません"
+logger = logging.getLogger("control_deck.gateway")
 _audit_log = logging.getLogger("control_deck.audit")
 
 
@@ -547,6 +549,7 @@ def _record_gateway_oom(alias: str, lease_id: str, response: httpx.Response) -> 
 # 転送先のエラー本文をクライアントへ渡す上限。llama.cpp は失敗した文法全体を
 # 返すことがあり、そのまま流すと数百KBになる。
 UPSTREAM_ERROR_CHARS = 2000
+SWAP_LOAD_TIMEOUT_SECONDS = 600
 
 
 def _upstream_error(alias: str, body: bytes) -> dict:
@@ -566,6 +569,38 @@ def _upstream_error(alias: str, body: bytes) -> dict:
         return {"error": {**detail, "message": f"{alias}: {message}"}}
     return {"error": {"type": "upstream_error", "code": "upstream_error",
                       "message": f"{alias}: {text[:UPSTREAM_ERROR_CHARS]}"}}
+
+
+class _Detached:
+    """クライアントに紐づかない載せ替え（調停役が行う）用の request の代わり。切断は起きない。"""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class SwapLoadError(RuntimeError):
+    pass
+
+
+async def _swap_load(alias: str, request=None) -> None:
+    """調停役が呼ぶ載せ替え: 他の大きなモデルを降ろし（prepare_switch）、GPU の lease の中で起動する。
+
+    今までは要求ごとにこの順で行っていた（lease → ensure_ready）。調停役が実行中 0 のときに 1 回だけ行い、
+    その後の要求は載っているモデルとして通る。lease を使うので broker の見積り・退避はそのまま効く。
+    """
+    from app.models_mgmt import local_llm
+
+    req = request if request is not None else _Detached()
+    ready = False
+    async with _model_startup(alias, req):
+        adapter, lease_id, renew = await _acquire_gateway_lease(alias, req)
+        try:
+            ready = await _wait_for_client(
+                asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=SWAP_LOAD_TIMEOUT_SECONDS)), req)
+        finally:
+            await _release_gateway_lease(adapter, lease_id, renew)
+    if not ready:
+        raise SwapLoadError("モデルの起動に失敗しました（起動の操作が通らなかったか、時間内に応答しませんでした）")
 
 
 @router.get("/v1/models")
@@ -609,7 +644,7 @@ async def gateway_load_model(model: str, request: Request):
     """
     _authorize(request)
     import time
-    from app.models_mgmt import large_model_lifecycle, local_llm
+    from app.models_mgmt import swap_scheduler
 
     instance = await asyncio.to_thread(resolve_instance, model)
     alias = str(instance["alias"])
@@ -617,12 +652,23 @@ async def gateway_load_model(model: str, request: Request):
         raise HTTPException(status_code=404, detail=f"登録されていないモデルです: {model}")
     started = time.monotonic()
     already = bool(instance.get("loaded"))
-    async with _model_startup(alias, request):
-        await large_model_lifecycle.prepare_switch(alias)
-        ready = await _wait_for_client(
-            asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=900)), request)
-    if not ready:
-        raise HTTPException(status_code=503, detail="モデルの起動に失敗しました", headers={"Retry-After": "10"})
+    # 載せ替えは調停役が順番に行う（実行中の要求は切らない。待たせて 503 にしない）。
+    ticket = await swap_scheduler.acquire(alias, request=request, kind="load")
+    try:
+        if ticket.needs_load:
+            # 載せ替えを要さないモデル（並べて起動できる llama.cpp など）は、従来どおりこの要求が起動する。
+            from app.models_mgmt import large_model_lifecycle, local_llm
+
+            async with _model_startup(alias, request):
+                await large_model_lifecycle.prepare_switch(alias)
+                ready = await _wait_for_client(
+                    asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=900)), request)
+            if not ready:
+                logger.warning("モデルの起動に失敗したため 503 を返します（/load）: model=%s", alias)
+                raise HTTPException(status_code=503, detail=f"モデル {alias} の起動に失敗しました",
+                                    headers={"Retry-After": "10"})
+    finally:
+        ticket.release()
     return {"model": alias, "ready": True, "already_loaded": already,
             "seconds": round(time.monotonic() - started, 1)}
 
@@ -698,7 +744,18 @@ async def _cloud_chat(request: Request, payload: dict):
                 await client.aclose()
                 await asyncio.to_thread(cloud.record_usage, target, caller, usage, status_code=200, timer=timer)
 
-        return StreamingResponse(relay(), media_type="text/event-stream")
+        async def finish() -> None:
+            # relay が一度も始まらない（クライアントが先に切れた等）と、relay の finally は走らない。
+            # 応答の終わりで必ず走るこの後始末が、上流の接続・lease・調停役の枠を返す（どれも二重に呼んでよい）。
+            try:
+                await upstream.aclose()
+            finally:
+                try:
+                    await client.aclose()
+                finally:
+                    await release_all()
+
+        return StreamingResponse(relay(), media_type="text/event-stream", background=BackgroundTask(finish))
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20), follow_redirects=False) as client:
             response = await client.post(url, json=body, headers=headers)
@@ -728,7 +785,7 @@ async def gateway_chat(request: Request):
     upstream = upstream_base()
     if upstream:
         return await _relay_to_upstream(request, upstream, "POST", "/chat/completions", await request.body())
-    from app.models_mgmt import local_llm
+    from app.models_mgmt import local_llm, swap_scheduler
 
     try:
         payload = await request.json()
@@ -741,30 +798,46 @@ async def gateway_chat(request: Request):
     alias, port = str(instance["alias"]), int(instance["port"])
     # 起動前に方針を決める（ensure_ready の後では「起動していたか」が分からない）。
     greedy_sampling = _greedy_sampling_for(instance, request)
-    async with _model_startup(alias, request):
-        adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
-        try:
-            # Same-model callers remeasure only after this startup completes.
-            ready = await _wait_for_client(
-                asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=420)), request
-            )
-            if not ready:
-                raise HTTPException(
-                    status_code=503,
-                    detail="モデルの起動に失敗しました",
-                    headers={"Retry-After": "5"},
+    # 載せ替えは調停役が決める。載っているモデルなら待たずに、別のモデルが載っていれば実行中が終わるまで
+    # 待たされる（503 にはしない）。以降の _model_startup・lease・ensure_ready は載ったモデルへの通常の経路。
+    ticket = await swap_scheduler.acquire(alias, request=request)
+    try:
+        async with _model_startup(alias, request):
+            adapter, lease_id, renew = await _acquire_gateway_lease(alias, request)
+            try:
+                # Same-model callers remeasure only after this startup completes.
+                ready = await _wait_for_client(
+                    asyncio.create_task(local_llm.ensure_ready(alias, timeout_seconds=420)), request
                 )
-        except (Exception, asyncio.CancelledError):
+                if not ready:
+                    logger.warning("モデルの起動に失敗したため 503 を返します: model=%s", alias)
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"モデル {alias} の起動に失敗しました",
+                        headers={"Retry-After": "5"},
+                    )
+            except (Exception, asyncio.CancelledError):
+                await _release_gateway_lease(adapter, lease_id, renew)
+                raise
+    except BaseException:
+        ticket.release()
+        raise
+
+    async def release_all() -> None:
+        # lease を返してから調停役へ返す（返す前に載せ替えが始まると、使用中の数が残って解放が見送られる）。
+        try:
             await _release_gateway_lease(adapter, lease_id, renew)
-            raise
+        finally:
+            ticket.release()
+
     try:
         await _admit(alias, port, payload)
+        payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
+        if instance.get("runtime") == "maya-s":
+            await _fit_maya_output(payload, port)
     except (Exception, asyncio.CancelledError):
-        await _release_gateway_lease(adapter, lease_id, renew)
+        await release_all()
         raise
-    payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
-    if instance.get("runtime") == "maya-s":
-        await _fit_maya_output(payload, port)
     # Model-level sampling settings are preserved for all remaining runtimes.
     if greedy_sampling:
         payload["temperature"] = 0.0
@@ -820,7 +893,7 @@ async def gateway_chat(request: Request):
             )
         except (Exception, asyncio.CancelledError):
             await client.aclose()
-            await _release_gateway_lease(adapter, lease_id, renew)
+            await release_all()
             raise
         if upstream.status_code >= 400:
             body = await upstream.aread()
@@ -829,7 +902,7 @@ async def gateway_chat(request: Request):
             try:
                 _record_gateway_oom(alias, lease_id, upstream)
             finally:
-                await _release_gateway_lease(adapter, lease_id, renew)
+                await release_all()
             return JSONResponse(
                 status_code=upstream.status_code, content=_upstream_error(alias, body),
             )
@@ -863,9 +936,20 @@ async def gateway_chat(request: Request):
                 clear_stream_phase()
                 await upstream.aclose()
                 await client.aclose()
-                await _release_gateway_lease(adapter, lease_id, renew)
+                await release_all()
 
-        return StreamingResponse(relay(), media_type="text/event-stream")
+        async def finish() -> None:
+            # relay が一度も始まらない（クライアントが先に切れた等）と、relay の finally は走らない。
+            # 応答の終わりで必ず走るこの後始末が、上流の接続・lease・調停役の枠を返す（どれも二重に呼んでよい）。
+            try:
+                await upstream.aclose()
+            finally:
+                try:
+                    await client.aclose()
+                finally:
+                    await release_all()
+
+        return StreamingResponse(relay(), media_type="text/event-stream", background=BackgroundTask(finish))
 
     try:
         started_at = asyncio.get_running_loop().time()
@@ -895,4 +979,4 @@ async def gateway_chat(request: Request):
             )
         return JSONResponse(status_code=upstream.status_code, content=content)
     finally:
-        await _release_gateway_lease(adapter, lease_id, renew)
+        await release_all()

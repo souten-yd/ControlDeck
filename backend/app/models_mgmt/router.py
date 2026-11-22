@@ -25,6 +25,14 @@ async def runtime_environment(user: User = Depends(require_permission("workflows
     return await runtime_policy.environment()
 
 
+@router.get("/swap-queue")
+async def swap_queue(user: User = Depends(require_permission("workflows.run"))):
+    """モデルの載せ替えの待ち行列（調停役の状態）。モデルごとの待ち数・最古の待ち秒・次の予定と理由・最近の載せ替え。"""
+    from app.models_mgmt import swap_scheduler
+
+    return await swap_scheduler.get_scheduler().status()
+
+
 @router.put("/runtime-policy")
 async def put_runtime_policy(
     body: dict, request: Request,
@@ -34,13 +42,13 @@ async def put_runtime_policy(
 
     current = runtime_policy.get_policy().model_dump()
     merged = {**current, **body}
-    for nested in ("chat", "deep_research", "amd_gpu", "preferred_models"):
+    for nested in ("chat", "deep_research", "amd_gpu", "preferred_models", "swap_scheduler"):
         if isinstance(current.get(nested), dict) and isinstance(body.get(nested), dict):
             merged[nested] = {**current[nested], **body[nested]}
     try:
         policy = runtime_policy.RuntimePolicy.model_validate(merged)
-        deferred_only = policy.model_dump(exclude={"preferred_models", "vram_margin_gib"}) == {
-            k: v for k, v in current.items() if k not in {"preferred_models", "vram_margin_gib"}}
+        deferred_only = policy.model_dump(exclude={"preferred_models", "vram_margin_gib", "swap_scheduler"}) == {
+            k: v for k, v in current.items() if k not in {"preferred_models", "vram_margin_gib", "swap_scheduler"}}
         if not deferred_only:
             policy = runtime_policy.normalize_gpu_profile(policy)
         changed_preferences = {key: alias for key, alias in policy.preferred_models.items()

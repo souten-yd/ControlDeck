@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-22 ゲートウェイの「載せ替えの調停役」（L2）
+
+- 利用者「モデルの載せ替え機能をインテリジェントにして…載せ替えの待ち時間は最短に、安全に。載せ替えなくていいタスクを先に、次に載せ替えの回数が最少になるように」。同日の追加「断ると要求が消える。待ち時間で優先度が少しずつ上がるように」「並列は Radiance だけ」。
+- 不具合: 要求ごとに `gateway_chat` → `prepare_switch` → `ensure_ready` が走り、別々のモデルの要求が互いを降ろそうとした（解放の見送り、Strata の操作ロックが取れず即失敗）。待てば通る要求が 300〜660 秒待って 503・500（箱の OpenCode が開発 Strata と調査 Maya-S を交互に呼んだ）。理由もログに無かった。
+- 直し: `backend/app/models_mgmt/swap_scheduler.py`。chat（ストリーム含む）と `/load` は調停役に並び、載せ替えは実行中が 0 のときに 1 回だけ（`gateway._swap_load`: `_model_startup` → lease → `prepare_switch` → `ensure_ready`）。載っているモデルは即実行（Radiance だけ `max_num_seqs` まで並列、他は 1 本）。点数 = (待ち数 + 最古の待ち秒/aging) ÷ 載せ替えの見込み秒（続ける点数は下限 10 秒で割る）で、続けるか・どのモデルへ切り替えるかを決める。載せ替え直後は目的の要求を先に通す（行き来の防止）。失敗は理由つき 503（ログにも）、2 回続くと 30 秒の間。次のモデルの重みは、MemAvailable が重み+8 GiB 以上のときだけ `posix_fadvise(WILLNEED)` で先読み。補助のモデル（embedding・reranker）は対象外。調停役が例外になったら要求を止めず通す。
+- 見込み秒: 調停役自身が測った載せ替えの所要（warm/cold）→ load_profiles の実測 → 60 秒。メモリ上（停止後 15 分以内・先読み済み）なら warm。
+- 見える化: `GET /api/v1/models/swap-queue`、載せ替えのたびにログ 1 行、Models の「切り替え待ち: …」。設定は LLM 共通設定の「モデルの載せ替え」（`runtime_policy.swap_scheduler`: `aging_seconds`・`prefetch`）。
+- テスト `test_swap_scheduler.py`（実行中を切らない・点数・待ちで優先度が上がり必ず実行・503 にしない・失敗の理由と間・交互の要求で載せ替えが到着順の 15 回に対し 4 回以下・先読み・補助の対象外・`/load`・二重ロックで止まらない・API）。
+
 ## 2026-11-22 AI アシスタントの道具 huggingface_models（Hugging Face のモデル検索）
 
 - 利用者「『Qwen の最新のモデルで Strata に対応しているモデルを抽出して特徴とともに教えて』のような検索で、Hugging Face 内を検索して教えてくれる機能が欲しい」「検索の幅・十分な件数を担保して」。
