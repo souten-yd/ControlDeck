@@ -52,7 +52,8 @@ for (const width of [320, 1280]) {
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await sheet.getByLabel("Strataメモリ目安").scrollIntoViewIfNeeded();
     await page.screenshot({ path: `/tmp/strata-memory-settings-${width}.png` });
-    await sheet.getByRole("button", { name: "保存", exact: true }).click();
+    // 個別設定には別の欄の「保存」（無効）もある。押すのは下の全体の「保存」
+    await sheet.getByRole("button", { name: "保存", exact: true }).last().click();
     await expect.poll(() => saved?.parallel).toBe(6);
     expect(saved.context).toBe("256k");
     expect(saved.kv_resident).toBe(32768);
