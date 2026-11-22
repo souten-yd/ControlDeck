@@ -1,8 +1,9 @@
 // 作業場の結果のカードの「変更」: ファイルの一覧 → 押すと行ごとの差分（追加は緑・削除は赤・行番号・横スクロール）。
 // 差分はホストが管理する export.git から取る（箱の作業ツリーでホストの git を動かさない）。
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api/client";
+import { DiffAskContext, DiffAskForm, askRowProps, type AskTarget } from "./DiffAsk";
 
 export type WorkspaceDiffFile = { path: string; added: number; removed: number; binary: boolean };
 export type WorkspaceDiffData = {
@@ -40,23 +41,35 @@ const TONE: Record<Row["kind"], string> = {
 };
 const MARK: Record<Row["kind"], string> = { add: "+", del: "−", hunk: "", ctx: " " };
 
-export function DiffLines({ diff }: { diff: string }) {
+/** file を渡し、会話へ送る口（DiffAskContext）があるときは、行を押すと「ここを直して」の入力が開く。 */
+export function DiffLines({ diff, file }: { diff: string; file?: string }) {
   const rows = parseDiff(diff);
+  const canAsk = useContext(DiffAskContext) !== null && Boolean(file);
+  const [asking, setAsking] = useState<(AskTarget & { key: number }) | null>(null);
   if (!rows.length) return <p className="px-2 py-1 text-zinc-500">表示する行がありません</p>;
   return (
-    <div data-testid="workspace-diff-lines" className="overflow-x-auto rounded border border-zinc-200 font-mono text-[11px] leading-5 dark:border-zinc-800">
+    <div className="rounded border border-zinc-200 dark:border-zinc-800">
+    <div data-testid="workspace-diff-lines" className="overflow-x-auto font-mono text-[11px] leading-5">
       <table className="min-w-full border-collapse">
         <tbody>
-          {rows.map((row, i) => (
-            <tr key={i} data-diff={row.kind} className={TONE[row.kind]}>
+          {rows.map((row, i) => {
+            const line = row.next ?? row.old;
+            const open = canAsk && file && (line !== undefined || row.kind === "hunk")
+              ? () => setAsking({ file, line: line ?? Number(/\+(\d+)/.exec(row.text)?.[1] ?? 1), content: `${row.kind === "del" ? "（削除）" : ""}${row.text}`, key: i }) : null;
+            return (
+            <tr key={i} data-diff={row.kind} {...askRowProps(open)}
+              className={`${TONE[row.kind]} ${open ? "cursor-pointer hover:brightness-95 [@media(pointer:coarse)]:h-9" : ""} ${asking?.key === i ? "outline outline-1 -outline-offset-1 outline-accent-500" : ""}`}>
               <td className="w-8 select-none px-1 text-right align-top tabular-nums text-zinc-400">{row.old ?? ""}</td>
               <td className="w-8 select-none px-1 text-right align-top tabular-nums text-zinc-400">{row.next ?? ""}</td>
               <td className="w-4 select-none px-1 align-top">{MARK[row.kind]}</td>
               <td className="whitespace-pre pr-3">{row.text}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
+    </div>
+    {asking && <DiffAskForm key={asking.key} target={asking} onClose={() => setAsking(null)} />}
     </div>
   );
 }
@@ -110,7 +123,7 @@ export function WorkspaceDiff({ name }: { name: string }) {
           <p className="break-all font-mono text-[11px] text-zinc-600 dark:text-zinc-300">{path}</p>
           {isFetching && !file && <p className="text-zinc-500">読み込み中…</p>}
           {file?.binary && <p data-testid="workspace-diff-binary" className="text-zinc-500">バイナリのファイル（差分は出しません）</p>}
-          {file && !file.binary && <DiffLines diff={file.diff} />}
+          {file && !file.binary && <DiffLines diff={file.diff} file={path} />}
           {file?.truncated && (
             <p data-testid="workspace-diff-truncated" className="text-amber-700 dark:text-amber-400">
               大きいので先頭の {Math.round((data?.limit ?? 0) / 1024)}KB で打ち切りました（全体 {Math.round(file.size / 1024)}KB）。続きは PR で見てください。

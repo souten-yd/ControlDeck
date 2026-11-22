@@ -23,6 +23,7 @@ import { useAssistantTts } from "./useAssistantTts";
 import { useWakeLock } from "../../hooks/useWakeLock";
 import { useUxPrefs } from "../../stores/uxPrefs";
 import { getSpeechEngines } from "../../api/speech";
+import { DiffAskContext } from "./DiffAsk";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { ROLE_LABELS, type RoleKey } from "../opencode/RolesPanel";
@@ -1908,6 +1909,7 @@ export default function AssistantChat() {
 
   return (
     <StopContext.Provider value={runningJob ? () => void stopRunning() : null}>
+    <DiffAskContext.Provider value={busy || hasContent ? null : (text) => { setCodeAgent("build"); rememberPrefs({ agent: "build" }); void send(text, "build", "code"); }}>
     <section
       data-assistant-shell
       aria-label={assistantName}
@@ -2550,6 +2552,7 @@ export default function AssistantChat() {
         </div>
       </div>
     </section>
+    </DiffAskContext.Provider>
     </StopContext.Provider>
   );
 }

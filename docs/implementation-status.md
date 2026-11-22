@@ -13,6 +13,13 @@
 - 出どころは Project Lab の作業場タブと同じ `GET /opencode/workspaces/progress`（同じ query キー＝キャッシュを共有。動いているものがあるときだけ 10 秒ごとに見張る）。会話との結び付きは進み具合の `conversation_id`（作業場ごとの最新の会話）。API には `interrupted`（#561 の interrupted。failed と区別）を 1 項目足しただけ。`WS_STATES` は ProjectLab から `DevWorkspace.tsx` へ移して共有。
 - テスト: `test_dev_workspaces.py`（interrupted の区別）、E2E `assistant-chat-list-workspace-badge.spec.ts`（320・1280、ライト・ダーク。撮影 `frontend/test-results/chat-list-ws-badge-*`）。
 - 注意: 印が出るのは各作業場の最新の会話だけ（作業場に結び付く会話が複数あっても、進み具合は作業場ごとに 1 件のため）。
+## 2026-11-23 AI アシスタント: 差分の行から「ここを直して」・「レビューして」ボタン（U7、L1）
+
+- 差分の行（会話の「変更」＝`OpenCodeChanges`、作業場の結果の「変更」＝`WorkspaceDiff`/`DiffLines`）を押す（スマホはタップ）と、行の下に小さな入力が開く。送ると「<ファイル>:<行> の <その行の内容> について: <文>」を同じ会話へビルド（`code_agent: build`）で送る。hunk の見出し行も押せる。削除の行は旧側の番号に「（削除）」。
+- 送る口は `AssistantChat.send` を `DiffAskContext`（新規 `DiffAsk.tsx`）で渡す。「このプランで作る」と同じくビルドへ切り替えて送る。生成中・入力中は値を入れないので、行もボタンも出ない（ProjectLab の結果カードにも出ない）。
+- 「レビューして」: 完了カード（`CodeDoneCard`）と作業場の結果のカードに出し、「今の変更をレビューして（reviewer の係を使って）。問題があれば直して。」を送る。reviewer は `provider.py` が常に agents へ入れる子エージェント。
+- テスト: E2E `assistant-diff-ask-review.spec.ts`（320・1280、ライト・ダーク、生成中は出ない。撮影 `frontend/test-results/diff-ask-*`）。
+- 確かめられなかった点: 実モデルが reviewer を呼ぶか。見た目の視覚ゲートは今夜は外した。
 
 ## 2026-11-23 完了カードが短い答えを繰り返していた（#565 の直し）
 
