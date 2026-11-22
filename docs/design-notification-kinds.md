@@ -3,7 +3,7 @@
 すべての通知は `backend/app/alerts/events.py::notify_event(kind, ...)` を通る。判断の順: ① 利用者ごとの種類の有効・無効 → ② お休みモード → ③ `webpush`。設定は `data_dir/push/notify-prefs.json`（利用者 ID ごと・上書きした値だけ）。画面は 設定 → 通知。API は `GET/PUT /api/v1/notification-settings`（本人の分だけ）。
 
 ## お休みモード
-既定は有効・22:00〜07:00（サーバーの地域の時刻、日またぎ可。開始を含み終了を含まない）。休み中の通知は送らず捨てる。緊急の監視の警報（app_down・app_health_failed・gpu_temp_c・cpu_temp_c）は「お休み中も送る」（既定は有効）で通す。
+既定は有効・22:00〜07:00（サーバーの地域の時刻、日またぎ可。開始を含み終了を含まない）。休み中の通知は送らず捨てる。緊急の監視の警報（app_down・app_health_failed・gpu_temp_c・cpu_temp_c）は「お休み中も送る」を有効にしたときだけ通す（既定は無効。2026-11-23 利用者「お休み中の通知は届かないようにしてほしい」）。
 
 ## 種類
 | 種類 | いつ | 既定 | 検出の場所 |

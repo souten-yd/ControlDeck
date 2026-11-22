@@ -3,7 +3,7 @@
 目的:
 - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。
 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。
-- 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」が有効なら送る。無効なら送らない。
+- 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」を有効にしたときだけ送る（既定は無効）。
 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。
 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。
 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。
@@ -75,11 +75,11 @@ def test_quiet_hours_custom_same_day_range_and_off(sent, monkeypatch):
 
 def test_urgent_alert_passes_quiet_hours_only_when_allowed(sent, monkeypatch):
     monkeypatch.setattr(events, "local_now", at(23))
+    events.notify_event("alert", title="t", user_ids=[7], urgent=True)          # 既定はお休み中は緊急も送らない
+    assert len(sent) == 0
+    events.save_prefs(7, quiet={"urgent_alerts": True})
     events.notify_event("alert", title="t", user_ids=[7], urgent=True)
     events.notify_event("alert", title="t", user_ids=[7])                       # 緊急でなければ止まる
-    assert len(sent) == 1
-    events.save_prefs(7, quiet={"urgent_alerts": False})
-    events.notify_event("alert", title="t", user_ids=[7], urgent=True)
     assert len(sent) == 1
     events.save_prefs(7, kinds={"alert": False}, quiet={"urgent_alerts": True})  # 種類を切れば緊急でも送らない
     events.notify_event("alert", title="t", user_ids=[7], urgent=True)
@@ -97,7 +97,7 @@ def test_settings_api_is_own_only_and_validates(admin_client):
     with SessionLocal() as db:
         admin_id = db.query(User).filter(User.username == "admin").one().id
     view = admin_client.get("/api/v1/notification-settings").json()
-    assert view["quiet"] == {"enabled": True, "start": "22:00", "end": "07:00", "urgent_alerts": True}
+    assert view["quiet"] == {"enabled": True, "start": "22:00", "end": "07:00", "urgent_alerts": False}
     assert {k["id"]: k["enabled"] for k in view["kinds"]}["chat_done"] is False
     put = admin_client.put("/api/v1/notification-settings", headers=CSRF_HEADERS,
                            json={"kinds": {"code_done": False}, "quiet": {"start": "23:00"}})

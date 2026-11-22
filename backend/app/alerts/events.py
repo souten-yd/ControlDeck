@@ -6,7 +6,7 @@
 どの場所から出す通知も、必ず `notify_event` を通す。この入口が次の順に判断し、送ってよい人だけを `webpush` へ渡す。
 1. 利用者ごとの「その種類を受け取る」の設定（既定は KINDS の default）。
 2. お休みモード（既定は有効・22:00〜07:00・サーバーの地域の時刻）。お休み中は送らず捨てる。
-   監視の警報のうち緊急のもの（urgent=True）は、利用者が「お休み中も送る」を選んでいれば送る（既定は送る）。
+   監視の警報のうち緊急のもの（urgent=True）は、利用者が「お休み中も送る」を選んだときだけ送る（既定は送らない。2026-11-23 利用者「お休み中の通知は届かないようにしてほしい」）。
 3. 送ってよければ `webpush.send_in_background`（待つ呼び出しは send_to）へ渡す。
 
 設定の置き場は利用者ごとの JSON（data_dir/push/notify-prefs.json）。DB の表は足さない（移行を要さず、
@@ -64,7 +64,7 @@ KINDS: tuple[Kind, ...] = (
 )
 KIND_BY_ID = {kind.id: kind for kind in KINDS}
 
-QUIET_DEFAULT = {"enabled": True, "start": "22:00", "end": "07:00", "urgent_alerts": True}
+QUIET_DEFAULT = {"enabled": True, "start": "22:00", "end": "07:00", "urgent_alerts": False}
 
 _lock = threading.Lock()
 
