@@ -360,6 +360,7 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 7  # 一覧・作る・消す + 3 段目の changes・check（GET/POST）・adopt
+    assert len(routes) == 10  # 一覧・作る・消す + 3 段目の changes・check（GET/POST）・adopt + 4 段目の diff・merge（GET/POST）
     for route in routes.values():
-        assert "terminal.use" in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path
+        wanted = "settings.manage" if route.path.endswith("/merge") else "terminal.use"  # マージだけは管理者
+        assert wanted in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path

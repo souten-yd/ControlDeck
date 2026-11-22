@@ -51,9 +51,9 @@ def test_pick_model_only_local_vision_and_never_cloud():
         {"id": "vl-b", "runtime": "strata", "vision": True, "loaded": True},
     ]
     assert vr.pick_model(entries) == "vl-b"          # 起動中を優先
-    # 起動していないものは既定では選ばない（関門のために本番のモデルを入れ替えない）
-    assert vr.pick_model(entries[:-1]) is None
-    assert vr.pick_model(entries[:-1], allow_load=True) == "vl-a"
+    # 起動していないものも選ぶ（呼ばれたらロードして答える、ほかの呼び出しと同じ動き）。--no-load のときだけ選ばない
+    assert vr.pick_model(entries[:-1]) == "vl-a"
+    assert vr.pick_model(entries[:-1], allow_load=False) is None
     assert vr.pick_model(entries[:3]) is None         # cloud と画像を読めないものだけ
     assert vr.pick_model([{"id": "cloud:x", "vision": True}]) is None
 

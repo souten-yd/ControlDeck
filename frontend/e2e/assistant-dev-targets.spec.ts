@@ -1,6 +1,6 @@
 // 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。
 //   作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。
-//   「詳しく」で機能の一覧（gpu は「準備中」で押せない）。プラン／ビルドと権限は 1 行のトグルで、既存の動き（PUT permission-mode）は同じ。
+//   「詳しく」で機能の一覧（gpu は「準備中」で押せない）。モードと権限は半分の幅で左右に並べた 1 行で、既存の動き（PUT permission-mode）は同じ。
 //   メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。
 // 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、
 //   表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
@@ -100,11 +100,17 @@ for (const [width, height] of [[1280, 900], [320, 700]]) {
       await page.screenshot({ path: `test-results/assistant-dev-targets-${width}-${scheme}-view-detail.png` });
       await group.locator("[data-target-detail]").click();
 
-      // プラン／ビルドと権限は 1 行のトグル。既存の動き（PUT permission-mode）は同じ
+      // モードと権限は半分の幅で左右に並べた 1 行（2026-11-22 利用者）。既存の動き（PUT permission-mode）は同じ
       const agentRow = menu.getByRole("group", { name: "OpenCode のモード" });
       const permRow = menu.getByRole("group", { name: "OpenCode の権限" });
-      expect((await agentRow.boundingBox())!.height).toBeLessThanOrEqual(48);
-      expect((await permRow.boundingBox())!.height).toBeLessThanOrEqual(48);
+      const a = (await agentRow.boundingBox())!, p = (await permRow.boundingBox())!;
+      expect(Math.abs(a.y - p.y)).toBeLessThanOrEqual(2);          // 同じ行
+      expect(a.x + a.width).toBeLessThanOrEqual(p.x + 1);          // 左がモード、右が権限
+      expect(Math.max(a.height, p.height)).toBeLessThanOrEqual(64); // 1 行に収まる
+      for (const b of await menu.locator("[data-agent-option], [data-permission-option]").all())
+        expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      for (const b of await menu.locator("[data-agent-option] span.truncate, [data-permission-option] span.truncate").all())
+        expect(await b.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);   // 文字が切れない
       await permRow.locator('[data-permission-option="ask"]').click();
       await expect.poll(() => state.permissionPuts.length).toBe(1);
       expect(state.permissionPuts[0]).toMatchObject({ mode: "ask" });

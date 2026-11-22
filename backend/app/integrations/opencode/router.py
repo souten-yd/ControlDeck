@@ -312,6 +312,67 @@ async def workspace_adopt(
     return result
 
 
+@router.get("/workspaces/{name}/diff")
+async def workspace_diff(name: str, path: str = "", user: User = Depends(require_permission("terminal.use"))):
+    """元からの差分。path なしはファイルの一覧、ありはそのファイルの unified diff（256KB まで）。export.git から取る。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    box = _owned_box(name, user)
+    try:
+        return await asyncio.to_thread(workspaces.file_diff, box, path)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+class MergeBody(BaseModel):
+    confirm: bool = False
+    l2_phrase: str = Field(default="", max_length=60)
+
+
+@router.get("/workspaces/{name}/merge")
+async def workspace_merge_preview(name: str, user: User = Depends(require_permission("settings.manage"))):
+    """マージの前提の確認（関門・区分・マージできるか）。何も書かない。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    _owned_box(name, user)
+    try:
+        return await asyncio.to_thread(workspaces.merge_preview, name, user.username)
+    except workspaces.AdoptRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+@router.post("/workspaces/{name}/merge")
+async def workspace_merge(
+    name: str, body: MergeBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """取り込んだ PR をマージする（settings.manage・確認の印が必須。L2 は確認の文言も要る）。Release はしない。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    if not body.confirm:
+        raise HTTPException(status_code=422, detail="マージするには確認（confirm）が必要です")
+    _owned_box(name, user)
+    try:
+        result = await asyncio.to_thread(workspaces.merge, name, user.username, confirm_phrase=body.l2_phrase)
+    except workspaces.AdoptRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    audit.record(db, "opencode.workspace.merge", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request,
+                 metadata={"pr_url": result["pr_url"], "tier": result["tier"], "head": result["head"],
+                           "guarded": result["guarded"]})
+    return result
+
+
 class SessionBody(BaseModel):
     project_path: str = Field(default="", max_length=4096)
     project_name: str = Field(default="", max_length=64)

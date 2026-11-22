@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 212 ファイル、1943 テスト（目的の未記入 93 ファイル）
-- E2E: 106 spec、214 テスト
+- backend: 213 ファイル、1953 テスト（目的の未記入 93 ファイル）
+- E2E: 107 spec、218 テスト
 
 ## backend（backend/tests）
 
@@ -815,6 +815,21 @@
 - `test_hostile_box_git_config_never_runs_on_the_host` — 箱の中の AI が .git/config に仕込んだ実行（fsmonitor・credential.helper・sshCommand・フック）が、ホスト側の
 - `test_api_check_job_changes_and_adopt_with_audit_and_permissions`
 - `test_api_controldeck_adopt_needs_settings_manage`
+
+### backend/tests/test_dev_workspace_merge.py
+
+目的: 開発の作業場 4 段目（行ごとの差分・画面からのマージ）。 目的: (1) 差分は箱の作業ツリーでホストの git を動かさず、ホストが管理する export.git の ref から取る。1 ファイル 256KB で 打ち切り、バイナリは中身を出さない。(2) 取り込んだ PR のマージは、PR が開いている・マージできる・PR の head が export の ref と 同じで関門で確かめた tree と同じ・最後の関門が合格、を全部満たすときだけ。区分 L2 は確認の文言（「L2 を理解した」）が要る。 settings.manage が要り、監査へ残す。マージするのは確認した head だけ（--match-head-commit）。Release はしない。 根拠: 2026-11-22 利用者「マージの判断を Claude（Opus）に頼らず、画面で行えるように」（外部への書き込みと権限に関わる L2）。 git は本物（一時のリポジトリ）、gh・箱の中の実行はモック。実際の PR はマージしない。
+
+- `test_file_diff_lists_files_and_reads_one_from_export_without_running_host_git_in_the_box`
+- `test_file_diff_truncates_large_files_and_hides_binary`
+- `test_api_diff_needs_owner_and_returns_json`
+- `test_merge_succeeds_for_l1_with_squash_delete_branch_and_match_head`
+- `test_merge_refuses_with_409_reason_and_never_calls_gh_merge`
+- `test_merge_refuses_when_the_box_moved_after_adopt_or_the_check_failed`
+- `test_merge_refuses_when_pr_tree_differs_from_checked_tree`
+- `test_merge_without_pr_or_for_codedev_is_refused`
+- `test_l2_change_needs_the_confirmation_phrase_and_lists_guarded_files`
+- `test_api_merge_needs_settings_manage_confirm_and_is_audited`
 
 ### backend/tests/test_dev_workspace_targets.py
 
@@ -3146,10 +3161,19 @@
 
 ### frontend/e2e/assistant-dev-targets.spec.ts
 
-目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。プラン／ビルドと権限は 1 行のトグルで、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
+目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。モードと権限は半分の幅で左右に並べた 1 行で、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。
 
 - plus menu shows the dev target, details and compact toggles (${width}px ${scheme})
 - target controldeck and mirror cannot be chosen when the source is a CodeDEV project
+
+### frontend/e2e/assistant-dev-workspace-diff-merge.spec.ts
+
+目的: 目的: 作業場の結果のカードの「変更」で、ファイルの一覧 → 行ごとの差分（追加は緑・削除は赤・行番号・横スクロール・打ち切りとバイナリの表示）が見え、 PR のリンクの横の「マージ」で前提の確認（関門・区分・マージできるか）→ 確認 → マージの結果が出る。L2 は強い警告と確認の文言の入力が要る。 前提を満たさないときは理由を出して押せない。320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「マージの判断を Claude に頼らず、画面で行えるように」（開発の作業場 4 段目・L2）。API は page.route で模擬する。実際には何もマージしない。
+
+- workspace diff: file list then line diff, binary and truncation (${width}px)
+- workspace merge: L1 confirms then merges without a phrase (${width}px)
+- workspace merge: L2 shows a strong warning and needs the phrase (${width}px)
+- workspace merge: unmet preconditions show the reason and cannot be pressed (dark, 320px)
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts
 

@@ -6,6 +6,8 @@ import { api, ApiError } from "../../api/client";
 import { ConfirmDialog } from "../../components/ui";
 import { useAuth, useToasts } from "../../stores";
 import { badgeText, targetInfo } from "./workspaceTargets";
+import { WorkspaceDiff } from "./WorkspaceDiff";
+import { WorkspaceMergeButton } from "./WorkspaceMerge";
 
 export type DevWorkspace = {
   name: string; source: string; source_label: string; branch: string;
@@ -24,6 +26,7 @@ export type WorkspaceChanges = {
   commits: { sha: string; author: string; at: number; subject: string }[]; commit_count: number;
   check: WorkspaceCheck | null;
   adopted: { kind: "pr" | "branch"; branch: string; pr_url: string; head: string } | null;
+  merged?: { at: number; by: string; pr_url: string; tier: string } | null;
 };
 
 export const WS_PREFIX = "ws:";
@@ -68,6 +71,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const base = `/opencode/workspaces/${encodeURIComponent(name)}`;
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState(false);
+  const [diff, setDiff] = useState(false);
   const [adopting, setAdopting] = useState(false);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
@@ -168,6 +172,11 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
           {info.commits.length > 0 && (
             <p className="text-zinc-500 dark:text-zinc-400">コミット {info.commit_count} 件（最新: {info.commits[0].subject}）</p>
           )}
+          <button type="button" onClick={() => setDiff((v) => !v)} aria-expanded={diff} data-testid="workspace-diff-toggle"
+            className="min-h-11 w-full text-left text-zinc-700 underline-offset-2 hover:underline dark:text-zinc-200">
+            変更{diff ? "を閉じる" : "（行ごとの差分）を見る"}
+          </button>
+          {diff && <WorkspaceDiff name={name} />}
           {check && !check.passed && !check.stale && (
             <ul data-testid="workspace-check-failures" className="list-disc pl-4 text-red-700 dark:text-red-400">
               {check.items.filter((i) => i.status === "ng").map((i) => <li key={i.name}>{i.name}: {i.message}</li>)}
@@ -186,11 +195,16 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             )}
           </div>
           {adopted && (
-            <p data-testid="workspace-adopted" className="break-all text-emerald-700 dark:text-emerald-400">
-              {adopted.kind === "pr"
-                ? <>PR を作りました。確認とマージは <a href={adopted.pr_url} target="_blank" rel="noreferrer" className="underline">{adopted.pr_url}</a> で行ってください。</>
-                : <>元のリポジトリに ws/{name} のブランチとして取り込みました。</>}
-            </p>
+            <div data-testid="workspace-adopted" className="flex min-w-0 flex-wrap items-center gap-2 text-emerald-700 dark:text-emerald-400">
+              <p className="min-w-0 flex-1 break-all">
+                {adopted.kind === "pr"
+                  ? <>PR を作りました。<a href={adopted.pr_url} target="_blank" rel="noreferrer" className="underline">{adopted.pr_url}</a>{info?.merged ? "（マージ済み）" : " で確認してマージします。"}</>
+                  : <>元のリポジトリに ws/{name} のブランチとして取り込みました。</>}
+              </p>
+              {adopted.kind === "pr" && can("settings.manage") && (
+                <WorkspaceMergeButton name={name} className={BTN} merged={Boolean(info?.merged)} />
+              )}
+            </div>
           )}
         </div>
       )}
