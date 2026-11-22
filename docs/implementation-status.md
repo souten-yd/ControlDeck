@@ -10,6 +10,13 @@
 - 編集できる: 隔離（`isolation`）・自動レビュー（`auto_review`）= `/opencode/workflow`、AI アシスタントの権限モード = `/chat/opencode/permission-mode`、ディスクの空きの下限（`workspace_min_free_gib`）= `/opencode/settings`。OpenCode 画面と同じ値。
 - 要約とリンク: 役割とモデル（指定のある役割を一覧し、編集は OpenCode 画面へ）・開発対象と取り込み先（本体は PR、ほかは元のリポジトリへブランチ）・関門（dev-check）の説明・自動保存（ターンの終わりごと・常に有効。ディスクの下限との関係を説明）。
 - テスト: E2E `dev-workspace-settings.spec.ts`（320・1280）。
+## 2026-11-23 自動保存の時点へ戻す（U15）
+
+- 自動保存（1 ターンの終わりのコミット）の時点へ、コード・会話・両方を戻せる（Claude Code の /rewind と同じ考え）。保存した回の発言の「⋯」に「この時点に戻す」（`RestoreDialog.tsx`: コードだけ / 会話だけ（既存の分岐）/ 両方。両方はコードが戻せてから分岐）。作業場の結果のカードに「保存の時点」の一覧（初め 5 件・もっと見る。「戻す前」の行は「戻す前に戻す」）。
+- backend（`workspaces.py`）: `autosave` が `sha` を返す。`checkpoints(box)`（起点の revision から HEAD まで最大 50 と過去の「戻す前」）・`restore(box, sha, username)`・`take_restore_note(box)`。戻す前に未保存を先に保存し（保存できず変更が残るなら戻さない）、戻せるのは HEAD の祖先で起点の子孫の保存と過去の「戻す前」だけ（sha は 40 桁の 16 進）。今の HEAD は `refs/controldeck/before-restore/<n>` に残し、メタの `restores`（最大 20）に記録。`git clean` はしない。自動保存と同じロックで直列化。
+- API: `GET /opencode/workspaces/{name}/checkpoints`、`POST /opencode/workspaces/{name}/restore`（body `{sha}`。持ち主だけ・その作業場で生成中の会話があれば 409・audit `workspace.restore`）。
+- AI へ伝える経路: メタの `restore_note` に 1 文を入れ、次の OpenCode のターンの先頭（「## コードを戻しました」）へ一度だけ付ける（`chat_persist.py`。画面の利用者の発言は変えない）。保存した回の発言の meta に `checkpoint {sha, count, workspace}` を記録する。
+- テスト: `test_dev_workspace_persist.py`（戻す・やり直し・拒否・API）、`test_opencode_workspace_persist.py`（checkpoint と注記）、E2E `assistant-restore-checkpoint.spec.ts`（320。未実行）。
 
 ## 2026-11-23 通知の作り直し: 種類ごとの有効・無効とお休みモード
 

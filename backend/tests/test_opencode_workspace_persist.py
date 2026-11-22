@@ -68,6 +68,7 @@ def _fake(monkeypatch, tmp_path, turn, *, autosave_results=None, chain=None, swi
         return autosaves.pop(0) if autosaves else CLEAN
 
     monkeypatch.setattr(workspaces, "autosave", fake_autosave)
+    monkeypatch.setattr(workspaces, "take_restore_note", lambda box: calls.pop("restore_note", ""))
     monkeypatch.setattr(_sandbox, "load", lambda name: None)
     monkeypatch.setattr(_sandbox, "model_chain", lambda b: list(chain or []))
     if chain is not None:
@@ -429,3 +430,22 @@ def test_resume_refuses_while_the_session_still_runs(admin_client, monkeypatch, 
                           json={"message_id": "m_live00000001"})
     assert r.status_code == 409 and "まだこの作業を続けています" in r.json()["detail"]
     assert not calls.get("turns"), "動いているセッションへは送らない"
+
+
+# ---- 保存の時点へ戻す（U15） ----
+# 目的: 保存した回の発言へ「この時点に戻す」の目印（meta.checkpoint）が付くこと、戻したあとの最初の依頼の
+# 先頭へ AI 向けの注記が付くこと（画面の利用者の発言は変えない）。根拠: ROADMAP U15。
+
+def test_turn_records_checkpoint_and_sends_restore_note_to_the_agent(admin_client, monkeypatch, tmp_path):
+    sha = "a" * 40
+    server, calls = _fake(monkeypatch, tmp_path, _ok, autosave_results=[
+        {"committed": True, "count": 3, "skipped": "", "free_gib": 90.0, "error": "", "sha": sha}])
+    calls["restore_note"] = "利用者がコードを戻しました。"
+    conv_id = _new_conversation(admin_client)
+    aid = _send(admin_client, conv_id, "続けて")
+    final = _wait_done(admin_client, conv_id, aid)
+    assert final["meta"]["checkpoint"] == {"sha": sha, "count": 3, "workspace": server.workspace}
+    sent = calls["turns"][0][1]
+    assert sent.index("利用者がコードを戻しました。") < sent.index("続けて")
+    msgs = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
+    assert [m["content"] for m in msgs if m["role"] == "user"] == ["続けて"], "画面の発言は変えない"

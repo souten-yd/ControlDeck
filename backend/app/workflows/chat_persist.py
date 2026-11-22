@@ -1742,6 +1742,18 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
             if documents:
                 buf["meta"]["documents"] = [{"name": d["name"], "path": d["relative"], "pages": d["pages"]} for d in documents]
             lead: list[str] = [TODO_GUIDE]
+            if server.workspace:
+                # 利用者がコードを保存の時点へ戻していたら、それを AI へ一度だけ伝える（画面の発言は変えない）
+                from app.maintenance import sandbox as _sb, workspaces as _ws
+
+                def restore_note() -> str:
+                    try:
+                        return _ws.take_restore_note(_sb.load(server.workspace))
+                    except _sb.SandboxError:
+                        return ""
+
+                if note := await asyncio.to_thread(restore_note):
+                    lead.append(f"## コードを戻しました\n{note}")
             if params.get("code_agent") == "plan":
                 lead.append("## プラン\nいまはプランです。ファイルの編集や変更を伴うコマンドはせず、read・grep・glob・"
                             "webfetch で調べ、実装の手順をまとめて利用者の確認を求めてください。")
@@ -1812,6 +1824,10 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                     logger.warning("作業場 %s の自動保存に失敗しました: %s", server.workspace, type(exc).__name__)
                     return
                 job.log("autosave", saved=saved, status=status)
+                if saved.get("sha"):
+                    # 「この時点に戻す」の目印（コードの保存の時点）。このあとの checkpoint で発言の meta に載る
+                    buf["meta"]["checkpoint"] = {"sha": saved["sha"], "count": saved["count"],
+                                                 "workspace": server.workspace}
                 if saved["skipped"] == "disk":
                     await on_text(f"\n\n（ディスクの空きが少ないので保存できません。残り {saved['free_gib']:.0f} GiB）")
                     from app.alerts.events import notify_event

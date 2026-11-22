@@ -457,6 +457,59 @@ async def workspace_adopt(
     return result
 
 
+@router.get("/workspaces/{name}/checkpoints")
+async def workspace_checkpoints(name: str, user: User = Depends(require_permission("terminal.use"))):
+    """戻せる保存の時点（新しい順）と、過去の「戻す前」。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    box = _owned_box(name, user)
+    try:
+        return {"checkpoints": await asyncio.to_thread(workspaces.checkpoints, box)}
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+
+
+class RestoreBody(BaseModel):
+    sha: str = Field(min_length=40, max_length=40)
+
+
+def _generating_in(db, box) -> bool:
+    """この作業場で OpenCode が今も回答を作っているか（戻すと作業中のファイルが変わるので止める）。"""
+    from sqlalchemy import select
+
+    from app.models import ChatMessage
+
+    escaped = str(box.repo.resolve()).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = db.execute(select(ChatMessage.job_id).where(
+        ChatMessage.status == "generating", ChatMessage.meta_json.like(f'%"project_path": "{escaped}"%', escape="\\"),
+    )).scalars().all()
+    return any((job := jobs.get(job_id)) is not None and job.status in ("queued", "running") for job_id in rows if job_id)
+
+
+@router.post("/workspaces/{name}/restore")
+async def workspace_restore(
+    name: str, body: RestoreBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """作業場のコードを、保存の時点へ戻す（戻す前の状態も残るので、あとで戻せる）。作業中の会話があれば 409。"""
+    import asyncio
+
+    from app.maintenance import workspaces
+
+    box = _owned_box(name, user)
+    if _generating_in(db, box):
+        raise HTTPException(status_code=409, detail="OpenCode が作業中です。終わるか止めてから戻してください")
+    try:
+        result = await asyncio.to_thread(workspaces.restore, box, body.sha, user.username)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    audit.record(db, "workspace.restore", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request, metadata={"to": body.sha, "before": result["before"]})
+    return result
+
+
 @router.get("/workspaces/{name}/diff")
 async def workspace_diff(name: str, path: str = "", user: User = Depends(require_permission("terminal.use"))):
     """元からの差分。path なしはファイルの一覧、ありはそのファイルの unified diff（256KB まで）。export.git から取る。"""

@@ -818,7 +818,8 @@ def autosave(box: Sandbox, conversation_id: str = "") -> dict:
     - 変更が無ければしない。ディスクの空きが下限を下回れば飛ばす（{"skipped": "disk"}）。
     - コミットは箱の中の箱の git で（--no-verify でフックを動かさない。作者は箱の設定済みの作者）。
     - 成功したら export.git へ取り込む（結果のカードの差分は export.git を見るので、途中の保存が見える）。
-    返り値: {"committed": bool, "count": int, "skipped": ""|"disk"|"clean"|"unknown"|"error", "free_gib": float, "error": str}
+    返り値: {"committed": bool, "count": int, "skipped": ""|"disk"|"clean"|"unknown"|"error", "free_gib": float, "error": str,
+             "sha": コミットした HEAD（保存しなかったら ""）}
     """
     # 同じ作業場の保存が重なる（2 つの会話のターンの終わり・起動時の立て直しと利用者の送信）と、番号が
     # 重なり index.lock を取り合うので、1 つずつにする
@@ -827,6 +828,12 @@ def autosave(box: Sandbox, conversation_id: str = "") -> dict:
 
 
 def _autosave(box: Sandbox, conversation_id: str) -> dict:
+    result = _autosave_commit(box, conversation_id)
+    result.setdefault("sha", "")
+    return result
+
+
+def _autosave_commit(box: Sandbox, conversation_id: str) -> dict:
     free = disk_free_gib()
     if free < min_free_gib():
         return {"committed": False, "count": 0, "skipped": "disk", "free_gib": round(free, 1), "error": ""}
@@ -858,10 +865,100 @@ def _autosave(box: Sandbox, conversation_id: str) -> dict:
                 "error": (err.strip() or f"終了コード {code}")[:200]}
     _update_meta(box.name, autosave_count=count)
     try:
+        sha = _box_head(box)
+    except SandboxError:
+        sha = ""
+    try:
         import_head(box)
     except SandboxError:
         pass          # カードは次に開いたときの取り込みで追いつく（保存自体は済んでいる）
-    return {"committed": True, "count": count, "skipped": "", "free_gib": round(free, 1), "error": ""}
+    return {"committed": True, "count": count, "skipped": "", "free_gib": round(free, 1), "error": "", "sha": sha}
+
+
+# ---- 保存の時点へ戻す（ROADMAP U15。Claude Code の /rewind のコード側） ----
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+CHECKPOINT_LIMIT = 50
+RESTORE_HISTORY = 20
+
+
+def _box_head(box: Sandbox) -> str:
+    return sandbox.in_box(box, ["git", "rev-parse", "HEAD"], timeout=30).strip()
+
+
+def checkpoints(box: Sandbox) -> list[dict]:
+    """戻せる時点。起点の revision から HEAD までのコミット（新しい順・最大 50）と、過去の「戻す前」。
+
+    {sha, at, subject, count（作業途中の保存の番号・無ければ 0）, conversation_id, kind: "save"|"before_restore"}。"""
+    meta = sandbox._read_meta(box.path)
+    revision = str(meta.get("revision") or "")
+    span = f"{revision}..HEAD" if SHA_RE.fullmatch(revision) else "HEAD"
+    out = sandbox.in_box(box, ["git", "log", f"-n{CHECKPOINT_LIMIT}", "--format=%H%x1f%cI%x1f%s", span], timeout=60)
+    items: list[dict] = []
+    for line in out.splitlines():
+        sha, _, rest = line.partition("\x1f")
+        at, _, subject = rest.partition("\x1f")
+        number = re.search(r"作業途中の保存 #(\d+)", subject)
+        conv = re.search(r"会話 (\S+) のターン", subject)
+        items.append({"sha": sha, "at": at, "subject": subject, "count": int(number.group(1)) if number else 0,
+                      "conversation_id": conv.group(1) if conv else "", "kind": "save"})
+    for entry in reversed(meta.get("restores") or []):
+        items.append({"sha": entry["from"], "at": entry["at"], "subject": "戻す前の状態", "count": 0,
+                      "conversation_id": "", "kind": "before_restore"})
+    return items
+
+
+def restore(box: Sandbox, sha: str, username: str) -> dict:
+    """作業場のコードを、保存の時点へ戻す。今の状態は先に保存し、refs/controldeck/before-restore/<n> にも残す（やり直せる）。
+
+    戻せるのは、HEAD の祖先で起点の revision の子孫（か同じ）の保存と、過去に戻した「戻す前」だけ。"""
+    if not SHA_RE.fullmatch(sha or ""):
+        raise SandboxError("戻す時点の指定が正しくありません")
+    with _autosave_lock(box.name):
+        saved = _autosave(box, "")
+        if saved["skipped"] in ("unknown", "error", "merge"):
+            raise SandboxError(saved["error"] or "今の変更を保存できないので戻しません")
+        if saved["skipped"] == "disk" and sandbox.probe(box, fresh=True)["dirty"]:
+            raise SandboxError("ディスクの空きが少なく今の変更を保存できないので、戻しません")
+        meta = sandbox._read_meta(box.path)
+        past = {str(r.get("from")) for r in meta.get("restores") or []}
+        revision = str(meta.get("revision") or "")
+
+        def ancestor(older: str, newer: str) -> bool:
+            return sandbox.in_box_result(box, ["git", "merge-base", "--is-ancestor", older, newer], timeout=30)[0] == 0
+
+        code = sandbox.in_box_result(box, ["git", "cat-file", "-e", f"{sha}^{{commit}}"], timeout=30)[0]
+        allowed = code == 0 and (sha in past or (ancestor(sha, "HEAD") and (
+            not SHA_RE.fullmatch(revision) or ancestor(revision, sha))))
+        if not allowed:
+            raise SandboxError("その時点へは戻せません（この作業場の保存ではありません）")
+        head = _box_head(box)
+        if head == sha:
+            raise SandboxError("すでにその時点です")
+        number = int(meta.get("restore_count") or 0) + 1
+        # 戻した先より後のコミットは、参照を残さないと git の掃除で消える
+        code, _, err = sandbox.in_box_result(
+            box, ["sh", "-c", 'git update-ref "refs/controldeck/before-restore/$2" HEAD && git reset --hard -q "$1"',
+                  "sh", sha, str(number)], timeout=180)
+        if code != 0:
+            raise SandboxError(f"戻せませんでした: {err.strip()[:200] or f'終了コード {code}'}")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        note = (f"利用者がコードを保存 {sha[:7]} の時点へ戻しました。それより後の変更は今のファイルにありません。"
+                "必要ならファイルを読み直してから続けてください。")
+        restores = [*(meta.get("restores") or []), {"at": now, "by": username, "from": head, "to": sha}]
+        _update_meta(box.name, restores=restores[-RESTORE_HISTORY:], restore_count=number, restore_note=note)
+        try:
+            import_head(box)
+        except SandboxError:
+            pass
+    return {"sha": sha, "before": head, "ref": f"refs/controldeck/before-restore/{number}"}
+
+
+def take_restore_note(box: Sandbox) -> str:
+    """戻したことを AI へ伝える 1 文を取り出す（一度きり）。"""
+    note = str(sandbox._read_meta(box.path).get("restore_note") or "")
+    if note:
+        _update_meta(box.name, restore_note="")
+    return note
 
 
 def busy(box: Sandbox) -> bool:

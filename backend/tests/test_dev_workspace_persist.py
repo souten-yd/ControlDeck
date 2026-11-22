@@ -135,7 +135,7 @@ def test_disk_floor_blocks_create_and_skips_autosave(box, monkeypatch):
     (box.repo / "x.txt").write_text("x")
     monkeypatch.setattr(workspaces, "disk_free_gib", lambda: 5.0)
     assert workspaces.autosave(box, "conv1") == {
-        "committed": False, "count": 0, "skipped": "disk", "free_gib": 5.0, "error": ""}
+        "committed": False, "count": 0, "skipped": "disk", "free_gib": 5.0, "error": "", "sha": ""}
     assert git(box.repo, "status", "--porcelain") == "?? x.txt", "飛ばしたときはコミットしない"
     with pytest.raises(sandbox.SandboxError, match="ディスクの空きが 5.0 GiB"):
         workspaces.create("admin", "controldeck", "ws2")
@@ -492,3 +492,110 @@ def test_restore_interrupted_does_not_wake_untouched_workspaces(box, monkeypatch
         "committed": False, "skipped": "clean", "count": 0, "free_gib": 100.0, "error": ""})
     workspaces.restore_interrupted()
     assert called == []
+
+
+# ---- 保存の時点へ戻す（ROADMAP U15） ----
+# 目的: 自動保存の時点へコードを戻せること、戻す前の状態も残ること（やり直せる）、戻せない指定は拒むこと、
+# 戻したことを AI へ一度だけ伝えること。根拠: ROADMAP U15（Claude Code の /rewind と同じ考え）。
+# 戻す操作は未保存の変更を失いうるので、先に保存できないときは戻さない（変更を失わない）。
+
+def _two_saves(box):
+    (box.repo / "w.txt").write_text("one\n")
+    first = workspaces.autosave(box, "conv1")
+    (box.repo / "w.txt").write_text("two\n")
+    second = workspaces.autosave(box, "conv1")
+    return first["sha"], second["sha"]
+
+
+def test_autosave_returns_the_committed_head(box, external):  # noqa: F811
+    first, second = _two_saves(box)
+    assert first != second and second == git(box.repo, "rev-parse", "HEAD")
+    assert workspaces.autosave(box, "conv1")["sha"] == "", "保存しなかったら空"
+
+
+def test_restore_resets_code_keeps_before_ref_records_meta_and_note_once(box, external):  # noqa: F811
+    first, second = _two_saves(box)
+    (box.repo / "w.txt").write_text("unsaved\n")       # 未保存の変更も先に保存され、失われない
+    result = workspaces.restore(box, first, "admin")
+    assert (box.repo / "w.txt").read_text() == "one\n"
+    assert git(box.repo, "rev-parse", "HEAD") == first
+    kept = git(box.repo, "rev-parse", result["ref"])
+    assert kept == result["before"] and git(box.repo, "show", f"{kept}:w.txt") == "unsaved"
+    meta = sandbox._read_meta(box.path)
+    assert meta["restores"][-1]["from"] == kept and meta["restores"][-1]["to"] == first
+    assert git(workspaces.export_repo(), "rev-parse", "refs/ws/ws1/head") == first
+    note = workspaces.take_restore_note(box)
+    assert first[:7] in note and "読み直して" in note
+    assert workspaces.take_restore_note(box) == "", "一度きり"
+    # 「戻す前」へは、祖先でなくなっていても戻せる（やり直し）
+    kinds = [(c["kind"], c["sha"]) for c in workspaces.checkpoints(box)]
+    assert ("before_restore", kept) in kinds
+    workspaces.restore(box, kept, "admin")
+    assert (box.repo / "w.txt").read_text() == "unsaved\n"
+
+
+def test_checkpoints_list_saves_newest_first_with_count_and_conversation(box, external):  # noqa: F811
+    first, second = _two_saves(box)
+    items = workspaces.checkpoints(box)
+    assert [c["sha"] for c in items] == [second, first]
+    assert items[0]["count"] == 2 and items[0]["conversation_id"] == "conv1" and items[0]["kind"] == "save"
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "HEAD", "g" * 40, "--hard", "a" * 41])
+def test_restore_rejects_malformed_sha(box, external, bad):  # noqa: F811
+    with pytest.raises(sandbox.SandboxError, match="正しくありません"):
+        workspaces.restore(box, bad, "admin")
+
+
+def test_restore_rejects_commits_outside_this_workspace_history(box, external):  # noqa: F811
+    first, _ = _two_saves(box)
+    start = str(sandbox._read_meta(box.path)["revision"])
+    git(box.repo, "checkout", "-q", "-b", "side", start)
+    (box.repo / "s.txt").write_text("s\n")
+    git(box.repo, "add", "-A")
+    git(box.repo, "commit", "-q", "-m", "side")
+    side = git(box.repo, "rev-parse", "HEAD")
+    git(box.repo, "checkout", "-q", "-")
+    with pytest.raises(sandbox.SandboxError, match="戻せません"):
+        workspaces.restore(box, side, "admin")          # HEAD の祖先ではない
+    with pytest.raises(sandbox.SandboxError, match="戻せません"):
+        workspaces.restore(box, "0" * 40, "admin")      # 存在しない
+
+
+def test_restore_refuses_when_unsaved_changes_cannot_be_saved(box, monkeypatch, external):  # noqa: F811
+    first, second = _two_saves(box)
+    (box.repo / "w.txt").write_text("unsaved\n")
+    monkeypatch.setattr(workspaces, "disk_free_gib", lambda: 5.0)
+    with pytest.raises(sandbox.SandboxError, match="ディスクの空き"):
+        workspaces.restore(box, first, "admin")
+    assert (box.repo / "w.txt").read_text() == "unsaved\n", "変更を失わない"
+    assert git(box.repo, "rev-parse", "HEAD") == second
+
+
+def test_restore_api_404_409_and_audit(box, api, monkeypatch, external):  # noqa: F811
+    from app.database import SessionLocal
+    from app.integrations.opencode import router as oc_router
+    from app.models import AuditLog, ChatMessage, Conversation
+
+    first, second = _two_saves(box)
+    url = f"/api/v1/opencode/workspaces/{box.name}"
+    assert api.get("/api/v1/opencode/workspaces/nothere/checkpoints").status_code == 422
+    assert api.post("/api/v1/opencode/workspaces/nothere/restore", json={"sha": first},
+                    headers=CSRF_HEADERS).status_code == 422, "他人・無い作業場は同じ「ありません」"
+    assert api.get(f"{url}/checkpoints").json()["checkpoints"][0]["sha"] == second
+    with SessionLocal() as db:
+        db.add(Conversation(id="convrestoreapi01", owner_user_id=None))
+        db.flush()
+        db.add(ChatMessage(id="msgrestoreapi0001", conversation_id="convrestoreapi01", role="assistant",
+                           content="途中", status="generating", job_id="job-x",
+                           meta_json=json.dumps({"mode": "code", "project_path": str(box.repo)})))
+        db.commit()
+    running = type("J", (), {"status": "running"})()
+    monkeypatch.setattr(oc_router.jobs, "get", lambda job_id: running)
+    assert api.post(f"{url}/restore", json={"sha": first}, headers=CSRF_HEADERS).status_code == 409
+    assert git(box.repo, "rev-parse", "HEAD") == second, "作業中は戻さない"
+    monkeypatch.setattr(oc_router.jobs, "get", lambda job_id: None)    # 止まった「生成中」は作業中とみなさない
+    r = api.post(f"{url}/restore", json={"sha": first}, headers=CSRF_HEADERS)
+    assert r.status_code == 200, r.text
+    with SessionLocal() as db:
+        assert db.execute(select(AuditLog).where(AuditLog.action == "workspace.restore")).scalars().first() is not None
