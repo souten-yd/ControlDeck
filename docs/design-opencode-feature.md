@@ -206,7 +206,7 @@ lint との往復を 1 往復ぶん減らす。
 
 ### 役割ごとのモデル（2026-11-22）
 
-OpenCode の設定（`opencode.json` ではなく ControlDeck 側の設定）に `roles: {plan, build, research, quick_check, final_check, evaluate}`（空＝既定）。v2 の `agent.<名前>.model` へ展開する（plan・build は組み込み、researcher・quick-checker・evaluator は子エージェント、final_check は reviewer・adversarial-reviewer・constructive-reviewer）。旧 `review_model` は final_check として読む。`advisor_model`・`developer_model` は従来どおり。
+OpenCode の設定（`opencode.json` ではなく ControlDeck 側の設定）に `roles: {plan, build, research, quick_check, final_check, evaluate, advise}`（空＝既定）。v2 の `agent.<名前>.model` へ展開する（plan・build は組み込み、researcher・quick-checker・evaluator は子エージェント、final_check は reviewer・adversarial-reviewer・constructive-reviewer）。旧 `review_model` は final_check として読む。`advise` は Auto Advisor の相談先。開発担当（developer）は build のモデルで動く。古い `developer_model`（build が空のときだけ）・`advisor_model` は読むときに roles へ移し、保存で空にする（2026-11-22）。モデルを選ぶ場所は「既定のモデル」と役割の表だけ。
 
 ### 道具の出し入れ
 

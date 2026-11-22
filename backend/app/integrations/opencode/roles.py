@@ -6,10 +6,11 @@
 1 つしか動かせないが、ゲートウェイが要求を順番に受けて載せ替える（生成中の要求は最後まで返し、割り込んだ要求は
 待ってから載せ替える。2026-11-22 Opus の実測）。同じ段に別のローカルがあれば、載せ替えで遅くなる旨を知らせるだけ。
 
-役割（6）と段（3）:
+役割（7）と段（4）:
   段 1 計画      plan
   段 2 作る      build / research / quick_check   （調査・簡易検証は、作るモデルの子エージェントが並んで動きうる）
   段 3 確かめる  final_check / evaluate           （最終検証と評価は並んで動きうる）
+  段 4 行き詰まったとき  advise                     （Auto Advisor の相談先。常に動くわけではないので段の検査の外）
 段をまたぐ載せ替えは許す（順番に動くため。ロードはゲートウェイが呼ばれたときに行う）。
 
 決まり:
@@ -22,12 +23,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-ROLES = ("plan", "build", "research", "quick_check", "final_check", "evaluate")
-STAGE_OF = {"plan": 1, "build": 2, "research": 2, "quick_check": 2, "final_check": 3, "evaluate": 3}
-STAGE_NAMES = {1: "① 計画", 2: "② 作る", 3: "③ 確かめる"}
+ROLES = ("plan", "build", "research", "quick_check", "final_check", "evaluate", "advise")
+STAGE_OF = {"plan": 1, "build": 2, "research": 2, "quick_check": 2, "final_check": 3, "evaluate": 3, "advise": 4}
+STAGE_NAMES = {1: "① 計画", 2: "② 作る", 3: "③ 確かめる", 4: "④ 行き詰まったとき"}
 ROLE_LABELS = {
     "plan": "計画", "build": "開発", "research": "調査", "quick_check": "簡易検証",
-    "final_check": "最終検証", "evaluate": "評価",
+    "final_check": "最終検証", "evaluate": "評価", "advise": "相談",
 }
 # 子エージェントの名前（plan・build は OpenCode の組み込みの主エージェント、final_check は reviewer 系）
 SUBAGENT_NAMES = {"research": "researcher", "quick_check": "quick-checker", "evaluate": "evaluator"}
@@ -103,6 +104,8 @@ def resolve(roles: Mapping | None, *, session_model: str, first_external: str = 
         "quick_check": raw["quick_check"] or build,
         "final_check": raw["final_check"] or checker,
         "evaluate": raw["evaluate"] or checker,
+        # 相談先（Auto Advisor）。未設定ならセッションと同じモデル（今までの「セッションと同じモデル」）
+        "advise": raw["advise"] or session,
     }
     if local_only:
         fallback = str(local_model or "").strip() or (session if is_local(session) else "auto")

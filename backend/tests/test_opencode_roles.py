@@ -42,7 +42,7 @@ def test_any_combination_is_allowed_and_only_noted():
     assert res.models["build"] == "maya-s" and res.models["research"] == "qwen-flash-next"
     assert any("載せ替え" in n for n in res.notes)
     # 全部違うモデル
-    every = {"plan": "a", "build": "b", "research": "c", "quick_check": "d", "final_check": "e", "evaluate": "f"}
+    every = {"plan": "a", "build": "b", "research": "c", "quick_check": "d", "final_check": "e", "evaluate": "f", "advise": "g"}
     res = roles.resolve(every, session_model="auto", strict=True)
     assert res.models == every
     # 全部同じモデルならお知らせも出ない（載せ替えは起きない）

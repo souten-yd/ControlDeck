@@ -93,7 +93,7 @@ export function OpenCodeFeatureSetup({ featureId }: { featureId: string }) {
         </>
       )}
       <p className="text-[11px] text-zinc-500">
-        レビュー・相談に使うモデルなどは <Link to="/opencode" className="text-accent-600 underline dark:text-accent-400">OpenCode の設定</Link> で選べます。
+        使うモデルは <Link to="/opencode" className="text-accent-600 underline dark:text-accent-400">OpenCode の設定</Link>の「役割とモデル」で選べます。
       </p>
     </div>
   );

@@ -36,7 +36,7 @@ class WorkflowBody(BaseModel):
     advisor_model: str | None = Field(default=None, max_length=200)
     developer_agent: bool | None = None
     developer_model: str | None = Field(default=None, max_length=200)
-    # 役割ごとのモデル {plan, build, research, quick_check, final_check, evaluate}（空＝既定）。roles.py
+    # 役割ごとのモデル {plan, build, research, quick_check, final_check, evaluate, advise}（空＝既定）。roles.py
     roles: dict[str, str] | None = None
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None

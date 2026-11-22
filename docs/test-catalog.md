@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 217 ファイル、2001 テスト（目的の未記入 93 ファイル）
+- backend: 217 ファイル、2006 テスト（目的の未記入 93 ファイル）
 - E2E: 109 spec、220 テスト
 
 ## backend（backend/tests）
@@ -2042,6 +2042,11 @@
 - `test_auto_review_is_on_by_default_and_adds_the_review_procedure`
 - `test_auto_review_can_be_turned_off`
 - `test_review_model_applies_to_the_builtin_reviewer`
+- `test_old_developer_and_advisor_models_move_to_roles_when_read` — 目的: 古い設定の developer_model・advisor_model が、読むときに roles.build・roles.advise へ移り、保存で空になる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
+- `test_developer_model_moves_to_build_only_when_build_is_empty` — 目的: developer_model は roles.build が空のときだけ build へ移り、選んである開発のモデルを上書きしない（古い API も同じ）。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
+- `test_advise_role_is_the_auto_advisor_target_and_developer_follows_build` — 目的: 役割「相談」が Auto Advisor の相談先になり、開発担当の子エージェントが build のモデルで動く。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
+- `test_old_advisor_model_api_value_sets_advise_and_unknown_model_is_refused` — 目的: 古い API の advisor_model を受けても壊れず advise へ移る。未登録のモデルは断る。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
+- `test_confidential_scope_drops_advise_and_developer_to_local` — 目的: 秘密の会話では相談・開発担当の外部モデルがローカルへ自動で落ちる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。
 
 ### backend/tests/test_passkeys.py
 
@@ -3545,7 +3550,7 @@
 
 ### frontend/e2e/opencode-roles.spec.ts
 
-目的: OpenCode 設定の「役割とモデル」。 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価）ごとに自由にモデルを選べ（全部違っても保存できる）、 同じ段に別のローカルがあればお知らせだけ出ること。最終検証＝開発のお知らせ。320・1280、ライト・ダークで読めること。 根拠: 2026-11-22 利用者「個別にモデルを設定できるようにして。全部同じも全部違うも。変な制限は設けなくて良い」。 検査はサーバー（/opencode/roles/check）が持つので、ここは検証用インスタンスの本物の API を通す。 */
+目的: OpenCode 設定の「役割とモデル」。 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価・相談）ごとに自由にモデルを選べ（全部違っても保存できる）、 同じ段に別のローカルがあればお知らせだけ出ること。最終検証＝開発のお知らせ。320・1280、ライト・ダークで読めること。 根拠: 2026-11-22 利用者「個別にモデルを設定できるようにして。全部同じも全部違うも。変な制限は設けなくて良い」。 検査はサーバー（/opencode/roles/check）が持つので、ここは検証用インスタンスの本物の API を通す。 */
 
 - 役割とモデル: どの組み合わせでも保存できる (${width}px ${scheme})
 

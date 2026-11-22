@@ -201,7 +201,7 @@ export default function OpenCodePage({ runtime = "v2" }: { runtime?: string }) {
     <div className="mx-auto max-w-3xl space-y-4 p-4 pb-24 sm:p-6">
       <PageHeader title="OpenCode"
         description={`${data?.feature.version ? `v${data.feature.version.match(/\d+(?:\.\d+)+/)?.[0] ?? data.feature.version}` : "確認中"} · CLIそのままの対話TUI（tmux永続・再接続可）`}
-        actions={<IconButton label="OpenCode 設定を開く" title="モデル・開発ワークフローの設定"
+        actions={<IconButton label="OpenCode 設定を開く" title="既定のモデル・役割とモデル・開発ワークフローの設定"
           onClick={() => setSettingsOpen(true)} disabled={!data}><IconSettings /></IconButton>} />
 
       {settingsOpen && data && <OpenCodeSettingsSheet initial={data} onClose={() => setSettingsOpen(false)} />}
@@ -375,21 +375,12 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
     },
     onError: (error) => show(error instanceof Error ? error.message : "設定を保存できませんでした", "error"),
   });
-  const known = form.model === "" || form.model === "auto" || models.some((m) => m.alias === form.model);
   return (
     <BottomSheet title="OpenCode 設定" onClose={onClose} wide>
       <div className="space-y-3">
         {!editable && <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">変更には管理者権限が必要です。</p>}
-        <SettingsGroup title="モデル" description="セッションで使うモデル">
-          <select aria-label="OpenCode モデル" value={known ? (form.model || "auto") : form.model} disabled={!editable}
-            onChange={(e) => setForm({ ...form, model: e.target.value })} className={`${input} min-h-11`}>
-            <option value="auto">Models で選んだランタイムに任せる（auto）</option>
-            {models.map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
-            {!known && <option value={form.model}>{form.model}</option>}
-          </select>
-          <p className="text-[11px] text-zinc-500">auto にすると、Models の共通設定で選んだランタイムのモデルを使います（必要なら起動します）。</p>
-        </SettingsGroup>
-        {workflow && <RolesPanel value={{ ...workflow, models }} onChange={setWorkflow} editable={editable} onProblem={setRolesProblem} />}
+        {workflow && <RolesPanel value={{ ...workflow, models, installed: workflowData?.installed }} onChange={setWorkflow} editable={editable} onProblem={setRolesProblem}
+          defaultModel={{ value: form.model, onChange: (next) => setForm({ ...form, model: next }) }} />}
         {workflow && <WorkflowExtensions value={{ ...workflow, models, installed: workflowData?.installed, features: workflowData?.features, browser: workflowData?.browser }} onChange={setWorkflow} editable={editable} />}
         <SettingsGroup title="詳細" description="接続先" collapsible defaultOpen={false}>
           <label className="block text-xs text-zinc-500">接続先（LLM endpoint）
