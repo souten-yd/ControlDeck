@@ -175,7 +175,10 @@ def test_cloud_role_models_need_the_opencode_egress_switch(isolated, cloud_store
     with pytest.raises(ValueError):
         provider.save_workflow({"review_model": "cloud:openrouter/not/selected"})
     saved = provider.save_workflow({"review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
-    assert (saved["review_model"], saved["advisor_model"], saved["developer_model"]) == (CLOUD, CLOUD, CLOUD)
+    # 古い API の値は役割の表へ移る（review_model は旧設定のまま最終検証として読まれる）
+    assert saved["review_model"] == CLOUD
+    assert saved["advisor_model"] == saved["developer_model"] == ""
+    assert saved["roles"] == {"advise": CLOUD, "build": CLOUD}
 
 
 def test_cloud_models_serve_as_reviewer_advisor_and_developer(isolated, cloud_store):
@@ -203,11 +206,12 @@ def test_revoking_egress_drops_cloud_role_models_from_new_sessions(isolated, clo
     payload, advisor = _v2(isolated)
     assert CLOUD not in json.dumps(payload) and CLOUD not in json.dumps(advisor)
     assert advisor["advisor"]["models"] == ["controldeck/qwen-flash-next"]
-    assert "model" not in payload["agents"]["developer"], "セッションと同じモデルで動く"
+    # 使えなくなった外部モデルの役割は、既定（セッションと同じモデル）で動く（開発担当は開発の役割と同じ）
+    assert payload["agents"]["developer"]["model"] == "controldeck/qwen-flash-next"
     # 保存済みの値を送り返すだけの保存（ほかの項目の変更）は止めない。新しく選ぶことはできない。
     saved = provider.save_workflow({"superpowers": True, "review_model": CLOUD, "advisor_model": CLOUD, "developer_model": CLOUD})
     assert saved["superpowers"] is True
-    provider.save_workflow({"developer_model": ""})
+    provider.save_workflow({"roles": {}})
     with pytest.raises(ValueError):
         provider.save_workflow({"developer_model": CLOUD})
 
@@ -217,10 +221,12 @@ def test_developer_agent_is_optional_and_can_use_a_local_model(isolated):
     assert "developer" not in payload["agents"]
     provider.save_workflow({"developer_agent": True})
     payload, _ = _v2(isolated)
-    assert "model" not in payload["agents"]["developer"]
-    provider.save_workflow({"developer_model": "maya-s"})
+    # 開発担当のモデルは役割「開発」と同じ（別の選択を持たない）。未設定ならセッションと同じ
+    assert payload["agents"]["developer"]["model"] == "controldeck/qwen-flash-next"
+    provider.save_workflow({"roles": {"build": "maya-s"}})
     payload, _ = _v2(isolated)
     assert payload["agents"]["developer"]["model"] == "controldeck/maya-s"
+    assert payload["agents"]["build"]["model"] == "controldeck/maya-s"
     assert payload["providers"]["controldeck"]["models"]["maya-s"]["limit"]["context"] == 1048576
     with pytest.raises(ValueError, match="登録されていない"):
         provider.save_workflow({"developer_model": "not-registered"})
@@ -240,7 +246,7 @@ def test_workflow_api_exposes_roles_and_cloud_choices(isolated, cloud_store):
     assert refused.value.status_code == 422
     cloud_store.save_egress({"opencode": True})
     saved = api.put_workflow(api.WorkflowBody(developer_agent=True, developer_model=CLOUD), user=None)
-    assert saved["developer_agent"] is True and saved["developer_model"] == CLOUD
+    assert saved["developer_agent"] is True and saved["developer_model"] == "" and saved["roles"]["build"] == CLOUD
     assert api.get_workflow(user=None)["cloud_models"][0]["id"] == CLOUD
 
 
@@ -265,3 +271,76 @@ def test_review_model_applies_to_the_builtin_reviewer(isolated):
     payload, _ = _v2(isolated)
     assert payload["agents"]["reviewer"]["model"] == "controldeck/maya-s"
     assert "maya-s" in payload["providers"]["controldeck"]["models"]
+
+
+# 目的: 古い設定・古い API の値を、役割の表（roles）へ移しても壊れないこと。
+# 根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を「役割とモデル」の 1 か所にする。
+def _write_settings(isolated, **values):
+    path = provider._settings_path()
+    path.write_text(json.dumps(values), encoding="utf-8")
+
+
+def test_old_developer_and_advisor_models_move_to_roles_when_read(isolated):
+    """目的: 古い設定の developer_model・advisor_model が、読むときに roles.build・roles.advise へ移り、保存で空になる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。"""
+    _write_settings(isolated, developer_model="maya-s", advisor_model="qwen-flash-next", roles={})
+    settings = provider.get_settings()
+    assert settings["roles"] == {"build": "maya-s", "advise": "qwen-flash-next"}
+    assert settings["developer_model"] == settings["advisor_model"] == ""
+    # 保存すると古い項目が空になり、役割へ残る（読むたびに同じ結果なので古い設定は動き続ける）
+    saved = provider.save_workflow({"superpowers": True})
+    assert saved["roles"] == {"build": "maya-s", "advise": "qwen-flash-next"}
+    assert json.loads(provider._settings_path().read_text())["developer_model"] == ""
+
+
+def test_developer_model_moves_to_build_only_when_build_is_empty(isolated):
+    """目的: developer_model は roles.build が空のときだけ build へ移り、選んである開発のモデルを上書きしない（古い API も同じ）。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。"""
+    _write_settings(isolated, developer_model="maya-s", roles={"build": "qwen-flash-next"})
+    assert provider.get_settings()["roles"]["build"] == "qwen-flash-next", "選んである開発のモデルを上書きしない"
+    # 古い API でも同じ
+    provider.save_workflow({"roles": {"build": "qwen-flash-next"}})
+    provider.save_workflow({"developer_model": "maya-s"})
+    assert provider.get_settings()["roles"]["build"] == "qwen-flash-next"
+    provider.save_workflow({"roles": {}})
+    provider.save_workflow({"developer_model": "maya-s"})
+    assert provider.get_settings()["roles"]["build"] == "maya-s"
+
+
+def test_advise_role_is_the_auto_advisor_target_and_developer_follows_build(isolated):
+    """目的: 役割「相談」が Auto Advisor の相談先になり、開発担当の子エージェントが build のモデルで動く。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。"""
+    provider.save_workflow({"auto_advisor": "active", "developer_agent": True,
+                            "roles": {"advise": "maya-s", "build": "qwen-flash-next"}})
+    payload, advisor = _v2(isolated)
+    assert advisor["advisor"]["models"] == ["controldeck/maya-s"]
+    assert advisor["routing"]["models"] == ["controldeck/qwen-flash-next"], "要否の判断はセッションと同じモデル"
+    assert payload["agents"]["developer"]["model"] == "controldeck/qwen-flash-next"
+    assert "maya-s" in payload["providers"]["controldeck"]["models"], "相談先のモデルも一覧へ載る"
+    # 未設定ならセッションと同じモデルに相談する
+    provider.save_workflow({"roles": {}})
+    _, advisor = _v2(isolated)
+    assert advisor["advisor"]["models"] == ["controldeck/qwen-flash-next"]
+
+
+def test_old_advisor_model_api_value_sets_advise_and_unknown_model_is_refused(isolated):
+    """目的: 古い API の advisor_model を受けても壊れず advise へ移る。未登録のモデルは断る。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。"""
+    saved = provider.save_workflow({"advisor_model": "maya-s"})
+    assert saved["roles"] == {"advise": "maya-s"} and saved["advisor_model"] == ""
+    # 画面が advise を送ってくれば、そちらが正
+    saved = provider.save_workflow({"advisor_model": "maya-s", "roles": {"advise": "qwen-flash-next"}})
+    assert saved["roles"] == {"advise": "qwen-flash-next"}
+    with pytest.raises(ValueError, match="登録されていない"):
+        provider.save_workflow({"advisor_model": "not-registered"})
+    assert provider.save_workflow({"advisor_model": ""})["roles"] == {}
+
+
+def test_confidential_scope_drops_advise_and_developer_to_local(isolated, cloud_store):
+    """目的: 秘密の会話では相談・開発担当の外部モデルがローカルへ自動で落ちる。根拠: 2026-11-22 利用者「他の設定と競合しないように…自動で適用」。モデルを選ぶ場所を役割の表の 1 か所にしたため。"""
+    cloud_store.save_egress({"opencode": True})
+    provider.save_workflow({"auto_advisor": "active", "developer_agent": True,
+                            "roles": {"advise": CLOUD, "build": CLOUD}})
+    payload, advisor = provider_workflow_local_only(isolated)
+    assert CLOUD not in json.dumps(payload) and CLOUD not in json.dumps(advisor)
+
+
+def provider_workflow_local_only(isolated):
+    wf = provider._workflow("v2", "qwen-flash-next", local_only=True)
+    return wf["agents"], wf["advisor"]

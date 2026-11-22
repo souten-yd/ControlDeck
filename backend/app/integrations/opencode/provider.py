@@ -39,13 +39,15 @@ DEFAULT_SETTINGS = {
     # 別のモデルを指定すると、ゲートウェイが要求に合わせて載せ替える。
     # 旧設定。最終検証（roles.final_check）の指定として読む。roles を保存したら空にする（移行）。
     "review_model": "",
+    # 旧設定。読むときに roles.advise へ移す（保存で空になる）。
     "advisor_model": "",
-    # 役割ごとのモデル（roles.py）。{plan, build, research, quick_check, final_check, evaluate}、空＝既定。
+    # 役割ごとのモデル（roles.py）。{plan, build, research, quick_check, final_check, evaluate, advise}、空＝既定。
     "roles": {},
-    # 開発担当（実装を任せる子エージェント developer）。モデルは空ならセッションと同じ。
-    # レビュー・相談・開発担当には外部モデル（cloud:<プロバイダ>/<モデル>）も選べるが、
+    # 開発担当（実装を任せる子エージェント developer）。モデルは役割「開発」（roles.build）と同じ。
+    # 役割には外部モデル（cloud:<プロバイダ>/<モデル>）も選べるが、
     # 利用者が OpenCode からの外部送信を許可し、そのモデルを有効にしているときだけ使う。
     "developer_agent": False,
+    # 旧設定。読むときに roles.build が空なら build へ移す（保存で空になる）。
     "developer_model": "",
     # UI 検証（Playwright MCP）。導入済みなら、子エージェント ui-verifier の道具として載せる。
     "ui_verify": True,
@@ -120,6 +122,23 @@ def get_settings() -> dict:
             settings.update({key: raw[key] for key in settings if key in raw})
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         pass
+    return _migrate_role_models(settings)
+
+
+def _migrate_role_models(settings: dict) -> dict:
+    """古い設定の developer_model・advisor_model を、役割の表（roles）へ移す（読むときに移す。保存で空になる）。
+
+    developer_model は roles.build が空のときだけ build へ（選んである開発のモデルを上書きしない）。
+    advisor_model は roles.advise が空のときだけ advise へ。古い設定は読むたびに同じ結果になるので動き続ける。
+    """
+    stored = settings.get("roles") if isinstance(settings.get("roles"), dict) else {}
+    migrated = dict(stored)
+    for old, role in (("developer_model", "build"), ("advisor_model", "advise")):
+        value = str(settings.get(old) or "").strip()
+        if value and not str(migrated.get(role) or "").strip():
+            migrated[role] = value
+        settings[old] = ""
+    settings["roles"] = migrated
     return settings
 
 
@@ -239,41 +258,57 @@ def save_workflow(patch: dict) -> dict:
             raise ValueError("権限モードは auto / ask のどちらかです")
         settings["chat_permission_mode"] = patch["chat_permission_mode"]
     known = {str(item.get("alias")) for item in local_llm.llm_instances()} | {"auto"}
-    for key in ROLE_MODEL_KEYS:
-        if key in patch:
-            value = str(patch[key] or "").strip()
-            # 保存済みの値をそのまま送り返してきただけなら通す（外部送信の許可を後から外しても、
-            # ほかの項目の保存まで止めない。使えない外部モデルは session を作るときに外す）。
-            if value and value != str(settings.get(key) or ""):
-                if value.startswith(CLOUD_PREFIX):
-                    if not _cloud_usable(value):
-                        raise ValueError(
-                            "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
-                            "OpenCode からの外部への送信を許可してください")
-                elif value not in known:
-                    raise ValueError(f"登録されていないモデルです: {value}")
-            settings[key] = value
+
+    def check_model(value: str, saved: tuple[str, ...] = ()) -> str:
+        """役割に選ぶモデルの検査。保存済みの値をそのまま送り返してきただけなら通す（外部送信の許可を後から
+        外しても、ほかの項目の保存まで止めない。使えない外部モデルは session を作るときに外す）。"""
+        value = str(value or "").strip()
+        if value and value not in saved:
+            if value.startswith(CLOUD_PREFIX):
+                if not _cloud_usable(value):
+                    raise ValueError(
+                        "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
+                        "OpenCode からの外部への送信を許可してください")
+            elif value not in known:
+                raise ValueError(f"登録されていないモデルです: {value}")
+        return value
+
+    saved_roles = dict(settings.get("roles") or {})
+    clean = dict(saved_roles)
     if "roles" in patch:
         incoming = patch["roles"] if isinstance(patch["roles"], dict) else {}
-        saved_roles = settings.get("roles") if isinstance(settings.get("roles"), dict) else {}
         # 旧 review_model で動いていた利用者の画面は、最終検証の欄に旧値を出す。送り返されたものは通す。
         legacy = str(settings.get("review_model") or "")
-        clean: dict[str, str] = {}
+        clean = {}
         for role in roles_mod.ROLES:
-            value = str(incoming.get(role) or "").strip()
-            if value and value not in (str(saved_roles.get(role) or ""), legacy if role == "final_check" else ""):
-                if value.startswith(CLOUD_PREFIX):
-                    if not _cloud_usable(value):
-                        raise ValueError(
-                            "この外部モデルは選べません。Models → フロンティア（外部）でモデルを有効にし、"
-                            "OpenCode からの外部への送信を許可してください")
-                elif value not in known:
-                    raise ValueError(f"登録されていないモデルです: {value}")
+            value = check_model(incoming.get(role), (str(saved_roles.get(role) or ""),
+                                                      legacy if role == "final_check" else ""))
             if value:
                 clean[role] = value
-        settings["roles"] = clean
         settings["review_model"] = ""   # 最終検証へ移行済み
-        # 同じ段のローカルが 2 つなら保存しない（作る設定でも同じ検査を通る）
+    # 古い API の値（review_model・advisor_model・developer_model）は役割へ移す（壊さない）。
+    #   review_model → 旧設定のまま保つ（最終検証として読む）、advisor_model → advise（画面が advise を送ってこなければ上書き）、
+    #   developer_model → build（空のときだけ。選んである開発のモデルを上書きしない）
+    incoming_roles = patch["roles"] if isinstance(patch.get("roles"), dict) else {}
+    if "review_model" in patch and "roles" not in patch:
+        # 旧設定のまま保つ（最終検証の指定として読まれる。roles を保存したら空になる）
+        settings["review_model"] = check_model(patch["review_model"], (str(settings.get("review_model") or ""),))
+    if "advisor_model" in patch and "advise" not in incoming_roles:
+        value = check_model(patch["advisor_model"], (str(saved_roles.get("advise") or ""),))
+        if value:
+            clean["advise"] = value
+        else:
+            clean.pop("advise", None)
+    if "developer_model" in patch:
+        value = check_model(patch["developer_model"], (str(saved_roles.get("build") or ""),))
+        if value and not clean.get("build"):
+            clean["build"] = value
+    if clean != saved_roles or "roles" in patch:
+        settings["roles"] = clean
+    settings["developer_model"] = ""
+    settings["advisor_model"] = ""
+    if "roles" in patch:
+        # 役割の保存では検査を通す（作る設定でも同じ検査を通る）
         role_resolution(settings, str(settings.get("model") or ""), strict=True)
     path = _settings_path()
     temp = path.with_suffix(".tmp")
@@ -300,7 +335,6 @@ def role_resolution(settings: dict, session_model: str, *, strict: bool = False,
         legacy_review=legacy, local_only=local_only or offline.in_confidential_scope(), strict=strict)
 
 
-ROLE_MODEL_KEYS = ("review_model", "advisor_model", "developer_model")
 CLOUD_PREFIX = "cloud:"
 
 
@@ -549,24 +583,18 @@ def _workflow(runtime: str, model: str, *, local_only: bool = False) -> dict:
     mode = str(settings.get("auto_advisor") or "off")
     if mode != "off" and specs.get("auto_advisor"):
         plugins.append(specs["auto_advisor"])
-        target = role_model(settings, "advisor_model")
-        if local_only and target and not roles_mod.is_local(target):
-            target = ""
-        if target and target != model:
+        target = role_models["advise"]   # 役割「相談」（空ならセッションと同じ。秘密ならローカル）
+        if target != model:
             models.append(target)
         advisor = {
-            "advisor": {"models": [f"controldeck/{target or model}"]},
+            "advisor": {"models": [f"controldeck/{target}"]},
             # 判断（毎回の要否判定）はセッションと同じモデルで行う。別のモデルに
             # すると判定のたびに載せ替えが起きる。
             "routing": {"mode": mode, "models": [f"controldeck/{model}"]},
         }
     if settings.get("developer_agent"):
-        developer = role_model(settings, "developer_model")
-        if local_only and developer and not roles_mod.is_local(developer):
-            developer = ""
-        if developer and developer != model:
-            models.append(developer)
-        agents["developer"] = _developer_agent(developer if developer != model else None)
+        # 開発担当は役割「開発」（build）のモデルで動く（別のモデルの選択は持たない）
+        agents["developer"] = _developer_agent(role_models["build"])
     return {"plugins": plugins, "models": list(dict.fromkeys(models)), "agents": agents, "advisor": advisor,
             "reviewer_model": reviewer_model, "auto_review": bool(settings.get("auto_review", True)),
             "roles": resolved}

@@ -3,17 +3,17 @@ import { openOpenCode } from "./support/opencode";
 import { establishSession, hasSession } from "./support/session";
 
 /** OpenCode 設定の「役割とモデル」。
- * 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価）ごとに自由にモデルを選べ（全部違っても保存できる）、
+ * 目的: 役割（計画・開発・調査・簡易検証・最終検証・評価・相談）ごとに自由にモデルを選べ（全部違っても保存できる）、
  * 同じ段に別のローカルがあればお知らせだけ出ること。最終検証＝開発のお知らせ。320・1280、ライト・ダークで読めること。
  * 根拠: 2026-11-22 利用者「個別にモデルを設定できるようにして。全部同じも全部違うも。変な制限は設けなくて良い」。
  * 検査はサーバー（/opencode/roles/check）が持つので、ここは検証用インスタンスの本物の API を通す。 */
 const workflow = {
-  superpowers: false, adversarial_review: false, auto_review: true, auto_advisor: "off", advisor_model: "",
-  developer_agent: false, developer_model: "", roles: {}, ui_verify: false, ui_verify_allow_external: false,
+  superpowers: false, adversarial_review: false, auto_review: true, auto_advisor: "off",
+  developer_agent: false, roles: {}, ui_verify: false, ui_verify_allow_external: false,
   research_tool: true, research_external: false, context7: false, github_cli: false, isolation: "box",
   models: [{ alias: "maya-s", runtime: "llama.cpp" }, { alias: "qwen-flash-next", runtime: "llama.cpp" }],
   cloud_models: [{ id: "cloud:openrouter/x/y", name: "OpenRouter / x/y", provider: "openrouter" }],
-  cloud_blocked: false, installed: {}, features: {}, browser: false, review_tool: false,
+  cloud_blocked: false, installed: { auto_advisor: true }, features: {}, browser: false, review_tool: false,
   github: { installed: false, configured: false }, isolation_effective: "box",
 };
 
@@ -43,9 +43,34 @@ for (const width of [320, 1280]) {
       const group = sheet.getByRole("heading", { name: "役割とモデル" });
       await group.scrollIntoViewIfNeeded();
 
+      // モデルを選ぶ欄は「既定のモデル」と役割の表だけ（開発担当・相談先の別の欄は無い）
+      const labels = await sheet.locator("select").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label") ?? ""));
+      expect(labels.filter((l) => l.endsWith("のモデル") && l !== "既定のモデル").length).toBe(7);
+      expect(labels).toContain("既定のモデル");
+      expect(labels.some((l) => /OpenCode モデル|開発担当のモデル|相談先のモデル/.test(l))).toBe(false);
+      await expect(sheet.getByText("役割でモデルを選ばなければ、このモデルで動きます")).toBeVisible();
+      await expect(sheet.getByText("秘密の会話・特許の流れでは、自動でローカルのモデルだけを使います")).toBeVisible();
+      // 既定のモデルは役割の表のすぐ上（同じ枠）
+      const defaultBox = await sheet.getByLabel("既定のモデル", { exact: true }).boundingBox();
+      const planBox = await sheet.getByLabel("① 計画 計画のモデル").boundingBox();
+      expect(defaultBox!.y).toBeLessThan(planBox!.y);
+      // 相談の行: Auto Advisor を使わないときは薄く「（相談を使うときだけ）」
+      const adviseStage = sheet.getByRole("region", { name: "④ 行き詰まったとき" });
+      await expect(adviseStage.getByText("（相談を使うときだけ）")).toBeVisible();
+      await expect(adviseStage).toHaveClass(/opacity-60/);
+      await adviseStage.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.screenshot({ path: `test-results/roles-advise-off-${width}-${scheme}.png` });
+      // 使うにすると普通の濃さになり、ヒントが変わる
+      await sheet.getByLabel("Auto Advisor", { exact: true }).selectOption("active");
+      await expect(adviseStage).not.toHaveClass(/opacity-60/);
+      await expect(adviseStage.getByText("（相談を使うときだけ）")).toHaveCount(0);
+      await adviseStage.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.screenshot({ path: `test-results/roles-advise-on-${width}-${scheme}.png` });
+      await group.scrollIntoViewIfNeeded();
+
       const select = (stage: string, role: string) => sheet.getByLabel(`${stage} ${role}のモデル`);
       for (const [stage, role] of [["① 計画", "計画"], ["② 作る", "開発"], ["② 作る", "調査"], ["② 作る", "簡易検証"],
-        ["③ 確かめる", "最終検証"], ["③ 確かめる", "評価"]]) {
+        ["③ 確かめる", "最終検証"], ["③ 確かめる", "評価"], ["④ 行き詰まったとき", "相談"]]) {
         const box = await select(stage, role).boundingBox();
         expect(box!.height, `${role} の選択は 44px 以上`).toBeGreaterThanOrEqual(44);
       }

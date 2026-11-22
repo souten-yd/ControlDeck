@@ -1,8 +1,7 @@
 /** 開発ワークフローの拡張（Superpowers・Adversarial Review・Auto Advisor・UI 検証）。
- * ここでは「使う／使わない」と、レビュー・相談に使うモデルだけを選ぶ。プラグイン自体の
- * 導入・更新・削除は 設定 → オプション機能 で行う。
- * ControlDeck から起動する OpenCode セッションにだけ効く。レビュー・相談に別のモデルを
- * 選ぶと、ゲートウェイが要求に合わせて載せ替える（例: Flash-Next で開発し Maya-S でレビュー）。 */
+ * ここでは「使う／使わない」だけを選ぶ。モデルを選ぶ場所は「役割とモデル」（RolesPanel）の 1 か所
+ * （レビュー＝最終検証、相談＝相談、開発担当＝開発）。プラグイン自体の導入・更新・削除は 設定 → オプション機能 で行う。
+ * ControlDeck から起動する OpenCode セッションにだけ効く。 */
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
@@ -25,13 +24,11 @@ export interface Workflow {
   auto_advisor: "off" | "observe" | "active";
   /** 旧設定（最終検証として読む）。画面は roles.final_check を使う。 */
   review_model?: string;
-  advisor_model: string;
-  /** 役割ごとのモデル（空＝既定）。plan / build / research / quick_check / final_check / evaluate。 */
-  roles?: Partial<Record<"plan" | "build" | "research" | "quick_check" | "final_check" | "evaluate", string>>;
-  /** 開発担当（実装を任せる子エージェント developer）を session に足すか。 */
+  /** 役割ごとのモデル（空＝既定）。plan / build / research / quick_check / final_check / evaluate / advise（相談先）。
+   * 古い設定の developer_model・advisor_model は、サーバーが build・advise へ移す（画面は扱わない）。 */
+  roles?: Partial<Record<"plan" | "build" | "research" | "quick_check" | "final_check" | "evaluate" | "advise", string>>;
+  /** 開発担当（実装を任せる子エージェント developer）を session に足すか。モデルは役割「開発」と同じ。 */
   developer_agent?: boolean;
-  /** 開発担当に使うモデル。空ならセッションと同じモデル。 */
-  developer_model?: string;
   /** 役割に選べる外部のモデル（OpenCode からの外部送信を許可したときだけ並ぶ）。 */
   cloud_models?: { id: string; name: string; provider: string }[];
   /** 有効な外部モデルはあるが、OpenCode からの送信が許可されていない。 */
@@ -67,8 +64,8 @@ export interface Workflow {
 
 export function workflowBody(value: Workflow) {
   return { superpowers: value.superpowers, adversarial_review: value.adversarial_review, auto_review: value.auto_review ?? true,
-    auto_advisor: value.auto_advisor, roles: value.roles ?? {}, advisor_model: value.advisor_model,
-    developer_agent: value.developer_agent ?? false, developer_model: value.developer_model ?? "",
+    auto_advisor: value.auto_advisor, roles: value.roles ?? {},
+    developer_agent: value.developer_agent ?? false,
     ui_verify: value.ui_verify ?? false, ui_verify_allow_external: value.ui_verify_allow_external ?? false,
     research_tool: value.research_tool ?? true, research_external: value.research_external ?? false,
     context7: value.context7 ?? false, github_cli: value.github_cli ?? false, isolation: value.isolation ?? "box" };
@@ -85,43 +82,8 @@ export function WorkflowExtensions({ value, onChange, editable }: {
       設定 → オプション機能で導入
     </Link>
   );
-  const cloudModels = value.cloud_models ?? [];
-  const modelSelect = (label: string, key: "advisor_model" | "developer_model", hint: string) => {
-    const current = value[key] ?? "";
-    const external = cloudModels.find((m) => m.id === current);
-    // 保存済みの外部モデルが、いまは選べない（送信の許可を外した・モデルを外した）。
-    const stale = current.startsWith("cloud:") && !external;
-    return (
-      <div className="block text-xs">
-        <label className="block">{label}
-          <select aria-label={label} value={current} disabled={!editable}
-            onChange={(e) => onChange({ ...value, [key]: e.target.value })} className={field}>
-            <option value="">セッションと同じモデル</option>
-            {(value.models ?? []).map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
-            {cloudModels.length > 0 && (
-              <optgroup label="外部（フロンティア）— 外部へ送信">
-                {cloudModels.map((m) => <option key={m.id} value={m.id}>外部｜{m.name}</option>)}
-              </optgroup>
-            )}
-            {stale && <option value={current}>{current}（いまは使えません）</option>}
-          </select>
-        </label>
-        <span className="text-[11px] text-zinc-500">{hint}</span>
-        {external && (
-          <p role="note" className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-            外部へ送信: この役割に渡す指示・コード・ファイルの内容が {external.name.split(" / ")[0]} へ送られます。未公開の情報を扱うプロジェクトではローカルのモデルを選んでください。
-          </p>
-        )}
-        {stale && (
-          <p role="note" className="mt-1 rounded-lg bg-zinc-50 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
-            この外部モデルはいま使えないため、セッションと同じモデルで動きます（Models → Frontierで、モデルと OpenCode からの送信を確かめてください）。
-          </p>
-        )}
-      </div>
-    );
-  };
   return (
-    <SettingsGroup title="開発ワークフロー" description="ControlDeck から開く OpenCode セッションに足す拡張。次に開くセッションから反映されます">
+    <SettingsGroup title="開発ワークフロー" description="AI の進め方と道具の設定です。ControlDeck から次に開くセッションから反映されます。モデルは「役割とモデル」で選びます">
       <Toggle label="プロジェクトの箱で動かす（推奨）"
         hint={value.isolation_effective === "host" && (value.isolation ?? "box") === "box"
           ? "podman が見つからないため、いまは利用者と同じ権限で動いています"
@@ -139,18 +101,18 @@ export function WorkflowExtensions({ value, onChange, editable }: {
         onChange={(v) => onChange({ ...value, superpowers: v })} />
       {!has("superpowers") && <p className="-mt-1 text-[11px]">{installLink("superpowers")}</p>}
       <Toggle label="自動レビュー（完了の前に別の目で確かめる）"
-        hint="コードを変えたら、完了を報告する前に子エージェント reviewer が差分を読み、重大な指摘は直してから終えます。同じ失敗が続いたり指摘が消えないときは、下の相談先のモデルに自動で相談します"
+        hint="コードを変えたら、完了を報告する前に子エージェント reviewer が差分を読み、重大な指摘は直してから終えます。同じ失敗が続いたり指摘が消えないときは、下の「行き詰まったら相談する」にも自動で回します"
         value={value.auto_review ?? true} disabled={!editable}
         onChange={(v) => onChange({ ...value, auto_review: v })} />
       {((value.auto_review ?? true) || (value.adversarial_review && has("adversarial_review"))) && (
-        <p className="-mt-1 text-[11px] text-zinc-500">レビューに使うモデルは、上の「役割とモデル」の最終検証で選びます。</p>
+        <p className="-mt-1 text-[11px] text-zinc-500">レビューのモデルは、上の「役割とモデル」の「最終検証」で選びます。</p>
       )}
-      <Toggle label="別の目によるレビュー（Adversarial Review）"
-        hint={has("adversarial_review") ? "大きな変更（公開の API・認証・データの移行や削除）では、自動レビューの後に出荷できない理由を探す係も読みます。/adversarial-review で手動でも呼べます" : "未導入です"}
+      <Toggle label="出荷できない理由を探すレビュー（Adversarial Review）"
+        hint={has("adversarial_review") ? "大きな変更（公開の API・認証・データの移行や削除）では、自動レビューの後に、出荷してはいけない理由を探す係も読みます。/adversarial-review で手動でも呼べます。モデルは「最終検証」と同じです" : "未導入です"}
         value={value.adversarial_review && has("adversarial_review")} disabled={!editable || !has("adversarial_review")}
         onChange={(v) => onChange({ ...value, adversarial_review: v })} />
       {!has("adversarial_review") && <p className="-mt-1 text-[11px]">{installLink("adversarial_review")}</p>}
-      <label className="block text-xs">行き詰まったら別のモデルに相談（Auto Advisor）
+      <label className="block text-xs">行き詰まったら相談する（Auto Advisor）
         <select aria-label="Auto Advisor" value={has("auto_advisor") ? value.auto_advisor : "off"} disabled={!editable || !has("auto_advisor")}
           onChange={(e) => onChange({ ...value, auto_advisor: e.target.value as Workflow["auto_advisor"] })} className={field}>
           <option value="off">使わない</option>
@@ -158,25 +120,21 @@ export function WorkflowExtensions({ value, onChange, editable }: {
           <option value="active">必要な場面で相談する</option>
         </select>
         <span className="text-[11px] text-zinc-500">{has("auto_advisor")
-          ? "方針を決める・行き詰まる・完了を宣言する場面で、相談先のモデルが作業を見て助言します。自動レビューで指摘が消えないときも相談します"
+          ? "方針を決める・行き詰まる・完了を宣言する場面で、別のモデルが作業を見て助言します。相談先は「役割とモデル」の「相談」で選びます"
           : installLink("auto_advisor")}</span>
       </label>
-      {value.auto_advisor !== "off" && has("auto_advisor") && modelSelect("相談先のモデル", "advisor_model",
-        "要否の判断はセッションと同じモデルで行い、相談するときだけこのモデルへ載せ替えます")}
-      <Toggle label="開発担当（実装を任せる子エージェント）"
-        hint="子エージェント developer を足します。主の会話は方針と確認に集中し、まとまった実装を別の文脈（別のモデルも可）へ任せられます"
+      <Toggle label="実装を子エージェントに任せる（開発担当）"
+        hint="まとまった実装を子エージェント developer に任せます。主の会話は方針と確認に集中できます。モデルは「役割とモデル」の「開発」と同じです"
         value={Boolean(value.developer_agent)} disabled={!editable}
         onChange={(v) => onChange({ ...value, developer_agent: v })} />
-      {value.developer_agent && modelSelect("開発担当のモデル", "developer_model",
-        "例: 相談と確認は手元のモデル、実装は別のモデル。ローカルの別モデルを選ぶと、任せるたびに載せ替えます")}
       {value.cloud_blocked && (
         <p className="rounded-xl bg-zinc-50 px-3 py-2 text-[11px] leading-relaxed text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-300">
-          外部のモデル（OpenRouter など）をレビュー・相談・開発担当に使うには、
+          「役割とモデル」で外部のモデル（OpenRouter など）を選ぶには、
           <Link to="/models?tab=frontier" className="text-accent-600 underline dark:text-accent-400">Models → Frontier</Link>
           で「OpenCode」からの外部への送信を許可します。
         </p>
       )}
-      <Toggle label="UI 検証（Playwright MCP）"
+      <Toggle label="画面をブラウザで確かめる（UI 検証・Playwright MCP）"
         hint={!has("ui_verify") ? "未導入です"
           : value.browser === false ? "このPCに Chrome が見つかりません。Google Chrome を入れると使えます"
           : "AI が開発中の画面を実際のブラウザで開き、幅を変えて撮影・操作します"}

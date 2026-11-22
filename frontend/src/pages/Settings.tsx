@@ -121,7 +121,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
 const OTHER_SCREEN_ITEMS: { label: string; screen: string; to: string; keywords: string[] }[] = [
   { label: "コンテキスト長・思考・量子化", screen: "AI モデル（個別設定）", to: "/models", keywords: ["コンテキスト", "CTX", "思考", "reasoning", "量子化", "KV", "VISION", "投機デコード", "Maya", "Strata", "llama"] },
   { label: "アイドル時に自動アンロード・既定のランタイム", screen: "AI モデル（共通設定）", to: "/models", keywords: ["アイドル", "自動アンロード", "自動停止", "ランタイム", "排他", "Deep Research", "アシスタント表示名"] },
-  { label: "開発ワークフロー・レビューに使うモデル", screen: "OpenCode 設定", to: "@opencode", keywords: ["Superpowers", "Adversarial", "レビュー", "Auto Advisor", "相談", "OpenCode", "ワークフロー"] },
+  { label: "既定のモデル・役割とモデル・開発ワークフロー", screen: "OpenCode 設定", to: "@opencode", keywords: ["役割", "モデル", "開発担当", "Superpowers", "Adversarial", "レビュー", "Auto Advisor", "相談", "OpenCode", "ワークフロー"] },
 ];
 
 function matches(def: SettingsSectionDef, query: string) {
