@@ -9,8 +9,8 @@ import { BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, Skeleton, primary
 import { IconDots } from "../../components/icons";
 import { DocumentSheet } from "../knowledge/DocumentSheet";
 import type { TabProps } from "./CaseSections";
-import { PublicConsent, SourceSelect, firstReady, useSources } from "./Sources";
-import { errorText, input } from "./shared";
+import { BlockedNotice, OutboundNote, SourceSelect, firstReady, useSources } from "./Sources";
+import { blockedOf, errorText, input, type BlockedQuery } from "./shared";
 
 const INTERVALS: [number, string][] = [[6, "6 時間"], [24, "1 日"], [168, "1 週間"], [720, "30 日"]];
 const intervalLabel = (h: number) => INTERVALS.find(([v]) => v === h)?.[1] ?? `${h} 時間`;
@@ -35,7 +35,7 @@ export function WatchSection({ c, meta, editable, onError }: TabProps) {
   const run = useMutation({ mutationFn: (w: Watch) => patentsApi.runWatch(c.id, w.id), onSuccess: () => show("取得を始めました"), onError });
   const toggle = useMutation({
     mutationFn: (w: Watch) => patentsApi.updateWatch(c.id, w.id, {
-      source: w.source, query: w.query, interval_hours: w.interval_hours, approved_public: w.approved_public, enabled: !w.enabled,
+      source: w.source, query: w.query, interval_hours: w.interval_hours, enabled: !w.enabled,
     }),
     onSuccess: refresh, onError,
   });
@@ -79,9 +79,8 @@ export function WatchSection({ c, meta, editable, onError }: TabProps) {
                     <p className="break-words text-sm font-medium">{w.query}</p>
                     <p className="mt-0.5 text-xs text-zinc-500">{w.source_label} · {intervalLabel(w.interval_hours)}ごと</p>
                     <p className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                      {!w.approved_public && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">確認待ち（動きません）</span>}
                       {!w.enabled && <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">止めています</span>}
-                      <span className="num text-zinc-500">{w.last_run ? `前回 ${when(w.last_run)}${w.last_status ? ` · ${w.last_status}` : ""}` : "まだ動いていません"}</span>
+                      <span className="num min-w-0 break-words text-zinc-500">{w.last_run ? `前回 ${when(w.last_run)}${w.last_status ? ` · ${w.last_status}` : ""}` : "まだ動いていません"}</span>
                     </p>
                   </div>
                   {editable && (
@@ -166,7 +165,7 @@ export function WatchSection({ c, meta, editable, onError }: TabProps) {
   );
 }
 
-/** 追加・直す。取得先か検索語を変えたとき（と、まだ確認していないとき）は、外部へ送る確認をもう一度取る。 */
+/** 追加・直す。外へ送る検索語は保存の時と実行のたびにサーバーが自動で検査する。 */
 function WatchForm({ caseId, watch, onClose, onSaved, onError }: {
   caseId: number; watch: Watch | null; onClose: () => void; onSaved: () => void; onError: (e: unknown) => void;
 }) {
@@ -176,24 +175,25 @@ function WatchForm({ caseId, watch, onClose, onSaved, onError }: {
   const [source, setSource] = useState(watch?.source ?? "");
   const [query, setQuery] = useState(watch?.query ?? "");
   const [hours, setHours] = useState(watch?.interval_hours ?? 168);
-  const [consent, setConsent] = useState(false);
+  const [blocked, setBlocked] = useState<BlockedQuery | null>(null);
   const chosenId = source || firstReady(sources);
   const chosen = sources.find((s) => s.id === chosenId);
-  const changed = !watch || watch.source !== chosenId || watch.query !== query.trim();
-  const needConsent = changed || !watch?.approved_public;
   const save = useMutation({
-    mutationFn: () => {
-      const body = { source: chosenId, query: query.trim(), interval_hours: hours, approved_public: needConsent ? consent : true, enabled: watch?.enabled ?? true };
+    mutationFn: (q: string) => {
+      const body = { source: chosenId, query: q.trim(), interval_hours: hours, enabled: watch?.enabled ?? true };
       return watch ? patentsApi.updateWatch(caseId, watch.id, body) : patentsApi.createWatch(caseId, body);
     },
     onSuccess: () => { show(watch ? "保存しました" : "ウォッチを追加しました"); onSaved(); },
-    onError: (e) => onError(new Error(errorText(e))),
+    onError: (e) => {
+      const b = blockedOf(e);
+      if (b) setBlocked(b); else onError(new Error(errorText(e)));
+    },
   });
-  const ok = Boolean(chosen && (chosen.ready || chosen.id === watch?.source) && query.trim() && (!needConsent || consent));
+  const ok = Boolean(chosen && (chosen.ready || chosen.id === watch?.source) && query.trim());
   return (
     <BottomSheet title={watch ? "ウォッチを直す" : "ウォッチを追加"} onClose={onClose}>
       {!data ? <Skeleton className="h-40" /> : (
-        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (ok) save.mutate(); }}>
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (ok) { setBlocked(null); save.mutate(query); } }}>
           <label className="block text-xs font-medium text-zinc-500">取得先
             <div className="mt-1"><SourceSelect sources={sources} value={chosenId} onChange={setSource} /></div>
           </label>
@@ -205,9 +205,9 @@ function WatchForm({ caseId, watch, onClose, onSaved, onError }: {
               {INTERVALS.map(([v, label]) => <option key={v} value={v}>{label}ごと</option>)}
             </select>
           </label>
-          {needConsent ? <PublicConsent checked={consent} onChange={setConsent} /> : (
-            <p className="text-xs text-zinc-500">検索語は確認済みです。取得先か検索語を変えると、もう一度確認します。</p>
-          )}
+          <OutboundNote />
+          {blocked && <BlockedNotice blocked={blocked} busy={save.isPending}
+            onUse={(q) => { setQuery(q); setBlocked(null); save.mutate(q); }} />}
           <button className={`${primaryButtonClass} w-full`} disabled={!ok || save.isPending}>{watch ? "保存" : "追加"}</button>
         </form>
       )}

@@ -52,7 +52,8 @@ export async function api<T = unknown>(
         });
         if (issues.length > 0) detail = issues.join(" / ");
       } else if (body.detail && typeof body.detail === "object") {
-        const structured = body.detail as { blocking?: unknown; warnings?: unknown };
+        const structured = body.detail as { blocking?: unknown; warnings?: unknown; message?: unknown };
+        if (typeof structured.message === "string") detail = structured.message;
         if (Array.isArray(structured.blocking) && structured.blocking.every((item) => typeof item === "string")) {
           detail = `公開できません: ${structured.blocking.join(" / ")}`;
         }

@@ -1,10 +1,18 @@
 /** Patent 画面で共通に使う小物（入力の見た目・期限の印・エラー文）。 */
 import type { ReactNode } from "react";
+import { ApiError } from "../../api/client";
 
 /** 幅を決めない入力欄（並べて使う select など）。`input` に w-28 などを足しても w-full が勝つので、幅を変えるときはこちら。 */
 export const inputBase = "rounded-xl border border-zinc-300 bg-white px-3 py-2 text-base sm:text-sm dark:border-zinc-700 dark:bg-zinc-900";
 export const input = `w-full ${inputBase}`;
 export const card = "rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900";
+
+/** 外へ送る前の自動の検査で止められたときの詳細（理由・重なった部分・言い換えの案）。止められたのでなければ null。 */
+export interface BlockedQuery { message: string; overlap: string; suggestion: string | null }
+export function blockedOf(e: unknown): BlockedQuery | null {
+  const d = e instanceof ApiError ? (e.detail as Partial<BlockedQuery> & { blocked?: boolean } | undefined) : undefined;
+  return d && typeof d === "object" && d.blocked ? { message: String(d.message ?? ""), overlap: String(d.overlap ?? ""), suggestion: d.suggestion ?? null } : null;
+}
 
 export function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);

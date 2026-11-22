@@ -8,8 +8,8 @@
 - 未公開の内容の検出: 語・検索式が案件の請求項・ヒアリングの記録の文章と 8 文字以上重なっていたら
   risk を付ける（全体が含まれる場合に加え、8 文字以上の一部分が写されている場合も。幅・改行の揺れは
   judge._flat で許容。外へ送る前に利用者に見せるため）。
-- 外へ送る語は、利用者が選んだものだけを approve で確認済みとして保存する（watch.py の approved_public と
-  同じ決まり: 確認の無い語は外へ出さない）。risk の付いた語は確認できない。
+- 外へ送る前の検査は egress.py（未公開の文章と 25 文字以上連続で一致する塊だけ止める）。risk（8 文字の重なり）は
+  画面の参考表示で、選択も送信も止めない。安全な語は default_selected で最初から選ばれた状態にする。
 """
 from __future__ import annotations
 
@@ -239,16 +239,22 @@ def get(case_id: int, survey_id: int) -> dict:
         conn.close()
     if r is None:
         raise pstore.NotFound("調査がありません")
-    return _row(r)
+    out = _row(r)
+    out["default_selected"] = default_selected(out, pstore.get_case(case_id)) if out["status"] == "succeeded" else []
+    return out
 
 
 def list_surveys(case_id: int) -> list[dict]:
     conn = connect()
     try:
-        return [_row(r) for r in conn.execute(
+        rows = [_row(r) for r in conn.execute(
             "SELECT * FROM patent_surveys WHERE case_id=? ORDER BY id DESC LIMIT 50", (int(case_id),))]
     finally:
         conn.close()
+    case = pstore.get_case(case_id) if rows else None
+    for row in rows:
+        row["default_selected"] = default_selected(row, case) if row["status"] == "succeeded" else []
+    return rows
 
 
 def _proposed_terms(survey: dict) -> set[str]:
@@ -259,24 +265,39 @@ def _proposed_terms(survey: dict) -> set[str]:
     return out
 
 
-def approve(case_id: int, survey_id: int, terms: list[str], approved_public: bool) -> dict:
-    """利用者が選んだ語だけを確認済みとして保存する（watch.py の approved_public と同じ決まり）。"""
-    if not approved_public:
-        raise pstore.PatentError("外部へ送る検索語です。未公開の発明の内容を含まないことを確認してください")
+def default_selected(survey: dict, case: dict) -> list[str]:
+    """画面で最初から選ばれた状態にする語。外へ送って安全な語（未公開の文章の 25 文字以上の連続を含まない語）は全部。
+    risks（8 文字の重なり）は参考表示で、選択も送信も止めない（2026-11-22 利用者「制限で検索が不十分になるのを避けたい」）。"""
+    from app.patents import egress
+
+    out: list[str] = []
+    for c in survey["concepts"]:
+        for term in (*c.get("ja", []), *c.get("en", []), *c.get("ipc", [])):
+            if term not in out and egress.inspect(term, case) is None:
+                out.append(term)
+    return out
+
+
+def approve(case_id: int, survey_id: int, terms: list[str], approved_public: bool = True) -> dict:
+    """利用者が選んだ語を保存する。手動の確認（approved_public）は要らない（互換のため引数は受けて無視する）。
+    未公開の文章をそのまま写した長い塊（egress.BLOCK_MIN_CHARS 以上）を含む語だけ、外へ送る前の検査と同じ基準で断る。"""
+    from app.patents import egress
+
     survey = get(case_id, survey_id)
     if survey["status"] != "succeeded":
         raise pstore.PatentError("検索語の案がまだ出来上がっていません（または失敗しました）")
     proposed = _proposed_terms(survey)
+    case = pstore.get_case(case_id)
     selected: list[str] = []
     for t in terms or []:
         term = str(t or "").strip()
         if not term or term in selected:
             continue
         if term not in proposed:
-            # 案の中の語だけを確認できる（risk の検査を通っていない語を入れさせないため）
             raise pstore.PatentError("案に無い語が含まれています。この案から選んでください")
-        if survey["risks"].get(term) == "unpublished":
-            raise pstore.PatentError("未公開の内容を含む語があります。その語を選択から外してください")
+        blocked = egress.inspect(term, case)
+        if blocked is not None:
+            raise blocked
         selected.append(term)
     _update(survey_id, approved=selected, approved_public=True, approved_at=_now())
     return get(case_id, survey_id)

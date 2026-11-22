@@ -1,7 +1,7 @@
 """公開データの取得・特許ウォッチ・期限の通知（統合後の再設計 R3-2）。
 
 目的:
-- 外へ送る検索語は利用者が「公開してよい」と確認したものだけ。確認の無い取得・ウォッチは動かさず、検索語を変えたら確認をやり直す。
+- 外へ送る検索語の検査は自動（2026-11-22 に手動の確認から置き換え。詳細は test_patent_egress.py）。確認（approved_public）が無くてもウォッチは動く。
 - 取得は https の公開アドレスだけ。内部アドレス・リダイレクトを拒む（SSRF）。鍵は暗号化して保存し、応答に出さない。
 - EPO OPS の書誌を統合ストアの書誌の形（meta["biblio"]）にそろえる。
 - ウォッチは新しく入った文献だけをヒットにし、2 回目は同じ文献を出さない。ヒットから X/Y/A で先行文献に登録できる。
@@ -92,7 +92,7 @@ def _case_with_claims():
     return case["id"]
 
 
-def test_watch_needs_public_approval_and_only_new_documents_become_hits(monkeypatch):
+def test_watch_runs_without_manual_approval_and_only_new_documents_become_hits(monkeypatch):
     from app.knowledge import ingest, sources
     from app.patents import store as pstore
     from app.patents import watch
@@ -104,13 +104,8 @@ def test_watch_needs_public_approval_and_only_new_documents_become_hits(monkeypa
     sent = []
     monkeypatch.setattr(sources, "fetch", lambda source, query, limit: sent.append(query) or sources.epo_docs(EPO))
     case_id = _case_with_claims()
-    unapproved = watch.save_watch(case_id, source="epo", query="ic=H10D", interval_hours=24, approved_public=False)
-    with pytest.raises(pstore.PatentError):
-        asyncio.run(watch.run_watch(Job(), unapproved["id"]))
-    assert sent == [] and unapproved["id"] not in watch.due_watches()
-    approved = watch.save_watch(case_id, source="epo", query="ic=H10D", interval_hours=24, approved_public=True,
-                                watch_id=unapproved["id"])
-    assert approved["approved_public"] and approved["id"] in watch.due_watches()
+    approved = watch.save_watch(case_id, source="epo", query="ic=H10D", interval_hours=24, approved_public=False)
+    assert approved["id"] in watch.due_watches()          # approved_public=False でも、自動の検査を通れば動く
     first = asyncio.run(watch.run_watch(Job(), approved["id"]))
     second = asyncio.run(watch.run_watch(Job(), approved["id"]))
     assert (first["new"], second["new"]) == (1, 0) and sent == ["ic=H10D", "ic=H10D"]
@@ -120,7 +115,7 @@ def test_watch_needs_public_approval_and_only_new_documents_become_hits(monkeypa
     assert pstore.get_case(case_id)["refs"][0]["category"] == "X"
     changed = watch.save_watch(case_id, source="epo", query="ic=H02M", interval_hours=24, approved_public=False,
                                watch_id=approved["id"])
-    assert not changed["approved_public"]       # 検索語を変えたら確認をやり直す
+    assert changed["enabled"] and changed["query"] == "ic=H02M"   # 検索語を変えても確認のやり直しは要らない（自動の検査）
 
 
 def test_deadline_notices_once_per_threshold_without_case_names(monkeypatch):
@@ -142,13 +137,16 @@ def test_deadline_notices_once_per_threshold_without_case_names(monkeypatch):
     assert asyncio.run(watch.tick())["notices"] == 0        # 同じ日・同じしきい値では 2 度知らせない
 
 
-def test_api_refuses_unapproved_queries(admin_client):
+def test_api_accepts_queries_without_manual_approval(admin_client, monkeypatch):
+    from app.knowledge import sources
+
+    monkeypatch.setattr(sources, "fetch", lambda source, query, limit: [])
     case_id = admin_client.post("/api/v1/patents/cases", json={"title": "x"}, headers=CSRF_HEADERS).json()["id"]
     r = admin_client.post(f"/api/v1/patents/cases/{case_id}/watches", json={"source": "epo", "query": "ic=H02M"},
                           headers=CSRF_HEADERS)
-    assert r.status_code == 422 and "確認" in r.json()["detail"]
+    assert r.status_code == 201
     r = admin_client.post("/api/v1/patents/sources/openalex/fetch", json={"query": "inverter"}, headers=CSRF_HEADERS)
-    assert r.status_code == 422
+    assert r.status_code == 201
     listed = admin_client.get("/api/v1/patents/sources").json()["sources"]
     assert {s["id"] for s in listed} == {"jpo", "epo", "uspto", "openalex", "rss", "gdelt"}
 

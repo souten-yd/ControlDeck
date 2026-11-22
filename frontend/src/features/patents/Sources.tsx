@@ -1,12 +1,12 @@
 /** 公開データの取得先（EPO・USPTO・OpenAlex・RSS・GDELT）。1 回だけ取得するシートと、鍵の設定のシート。
- *  検索語は外部の検索サービスへ送られるので、送る前に「未公開の発明の内容を含まない」ことを必ず確かめてもらう
+ *  検索語は外部の検索サービスへ送られる。送る直前にサーバーが案件の未公開の文章との重なりを自動で検査する
  *  （2026-11-21 R3-2。backend/app/knowledge/sources.py と patents/router.py「公開データの取得・ウォッチ」）。 */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { patentsApi, type PatentSource } from "../../api/patents";
 import { useToasts } from "../../stores";
 import { BottomSheet, Skeleton, primaryButtonClass } from "../../components/ui";
-import { errorText, input } from "./shared";
+import { blockedOf, errorText, input, type BlockedQuery } from "./shared";
 
 export const KEY_LABEL: Record<string, string> = {
   jpo_token_url: "トークン取得の URL（利用登録の後に特許庁から通知）", jpo_id: "ID（特許庁から通知）", jpo_password: "パスワード（特許庁から通知）",
@@ -17,13 +17,23 @@ export function useSources() {
   return useQuery({ queryKey: ["patent-sources"], queryFn: patentsApi.sources, staleTime: 30_000 });
 }
 
-/** 外部へ送る前の確認。チェックしないと送れない。 */
-export function PublicConsent({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+/** 外部へ送ることの 1 行の説明（確認の操作は要らない。検査はサーバーが自動でする）。 */
+export function OutboundNote() {
+  return <p className="text-xs leading-relaxed text-zinc-500">検索語は外部の検索サービスへ送られます。案件の未公開の文章と重なる語は、自動で止めます</p>;
+}
+
+/** 止められたときの理由と、ワンタップの言い換え（キーワードに分けた形に置き換えて、そのまま送る）。 */
+export function BlockedNotice({ blocked, busy, onUse }: { blocked: BlockedQuery; busy: boolean; onUse: (query: string) => void }) {
   return (
-    <label className="flex items-start gap-3 rounded-xl bg-amber-50 p-3 text-sm leading-relaxed text-amber-900 dark:bg-amber-900/20 dark:text-amber-100">
-      <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-accent-600" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span>この検索語は外部の検索サービスへ送られます。未公開の発明の内容を含まないことを確認しました</span>
-    </label>
+    <div role="alert" className="space-y-2 rounded-xl bg-amber-50 p-3 text-sm leading-relaxed text-amber-900 dark:bg-amber-900/20 dark:text-amber-100">
+      <p className="break-words">{blocked.message}</p>
+      {blocked.suggestion && (
+        <>
+          <p className="break-words rounded-lg bg-white/70 px-2 py-1 text-xs dark:bg-zinc-900/60">言い換えの案: {blocked.suggestion}</p>
+          <button type="button" className={`${primaryButtonClass} w-full`} disabled={busy} onClick={() => onUse(blocked.suggestion!)}>この言い換えで送る</button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -49,18 +59,21 @@ export function FetchSheet({ onClose }: { onClose: () => void }) {
   const [source, setSource] = useState("");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(25);
-  const [consent, setConsent] = useState(false);
+  const [blocked, setBlocked] = useState<BlockedQuery | null>(null);
   const chosen = sources.find((s) => s.id === (source || firstReady(sources)));
   const fetch = useMutation({
-    mutationFn: () => patentsApi.fetchSource(chosen!.id, { query: query.trim(), limit, approved_public: true }),
+    mutationFn: (q: string) => patentsApi.fetchSource(chosen!.id, { query: q.trim(), limit }),
     onSuccess: () => { show("取得を始めました（Jobs で進み具合を見られます）"); onClose(); },
-    onError: (e) => show(errorText(e), "error"),
+    onError: (e) => {
+      const b = blockedOf(e);
+      if (b) setBlocked(b); else show(errorText(e), "error");
+    },
   });
-  const ok = Boolean(chosen?.ready && query.trim() && consent && limit >= 1 && limit <= 100);
+  const ok = Boolean(chosen?.ready && query.trim() && limit >= 1 && limit <= 100);
   return (
     <BottomSheet title="公開データを取得" onClose={onClose}>
       {!data ? <Skeleton className="h-40" /> : (
-        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (ok) fetch.mutate(); }}>
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (ok) { setBlocked(null); fetch.mutate(query); } }}>
           <label className="block text-xs font-medium text-zinc-500">取得先
             <div className="mt-1"><SourceSelect sources={sources} value={chosen?.id ?? ""} onChange={setSource} /></div>
           </label>
@@ -71,7 +84,9 @@ export function FetchSheet({ onClose }: { onClose: () => void }) {
             <input className={`${input} mt-1 w-28`} type="number" min={1} max={100} inputMode="numeric" value={limit}
               onChange={(e) => setLimit(Number(e.target.value))} />
           </label>
-          <PublicConsent checked={consent} onChange={setConsent} />
+          <OutboundNote />
+          {blocked && <BlockedNotice blocked={blocked} busy={fetch.isPending}
+            onUse={(q) => { setQuery(q); setBlocked(null); fetch.mutate(q); }} />}
           <button className={`${primaryButtonClass} w-full`} disabled={!ok || fetch.isPending}>取得する</button>
           <p className="text-xs text-zinc-500">取得した公報・論文は「公報」と分析に入ります。</p>
         </form>

@@ -85,7 +85,7 @@ export interface Watch {
   approved_public: boolean; last_run: number | null; last_status: string;
 }
 export interface WatchHit { id: number; watch_id: number; doc_ref: string; title: string; score: number; status: string; created: number }
-export interface WatchBody { source: string; query: string; interval_hours: number; approved_public: boolean; enabled: boolean }
+export interface WatchBody { source: string; query: string; interval_hours: number; enabled: boolean }
 
 export const patentsApi = {
   meta: () => api<PatentMeta>("/patents/meta"),
@@ -131,7 +131,7 @@ export const patentsApi = {
   sources: () => api<{ sources: PatentSource[] }>("/patents/sources"),
   setSourceKeys: (values: Record<string, string>) =>
     api<{ sources: PatentSource[] }>("/patents/sources/keys", { method: "PUT", json: { values } }),
-  fetchSource: (source: string, body: { query: string; limit: number; approved_public: boolean }) =>
+  fetchSource: (source: string, body: { query: string; limit: number; case_id?: number }) =>
     api<{ job_id: string }>(`/patents/sources/${encodeURIComponent(source)}/fetch`, { method: "POST", json: body }),
   watches: (id: number) => api<{ watches: Watch[]; hits: WatchHit[] }>(`/patents/cases/${id}/watches`),
   createWatch: (id: number, body: WatchBody) => api<Watch>(`/patents/cases/${id}/watches`, { method: "POST", json: body }),

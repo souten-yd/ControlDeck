@@ -30,6 +30,10 @@ def _call(fn, *args, **kwargs):
     except pstore.NotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except pstore.PatentError as exc:
+        from app.patents import egress
+
+        if isinstance(exc, egress.QueryBlocked):      # 理由・重なった部分・言い換えの案を画面へ返す
+            raise HTTPException(status_code=422, detail=exc.detail()) from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -262,7 +266,7 @@ class SurveyBody(BaseModel):
 
 class SurveyApproveBody(BaseModel):
     terms: list[str] = Field(default_factory=list, max_length=200)
-    approved_public: bool = False
+    approved_public: bool = True          # 互換のため受けるが無視する（自動の検査に置き換え）
 
 
 @router.get("/cases/{case_id}/surveys")
@@ -311,7 +315,7 @@ def approve_survey(case_id: int, survey_id: int, body: SurveyApproveBody, reques
     """外へ送る語を、利用者が選んだものだけ確認済みとして保存する。risk の付いた語は断る（値は監査に残さない）。"""
     from app.patents import survey
 
-    out = _call(survey.approve, case_id, survey_id, body.terms, body.approved_public)
+    out = _call(survey.approve, case_id, survey_id, body.terms)
     audit.record(db, "patents.survey_approve", user=user, resource_type="patent_case", resource_id=str(case_id),
                  request=request, metadata={"survey_id": survey_id, "terms": len(out["approved"])})
     return out
@@ -421,14 +425,15 @@ class SourceKeys(BaseModel):
 class FetchBody(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=25, ge=1, le=100)
-    approved_public: bool = False
+    case_id: int | None = None            # 案件の検索なら指定する（無ければ全案件の未公開の文章と照らす）
+    approved_public: bool = True          # 互換のため受けるが無視する
 
 
 class WatchBody(BaseModel):
     source: str
     query: str = Field(min_length=1, max_length=500)
     interval_hours: int = Field(default=168, ge=6, le=720)
-    approved_public: bool = False
+    approved_public: bool = True          # 互換のため受けるが無視する
     enabled: bool = True
 
 
@@ -437,9 +442,17 @@ class HitBody(BaseModel):
     category: str | None = Field(default=None, pattern="^[XYAPE]$")
 
 
-def _need_public(flag: bool) -> None:
-    if not flag:
-        raise HTTPException(status_code=422, detail="外部へ送る検索語です。未公開の発明の内容を含まないことを確認してください")
+def _guard_query(db, user, request, query: str, source: str, case_id: int | None, action: str) -> None:
+    """外部の検索サービスへ送る直前の自動の検査（egress.check）。止めたら 422 と理由・言い換えの案。監査は長さと理由だけ。"""
+    from app.patents import egress
+
+    try:
+        egress.check(query, case_id)
+    except egress.QueryBlocked as blocked:
+        audit.record(db, f"{action}_blocked", user=user, resource_type="patent_case",
+                     resource_id=str(case_id if case_id is not None else "*"), request=request, result="denied",
+                     metadata=egress.blocked_metadata(query, source, case_id, blocked))
+        raise HTTPException(status_code=422, detail=blocked.detail()) from blocked
 
 
 @router.get("/sources")
@@ -468,10 +481,13 @@ async def fetch_source(source: str, body: FetchBody, request: Request, user: Use
     """公開データを 1 回取得して取り込む（Jobs）。検索語は外部へ送られるので、公開してよい語だけ。"""
     from app.jobs import service as jobs
     from app.knowledge import sources
+    from app.patents import egress
 
-    _need_public(body.approved_public)
     if source not in sources.SOURCES:
         raise HTTPException(status_code=404, detail="知らない取得先です")
+    if body.case_id is not None:
+        await asyncio.to_thread(_call, pstore.get_case, body.case_id)
+    await asyncio.to_thread(_guard_query, db, user, request, body.query, source, body.case_id, "patents.source_fetch")
 
     async def run(job: jobs.Job) -> dict:
         job.set_progress("取得しています", 0, 2)
@@ -481,7 +497,7 @@ async def fetch_source(source: str, body: FetchBody, request: Request, user: Use
 
     job = jobs.create("patents.fetch", f"公開データの取得: {sources.SOURCES[source]['label']}", run, owner_user_id=user.id)
     audit.record(db, "patents.source_fetch", user=user, resource_type="source", resource_id=source, request=request,
-                 metadata={"job_id": job.id, "query": body.query, "approved_public": True})
+                 metadata={"job_id": job.id, **egress.sent_metadata(body.query, source, body.case_id)})
     return {"job_id": job.id}
 
 
@@ -496,20 +512,25 @@ def list_watches(case_id: int, user: User = VIEW):
 def create_watch(case_id: int, body: WatchBody, request: Request, user: User = Depends(EDIT), db=Depends(get_db)):
     from app.patents import watch
 
-    _need_public(body.approved_public)
+    _call(pstore.get_case, case_id)
+    _guard_query(db, user, request, body.query, body.source, case_id, "patents.watch_create")
     out = _call(watch.save_watch, case_id, source=body.source, query=body.query, interval_hours=body.interval_hours,
-                approved_public=True, enabled=body.enabled)
+                enabled=body.enabled)
     audit.record(db, "patents.watch_create", user=user, resource_type="patent_case", resource_id=str(case_id),
-                 request=request, metadata={"source": body.source, "query": body.query})
+                 request=request, metadata={"source": body.source, "query_chars": len(body.query), "checked": "auto"})
     return out
 
 
 @router.put("/cases/{case_id}/watches/{watch_id}")
-def update_watch(case_id: int, watch_id: int, body: WatchBody, user: User = Depends(EDIT)):
+def update_watch(case_id: int, watch_id: int, body: WatchBody, request: Request, user: User = Depends(EDIT),
+                 db=Depends(get_db)):
     from app.patents import watch
 
+    _call(pstore.get_case, case_id)
+    if body.enabled:      # 止める操作は検査しない（止めた監視を止められなくならないように）
+        _guard_query(db, user, request, body.query, body.source, case_id, "patents.watch_update")
     return _call(watch.save_watch, case_id, source=body.source, query=body.query, interval_hours=body.interval_hours,
-                 approved_public=body.approved_public, enabled=body.enabled, watch_id=watch_id)
+                 enabled=body.enabled, watch_id=watch_id, check=body.enabled)
 
 
 @router.delete("/cases/{case_id}/watches/{watch_id}")
@@ -521,7 +542,7 @@ def delete_watch(case_id: int, watch_id: int, user: User = Depends(EDIT)):
 
 
 @router.post("/cases/{case_id}/watches/{watch_id}/run", status_code=201)
-def run_watch(case_id: int, watch_id: int, user: User = Depends(EDIT)):
+def run_watch(case_id: int, watch_id: int, user: User = Depends(EDIT)):   # 検査は watch.run_watch の中（実行のたび）
     from app.jobs import service as jobs
     from app.patents import watch
 
