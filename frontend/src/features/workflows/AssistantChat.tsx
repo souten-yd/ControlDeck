@@ -26,7 +26,8 @@ import { getSpeechEngines } from "../../api/speech";
 import { TodoFloat, type OpenCodeTodo } from "./TodoFloat";
 import { QueuedRequests, VoiceWave, type QueuedItem } from "./QueuedRequests";
 import { ROLE_LABELS, type RoleKey } from "../opencode/RolesPanel";
-import { extractPlanQuestions, recommendedAnswer } from "./planQuestions";
+import { extractPlanQuestions } from "./planQuestions";
+import { PlanQuestionForm } from "./PlanQuestionForm";
 import { CodeDoneCard, OpenCodeChanges, type CodeChange } from "./OpenCodeChanges";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
@@ -2185,7 +2186,10 @@ export default function AssistantChat() {
                 onBuildFromPlan={!busy && !hasContent && i === messages.length - 1 && m.agent === "plan" && m.persistStatus === "completed"
                   ? () => { setCodeAgent("build"); rememberPrefs({ agent: "build" }); void send("このプランで実装してください。", "build", "code"); } : undefined}
                 onProceedRecommended={!busy && !hasContent && i === messages.length - 1 && m.agent && m.answeredBy === "code" && m.persistStatus === "completed"
-                  ? (text) => { void send(text, m.agent, "code"); } : undefined}
+                  ? (text, build) => {
+                    if (build) { setCodeAgent("build"); rememberPrefs({ agent: "build" }); }
+                    void send(text, build ? "build" : m.agent, "code");
+                  } : undefined}
                 editing={!!m.messageId && editingId === m.messageId}
                 actionsDisabled={busy}
                 onAction={(action) => void onMessageAction(m, action)}
@@ -2823,8 +2827,8 @@ function MessageBubble({
   onRetry?: () => void;
   /** プランの回答の後で、そのプランをビルドで実装する */
   onBuildFromPlan?: () => void;
-  /** 本文の「決めてもらいたいこと」の推奨をまとめて答える（同じ会話・同じモードへ送る） */
-  onProceedRecommended?: (text: string) => void;
+  /** 本文の「決めてもらいたいこと」への答えを送る（build=true はビルドへ切り替える。違えば同じ会話・同じ agent） */
+  onProceedRecommended?: (text: string, build: boolean) => void;
   resendDisabled?: boolean;
   editing?: boolean;
   actionsDisabled?: boolean;
@@ -3099,20 +3103,8 @@ function MessageBubble({
         )}
       </div>
     </div>
-    {recommendations.length > 0 && (
-      <div data-plan-recommend className="mt-1 min-w-0 max-w-full rounded-xl border border-accent-200 bg-accent-50/60 p-2.5 text-sm dark:border-accent-700/50 dark:bg-accent-600/10">
-        <ul className="mb-2 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
-          {recommendations.map((q) => (
-            <li key={q.n} className="min-w-0 break-words"><span className="font-semibold">{q.n}.</span> {q.recommended}</li>
-          ))}
-        </ul>
-        <button type="button" data-proceed-recommended onClick={() => onProceedRecommended!(recommendedAnswer(recommendations))}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 [@media(pointer:coarse)]:min-h-11">
-          <span aria-hidden>✅</span>推奨どおりで進める
-        </button>
-      </div>
-    )}
-    {onBuildFromPlan && (
+    {recommendations.length > 0 && <PlanQuestionForm questions={recommendations} isPlan={msg.agent === "plan"} onSubmit={onProceedRecommended!} />}
+    {onBuildFromPlan && recommendations.length === 0 && (
       <button type="button" data-build-from-plan onClick={onBuildFromPlan}
         className="mt-1 inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 [@media(pointer:coarse)]:min-h-11">
         <span aria-hidden>🛠️</span>このプランで作る（ビルドに切り替えて送る）
