@@ -1089,6 +1089,21 @@ async def opencode_resume(conv_id: str, body: ResumeBody,
         raise HTTPException(status_code=409, detail="この回は OpenCode の回ではありません")
     if meta.get("resumed"):
         raise HTTPException(status_code=409, detail="この回はすでに続きから再開しました")
+    # 再起動の後も OpenCode のセッションが箱の中で動き続けていることがある（会話サーバーは別のユニット）。
+    # そのまま送ると同じセッションへ二重に頼むので、動いていれば送らずに知らせる（2026-11-22 Opus の監査）。
+    if meta.get("server_key") and str(meta.get("opencode_session") or "").startswith("ses_"):
+        from app.integrations.opencode import chat_server
+
+        server = await asyncio.to_thread(chat_server.load, str(meta["server_key"]))
+        if server is not None:
+            try:
+                still = await chat_server.session_is_active(server, str(meta["opencode_session"]))
+            except chat_server.ChatServerError:
+                still = False
+            if still:
+                raise HTTPException(status_code=409, detail=(
+                    "OpenCode はまだこの作業を続けています（ControlDeck の再起動の後も動いていました）。"
+                    "終わるのを待つか、止めてから「続きから」を押してください"))
     todo_lines = [f"- [{t.get('status')}] {t.get('content')}" for t in (meta.get("todos") or [])
                   if isinstance(t, dict) and str(t.get("content") or "").strip()][:30]
     content = (f"前回は中断されました（{_resumed_reason(row)}）。"

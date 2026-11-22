@@ -402,3 +402,30 @@ def test_resume_cannot_be_done_twice_for_the_same_turn(admin_client, monkeypatch
     again = admin_client.post(url, headers=CSRF_HEADERS, json={"message_id": "m_twice00000001"})
     assert again.status_code == 409 and "すでに" in again.json()["detail"]
     assert len(calls["turns"]) == 1, "二重に送らない"
+
+
+def test_resume_refuses_while_the_session_still_runs(admin_client, monkeypatch, tmp_path):
+    """ControlDeck の再起動の後も OpenCode のセッションが箱の中で動き続けていれば、続きからは送らずに 409 で知らせる
+    （同じセッションへ二重に頼まない。2026-11-22 Opus の監査）。"""
+    from app.database import SessionLocal
+    from app.integrations.opencode import chat_server
+    from app.models import ChatMessage
+
+    server, calls = _fake(monkeypatch, tmp_path, _ok, autosave_results=[CLEAN])
+    monkeypatch.setattr(chat_server, "load", lambda key: server)
+
+    async def active(srv, sid):
+        return sid == "ses_live"
+
+    monkeypatch.setattr(chat_server, "session_is_active", active)
+    conv_id = _new_conversation(admin_client)
+    with SessionLocal() as db:
+        db.add(ChatMessage(id="m_live00000001", conversation_id=conv_id, role="assistant", content="途中まで",
+                           status="interrupted",
+                           meta_json=json.dumps({"mode": "code", "project_path": str(tmp_path),
+                                                 "server_key": "k1", "opencode_session": "ses_live"})))
+        db.commit()
+    r = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/opencode/resume", headers=CSRF_HEADERS,
+                          json={"message_id": "m_live00000001"})
+    assert r.status_code == 409 and "まだこの作業を続けています" in r.json()["detail"]
+    assert not calls.get("turns"), "動いているセッションへは送らない"
