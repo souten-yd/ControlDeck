@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 223 ファイル、2067 テスト（目的の未記入 93 ファイル）
-- E2E: 110 spec、222 テスト
+- backend: 223 ファイル、2069 テスト（目的の未記入 93 ファイル）
+- E2E: 111 spec、224 テスト
 
 ## backend（backend/tests）
 
@@ -883,6 +883,8 @@
 - `test_delete_is_owner_only`
 - `test_workspace_api_list_create_delete_confirm_and_audit`
 - `test_workspace_api_requires_login_and_terminal_permission`
+- `test_workspace_progress_states_todo_and_server_from_latest_message` — 目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
+- `test_workspace_progress_with_no_workspaces` — 目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。
 
 ### backend/tests/test_diagnostics.py
 
@@ -3691,6 +3693,13 @@
 目的: **未記入**
 
 - starts, previews, and stops an isolated Project Lab Web profile
+
+### frontend/e2e/project-lab-workspaces.spec.ts
+
+目的: 目的: Project Lab の一覧の上の「プロジェクト｜作業場」の切り替えと、作業場のカード（元・開発対象の札・ 進み具合・ToDo・最後に動いた時刻・会話を開く）が正しく出る。AI アシスタントの作業フォルダの選択欄は 「CodeDEV のプロジェクト」と「作業場（一時）」に分かれ、「🧪 ＋ 新しい作業場（ControlDeck を直す・試す）」は選択欄の中の「➕ 新規作成」のすぐ下に出る（利用者の決定。選択欄の外の別のボタンは作らない）。 根拠: 2026-11-22 利用者「Project Lab で現在の進捗とかって確認できないんだったっけ…参照先がテンポラリーな フォルダなら、今あるドロップダウンの一覧とは別にした方がいい」「入口が選択欄のいちばん下に隠れて分からない」。 API は模擬する（箱・OpenCode を動かさない）。320・1280、ライト・ダークの撮影もこの中で行う。
+
+- project lab switches to workspaces and shows progress (${width}px ${scheme})
+- assistant folder select separates codedev and workspaces (${width}px ${scheme})
 
 ### frontend/e2e/project-lab.spec.ts
 

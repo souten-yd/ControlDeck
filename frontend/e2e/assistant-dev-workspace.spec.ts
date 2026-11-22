@@ -36,8 +36,13 @@ async function mock(page: Page) {
       return route.fulfill({ json: { ok: true } });
     }
     if (/\/workspaces\/[^/?]+\/[^/?]+/.test(request.url())) {
-      // 一覧ではない取得（変更・関門など）は一覧の形にしない（形の違う応答で結果のカードが落ちていた）
-      return route.fulfill({ json: { files: [], commits: [], commit_count: 0, uncommitted: false } });
+      // 一覧ではない取得（変更・関門など）は一覧の形にしない（形の違う応答で結果のカードが落ちていた）。
+      // 数も含めて本物の changes と同じ形にする（visual review: 欠けた応答で「undefined ファイル」と出た）
+      return route.fulfill({ json: {
+        base: "0000000", head: "1111111", file_count: 0, added: 0, removed: 0, dirty: false,
+        uncommitted: false,
+        files: [], commits: [], commit_count: 0, check: null, adopted: null, merged: null,
+      } });
     }
     return route.fulfill({ json: { workspaces: state.list } });
   });
