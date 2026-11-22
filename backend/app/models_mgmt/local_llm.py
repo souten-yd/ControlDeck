@@ -156,7 +156,11 @@ async def ensure_ready(alias: str, *, timeout_seconds: int = 240) -> bool:
 
         if not await provider().wait_returned(timeout=timeout_seconds):
             return False
-    return await module_for(str(item["runtime"])).ensure_ready(alias, timeout_seconds=timeout_seconds)
+    from app.models_mgmt import large_model_lifecycle
+
+    # 要求による起動: 利用者の既定の選択（selected_runtime）を変えない（large_model_lifecycle.on_demand_start）
+    with large_model_lifecycle.on_demand_start():
+        return await module_for(str(item["runtime"])).ensure_ready(alias, timeout_seconds=timeout_seconds)
 
 
 async def ensure_ready_by_base_url(base_url: str, *, timeout_seconds: int = 240) -> bool:
