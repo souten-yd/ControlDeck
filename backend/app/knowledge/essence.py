@@ -182,6 +182,15 @@ def _epoch(conn, doc_id: int) -> int:
     return int(row["epoch"]) if row is not None else 0
 
 
+def epoch_of(shard: str, doc_id: int) -> int:
+    """文書の版の番号（接続はここで開く）。K3 のリンク（links.py）のレビューの効きの判定に使う。"""
+    conn = connect(shard)
+    try:
+        return _epoch(conn, doc_id)
+    finally:
+        conn.close()
+
+
 def list_essences(ref: str, limit: int = 50) -> list[dict]:
     """版ごとの一覧。現在の版と違う抽出には stale を付け、各件に最新のレビューの状態を付ける。"""
     shard, doc_id = documents.parse_ref(ref)

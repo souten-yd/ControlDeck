@@ -8,6 +8,8 @@ import { useAuth, useToasts } from "../../stores";
 import type { Biblio } from "../../api/patents";
 import { BiblioBlock } from "./BiblioBlock";
 import { EssenceSection } from "./EssenceSection";
+import { KnowledgeMap } from "./KnowledgeMap";
+import { LinkSection } from "./LinkSection";
 
 const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 const PREVIEW_CHARS = 4000;
@@ -99,6 +101,8 @@ export function DocumentSheet({ docRef, onClose }: { docRef: string; onClose: ()
             )}
           </section>
           <EssenceSection key={ref} docRef={ref} aiUse={doc.ai_use} />
+          <KnowledgeMap docRef={ref} onOpen={open} />
+          <LinkSection docRef={ref} onOpen={open} />
           <section>
             <h3 className="mb-2 text-xs font-semibold text-zinc-500">本文</h3>
             {doc.text ? (

@@ -3,6 +3,7 @@
  *  権限のある利用者が承認・却下・差し戻し（メモは任意）で確かめる。レビューは追記だけなので、
  *  前回のレビュー（誰がいつどうした）は折りたたみで見られる（API が返すのは最新の 1 件だけ）。
  *  原文の版が変わった行は stale の印を出し、前の承認は効かないことを明示する。
+ *  K3: 承認済みの知識は「別の文献の知識と結ぶ」（技術仮説のリンク）の元になれる。
  *  手本: DocumentSheet の「AI の分析」（節の形・権限の出し分け）と ClaimJudge（行ごとの確認・Job の見せ方）。 */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import { knowledgeApi, ESSENCE_DECISION_LABEL, type EssenceItem, type EssenceRow
 import { primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { useAuth, useToasts } from "../../stores";
 import { JobProgress } from "./JobProgress";
+import { LinkMaker } from "./LinkMaker";
 
 /** 行（1 回の抽出）の状態。succeeded は内容があるので一覧側で扱う。 */
 const ROW_STATUS_LABEL: Record<string, string> = {
@@ -41,7 +43,12 @@ export function EssenceSection({ docRef, aiUse }: { docRef: string; aiUse: strin
   });
   const rows = list.data?.essences ?? [];
   const kinds = list.data?.kinds ?? {};
-  const refresh = () => qc.invalidateQueries({ queryKey: ["knowledge-essences", docRef] });
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["knowledge-essences", docRef] });
+    // 承認の変更で、リンクの失効（K3）と知識マップにも反映させたいので一緒に読み直す
+    qc.invalidateQueries({ queryKey: ["knowledge-links", docRef] });
+    qc.invalidateQueries({ queryKey: ["knowledge-map", docRef] });
+  };
   const start = useMutation({
     mutationFn: () => knowledgeApi.extractEssences(docRef),
     onSuccess: ({ job_id }) => {
@@ -98,15 +105,15 @@ export function EssenceSection({ docRef, aiUse }: { docRef: string; aiUse: strin
           />
         )}
         {rows.map((row) => (
-          <RowBlock key={row.id} row={row} kinds={kinds} editable={editable} onChanged={refresh} />
+          <RowBlock key={row.id} row={row} docRef={docRef} kinds={kinds} editable={editable} onChanged={refresh} />
         ))}
       </div>
     </section>
   );
 }
 
-function RowBlock({ row, kinds, editable, onChanged }: {
-  row: EssenceRow; kinds: Record<string, string>; editable: boolean; onChanged: () => void;
+function RowBlock({ row, docRef, kinds, editable, onChanged }: {
+  row: EssenceRow; docRef: string; kinds: Record<string, string>; editable: boolean; onChanged: () => void;
 }) {
   // 種類（課題・原因・…・応用）ごとにまとめる。kinds の並び（API の返り順）に従う
   const groups = Object.entries(kinds)
@@ -139,7 +146,8 @@ function RowBlock({ row, kinds, editable, onChanged }: {
             </p>
             <ul className="mt-1.5 space-y-2">
               {g.entries.map(({ item, index }) => (
-                <ItemCard key={index} row={row} item={item} index={index} editable={editable} onChanged={onChanged} />
+                <ItemCard key={index} row={row} item={item} index={index} docRef={docRef}
+                  editable={editable} onChanged={onChanged} />
               ))}
             </ul>
           </div>
@@ -149,11 +157,12 @@ function RowBlock({ row, kinds, editable, onChanged }: {
   );
 }
 
-function ItemCard({ row, item, index, editable, onChanged }: {
-  row: EssenceRow; item: EssenceItem; index: number; editable: boolean; onChanged: () => void;
+function ItemCard({ row, item, index, docRef, editable, onChanged }: {
+  row: EssenceRow; item: EssenceItem; index: number; docRef: string; editable: boolean; onChanged: () => void;
 }) {
   const show = useToasts((s) => s.show);
   const [note, setNote] = useState("");
+  const [linking, setLinking] = useState(false);
   const review = useMutation({
     mutationFn: (decision: string) => knowledgeApi.reviewEssence(`${row.shard}:${row.id}`, index, decision, note.trim()),
     onSuccess: () => { setNote(""); onChanged(); },
@@ -205,6 +214,16 @@ function ItemCard({ row, item, index, editable, onChanged }: {
       )}
       {editable && row.stale && (
         <p className="mt-1 text-xs text-zinc-500">原文が変わっているためレビューできません。新しい版でもう一度抽出してください。</p>
+      )}
+      {editable && !row.stale && item.review_status === "approved" && (
+        <div className="mt-2">
+          {linking ? (
+            <LinkMaker sourceEssenceRef={`${row.shard}:${row.id}`} sourceItem={index} excludeDocRef={docRef}
+              essenceLabel={item.summary} onDone={() => { setLinking(false); onChanged(); }} />
+          ) : (
+            <button className={secondaryButtonClass} onClick={() => setLinking(true)}>別の文献の知識と結ぶ</button>
+          )}
+        </div>
       )}
     </li>
   );
