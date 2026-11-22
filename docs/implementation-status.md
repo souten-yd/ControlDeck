@@ -6,6 +6,13 @@
 - `workspaces.suggest_title`: 差分の起点（`change_base`）から head までの、自動保存・マージ以外のコミットの件名（新しいもの）→ 自動保存に記録された会話の題 → 「作業場 <名前> からの変更」の順。1 行に畳んで 120 字。`changes` の `suggested_title` で画面へ。
 - 取り込みの確認（本体の PR）に「PR の題」の欄。候補が入っていて書き換えられる。
 - テスト: `test_dev_workspace_adopt.py`（自動保存を飛ばす・会話の題・既定）、E2E `assistant-dev-workspace-result.spec.ts`。
+## 2026-11-23 作業場の関門を信頼できる版のコードで動かす（U21）
+
+- 前は本体の作業場の関門（dev_check）を箱の中のコピーで動かしていたので、箱の AI が関門の仕組みそのものを書き換えて「合格」にできた（守りはマージの L2 の警告だけ）。
+- `workspaces.trusted_gate_code()`: ホストの本体の `origin/main` から `backend/app` だけを `git archive` で取り出し（`data/gate-code/<sha>`、新しい 3 版を残す）、関門の実行に読み取り専用で見せる。`python -s -P` で箱の backend と HOME の user site を import に入れない。調べる対象は `CONTROL_DECK_DEV_CHECK_REPO`（箱の作業ツリー）。
+- 作業場のテスト・ビルドは作業場のもの（子へは関門の PYTHONPATH を渡さない）。テストの書き換えは、これまでどおり L2 の守る場所の警告が見る。
+- 手元で、取り出した版から作業ツリーの差分を調べられることを確かめた。実際の箱（podman）での通しは未。
+- テスト: `test_dev_workspace_adopt.py`（読み取り専用・環境・取り出し）、`test_dev_check.py`（子の環境）。
 
 ## 2026-11-23 お休み中は緊急の警報も送らない（既定）
 

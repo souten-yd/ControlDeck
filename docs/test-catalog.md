@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 228 ファイル、2146 テスト（目的の未記入 93 ファイル）
+- backend: 228 ファイル、2149 テスト（目的の未記入 93 ファイル）
 - E2E: 119 spec、244 テスト
 
 ## backend（backend/tests）
@@ -760,6 +760,7 @@
 - `test_alembic_needs_exactly_one_head`
 - `test_report_lists_failures_and_the_verdict`
 - `test_gather_diff_sees_changes_added_lines_and_untracked_files`
+- `test_clean_env_does_not_pass_the_trusted_gate_path_to_tests` — U21: 関門を信頼できる版で動かすときの PYTHONPATH を子（作業場の pytest）へ渡さない。渡すと作業場のテストが
 
 ### backend/tests/test_dev_sandbox.py
 
@@ -826,6 +827,8 @@
 - `test_api_controldeck_adopt_needs_settings_manage`
 - `test_suggested_title_skips_autosaves_and_falls_back_to_the_conversation` — U18: PR の題に「作業途中の保存 #N」を使わない。名前の付いたコミットが無ければ、自動保存に記録された会話の題。
 - `test_suggested_title_without_conversation_uses_workspace_name`
+- `test_check_runs_the_trusted_gate_code_not_the_boxs_copy` — U21: 本体の作業場の関門は、箱のコピーの dev_check ではなく、ホストの main から取り出した版（読み取り専用）で動く。
+- `test_trusted_gate_code_is_extracted_from_host_main` — 取り出すのはホストの本体の origin/main の backend/app だけ。同じ版は作り直さず、古い版は 3 つまで。
 
 ### backend/tests/test_dev_workspace_merge.py
 

@@ -136,3 +136,12 @@ def test_gather_diff_sees_changes_added_lines_and_untracked_files(tmp_path):
     diff = dc.gather_diff(base, tmp_path)
     assert diff.changed == ["a.py", "new.py"] and diff.added_files == ["new.py"]
     assert diff.added_lines["a.py"] == {2: "y = 2"} and diff.added_lines["new.py"] == {1: "z = 3"}
+
+
+def test_clean_env_does_not_pass_the_trusted_gate_path_to_tests(monkeypatch):
+    """U21: 関門を信頼できる版で動かすときの PYTHONPATH を子（作業場の pytest）へ渡さない。渡すと作業場のテストが
+    関門側の app を読み、作業場の変更を試さない。"""
+    monkeypatch.setenv("PYTHONPATH", "/gate/backend")
+    monkeypatch.setenv("CONTROL_DECK_DEV_CHECK_REPO", "/box/repo")
+    env = dc._clean_env()
+    assert "PYTHONPATH" not in env and "CONTROL_DECK_DEV_CHECK_REPO" not in env

@@ -364,3 +364,41 @@ def test_suggested_title_without_conversation_uses_workspace_name(repo):  # noqa
     git(box.repo, "commit", "-q", "--allow-empty", "-m", "作業途中の保存 #1（起動時の立て直し）")
     workspaces.import_head(box)
     assert workspaces.suggest_title(sandbox.load(box.name)) == f"作業場 {box.name} からの変更"
+
+def test_check_runs_the_trusted_gate_code_not_the_boxs_copy(box, tmp_path):
+    """U21: 本体の作業場の関門は、箱のコピーの dev_check ではなく、ホストの main から取り出した版（読み取り専用）で動く。
+    根拠: 箱の AI が dev_check を書き換えれば「合格」にできた（2026-11-22 の評価。L2 の警告だけが守りだった）。"""
+    from tests.test_dev_workspaces import BOX_CHECK
+
+    run_check(box.name)
+    last = BOX_CHECK["last"]
+    gate = tmp_path / "gate"
+    assert last["readonly"] == [gate], "関門のコードは箱が書けない読み取り専用で見せる"
+    assert last["env"] == {"PYTHONPATH": str(gate / "backend"), "CONTROL_DECK_DEV_CHECK_REPO": str(box.repo)}
+    assert " -s -P -m app.maintenance.dev_check" in last["command"][2], "箱の backend と user site を import に入れない"
+
+
+def test_trusted_gate_code_is_extracted_from_host_main(tmp_path, monkeypatch):
+    """取り出すのはホストの本体の origin/main の backend/app だけ。同じ版は作り直さず、古い版は 3 つまで。"""
+    source = tmp_path / "host"
+    (source / "backend" / "app" / "maintenance").mkdir(parents=True)
+    (source / "backend" / "app" / "maintenance" / "dev_check.py").write_text("TRUSTED = 1\n")
+    (source / "frontend").mkdir()
+    (source / "frontend" / "x.ts").write_text("x")
+    git(source, "init", "-q", "-b", "main")
+    git(source, "add", "-A")
+    git(source, "commit", "-q", "-m", "init")
+    git(source, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(workspaces, "controldeck_repo", lambda: source)
+    monkeypatch.setattr(sandbox, "_data_dir", lambda: tmp_path / "data")
+    (source / "backend" / "app" / "maintenance" / "dev_check.py").write_text("TAMPERED = 1\n")   # 作業ツリーの変更は使わない
+    first = workspaces.trusted_gate_code()
+    assert first.name == git(source, "rev-parse", "HEAD")
+    assert (first / "backend/app/maintenance/dev_check.py").read_text() == "TRUSTED = 1\n"
+    assert not (first / "frontend").exists()
+    assert workspaces.trusted_gate_code() == first
+    for i in range(4):
+        git(source, "commit", "-q", "--allow-empty", "-m", f"c{i}")
+        git(source, "update-ref", "refs/remotes/origin/main", "HEAD")
+        workspaces.trusted_gate_code()
+    assert len([d for d in (tmp_path / "data" / "gate-code").iterdir()]) == workspaces.GATE_CODE_KEEP
