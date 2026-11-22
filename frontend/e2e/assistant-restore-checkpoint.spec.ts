@@ -39,6 +39,7 @@ test("restore the code to the checkpoint of an autosaved turn", async ({ page })
   const dialog = page.getByRole("alertdialog", { name: "この時点に戻す" });
   await expect(dialog.getByText("両方戻す")).toBeVisible();
   await expect(dialog.getByText("戻す前の状態も保存されるので、あとで戻せます。")).toBeVisible();
+  await page.screenshot({ path: "test-results/assistant-restore-checkpoint-320.png" });
   await dialog.getByText("コードだけ戻す").click();
   await dialog.getByRole("button", { name: "戻す", exact: true }).click();
   await expect.poll(() => calls).toEqual([`restore:${SHA}`]);
