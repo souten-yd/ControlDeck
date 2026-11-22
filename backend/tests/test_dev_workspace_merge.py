@@ -167,11 +167,13 @@ def test_l2_change_needs_the_confirmation_phrase_and_lists_guarded_files(box, gh
     preview = workspaces.merge_preview(box.name, "admin")
     assert preview["tier"] == "L2" and preview["phrase"] == PHRASE
     assert [g["path"] for g in preview["guarded"]] == ["backend/app/security/deps.py"]
+    # L2 はボタンの印（acknowledge_l2）で承認する（2026-11-23 利用者「文言を入力させずにボタンタップで」）。
+    # 印も古い確認の文言も無いマージは断る
     for wrong in ("", "了解", PHRASE + "!"):
         with pytest.raises(workspaces.AdoptRefused, match="L2"):
             workspaces.merge(box.name, "admin", confirm_phrase=wrong)
     assert gh["merges"] == []
-    result = workspaces.merge(box.name, "admin", confirm_phrase=f" {PHRASE} ")
+    result = workspaces.merge(box.name, "admin", acknowledge_l2=True)
     assert result["tier"] == "L2" and result["guarded"] == ["backend/app/security/deps.py"] and len(gh["merges"]) == 1
 
 
@@ -201,3 +203,25 @@ def test_api_merge_needs_settings_manage_confirm_and_is_audited(box, api, gh, mo
     assert len(rows) == 1
     meta = json.loads(rows[0].metadata_json) if isinstance(rows[0].metadata_json, str) else rows[0].metadata_json
     assert meta["pr_url"].endswith("/pull/7") and meta["tier"] == "L1" and meta["guarded"] == []
+
+
+def test_tier_is_judged_on_the_pr_diff_from_the_current_main(box, gh, monkeypatch):  # noqa: F811
+    """区分（L0/L1/L2）は、PR が実際に入れる差分（今の main との共通の祖先＝change_base から）で決める。
+    根拠: 2026-11-22 の通しの U20。作業場が main を取り込んだ後、元の revision から見ていたので、他の PR の
+    変更（AGENTS.md・router.py など）まで数え、画面だけの PR が「L2・40 ファイル」と出た。"""
+    from app.maintenance import change_policy
+
+    adopted(box)
+    seen = {}
+    base_of_main = str(box.meta.get("revision"))   # 本物の commit（共通の祖先の代わり）
+    asked = []
+    monkeypatch.setattr(workspaces, "change_base", lambda b, head: asked.append(head) or base_of_main)
+
+    def classify(repo, base, head, project):
+        seen["base"] = base
+        return {"tier": "L1", "guarded": [], "files": [{"path": "frontend/src/x.tsx"}]}
+
+    monkeypatch.setattr(change_policy, "classify", classify)
+    facts = workspaces._merge_facts(box)
+    assert asked and seen["base"] == base_of_main, "区分は change_base（今の main との共通の祖先）から"
+    assert facts["tier"] == "L1" and facts["file_count"] == 1

@@ -731,8 +731,10 @@ def _merge_facts(box: Sandbox) -> dict:
         if not tree or tree != (saved or {}).get("tree"):
             problems.append("PR の内容が、関門で確かめた内容と違います。関門を流し直してください")
         try:
-            # 区分の判定は元の revision から見る（main の取り込み分まで含む広い側。関門は狭めない）
-            base = str(box.meta.get("revision") or "")
+            # 区分の判定は、PR が実際に入れる差分（今の main との共通の祖先から）で見る。元の revision から見ると、
+            # 作業場が取り込んだ main の分（他の PR の変更）まで数え、画面だけの PR が「L2・40 ファイル」と出た
+            # （2026-11-22 の通しの U20。結果のカードの U16 と同じ change_base を使う）
+            base = change_base(box, pr_head)
             _host_git("cat-file", "-e", f"{base}^{{commit}}", cwd=exp)  # 箱の外の export.git での確認（ここも箱の中では動かさない）
             report = change_policy.classify(exp, base, pr_head, "controldeck")
             tier, guarded, file_count = report["tier"], report["guarded"], len(report["files"])
@@ -752,14 +754,16 @@ def merge_preview(name: str, username: str) -> dict:
     return facts
 
 
-def merge(name: str, username: str, *, confirm_phrase: str = "") -> dict:
+def merge(name: str, username: str, *, acknowledge_l2: bool = False, confirm_phrase: str = "") -> dict:
     """取り込んだ PR を squash でマージする（前提を全部満たすときだけ）。Release はしない。"""
     box = get(name, username)
     facts = _merge_facts(box)
     if facts["problems"]:
         raise AdoptRefused("マージできません: " + " / ".join(facts["problems"]))
-    if facts["tier"] == "L2" and confirm_phrase.strip() != MERGE_L2_PHRASE:
-        raise AdoptRefused(f"この変更は L2 です。確認の文言「{MERGE_L2_PHRASE}」を入力してください")
+    # L2 は画面の「L2 を確かめてマージ」のボタン（acknowledge_l2）で承認する（2026-11-23 利用者「文言を入力させずに
+    # ボタンタップで承認できるように」）。印の無い L2 のマージは断る。古い確認の文言も受ける（互換）。
+    if facts["tier"] == "L2" and not (acknowledge_l2 or confirm_phrase.strip() == MERGE_L2_PHRASE):
+        raise AdoptRefused("この変更は L2 です。内容を確かめて「L2 を確かめてマージ」を押してください")
     pr = facts["pr"]
     # 確認した head のままのときだけマージする（確認からマージの間に PR へ commit が足されても入れない）
     _gh("pr", "merge", str(pr["number"]), "-R", pr["slug"], "--squash", "--delete-branch", "--match-head-commit", facts["_head"])

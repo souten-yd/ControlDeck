@@ -463,7 +463,8 @@ async def workspace_diff(name: str, path: str = "", user: User = Depends(require
 
 class MergeBody(BaseModel):
     confirm: bool = False
-    l2_phrase: str = Field(default="", max_length=60)
+    acknowledge_l2: bool = False                      # L2 を確かめてマージのボタン（2026-11-23）
+    l2_phrase: str = Field(default="", max_length=60)  # 古い確認の文言（互換）
 
 
 @router.get("/workspaces/{name}/merge")
@@ -496,7 +497,8 @@ async def workspace_merge(
         raise HTTPException(status_code=422, detail="マージするには確認（confirm）が必要です")
     _owned_box(name, user)
     try:
-        result = await asyncio.to_thread(workspaces.merge, name, user.username, confirm_phrase=body.l2_phrase)
+        result = await asyncio.to_thread(workspaces.merge, name, user.username,
+                                   acknowledge_l2=body.acknowledge_l2, confirm_phrase=body.l2_phrase)
     except workspaces.AdoptRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except workspaces.SandboxError as exc:

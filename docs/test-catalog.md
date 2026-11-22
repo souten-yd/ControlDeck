@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 226 ファイル、2118 テスト（目的の未記入 93 ファイル）
+- backend: 226 ファイル、2119 テスト（目的の未記入 93 ファイル）
 - E2E: 112 spec、229 テスト
 
 ## backend（backend/tests）
@@ -832,6 +832,7 @@
 - `test_merge_without_pr_or_for_codedev_is_refused`
 - `test_l2_change_needs_the_confirmation_phrase_and_lists_guarded_files`
 - `test_api_merge_needs_settings_manage_confirm_and_is_audited`
+- `test_tier_is_judged_on_the_pr_diff_from_the_current_main` — 区分（L0/L1/L2）は、PR が実際に入れる差分（今の main との共通の祖先＝change_base から）で決める。
 
 ### backend/tests/test_dev_workspace_persist.py
 
@@ -3402,7 +3403,7 @@
 
 - workspace diff: file list then line diff, binary and truncation (${width}px)
 - workspace merge: L1 confirms then merges without a phrase (${width}px)
-- workspace merge: L2 shows a strong warning and needs the phrase (${width}px)
+- workspace merge: L2 shows a strong warning and is approved by a tap (${width}px)
 - workspace merge: unmet preconditions show the reason and cannot be pressed (dark, 320px)
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts

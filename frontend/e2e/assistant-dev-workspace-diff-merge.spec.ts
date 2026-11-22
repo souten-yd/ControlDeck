@@ -8,7 +8,6 @@ import { establishSession, hasSession } from "./support/session";
 const NAME = "ws-20261122-2";
 const REPO = `/data/sandboxes/${NAME}/work/repo`;
 const PR = "https://github.com/example/repo/pull/7";
-const PHRASE = "L2 を理解した";
 const LONG = "const veryLongLine = \"" + "x".repeat(160) + "\";";
 const DIFF = [
   "diff --git a/backend/app/x.py b/backend/app/x.py", "index 1..2 100644", "--- a/backend/app/x.py", "+++ b/backend/app/x.py",
@@ -56,7 +55,7 @@ async function mock(page: Page, opts: { tier: "L1" | "L2"; problems?: string[] }
     }
     const problems = opts.problems ?? [];
     return route.fulfill({ json: {
-      ready: problems.length === 0, problems, tier: opts.tier, phrase: opts.tier === "L2" ? PHRASE : "", file_count: 3,
+      ready: problems.length === 0, problems, tier: opts.tier, phrase: "", file_count: 3,
       guarded: opts.tier === "L2" ? [{ path: "backend/app/security/deps.py", reasons: ["認証・権限"] }] : [],
       check: { passed: true, at: 1 }, merged: null,
       pr: { number: 7, url: PR, state: problems.length ? "CLOSED" : "OPEN", mergeable: "MERGEABLE", head: "def7654321" },
@@ -128,12 +127,12 @@ for (const width of [320, 1280]) {
     await page.screenshot({ path: `test-results/workspace-merge-${width}-l1.png` });
     await dialog.getByRole("button", { name: "マージする" }).click();
     await expect(dialog.getByTestId("workspace-merge-done")).toContainText("次の Release で本番に入ります");
-    expect(state.merges).toEqual([{ confirm: true, l2_phrase: "" }]);
+    expect(state.merges).toEqual([{ confirm: true, acknowledge_l2: false }]);
     await noOverflow(page);
     await page.screenshot({ path: `test-results/workspace-merge-${width}-done.png` });
   });
 
-  test(`workspace merge: L2 shows a strong warning and needs the phrase (${width}px)`, async ({ page, context }) => {
+  test(`workspace merge: L2 shows a strong warning and is approved by a tap (${width}px)`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
     await page.setViewportSize({ width, height: 800 });
     await establishSession(page, context);
@@ -144,16 +143,15 @@ for (const width of [320, 1280]) {
     const l2 = dialog.getByTestId("workspace-merge-l2");
     await expect(l2).toContainText("この変更は L2（認証・権限・秘密・外部送信・移行・更新と隔離の仕組み）に当たります");
     await expect(l2).toContainText("backend/app/security/deps.py");
-    const go = dialog.getByRole("button", { name: "マージする" });
-    await expect(go).toBeDisabled();
-    await dialog.getByTestId("workspace-merge-phrase").fill("了解");
-    await expect(go).toBeDisabled();
-    await page.screenshot({ path: `test-results/workspace-merge-${width}-l2.png` });
-    await dialog.getByTestId("workspace-merge-phrase").fill(PHRASE);
+    // 文言の入力は無く、「L2 を確かめてマージ」を押すだけで承認する（2026-11-23 利用者「ボタンタップで承認」）
+    await expect(dialog.getByTestId("workspace-merge-phrase")).toHaveCount(0);
+    const go = dialog.getByRole("button", { name: "L2 を確かめてマージ" });
     await expect(go).toBeEnabled();
+    expect((await go.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await page.screenshot({ path: `test-results/workspace-merge-${width}-l2.png` });
     await go.click();
     await expect(dialog.getByTestId("workspace-merge-done")).toBeVisible();
-    expect(state.merges).toEqual([{ confirm: true, l2_phrase: PHRASE }]);
+    expect(state.merges).toEqual([{ confirm: true, acknowledge_l2: true }]);
     await noOverflow(page);
   });
 }
