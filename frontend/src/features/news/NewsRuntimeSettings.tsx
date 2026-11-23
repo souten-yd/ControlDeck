@@ -132,11 +132,15 @@ export function NewsRuntimeCards() {
           {(draft.llm.digest_focus ?? "").length > 0 && <span className="tabular-nums"> {draft.llm.digest_focus.length} / 1000 文字</span>}
         </p>
         <div className="space-y-2">
-          <Toggle label="英語の記事の概要を日本語に訳す" hint="英語の記事の抜粋を日本語の 1〜2 文にして、一覧・カードに出します（題は訳しません。元の抜粋は「訳」を開くと見られます）。新しく取った記事に 20 件ずつ訳します。モデルは下の一言要約のモデルです。" value={draft.llm.translate_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, translate_enabled: on } })} />
-          {draft.llm.translate_enabled && !draft.llm.gist_enabled && <>
-            <label className={label}>訳のモデル（一言要約と共通）
-              <ModelSelect name="訳のモデル" value={draft.llm.gist_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, gist_model: v } })} /></label>
+          <Toggle label="記事の下ごしらえ（日本語の概要・画像の描写・話題の語）" hint="新しく取った記事を 20 件ずつ 1 回の呼び出しで、日本語の 1〜2 文の概要（英語なら訳）・画像生成のための英語の描写・話題の語にします（題は訳しません）。変換が終わるまでは元の題と抜粋を出します。モデルは下の一言要約のモデルです。" value={draft.llm.prep_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, prep_enabled: on } })} />
+          {draft.llm.prep_enabled && <>
+            <label className={label}>一言要約・下ごしらえのモデル
+              <ModelSelect name="下ごしらえのモデル" value={draft.llm.gist_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, gist_model: v } })} /></label>
             <ModelNote model={draft.llm.gist_model} options={options.data} />
+            <label className={label}>1 回の取得で下ごしらえする上限（件。20 件で 1 回の呼び出し）
+              <input type="number" min={1} max={200} aria-label="下ごしらえの上限" data-testid="prep-max" value={draft.llm.prep_max_per_run ?? 100} disabled={dis}
+                onChange={(e) => set({ llm: { ...draft.llm, prep_max_per_run: Math.max(1, Math.min(200, Number(e.target.value) || 1)) } })} className={`${field} mt-1 w-28`} /></label>
+            <p className="text-[11px] text-zinc-500 tabular-nums" data-testid="prep-calls">今日の下ごしらえの呼び出し {data?.prep_calls_today ?? 0} 回（OpenRouter の無料のモデルは 1 日 50 回までが目安です）</p>
           </>}
         </div>
         <div className="space-y-2">

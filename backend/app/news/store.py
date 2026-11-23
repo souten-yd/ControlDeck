@@ -104,7 +104,7 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
             if row.gist:      # LLM が付けた話題の語は、取り直しで消さない
                 topics = json.dumps(list(dict.fromkeys(topics_of(row) + json.loads(topics))), ensure_ascii=False)
             if row.summary != data["summary"]:
-                row.summary_ja = ""      # 抜粋が変わったら、古い訳は捨てて訳し直す
+                row.summary_ja, row.prep_tries = "", 0      # 抜粋が変わったら、古い訳は捨てて下ごしらえし直す
             row.title, row.summary, row.topics, row.fetched_at = data["title"], data["summary"], topics, now
             row.image_url = data.get("image_url") or row.image_url
             updated += 1

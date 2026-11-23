@@ -5,7 +5,9 @@
 - 対象は **新しく入った記事だけ**・1 回の取得で最大 MAX_PER_RUN 件・同時 CONCURRENCY・1 件 PER_ITEM_SECONDS 秒・先頭 READ_BYTES だけ読む。
 - 通信は web_collector.egress.guarded_client（私的・内部のアドレスは断る。リダイレクトは各段を検査して追う）。http/https だけ。
 - 取れなかった記事にも image_tried の印を付け、再試行しない。保存するのは画像の URL だけ（画像そのものはブラウザが読む）。
-- リリース（GitHub の汎用の画像）・出来事・Google ニュースの転送 URL は対象にしない。
+- リリース（GitHub の汎用の画像）・出来事は対象にしない。Google ニュースの転送 URL は gnews.resolve で元の記事の URL を解いてから取る（解けなければ諦める。記事の url は変えない）。
+- 対象は新着と、画像を試していない古い記事（新しい順に最大 BACKFILL_PER_RUN 件。2026-11-24 利用者の本番: 既存 860 件が image_tried=0 のまま）。1 回で合わせて MAX_PER_RUN 件まで。
+- サイトのロゴを画像とみなさない: 同じ出どころ（ドメイン）の 2 件以上の別の記事に同じ画像 URL が付いていたら、その URL はロゴとして外す（画像生成へ回る。既に付いた分も同じ）。
 """
 from __future__ import annotations
 
@@ -14,21 +16,24 @@ import logging
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.news import db as news_db
+from app.news import gnews
 from app.news.db import NewsItem
 from app.news.sources import safe_url
 
 logger = logging.getLogger("control_deck.news.images")
 
 MAX_PER_RUN = 60
+BACKFILL_PER_RUN = 40
+LOGO_MIN_ARTICLES = 2
+GENERATED_PREFIX = "/api/v1/news/images/"
 CONCURRENCY = 4
 PER_ITEM_SECONDS = 8
 READ_BYTES = 256 * 1024
 MAX_REDIRECTS = 3
 SKIP_KINDS = ("release", "event")
-SKIP_HOSTS = ("news.google.com",)
 UA = "Mozilla/5.0 (compatible; ControlDeckNews/1.0)"
 
 _IMAGE_META = ("og:image", "og:image:secure_url", "og:image:url", "twitter:image", "twitter:image:src")
@@ -74,7 +79,7 @@ async def fetch_page_image(url: str) -> str | None:
     from app.web_collector import egress
 
     parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname or parts.hostname in SKIP_HOSTS:
+    if parts.scheme not in ("http", "https") or not parts.hostname or gnews.is_google_news(url):
         return None
     current = url
     try:
@@ -104,11 +109,17 @@ async def fetch_page_image(url: str) -> str | None:
 
 
 def _candidates(ids: list[int]) -> list[tuple[int, str]]:
+    """新着（ids）を先に、残りの枠で、画像を試していない古い記事を新しい順に（最大 BACKFILL_PER_RUN 件）。"""
+    base = (NewsItem.image_url.is_(None), NewsItem.image_tried.is_(False), NewsItem.kind.not_in(SKIP_KINDS))
     with news_db.session() as db:
-        rows = db.execute(select(NewsItem.id, NewsItem.url).where(
-            NewsItem.id.in_(ids or [0]), NewsItem.image_url.is_(None), NewsItem.image_tried.is_(False),
-            NewsItem.kind.not_in(SKIP_KINDS)).order_by(NewsItem.published_at.desc()).limit(MAX_PER_RUN)).all()
-        return [(i, u) for i, u in rows]
+        fresh = db.execute(select(NewsItem.id, NewsItem.url).where(NewsItem.id.in_(ids or [0]), *base)
+                           .order_by(NewsItem.published_at.desc()).limit(MAX_PER_RUN)).all()
+        room = min(BACKFILL_PER_RUN, MAX_PER_RUN - len(fresh))
+        old: list = []
+        if room > 0:
+            old = db.execute(select(NewsItem.id, NewsItem.url).where(NewsItem.id.not_in(ids or [0]), *base)
+                             .order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(room)).all()
+        return [(i, u) for i, u in [*fresh, *old]]
 
 
 def _store(results: dict[int, str | None], tried: list[int]) -> None:
@@ -121,21 +132,49 @@ def _store(results: dict[int, str | None], tried: list[int]) -> None:
         db.commit()
 
 
+def _domain(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def drop_logos() -> int:
+    """同じ出どころ（ドメイン）の 2 件以上の別の記事に付いた同じ画像 URL を、記事の画像から外す（サイトのロゴ）。外した件数。
+    生成画像・リリース・出来事・Google ニュースの記事（出どころが転送のドメイン）は見ない。image_tried は True のまま（取り直さない）。"""
+    with news_db.session() as db:
+        shared = db.scalars(select(NewsItem.image_url).where(NewsItem.image_url.is_not(None), NewsItem.kind.not_in(SKIP_KINDS))
+                            .group_by(NewsItem.image_url).having(func.count(NewsItem.id) >= LOGO_MIN_ARTICLES)).all()
+        shared = [u for u in shared if not u.startswith(GENERATED_PREFIX)]
+        groups: dict[tuple[str, str], list[int]] = {}
+        for i in range(0, len(shared), 400):
+            for item_id, url, image in db.execute(select(NewsItem.id, NewsItem.url, NewsItem.image_url).where(
+                    NewsItem.image_url.in_(shared[i:i + 400]), NewsItem.kind.not_in(SKIP_KINDS))):
+                if not gnews.is_google_news(url):
+                    groups.setdefault((_domain(url), image), []).append(item_id)
+        drop = [item_id for ids in groups.values() if len(ids) >= LOGO_MIN_ARTICLES for item_id in ids]
+        for i in range(0, len(drop), 400):
+            db.execute(update(NewsItem).where(NewsItem.id.in_(drop[i:i + 400])).values(image_url=None, image_tried=True))
+        db.commit()
+        return len(drop)
+
+
 async def fill(new_ids: list[int]) -> dict:
-    """新しく入った記事（new_ids）のうち画像の無いものへ、ページの画像を付ける。{"tried": 件数, "found": 件数}。"""
+    """新しく入った記事（new_ids）と古い記事の画像の埋め合わせ。{"tried": 件数, "found": 件数, "logos": 外したロゴの数}。"""
     todo = await asyncio.to_thread(_candidates, new_ids)
-    if not todo:
-        return {"tried": 0, "found": 0}
     gate = asyncio.Semaphore(CONCURRENCY)
     results: dict[int, str | None] = {}
 
     async def one(item_id: int, url: str) -> None:
         async with gate:
             try:
-                results[item_id] = await asyncio.wait_for(fetch_page_image(url), PER_ITEM_SECONDS + 2)
+                target = url
+                if gnews.is_google_news(url):
+                    target = await asyncio.wait_for(gnews.resolve(url), PER_ITEM_SECONDS * 2 + 2)
+                results[item_id] = await asyncio.wait_for(fetch_page_image(target), PER_ITEM_SECONDS + 2) if target else None
             except Exception:  # noqa: BLE001
                 results[item_id] = None
 
     await asyncio.gather(*[one(i, u) for i, u in todo])
-    await asyncio.to_thread(_store, results, [i for i, _ in todo])
-    return {"tried": len(todo), "found": sum(1 for v in results.values() if v)}
+    if todo:
+        await asyncio.to_thread(_store, results, [i for i, _ in todo])
+    logos = await asyncio.to_thread(drop_logos)
+    return {"tried": len(todo), "found": sum(1 for v in results.values() if v), "logos": logos}

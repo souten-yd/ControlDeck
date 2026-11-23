@@ -41,8 +41,10 @@ def build(db: Session, user_id: int, now: datetime | None = None) -> dict:
     st = store.states(db, user_id, [r.id for r in rows])
     ranked = profile.rank(db, user_id, rows, st, now)
 
-    onair = _tag(ranked[:1], st, channels)
-    taken = {r.id for r, _ in ranked[:1]}
+    # ON AIR は、どれかのチャンネルに合う記事の中から選ぶ（合う記事が 1 件も無いときだけ、全体の 1 位）
+    top = next(((r, s) for r, s in ranked if profile.fits_channel(r, channels)), None) or (ranked[0] if ranked else None)
+    onair = _tag([top] if top else [], st, channels)
+    taken = {top[0].id} if top else set()
     buckets: dict[str, list[dict]] = {}
     for name, span in BUCKETS:
         edge = store.utc_naive(now - span)

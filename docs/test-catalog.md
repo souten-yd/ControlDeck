@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 242 ファイル、2382 テスト（目的の未記入 93 ファイル）
-- E2E: 129 spec、282 テスト
+- backend: 243 ファイル、2394 テスト（目的の未記入 93 ファイル）
+- E2E: 130 spec、284 テスト
 
 ## backend（backend/tests）
 
@@ -2100,6 +2100,9 @@
 - `test_fetch_page_image_refuses_private_addresses` — 実物の guarded_client を使う（私的・loopback の IP は接続前に断る。外へは出ない）。
 - `test_fill_only_new_items_without_image_and_never_retries`
 - `test_fill_is_capped_per_run`
+- `test_backfill_old_items_up_to_40_within_the_run_cap` — 目的: 取得のたびに、画像を試していない古い記事を新しい順に最大 40 件、新着と合わせて 1 回 60 件の中で試すこと。
+- `test_site_logo_shared_by_two_articles_is_dropped_but_other_domains_kept` — 目的: 同じドメインの 2 件以上の別の記事に同じ画像 URL が付いていれば、その URL はロゴとして外す（既に付いた分も）。別のドメインの共有・1 件だけ・生成画像は残す。
+- `test_google_news_items_resolve_to_original_url_for_the_image` — 目的: Google ニュースの記事は転送を解いた元の URL からページの画像を取り、記事の url は置き換えないこと。解けなければ画像は付けない（画像生成へ）。
 - `test_upsert_reports_new_ids`
 - `test_own_repo_not_in_defaults_and_removed_once_from_saved_config`
 - `test_own_repo_items_hidden_from_list_home_channels_and_digest`
@@ -2110,6 +2113,17 @@
 - `test_changed_search_channels_detects_term_lang_and_new_channels`
 - `test_refresh_with_channel_ids_fetches_only_those_searches`
 - `test_home_items_pref_range`
+
+### backend/tests/test_news_prep_gnews_rank.py
+
+目的: 目的: ニュースの Google ニュースの転送の解き方（手順の単体。中身はモック）と、おすすめの順位（チャンネルに合う記事が上）と、画像生成が下ごしらえの描写を使うことの試験。外へ通信しない。 根拠: 2026-11-24 利用者「Google ニュースの記事はページの画像が 0 件」「ON AIR とホームの 1 位が Bored.com（HN のトップ）でチャンネルに合わない」「日本語の題の記事は決まり文句に落ち、3 件が同じ地球儀の絵になった」。
+
+- `test_gnews_legacy_id_is_decoded_offline_and_new_style_is_not`
+- `test_gnews_signature_body_and_response_parsing`
+- `test_gnews_resolve_new_style_does_two_requests_and_gives_up_on_failure`
+- `test_gnews_resolve_refuses_private_addresses_with_real_guard` — 実物の guarded_client を使う（Google の API が私的な IP を返しても、後段の取得で断る）。ここでは通信せず legacy の解きだけ確かめる。
+- `test_channel_fit_beats_a_newer_unrelated_article_in_ranking_and_onair` — 目的: おすすめの点でチャンネルに合う記事を強く上げ、合わない記事（HN のトップなど）は下げる（消さない）。ON AIR は合う記事から選ぶ。新着の並びは変えない。
+- `test_imagegen_prompt_uses_prep_description_over_fixed_phrase` — 目的: 下ごしらえの英語の描写があれば、決まり文句（地球儀）ではなくそれを絵のプロンプトにすること。
 
 ### backend/tests/test_news_rag_llm.py
 
@@ -2151,9 +2165,12 @@
 - `test_focus_matching_articles_are_ranked_first`
 - `test_broken_answers_fall_back_to_headlines` — 目的: 存在しない [n] だらけ・見出し無し・引用無し・傾向無し・空の返事は、見出しの一覧（fallback）に落ちること。
 - `test_focus_setting_is_validated_and_limited`
-- `test_english_detection`
-- `test_translation_batches_20_per_call_saves_and_presents` — 目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
-- `test_translation_without_egress_permission_does_nothing`
+- `test_prep_batches_20_per_call_saves_and_presents` — 目的: 下ごしらえは 20 件で 1 回の呼び出し。日本語の概要・画像の描写・話題の語を保存し、一覧は訳を出して元の抜粋も返すこと。呼び出し回数を数えること。切のときは呼ばない。
+- `test_prep_parse_rejects_broken_and_misnumbered_replies` — 目的: JSON が壊れていれば ValueError、番号が範囲外・整数でない項目は捨て、コードの囲み・配列の形も読み、英語だけの ja は使わないこと。
+- `test_prep_resends_only_missing_once_then_leaves_to_next_fetch` — 目的: 欠けた・合わない記事だけを同じ回の中で 1 回だけ送り直し、それでもだめな記事は試行を +1 して次の取得へ回す（3 回で諦める）こと。
+- `test_prep_respects_per_run_limit_and_unreadable_reply` — 目的: 1 回の取得の上限（既定 100 件 = 5 回）を超えて送らないこと。JSON が読めない返事は、記事を済みにしないこと。
+- `test_prep_without_egress_permission_does_nothing`
+- `test_prep_calls_shown_in_settings_and_day_rollover` — 目的: 設定の画面に「今日の下ごしらえの呼び出し n 回」を出す値があり、日付が変われば 0 に戻ること（無料のモデルの 1 日の上限 50 回に気づけるように）。
 - `test_digest_rejects_english_and_retries_once` — 目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
 - `test_news_llm_retries_when_busy_and_not_when_over_budget` — 目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
 - `test_digest_shows_headlines_while_the_llm_is_working` — 目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
@@ -4135,6 +4152,13 @@
 目的: 設定 → 表示の「メニューの表示」: メニュー（PC のサイドバー・携帯のドロワー）の項目を 1 つずつ隠せる。 隠した項目は「よく使う」からも消える。Settings は隠せない（隠すと戻れない）。選択は端末に残る。 Add-on の項目も同じ一覧から選べる（effective addons を差し替えて確かめる）。 根拠: 2026-11-23 利用者「設定で表示っていう項目があれば、そこの中にメインメニューの項目を任意に 表示、非表示の選択ができるようにしてほしい。新しく導入されたプラグインや今後導入される機能、今開発中の パテントなども含めて…汎用的に開発すること」。 */
 
 - メニューの項目を隠せる（${width}px）
+
+### frontend/e2e/news-prep.spec.ts
+
+目的: ニュース: 設定に「今日の下ごしらえの呼び出し n 回」と上限が出ること、ON AIR がチャンネルに合う記事であること。API は page.route で模擬する。 根拠: 2026-11-24 利用者「ある程度のまとまりを送って構造的に個別に返してもらう」（無料のモデルの 1 日の上限 50 回に気づけるように）、 本番で ON AIR とホームの 1 位が Bored.com（HN のトップ）でチャンネルに合わなかった。 撮影は test-results/news-prep-settings-{320,1280}.png・news-prep-onair-{320,1280}.png。 */
+
+- ニュース設定: 今日の下ごしらえの呼び出し回数と上限（${width}px）
+- ニュース: ON AIR はチャンネルに合う記事（${width}px）
 
 ### frontend/e2e/news-sources-images.spec.ts
 

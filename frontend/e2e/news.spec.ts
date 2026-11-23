@@ -143,7 +143,7 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
   // 2 段目: まとめ・設定（更新・LLM・RAG）・意味で探す
   const settings = {
     feed_refresh_minutes: 15, digest_daily: { enabled: true, time: "06:30" }, digest_weekly: { enabled: true, weekday: 0, time: "07:00" },
-    quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto", digest_focus: "", translate_enabled: true },
+    quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto", digest_focus: "", prep_enabled: true, prep_max_per_run: 100 },
     rag: { enabled: true, fulltext: false, on_prune: "keep" },
     imagegen: { enabled: false, tier: "small", threads: 8, max_per_run: 30 },
   };
@@ -685,10 +685,10 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await page.goto("/settings/news");
     await expect(page.getByTestId("digest-focus-note")).toContainText("外部のモデルを選ぶと、この文も送られます");
     await page.getByTestId("digest-focus").fill("AI 技術の最新動向\nAI モデルの最新動向");
-    await page.getByRole("checkbox", { name: /英語の記事の概要を日本語に訳す/ }).uncheck();
+    await page.getByRole("checkbox", { name: /記事の下ごしらえ/ }).uncheck();
     await page.getByRole("button", { name: "保存", exact: true }).first().click();
     await expect.poll(() => savedSettings.length).toBe(1);
-    expect(savedSettings[0]).toMatchObject({ llm: { digest_focus: "AI 技術の最新動向\nAI モデルの最新動向", translate_enabled: false } });
+    expect(savedSettings[0]).toMatchObject({ llm: { digest_focus: "AI 技術の最新動向\nAI モデルの最新動向", prep_enabled: false } });
     expect(await noOverflow(page)).toBe(true);
     await shot(page, `test-results/news-digest-focus-settings-${width}.png`);
   });

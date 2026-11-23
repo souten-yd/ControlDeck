@@ -109,7 +109,7 @@ def test_fill_only_new_items_without_image_and_never_retries(monkeypatch):
     b = add("https://a.test/2", title="取れない")
     c = add("https://a.test/3", title="すでに画像あり", image="https://i.test/c.png")
     d = add("https://a.test/4", title="リリース", kind="release", source_key="github:x/y")
-    old = add("https://a.test/5", title="新着でない")
+    old = add("https://a.test/5", title="新着でない", published=NOW - timedelta(days=1))
     calls: list[str] = []
 
     async def fake(url):
@@ -118,13 +118,13 @@ def test_fill_only_new_items_without_image_and_never_retries(monkeypatch):
 
     monkeypatch.setattr(images, "fetch_page_image", fake)
     out = asyncio.run(images.fill([a, b, c, d]))
-    assert out == {"tried": 2, "found": 1} and sorted(calls) == ["https://a.test/1", "https://a.test/2"]
+    assert out["tried"] == 3 and out["found"] == 1 and sorted(calls) == ["https://a.test/1", "https://a.test/2", "https://a.test/5"]
     with news_db.session() as db:
         rows = {r.id: r for r in db.query(NewsItem)}
     assert rows[a].image_url == "https://i.test/a.png" and rows[a].image_tried and rows[b].image_url is None and rows[b].image_tried
-    assert not rows[old].image_tried and not rows[d].image_tried
+    assert rows[old].image_tried and not rows[d].image_tried          # 新着でない記事は、枠の残りで埋め合わせる
     calls.clear()
-    assert asyncio.run(images.fill([a, b])) == {"tried": 0, "found": 0} and calls == []       # 取れなかった記事も再試行しない
+    assert asyncio.run(images.fill([a, b]))["tried"] == 0 and calls == []       # 取れなかった記事も再試行しない
 
 
 def test_fill_is_capped_per_run(monkeypatch):
@@ -135,6 +135,75 @@ def test_fill_is_capped_per_run(monkeypatch):
 
     monkeypatch.setattr(images, "fetch_page_image", fake)
     assert asyncio.run(images.fill(ids))["tried"] == images.MAX_PER_RUN
+
+
+def test_backfill_old_items_up_to_40_within_the_run_cap(monkeypatch):
+    """目的: 取得のたびに、画像を試していない古い記事を新しい順に最大 40 件、新着と合わせて 1 回 60 件の中で試すこと。
+    根拠: 2026-11-24 利用者の本番: 画像を取るのは新しい記事だけで、既存の 860 件は image_tried が 0 のまま。"""
+    old = [add(f"https://o.test/{i}", title=f"old{i}", published=NOW - timedelta(days=2, minutes=i)) for i in range(70)]
+    fresh = [add(f"https://n.test/{i}", title=f"new{i}", published=NOW - timedelta(minutes=i)) for i in range(30)]
+    seen: list[str] = []
+
+    async def fake(url):
+        seen.append(url)
+        return None
+
+    monkeypatch.setattr(images, "fetch_page_image", fake)
+    assert asyncio.run(images.fill(fresh))["tried"] == 60          # 新着 30 + 古い 30（枠 60 の残り）
+    assert sum(u.startswith("https://o.test/") for u in seen) == 30 and "https://o.test/0" in seen
+    seen.clear()
+    assert asyncio.run(images.fill([]))["tried"] == 40             # 新着が無ければ古い記事 40 件（最大）
+    assert "https://o.test/30" in seen and "https://o.test/0" not in seen
+
+
+def test_site_logo_shared_by_two_articles_is_dropped_but_other_domains_kept():
+    """目的: 同じドメインの 2 件以上の別の記事に同じ画像 URL が付いていれば、その URL はロゴとして外す（既に付いた分も）。別のドメインの共有・1 件だけ・生成画像は残す。
+    根拠: 2026-11-24 利用者の本番: フォーラム（Discourse）はどの投稿でも同じサイトのロゴが og:image に返る。"""
+    logo = "https://forum.test/logo.png"
+    a = add("https://forum.test/t/1", title="a", image=logo)
+    b = add("https://forum.test/t/2", title="b", image=logo)
+    c = add("https://forum.test/t/3", title="c", image="https://forum.test/own.png")
+    d = add("https://other.test/1", title="d", image="https://cdn.test/shared.png")
+    e = add("https://news.test/1", title="e", image="https://cdn.test/shared.png")
+    g = add("https://www.site.test/1", title="g", image="https://img.test/x.png")
+    h = add("https://site.test/2", title="h", image="https://img.test/x.png")
+    gen = "/api/v1/news/images/1.webp"
+    i1 = add("https://gen.test/1", title="i1", image=gen)
+    i2 = add("https://gen.test/2", title="i2", image=gen)
+    assert images.drop_logos() == 4
+    with news_db.session() as db:
+        rows = {r.id: r for r in db.query(NewsItem)}
+    assert rows[a].image_url is None and rows[b].image_url is None and rows[a].image_tried
+    assert rows[g].image_url is None and rows[h].image_url is None               # www. の有無は同じドメイン
+    assert rows[c].image_url and rows[d].image_url and rows[e].image_url         # 別のドメインの共有は残す
+    assert rows[i1].image_url == gen and rows[i2].image_url == gen
+
+
+def test_google_news_items_resolve_to_original_url_for_the_image(monkeypatch):
+    """目的: Google ニュースの記事は転送を解いた元の URL からページの画像を取り、記事の url は置き換えないこと。解けなければ画像は付けない（画像生成へ）。
+    根拠: 2026-11-24 利用者の本番: Google ニュースの記事はページの画像が 0 件。"""
+    gnews_url = "https://news.google.com/rss/articles/CBMiAAAA?oc=5"
+    ok = add(gnews_url, title="g1", source_key="search:ai:gnews-ja")
+    fail = add("https://news.google.com/rss/articles/CBMiBBBB?oc=5", title="g2", source_key="search:ai:gnews-ja")
+    from app.news import gnews
+
+    async def fake_resolve(url, client=None):
+        return "https://real.test/article" if url == gnews_url else None
+
+    fetched: list[str] = []
+
+    async def fake_fetch(url):
+        fetched.append(url)
+        return "https://real.test/og.png"
+
+    monkeypatch.setattr(gnews, "resolve", fake_resolve)
+    monkeypatch.setattr(images, "fetch_page_image", fake_fetch)
+    out = asyncio.run(images.fill([ok, fail]))
+    assert out["tried"] == 2 and out["found"] == 1 and fetched == ["https://real.test/article"]
+    with news_db.session() as db:
+        rows = {r.id: r for r in db.query(NewsItem)}
+    assert rows[ok].image_url == "https://real.test/og.png" and rows[ok].url == gnews_url
+    assert rows[fail].image_url is None and rows[fail].image_tried
 
 
 def test_upsert_reports_new_ids():

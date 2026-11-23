@@ -5,7 +5,7 @@ OpenRouter の無料 LLM の利用を想定している。もちろんローカ�
 
 - 更新: ホームのフィードの読み直しの間隔・日刊のまとめの時刻・週刊のまとめの曜日と時刻・取得しない時間帯。
   ニュースのページの取得の間隔（分）は従来どおり channels.json の interval_minutes（設定の「アーカイブ」）。
-- LLM: 用途ごと（まとめ・一言要約と話題の語・英語の抜粋の訳）にモデルを選ぶ。まとめの重点（digest_focus）は利用者が書く自由記述。"auto"・登録済みのローカルモデル・"cloud:openrouter/…"。
+- LLM: 用途ごと（まとめ・一言要約と話題の語・記事の下ごしらえ〔概要・画像の描写・話題の語を 20 件ずつ 1 回で〕）にモデルを選ぶ。まとめの重点（digest_focus）は利用者が書く自由記述。"auto"・登録済みのローカルモデル・"cloud:openrouter/…"。
 - RAG: 取った記事を知識基盤の分野 news へ入れる（本文も入れるか・古い記事を消すとき RAG も消すか）。
 形は厳密に検査し、足りない項目は既定で補う。
 """
@@ -29,7 +29,7 @@ DEFAULTS: dict = {
     "digest_daily": {"enabled": True, "time": "06:30"},
     "digest_weekly": {"enabled": True, "weekday": 0, "time": "07:00"},
     "quiet": {"enabled": False, "start": "01:00", "end": "05:00"},
-    "llm": {"digest_model": "auto", "gist_enabled": False, "gist_model": "auto", "digest_focus": "", "translate_enabled": True},
+    "llm": {"digest_model": "auto", "gist_enabled": False, "gist_model": "auto", "digest_focus": "", "prep_enabled": True, "prep_max_per_run": 100},
     "rag": {"enabled": True, "fulltext": False, "on_prune": "keep"},
     # 画像の無い記事に AI でイメージ画像を作る（CPU だけ。機能「ニュースの画像生成（CPU）」が要る。既定は切）
     "imagegen": {"enabled": False, "tier": "small", "threads": 8, "max_per_run": 30},
@@ -119,7 +119,7 @@ def normalize(raw: object) -> dict:
     llm = _table(raw, "llm")
     out["llm"] = {"digest_model": _model(llm.get("digest_model", "auto"), "まとめ"), "gist_enabled": _bool(llm, "gist_enabled", False),
                   "gist_model": _model(llm.get("gist_model", "auto"), "一言要約"), "digest_focus": _focus(llm.get("digest_focus", "")),
-                  "translate_enabled": _bool(llm, "translate_enabled", True)}
+                  "prep_enabled": _bool(llm, "prep_enabled", True), "prep_max_per_run": _int(llm.get("prep_max_per_run", 100), "下ごしらえの 1 回の件数", 1, 200)}
     rag = _table(raw, "rag")
     on_prune = rag.get("on_prune", "keep")
     if on_prune not in ON_PRUNE:

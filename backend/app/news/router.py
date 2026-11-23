@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import digest, home, imagegen, llm, prefs, presets, profile, rag, service, sources, store
+from app.news import digest, home, imagegen, llm, prefs, prep, presets, profile, rag, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -209,7 +209,7 @@ def get_settings(user: User = Depends(get_current_user)):
     """更新のタイミング・LLM・RAG の設定。ホームのフィードの読み直しの間隔は誰の画面でも使うので、ログインした人なら読める。"""
     settings = news_settings.load()
     return {"settings": settings, "weekdays": list(news_settings.WEEKDAYS), "interval_minutes": channels_mod.load()["interval_minutes"],
-            "imagegen_available": imagegen.available(settings["imagegen"]["tier"]), "imagegen_tiers": imagegen.tiers_info()}
+            "imagegen_available": imagegen.available(settings["imagegen"]["tier"]), "prep_calls_today": prep.calls_today(), "imagegen_tiers": imagegen.tiers_info()}
 
 
 @router.get("/images/{item_id}.webp")

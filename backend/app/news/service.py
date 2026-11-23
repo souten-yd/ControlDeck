@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.news import channels, gist, imagegen, images, rag, settings, sources, store
+from app.news import channels, gist, imagegen, images, prep, rag, settings, sources, store
 from app.news import db as news_db
 from app.news.db import NewsItem
 
@@ -66,14 +66,15 @@ def _reload(ids: list[int]) -> list[dict]:
 
 async def _after_save(saved: dict, cfg: dict) -> dict:
     """取った後の仕事（一言要約・RAG への取り込み・RAG の掃除）。失敗しても取得の結果は変えない（理由だけ返す）。"""
-    info: dict = {"gist": {"done": 0, "error": ""}, "rag": {"added": 0, "error": ""}}
+    info: dict = {"gist": {"done": 0, "error": ""}, "prep": {"done": 0, "calls": 0, "error": ""}, "rag": {"added": 0, "error": ""}}
     changed = saved["changed"]
     try:
         info["gist"] = await gist.enrich(changed)
-        translated = await gist.translate(changed)
-        if translated["error"] and not info["gist"]["error"]:
-            info["gist"]["error"] = translated["error"]
-        if info["gist"]["done"] or translated["done"]:
+        prepared = await prep.run(changed)
+        info["prep"] = prepared
+        if prepared["error"] and not info["gist"]["error"]:
+            info["gist"]["error"] = prepared["error"]
+        if info["gist"]["done"] or prepared["done"]:
             changed = await asyncio.to_thread(_reload, [i["id"] for i in changed])
     except Exception as exc:  # noqa: BLE001
         logger.warning("一言要約に失敗しました: %s", exc)
