@@ -559,3 +559,104 @@ def test_summary_endpoint_requires_settings_manage(admin_client, store):
     assert TestClient(app).get("/api/v1/models/cloud-summary").status_code in (401, 403)
     data = admin_client.get("/api/v1/models/cloud-summary").json()
     assert data["running"] == [] and data["today"]["calls"] == 0 and data["last"] is None
+
+
+def _route_upstream(monkeypatch, routes):
+    """URL ごとに返す応答を変えるモック。送った要求は sent に残る。routes の値が例外なら送出する。"""
+    sent = []
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            sent.append(request)
+            result = routes[str(request.url)]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": Transport()}))
+    return sent
+
+
+def _item(model_id, price="0.000001"):
+    return {"id": model_id, "name": model_id, "pricing": {"prompt": price, "completion": price}}
+
+
+_KEYED = "https://openrouter.ai/api/v1/models"
+
+
+def test_excluded_models_are_counted_against_the_public_list(store, monkeypatch):
+    """目的: アカウントの設定で除外されたモデルの数（うち無料）を、鍵なしの公開の一覧との差で出す。
+    根拠: 利用者の言葉（2026-11-23）「フリーモデルを制限しないにしてるのに 200 件しか取れず、無料は 1 件」。"""
+    import asyncio
+
+    _configure()
+    monkeypatch.setattr(cloud, "_zdr_models", lambda: _async_value(set()))
+    # 同じ URL に鍵あり・鍵なしで違う応答を返すため、Authorization の有無で分ける。
+    keyed = httpx.Response(200, json={"data": [_item("a/one"), _item("a/two")]})
+    public = httpx.Response(200, json={"data": [
+        _item("a/one"), _item("a/two"), _item("b/hidden"), _item("c/free:free", "0"), _item("~d/alias")]})
+    sent = []
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            sent.append(request)
+            return keyed if "authorization" in request.headers else public
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": Transport()}))
+    report = asyncio.run(cloud.remote_models_report("openrouter"))
+    assert [m["id"] for m in report["models"]] == ["a/one", "a/two"]
+    assert report["excluded"]["count"] == 3 and report["excluded"]["free_count"] == 1
+    assert {m["id"] for m in report["excluded"]["models"]} == {"b/hidden", "c/free:free", "~d/alias"}
+    assert [("authorization" in r.headers) for r in sent] == [True, False], "公開の一覧には秘密を送らない"
+    assert isinstance(report["fetched_at"], int)
+
+
+def test_public_list_failure_hides_the_count_without_breaking(store, monkeypatch):
+    """目的: 公開の一覧が取れなくても、モデルの一覧は返し、除外の件数だけを出さない。
+    根拠: 利用者の依頼（2026-11-23）「公開の一覧が取れなければ件数は出さない（失敗で画面を壊さない）」。"""
+    import asyncio
+
+    _configure()
+    monkeypatch.setattr(cloud, "_zdr_models", lambda: _async_value(set()))
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if "authorization" in request.headers:
+                return httpx.Response(200, json={"data": [_item("a/one")]})
+            raise httpx.ConnectError("down")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real(*a, **{**k, "transport": Transport()}))
+    report = asyncio.run(cloud.remote_models_report("openrouter"))
+    assert len(report["models"]) == 1 and report["excluded"] is None
+
+
+def test_non_openrouter_has_no_excluded_report(store, monkeypatch):
+    """目的: OpenRouter 以外では公開の一覧を問い合わせない。根拠: 依頼「OpenRouter のときだけ」（2026-11-23）。"""
+    import asyncio
+
+    _configure("openai", models=("gpt-x",))
+    sent = _route_upstream(monkeypatch, {"https://api.openai.com/v1/models": httpx.Response(200, json={"data": [_item("gpt-x")]})})
+    report = asyncio.run(cloud.remote_models_report("openai"))
+    assert report["excluded"] is None and len(sent) == 1
+
+
+def test_refresh_ignores_the_zdr_cache(store, monkeypatch):
+    """目的: 取り直すときは ZDR 一覧の 1 時間の覚えを使わず、問い合わせ直す。
+    根拠: 利用者の言葉（2026-11-23）「モデル設定を更新した。モデルリストが更新もされない」。"""
+    import asyncio
+
+    _configure()
+    zdr_url = "https://openrouter.ai/api/v1/endpoints/zdr"
+    sent = _route_upstream(monkeypatch, {
+        _KEYED: httpx.Response(200, json={"data": [_item("a/one")]}),
+        zdr_url: httpx.Response(200, json={"data": [{"model_id": "a/one"}]}),
+    })
+    monkeypatch.setattr(cloud, "_zdr_cache", (0.0, set()))
+    asyncio.run(cloud.remote_models_report("openrouter"))
+    asyncio.run(cloud.remote_models_report("openrouter"))
+    assert sum(str(r.url) == zdr_url for r in sent) == 1, "通常は覚えを使う"
+    asyncio.run(cloud.remote_models_report("openrouter", refresh=True))
+    assert sum(str(r.url) == zdr_url for r in sent) == 2, "取り直しでは問い合わせ直す"

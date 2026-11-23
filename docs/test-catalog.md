@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 239 ファイル、2325 テスト（目的の未記入 93 ファイル）
-- E2E: 127 spec、273 テスト
+- backend: 239 ファイル、2329 テスト（目的の未記入 93 ファイル）
+- E2E: 127 spec、274 テスト
 
 ## backend（backend/tests）
 
@@ -665,6 +665,10 @@
 - `test_running_call_reports_time_to_first_token`
 - `test_context_lengths_are_fetched_at_most_hourly`
 - `test_summary_endpoint_requires_settings_manage`
+- `test_excluded_models_are_counted_against_the_public_list` — 目的: アカウントの設定で除外されたモデルの数（うち無料）を、鍵なしの公開の一覧との差で出す。
+- `test_public_list_failure_hides_the_count_without_breaking` — 目的: 公開の一覧が取れなくても、モデルの一覧は返し、除外の件数だけを出さない。
+- `test_non_openrouter_has_no_excluded_report` — 目的: OpenRouter 以外では公開の一覧を問い合わせない。根拠: 依頼「OpenRouter のときだけ」（2026-11-23）。
+- `test_refresh_ignores_the_zdr_cache` — 目的: 取り直すときは ZDR 一覧の 1 時間の覚えを使わず、問い合わせ直す。
 
 ### backend/tests/test_code_research.py
 
@@ -3915,6 +3919,7 @@
 - キーを保存して有効にし、モデルを選び、確認のうえで外部への送信を許可できる（320px）
 - OpenRouter の費用・入力の扱い・残高が見え、並べ替えと絞り込みができる（320px）
 - 賢さ・コンテキスト・価格・対応機能・提供元を組み合わせて絞り込める（${width}px）
+- 一覧を取り直せて、アカウントの設定で除外されたモデルが見える（${width}px）
 
 ### frontend/e2e/generated-blazor-gui.spec.ts
 

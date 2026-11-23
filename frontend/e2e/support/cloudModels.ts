@@ -62,7 +62,7 @@ export const ACCOUNT = {
   is_free_tier: false, free_requests_remaining: 950,
 };
 
-export async function mockCloud(page: Page, state: MockCloud, options: { usage?: unknown[]; remote?: unknown[]; account?: unknown } = {}) {
+export async function mockCloud(page: Page, state: MockCloud, options: { usage?: unknown[]; remote?: unknown[]; account?: unknown; excluded?: unknown; fetchedAt?: number[] } = {}) {
   const puts: Array<{ path: string; body: Record<string, unknown> }> = [];
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -93,7 +93,16 @@ export async function mockCloud(page: Page, state: MockCloud, options: { usage?:
     Object.assign(state.egress, body);
     return json(route, state);
   });
-  await page.route("**/api/v1/models/cloud/*/remote-models", (route) => json(route, { models: options.remote ?? remoteModels() }));
+  // refresh=true で呼ばれた回数を残す（取り直しがサーバーの覚えを使わない要求になっているかの確認用）。
+  await page.route("**/api/v1/models/cloud/*/remote-models*", (route) => {
+    const refresh = new URL(route.request().url()).searchParams.get("refresh") === "true";
+    if (refresh) puts.push({ path: "remote-models-refresh", body: {} });
+    const times = options.fetchedAt ?? [1_760_000_000];
+    return json(route, {
+      models: options.remote ?? remoteModels(), excluded: options.excluded ?? null,
+      fetched_at: times[Math.min(puts.filter((p) => p.path === "remote-models-refresh").length, times.length - 1)],
+    });
+  });
   await page.route("**/api/v1/models/cloud/*/account", (route) => {
     const id = new URL(route.request().url()).pathname.split("/").at(-2);
     return json(route, id === "openrouter" ? options.account ?? ACCOUNT : { supported: false });

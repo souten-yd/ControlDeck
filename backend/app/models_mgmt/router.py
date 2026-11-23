@@ -1811,11 +1811,12 @@ def cloud_save(provider_id: str, body: dict, request: Request,
 
 
 @router.get("/cloud/{provider_id}/remote-models")
-async def cloud_remote_models(provider_id: str, user: User = Depends(require_permission("settings.manage"))):
+async def cloud_remote_models(provider_id: str, refresh: bool = False,
+                              user: User = Depends(require_permission("settings.manage"))):
     from app.models_mgmt import cloud
 
     try:
-        return {"models": await cloud.list_remote_models(provider_id)}
+        return await cloud.remote_models_report(provider_id, refresh=refresh)
     except cloud.CloudError as exc:
         raise _cloud_error(exc) from exc
 

@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CLOUD_QUERY_KEY, cloudGatewayId, getCloudAccount, getCloudState, getCloudUsage, listCloudRemoteModels,
   saveCloudEgress, saveCloudProvider,
-  type CloudDataPolicy, type CloudPrivacy, type CloudProvider, type CloudProviderPatch, type CloudRemoteModel,
+  type CloudDataPolicy, type CloudExcludedModels, type CloudPrivacy, type CloudProvider, type CloudProviderPatch, type CloudRemoteModel,
   type CloudState, type CloudUsageRow,
 } from "../../api/cloudModels";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../../components/ui";
@@ -610,6 +610,19 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
     queryKey: ["cloud-remote-models", p.id], queryFn: () => listCloudRemoteModels(p.id),
     staleTime: 5 * 60_000, retry: false,
   });
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  // 覚えている一覧は使わず、その場で問い合わせ直す（サーバーの覚えも使わない）。
+  const refreshList = async () => {
+    setRefreshing(true);
+    try {
+      queryClient.setQueryData(["cloud-remote-models", p.id], await listCloudRemoteModels(p.id, true));
+    } catch (error) {
+      show(`一覧を取り直せませんでした: ${errorText(error, "不明なエラー")}`, "error");
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [selected, setSelected] = useState<Set<string>>(() => new Set(p.models));
   const [query, setQuery] = useState("");
   const [freeOnly, setFreeOnly] = useState(false);
@@ -762,11 +775,24 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
             {anyCondition && (
               <button type="button" onClick={clearConditions} className="min-h-11 text-accent-600 underline dark:text-accent-400">条件をクリア</button>
             )}
-            <span aria-live="polite">{remote.data ? `${matches.length.toLocaleString()} 件` : ""} · 選択 {selected.size}/{MAX_MODELS}</span>
+            <span aria-live="polite">
+              {remote.data ? `該当 ${matches.length.toLocaleString()} 件（全 ${all.length.toLocaleString()} 件）` : ""} · 選んだ {selected.size} 件（最大 {MAX_MODELS}）
+            </span>
           </span>
         </div>
       </div>
 
+      {remote.data && (
+        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+          <button type="button" onClick={refreshList} disabled={refreshing || remote.isFetching} className={smallButton}>
+            {refreshing ? "取り直し中…" : "一覧を取り直す"}
+          </button>
+          {remote.data.fetched_at ? (
+            <span className="num">最後に取得: {new Date(remote.data.fetched_at * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+          ) : null}
+        </div>
+      )}
+      {remote.data?.excluded && remote.data.excluded.count > 0 && <ExcludedModels excluded={remote.data.excluded} />}
       <MetaLegend policy={p.data_policy} />
       {remote.isLoading && (
         <div className="space-y-2" aria-busy="true">
@@ -823,6 +849,32 @@ function ModelPickerSheet({ provider: p, onClose }: { provider: CloudProvider; o
         </button>
       </SheetActions>
     </BottomSheet>
+  );
+}
+
+/** OpenRouter がアカウントの設定で一覧から除いたモデル。選べないので灰色で、畳んで見せる。 */
+function ExcludedModels({ excluded }: { excluded: CloudExcludedModels }) {
+  return (
+    <details className="mb-2 rounded-xl border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700">
+      <summary className="min-h-11 cursor-pointer py-2 font-medium">
+        アカウントの設定で除外: {excluded.count.toLocaleString()} 件（うち無料 {excluded.free_count.toLocaleString()} 件）
+      </summary>
+      <p className="pb-2 leading-relaxed text-zinc-600 dark:text-zinc-300">
+        OpenRouter の Settings → Privacy（学習・ZDR）や、API キーの Guardrails で絞られています。
+        設定は{" "}
+        <a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noopener noreferrer"
+          className="break-all text-accent-600 underline dark:text-accent-400">openrouter.ai/settings/privacy</a>
+        {" "}で変えられます。
+      </p>
+      <ul className="max-h-60 divide-y divide-zinc-100 overflow-y-auto overscroll-contain dark:divide-zinc-800" aria-label="除外されたモデル">
+        {excluded.models.map((m) => (
+          <li key={m.id} className="py-1.5 text-zinc-400 dark:text-zinc-500" aria-disabled="true">
+            <span className="block break-words">{m.name}{m.free ? "（無料）" : ""}</span>
+            {m.name !== m.id && <span className="block break-all font-mono text-[11px]">{m.id}</span>}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

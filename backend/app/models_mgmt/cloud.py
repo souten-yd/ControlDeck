@@ -457,8 +457,18 @@ def spent_this_month(provider_id: str) -> float:
                if row.get("provider") == provider_id)
 
 
-async def list_remote_models(provider_id: str) -> list[dict]:
+async def list_remote_models(provider_id: str, refresh: bool = False) -> list[dict]:
     """プロバイダが提供するモデルの一覧（使うモデルを選ぶため）。キーで問い合わせる。"""
+    return (await remote_models_report(provider_id, refresh=refresh))["models"]
+
+
+async def remote_models_report(provider_id: str, refresh: bool = False) -> dict:
+    """モデルの一覧と、OpenRouter のときはアカウントの設定で除外されたモデル。
+
+    OpenRouter は、プライバシー・ZDR・ガードレールの設定に合わないモデルを、キーつきの一覧から除く。
+    鍵なしの公開の一覧との差を数えて、「なぜ少ないのか」を画面で説明できるようにする。
+    refresh のときは、ZDR 一覧の 1 時間の覚えも使わず取り直す。
+    """
     import httpx
 
     from app.security.crypto import decrypt_text
@@ -480,6 +490,9 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         raise CloudError("API キーが受け付けられませんでした", 400)
     if response.status_code >= 400:
         raise CloudError(f"モデルの一覧を取得できませんでした（HTTP {response.status_code}）", 502)
+    if refresh:
+        global _zdr_cache
+        _zdr_cache = (0.0, _zdr_cache[1])  # 時刻だけ捨てる。取れなければ前の値を使う。
     zdr_models = await _zdr_models() if provider_id == "openrouter" else set()
     rows = []
     try:
@@ -508,7 +521,41 @@ async def list_remote_models(provider_id: str) -> list[dict]:
         if isinstance(row["context_length"], int) and row["context_length"] > 0:
             _context_lengths[(provider_id, model_id)] = row["context_length"]
         rows.append(row)
-    return rows
+    excluded = None
+    if provider_id == "openrouter":
+        excluded = await _excluded_by_account({str(i.get("id") or "") for i in items if isinstance(i, dict)}
+                                              if isinstance(items, list) else set())
+    return {"models": rows, "excluded": excluded, "fetched_at": int(time.time())}
+
+
+async def _excluded_by_account(keyed_ids: set[str]) -> dict | None:
+    """鍵なしの公開の一覧にあって、キーつきの一覧に無いもの。公開の一覧が取れなければ None。
+
+    秘密は送らない（Authorization を付けない）。失敗しても画面は壊さない。
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.get("https://openrouter.ai/api/v1/models")
+        if response.status_code >= 400:
+            return None
+        items = (response.json() or {}).get("data")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    models = []
+    for item in items[:3000]:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "")
+        if not model_id or model_id in keyed_ids:
+            continue
+        pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+        free = _per_million(pricing.get("prompt")) == 0 and _per_million(pricing.get("completion")) == 0
+        models.append({"id": model_id[:200], "name": str(item.get("name") or model_id)[:200], "free": free})
+    return {"count": len(models), "free_count": sum(1 for m in models if m["free"]), "models": models[:1000]}
 
 
 # 「70b」「8x22b」「a3b」「135m」。前後が英数字のもの（4bit・v2b・32k など）は拾わない。
