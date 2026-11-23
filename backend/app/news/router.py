@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -60,8 +61,14 @@ def _channel(channel_id: str) -> dict | None:
 def items(view: str = Query("recommended", pattern="^(recommended|latest|starred)$"), kind: str = "", source: str = "", topic: str = "", channel: str = "",
           q: str = Query("", max_length=200), date: str = "", before: str = "", limit: int = Query(store.PAGE_DEFAULT, ge=1, le=store.PAGE_MAX),
           user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
-    return store.list_items(db, user.id, view=view, kinds=_kinds(kind), source=source[:200], topic=topic[:60], q=q, day=_day(date),
-                            before=before, limit=limit, channel=_channel(channel))
+    result = store.list_items(db, user.id, view=view, kinds=_kinds(kind), source=source[:200], topic=topic[:60], q=q, day=_day(date),
+                              before=before, limit=limit, channel=_channel(channel))
+    # ホームのカードが色の印を付けられるよう、チャンネルの指定が無い一覧にも所属のチャンネルを付ける
+    channels = channels_mod.numbered(channels_mod.load()["channels"])
+    for item in result["items"]:
+        if "channel" not in item:
+            item["channel"] = channels_mod.first_channel(channels, SimpleNamespace(kind=item["kind"], source_key=item.get("source_key", ""), title=item["title"], summary=item.get("summary") or ""))
+    return result
 
 
 @router.get("/archive")

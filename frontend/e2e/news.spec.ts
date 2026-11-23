@@ -101,7 +101,8 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
     let rows = items.filter((i) => (!kinds.length || kinds.includes(i.kind)) && (!q || i.title.includes(q) || i.summary.includes(q)) && (!ch || inChannel(ch, i)));
     if (url.searchParams.get("view") === "starred") rows = rows.filter((i) => i.state.star);
     if (date) rows = rows.filter((i) => i.published_at.startsWith(date));
-    return route.fulfill({ json: { items: rows, next: null } });
+    // 本番の /news/items と同じく、各記事に所属チャンネルの id を付ける（ホームのカードの色の点・札）
+    return route.fulfill({ json: { items: rows.map((i) => ({ ...i, channel: channels.find((c) => inChannel(c, i))?.id ?? null })), next: null } });
   });
   await page.route(/\/api\/v1\/news\/items\/(\d+)\/action$/, (route) => {
     const id = Number(route.request().url().match(/items\/(\d+)\//)![1]);
@@ -149,7 +150,8 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
   const digestOf = (id: number, period: string, day: string, body: string, extra: object = {}) => ({
     id, period, label: period === "daily" ? "今朝のまとめ" : "今週のまとめ", day, body, model: "cloud:openrouter/meta/llama-3.3-70b:free", created_at: at(1),
     error: "", fallback: false, item_ids: [1, 2], sources: [{ id: 1, n: 1, title: ITEMS[0].title, source: "ITmedia NEWS", url: ITEMS[0].url }, { id: 2, n: 2, title: ITEMS[1].title, source: "GitHub", url: ITEMS[1].url }], ...extra });
-  const daily = digestOf(1, "daily", "2026-11-23", "## ローカル LLM\n- Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n## AMD・GPU\n- llama.cpp が ROCm の Flash Attention を高速化した。[2]");
+  const daily = digestOf(1, "daily", new Date().toLocaleDateString("en-CA"),   // 今日の分（ホームのカードの「今朝のまとめ」は今日の分だけ出す）
+     "## ローカル LLM\n- Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n## AMD・GPU\n- llama.cpp が ROCm の Flash Attention を高速化した。[2]");
   const weekly = digestOf(2, "weekly", "2026-11-23", "## ローカル LLM\n- 見出しだけの一覧です。 [1]", { fallback: true, error: "接続できません", model: "auto" });
   await page.route(/\/api\/v1\/news\/digests$/, (route) => route.fulfill({ json: { latest: { daily, weekly }, digests: [daily, weekly, digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" })] } }));
   await page.route(/\/api\/v1\/news\/digests\/(\d+)$/, (route) => route.fulfill({ json: route.request().url().endsWith("/2") ? weekly : route.request().url().endsWith("/1") ? daily : digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" }) }));
@@ -482,14 +484,58 @@ for (const width of [1280, 320]) {
   });
 }
 
-test("ニュース: ホームのカード・メニュー・設定の入口", async ({ page, context }) => {
+const HOME_DESIGNS = ["broadcast", "magazine", "newspaper", "finance", "text"] as const;
+for (const design of HOME_DESIGNS) {
+  test(`ニュース: ホームのカード（${design}）: まとめ・画像のカード・見出し・見た目`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockNews(page, { design });
+    await establishSession(page, context);
+    await page.goto("/");
+    const home = page.getByRole("region", { name: "ニュース" });
+    await expect(home).toHaveAttribute("data-design", design);
+    await expect(home.getByRole("link", { name: /Qwen の新しいモデル/ })).toBeVisible();
+    // 先頭に今朝のまとめ（本文の最初の文。出典の [1] は消す）。押すと /news
+    const digest = home.getByTestId("home-digest");
+    await expect(digest).toContainText("Qwen の新モデルが公開され、GGUF 版も同時に配布された。");
+    await expect(digest).not.toContainText("[1]");
+    // 表示のデザインの色（根の背景）がニュースのページと同じ変数から来ている
+    const bgColor = await home.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bgColor).not.toBe("rgba(0, 0, 0, 0)");
+    if (design === "text") {
+      // 画像なし・番号つき
+      await expect(home.locator("img")).toHaveCount(0);
+      await expect(home.locator(".nwx-rank").first()).toHaveText("1.");
+      await expect(home.locator(".nwx-row")).toHaveCount(5);
+    } else {
+      await expect(home.getByTestId("home-lead").locator("img")).toBeVisible();   // おすすめの 1 位は画像つき
+      await expect(home.getByTestId("home-rows").locator("li")).toHaveCount(4);
+      await expect(home.getByTestId("home-rows").locator(".nwh-dot").first()).toBeVisible();
+      await expect(home.getByTestId("home-lead")).toContainText(/CH 0\d/);             // チャンネルの札
+    }
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-home-card-${design}-1280.png`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-home-card-${design}-390.png`);
+    await page.setViewportSize({ width: 320, height: 700 });
+    expect(await noOverflow(page)).toBe(true);
+  });
+}
+
+test("ニュース: ホームのカード・見出しは新しいタブで open を記録・まとめが今日の分でなければ出さない・メニュー・設定の入口", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   await page.setViewportSize({ width: 1280, height: 900 });
   await mockNews(page);
+  await page.route(/\/api\/v1\/news\/digests$/, (route) => route.fulfill({ json: { latest: { daily: { id: 9, period: "daily", label: "今朝のまとめ", day: "2020-01-01", body: "- 古いまとめ。", model: "m", created_at: at(1), error: "", fallback: false, item_ids: [], sources: [] }, weekly: null }, digests: [] } }));
   await establishSession(page, context);
   await page.goto("/");
   const home = page.getByRole("region", { name: "ニュース" });
-  await expect(home.getByRole("link", { name: /Qwen の新しいモデル/ })).toBeVisible();
+  const link = home.getByRole("link", { name: /Qwen の新しいモデル/ });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(home.getByTestId("home-digest")).toHaveCount(0);
   await page.locator("[data-shell-sidebar]").getByRole("link", { name: "News", exact: true }).click();
   await expect(page).toHaveURL(/\/news$/);
   // ニュースのページの上から設定を開ける

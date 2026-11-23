@@ -205,6 +205,8 @@
 .nwd-lead-title a:hover { color: var(--nw-accent); }
 .nwd-lead-sum { margin: 0; color: var(--nw-muted); line-height: 1.65; overflow-wrap: anywhere; }
 .nwd-tag { font-weight: 800; color: var(--ch, var(--nw-accent)); letter-spacing: .06em; }
+/* 明るい地のデザインでは、チャンネルの色（黄など）のままだと文字が読めないので、文字の色へ寄せる */
+.nw[data-design="magazine"] .nwd-tag, .nw[data-design="newspaper"] .nwd-tag, .nw[data-design="finance"] .nwd-tag { color: color-mix(in srgb, var(--ch, var(--nw-accent)) 45%, var(--nw-fg)); }
 .nwd-rows { min-width: 0; }
 .nwd-rows ol { list-style: none; margin: 0; padding: 0; }
 .nwd-rows li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--nw-line); min-width: 0; }
@@ -296,3 +298,47 @@
 .nw[data-design="text"] .nw-numbers-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .nw[data-design="text"] .nw-big { font-size: 1.8rem; }
 .nw[data-design="text"] .nw-panel { border-radius: 0; }
+
+/* ===== ホームの小さなニュースのカード（NewsHomeCard）: 根は .nw のまま、ホームのほかのカードの大きさ・余白に揃える ===== */
+.nw.nwh { --nw-fs: 14px; container-type: inline-size; border: 1px solid var(--nw-line); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+@media (min-width: 768px) { .nw.nwh { padding: 16px; } }
+.nw.nwh[data-design="broadcast"] { border-color: #232a36; }
+.nwh-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nwh-title { font-size: 1.05rem; }
+.nw.nwh[data-design="broadcast"] .nwh-title::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 8px; vertical-align: middle; }
+.nwh-open { font-size: .75rem; font-weight: 700; color: var(--nw-accent); padding: 8px; margin: -8px; min-height: 32px; display: inline-flex; align-items: center; }
+.nwh-open:hover { text-decoration: underline; }
+.nwh-digest { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-left: 4px solid var(--nw-accent); background: color-mix(in srgb, var(--nw-accent) 8%, transparent); border-radius: min(var(--nw-radius), 8px); min-width: 0; }
+.nwh-digest:hover .nwh-digest-text { text-decoration: underline; }
+.nwh-digest .nw-badge { flex: 0 0 auto; margin-top: 2px; }
+.nwh-digest-text { min-width: 0; line-height: 1.5; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: .85rem; }
+.nwh-body { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 560px) { .nwh-body { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; } }
+.nwh-lead { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+@container (min-width: 760px) { .nwh-lead { flex-direction: row; align-items: flex-start; } .nwh-lead .nwd-lead-media { flex: 0 0 48%; } }
+.nwh-lead .nwd-lead-media { width: 100%; }
+.nwh-lead-title { margin: 0; font-size: 1rem; font-weight: 800; line-height: 1.35; overflow-wrap: anywhere; font-family: var(--nw-head-font); text-transform: none; }
+.nwh-lead-title a:hover, .nwh-row-title a:hover { color: var(--nw-accent); }
+.nwh-rows { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.nwh-rows li { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; border-top: 1px solid var(--nw-line); min-width: 0; }
+.nwh-rows li:first-child { border-top: 0; }
+@container (min-width: 560px) { .nwh-rows li:first-child { padding-top: 0; } }
+.nwh-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--ch, var(--nw-accent)); align-self: center; }
+.nwh-row-title { flex: 1 1 0; min-width: 0; font-weight: 600; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nwh-time { flex: 0 0 auto; font-size: .7rem; color: var(--nw-muted); }
+/* デザインごとの違い */
+.nw.nwh[data-design="magazine"] { border-radius: 4px; border-top: 4px solid var(--nw-fg); }
+.nw.nwh[data-design="magazine"] .nwh-title { text-transform: uppercase; font-size: 1.2rem; }
+.nw.nwh[data-design="magazine"] .card-meta { text-transform: uppercase; letter-spacing: .06em; font-size: .66rem; font-weight: 700; color: var(--nw-accent); }
+.nw.nwh[data-design="newspaper"] { border-radius: 2px; border-top: 3px solid var(--nw-nav); }
+.nw.nwh[data-design="newspaper"] .nwh-head { border-bottom: 1px solid var(--nw-line); padding-bottom: 6px; }
+.nw.nwh[data-design="newspaper"] .nwh-lead-title { font-weight: 700; }
+.nw.nwh[data-design="finance"] { border-radius: 0; }
+.nw.nwh[data-design="finance"] .nwh-head { border-bottom: 1px solid var(--nw-fg); padding-bottom: 6px; }
+.nw.nwh[data-design="finance"] .nwh-lead-title { font-weight: 600; }
+.nw.nwh[data-design="finance"] .nwd-lead-media { aspect-ratio: 16 / 9; }
+.nw.nwh[data-design="text"] { border-radius: 0; gap: 6px; }
+.nw.nwh[data-design="text"] .nwh-head { background: var(--nw-accent); color: var(--nw-accent-fg); padding: 2px 8px; margin: -12px -12px 0; }
+@media (min-width: 768px) { .nw.nwh[data-design="text"] .nwh-head { margin: -16px -16px 0; } }
+.nw.nwh[data-design="text"] .nwh-open { color: inherit; }
+.nw.nwh[data-design="text"] .nwh-digest { border-radius: 0; }

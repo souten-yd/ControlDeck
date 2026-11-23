@@ -227,6 +227,9 @@ def test_home_and_channel_items_api(client):
     got = c.get("/api/v1/news/items?channel=amd&view=latest").json()
     assert [i["title"] for i in got["items"]] == ["Radeon の新ドライバ ROCm 7"] and got["items"][0]["channel"] == "amd"
     assert c.get("/api/v1/news/items?channel=none").status_code == 404
+    # チャンネルを指定しない一覧（ホームのカード）にも所属のチャンネルが付く
+    every = c.get("/api/v1/news/items?view=latest").json()["items"]
+    assert any(i["channel"] == "amd" for i in every) and all("channel" in i for i in every)
     assert c.get("/api/v1/news/home").status_code == 200 and c.get("/api/v1/news/home").json()["sections"][0]["id"] == "amd"
     client.cookies.clear()
     assert client.get("/api/v1/news/home").status_code in (401, 403)
