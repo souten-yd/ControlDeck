@@ -404,7 +404,8 @@ def test_secret_and_patent_conversations_create_protected_memory(extractor):
 
 
 def test_secret_looking_text_and_bad_output_are_not_remembered(extractor):
-    extractor["answer"] = json.dumps({"memories": [{"text": "利用者の API キーは sk-abcdef1234567890xyz", "kind": "fact"}]})
+    fake_key = "-".join(["sk", "abcdef1234567890xyz"])                         # 秘密らしい値は実行時に組み立てる（dev-check）
+    extractor["answer"] = json.dumps({"memories": [{"text": f"利用者の API キーは {fake_key}", "kind": "fact"}]})
     assert _remember() == {"created": 0, "pending": 0}
     extractor["answer"] = "覚えました！"                                              # JSON でない返事は作らない
     assert _remember() == {"created": 0, "pending": 0}
