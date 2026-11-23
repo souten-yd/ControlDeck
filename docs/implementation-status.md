@@ -16,6 +16,12 @@
 - 「履歴 15分・生データ・n 点」の行は PC・モバイルとも Home から外し、設定 → 表示「Home のグラフの履歴」へ（localStorage `control-deck-home-history-minutes`。以前は保存なしで毎回 15 分）。
 - 通知の 1 行（`HomeNoticeLine`、backend `alerts/home_notice.py` の `GET /home-notices`・`POST /home-notices/dismiss`）: 監視の警報・失敗したアプリ・更新の失敗・承認待ちを集め、エラー > 警告 > 注意 > 情報 → 新しさの順の先頭 1 件。元が解決すれば消えて次が出る。「閉じる」は本人だけ（解決後は印を掃除）。お休みモードとは無関係。
 - 試験: `backend/tests/test_home_notice.py`、E2E `frontend/e2e/home-compact.spec.ts`（390・320・1280、ライト・ダーク）。
+## 2026-11-23 作業場へ渡す USB 機器（シリアル・adb）の第 1 段（設計は `docs/design-device-dev.md`）
+
+- 利用者の要望: 「USB の装置（Android・M5Stack・ラズパイ）を OpenCode から開発できないか。作業場に環境を作ってよい。安全に」。
+- `maintenance/devices.py`: /dev/serial/by-id と sysfs を読むだけの一覧（シリアルは ttyUSB*・ttyACM* の実体だけ、adb はインターフェース ff/42/01 とシリアルを持つ機器だけ）。起動のたびに実体へ解決し、無ければ渡さず警告。
+- 作業場の meta `devices`（既定は空・箱の外・読み込み時に検査）。`podman_argv` が選んだ機器だけを `--device` と `--group-add keep-groups` で渡す。API: `GET /opencode/devices`・`PUT /opencode/workspaces/{name}/devices`（settings.manage）。監査 `opencode.workspace.device_attach/detach`。画面: 作業場の結果のカードの「USB 機器」（危険の説明つき）。
+- テスト: `test_dev_workspace_devices.py`。実機の USB をつないだ起動は未確認（Opus が確かめる）。Wi-Fi・承認・ツールチェーンは第 2 段以降。
 
 ## 2026-11-23 ニュース: Release の機能を切った Codeberg のリポジトリ（Radiance）はタグから更新を読む（本番で HTTP 404 だった）。
 ## 2026-11-23 ニュースの「意味で探す」に並べ替え（reranker）を通し、見出しが同じ記事を 1 件に（本番で、ぴったりの記事が 4 位以下・同じ記事が 2 件出ていた）。日本語の問いから英語の記事を探す件は U35。

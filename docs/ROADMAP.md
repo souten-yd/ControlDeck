@@ -20,6 +20,7 @@
 | | | P4 GPU の貸し出し | 未着手 | 同上 |
 | | | P5 ホストの API で評価 | 未着手 | 同上 |
 | | | P6 試運転（下の 2 の W2 の最初の項目を OpenCode にやらせる） | 未着手 | 同上 |
+| 1b | 作業場から実機（USB・Wi-Fi）の開発 | 第 1 段 USB のシリアル・adb の許可（実装済み）→ 第 2 段 承認・ツールチェーン → 第 3 段 Wi-Fi → 第 4 段 Pi のガジェット・SWD | 第 1 段完了（実機の確認は未）。第 2 段から | `design-device-dev.md` |
 | 2 | 検索基盤（Web 収集） | W2 ブラウザ（JS が要るページ・中継・data_api）→ W3 巡回 | W1 完了（v0.108）。W2 から | `HANDOFF-web-collector.md`、`PLAN-web-collector.md` |
 | 3 | 特許の調査（Patent P1） | テーマ→検索語→承認→取得→関連順→全文判定→保存 | 未着手。W2 とナレッジの検索入口が前提 | 同上 |
 | 4 | 統合ナレッジ（PatentBuddy の未反映の内容を作り直す） | K1 知識エッセンス → K2 横断検索・比較 → K3 知識マップ・仮説 → K4 Idea Canvas → K5 3 段の画面 → K6（R3-6 の残り）。R2-3 書誌グラフ・R2-5 PDF の座標 | R3-0〜3 完了。PB の PR は 2026-11-21 に閉じた。K1 から（`HANDOFF-knowledge-platform.md`） | `HANDOFF-knowledge-platform.md`、`PLAN-knowledge-platform.md` |

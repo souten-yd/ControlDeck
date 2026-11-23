@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -53,6 +54,8 @@ TARGETS = ("app", "llm_app", "controldeck")
 LIMIT_PATTERN = re.compile(
     r"\b(rate[ _-]?limit(ed)?|too many requests|quota|usage limit|limit (reached|exceeded)|exceeded|insufficient"
     r"|billing|credits?|payment required|429|402)\b", re.I)
+
+log = logging.getLogger(__name__)
 
 
 class SandboxError(RuntimeError):
@@ -167,6 +170,13 @@ class Sandbox:
     @property
     def allow_zen(self) -> bool:
         return bool(self.meta.get("allow_zen", True))
+
+    @property
+    def devices(self) -> list[dict]:
+        """この箱へ渡す USB 機器（既定は無し）。利用者だけが workspaces.set_devices で変える。"""
+        from app.maintenance import devices
+
+        return [dict(d) for d in self.meta.get("devices") or [] if devices.valid_entry(d)]
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -321,6 +331,11 @@ def _validated(name: str, path: Path, meta: dict, *, strict: bool = True) -> dic
     if "capabilities" in meta and not (isinstance(meta["capabilities"], list)
                                        and all(x in CAPABILITIES for x in meta["capabilities"])):
         raise _tampered("capabilities が正しくありません")
+    if "devices" in meta:
+        from app.maintenance import devices
+
+        if not (isinstance(meta["devices"], list) and all(devices.valid_entry(d) for d in meta["devices"])):
+            raise _tampered("devices が正しくありません")
     if "target" in meta and meta["target"] not in TARGETS:
         raise _tampered("target が正しくありません")
     if "adopt" in meta and meta["adopt"] not in ADOPT_MODES:
@@ -488,7 +503,7 @@ def container_argv(command: list[str], *, workdir: Path, writable: list[Path], r
                    overlays: list[tuple[Path, Path]] = (), env: dict[str, str] | None = None,
                    interactive: bool = False, name: str = "", detach: bool = False,
                    env_file: Path | None = None, binds: list[tuple[Path, Path]] = (),
-                   hide: list[Path] = (), pod: str = "") -> list[str]:
+                   hide: list[Path] = (), pod: str = "", devices: list[str] = ()) -> list[str]:
     """イメージを使わない箱の podman 引数。書けるのは writable だけ、他はホストを読み取り専用で見せる。
 
     サンドボックス（./deck.sh sandbox）と OpenCode のプロジェクトの箱が共有する。
@@ -532,6 +547,11 @@ def container_argv(command: list[str], *, workdir: Path, writable: list[Path], r
     if env_file is not None:
         # 秘密（パスワード）は argv に載せない（ps や systemctl show から見える）。
         argv += ["--env-file", str(env_file)]
+    # 利用者が選んだ USB 機器だけ（devices.resolve が検査済みの実体のパス）。keep-groups は dialout・plugdev の権限を引き継ぐ
+    for device in devices:
+        argv += ["--device", f"{device}:{device}:rw"]
+    if devices:
+        argv += ["--group-add", "keep-groups"]
     argv += ["-w", str(workdir), "--rootfs", str(_rootfs()), *command]
     return argv
 
@@ -732,9 +752,16 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
     # 箱を消すと一緒に消える
     tmp = box.path / "tmp"
     tmp.mkdir(mode=0o700, exist_ok=True)
+    device_paths: list[str] = []
+    if box.devices:
+        from app.maintenance import devices
+
+        device_paths, warnings = devices.resolve(box.devices)
+        for warning in warnings:
+            log.warning("作業場 %s: %s", box.name, warning)
     argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
                           overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach,
-                          pod=pod, env_file=env_file, binds=[(tmp, Path("/tmp"))])
+                          pod=pod, env_file=env_file, binds=[(tmp, Path("/tmp"))], devices=device_paths)
     if extra:
         index = argv.index("--rootfs")
         argv[index:index] = extra

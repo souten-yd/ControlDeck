@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 238 ファイル、2315 テスト（目的の未記入 93 ファイル）
-- E2E: 127 spec、271 テスト
+- backend: 239 ファイル、2325 テスト（目的の未記入 93 ファイル）
+- E2E: 127 spec、273 テスト
 
 ## backend（backend/tests）
 
@@ -862,6 +862,21 @@
 - `test_suggested_title_without_conversation_uses_workspace_name`
 - `test_check_runs_the_trusted_gate_code_not_the_boxs_copy` — U21: 本体の作業場の関門は、箱のコピーの dev_check ではなく、ホストの main から取り出した版（読み取り専用）で動く。
 - `test_trusted_gate_code_is_extracted_from_host_main` — 取り出すのはホストの本体の origin/main の backend/app だけ。同じ版は作り直さず、古い版は 3 つまで。
+
+### backend/tests/test_dev_workspace_devices.py
+
+目的: 作業場へ渡す USB 機器（第 1 段: シリアルと adb の USB）。 目的: 既定は何も渡さず、利用者が選んだ機器だけが箱の podman 起動の --device に入ること。選んでいない機器・ 存在しない機器・by-id の外のパス・形の悪い指定は入らないこと。選べるのは管理者（settings.manage）だけで、 箱の中継は機器の API を通さないこと。付け外しは監査に残ること。 根拠: 2026-11-23 利用者「USB につながってる装置（Android・M5Stack・ラズパイ）を OpenCode から開発できないか。 安全にできないか。作業場ごとに許可する設定でもよい」。sysfs・/dev はテスト用の置き場、podman は呼ばない。
+
+- `test_listing_shows_only_serial_ttys_and_adb_with_serial`
+- `test_no_devices_by_default_and_no_device_args`
+- `test_only_selected_devices_reach_podman_args`
+- `test_missing_or_unplugged_device_is_not_passed_and_warns`
+- `test_bad_entries_are_refused`
+- `test_tampered_meta_devices_is_rejected_on_load`
+- `test_other_users_workspace_cannot_be_changed`
+- `test_api_list_set_audit_and_gateway_blocks`
+- `test_box_gateway_does_not_expose_device_api` — 箱の中（AI）から届く道は、中継が許したものだけ。機器の API はその中に無い。
+- `test_api_requires_settings_manage`
 
 ### backend/tests/test_dev_workspace_merge.py
 
@@ -3936,6 +3951,8 @@
 目的: 目的: モバイル（390 / 320px）のホームを詰め、状態のカード群が 1 画面に収まること。 - CPU+RAM・GPU+VRAM がそれぞれ 1 枚（2 本の線）で、横 1 段。履歴の選択の行（履歴・生データ・n 点）は無い。 - 電力の 4 項目（PSU 総出力・今回の起動中・今日・今月）が 1 行。 - LLM カードは見出しの行に「ローカル · 未ロード」。 - 一番上に通知の 1 行（最も重要な 1 件の札・本文・ほか n 件）。色だけでなく札の文字がある。PC（1280px）にも出る。 - どの幅でも横にはみ出さない。撮影: test-results/home-compact-{390,320,1280}.png（ライト）と -dark.png。 根拠: 2026-11-23 利用者「モバイルのホーム画面は 1 画面で今の情報とニュースを表示したい…履歴の 1 行は不要… 最終的な通知の内容を一行で表示して、重要度で題名と色を変えて」。API は模擬する（metrics は実体）。
 
 - home compact (${width}px, ${scheme})
+- home notice scrolls and flips (390px)
+- home notice with a single item does not flip (390px)
 
 ### frontend/e2e/ios-keyboard-field.spec.ts
 

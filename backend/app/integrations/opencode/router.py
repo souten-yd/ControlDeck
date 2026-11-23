@@ -306,6 +306,38 @@ def create_workspace(
     return result
 
 
+class DevicesBody(BaseModel):
+    devices: list[dict] = Field(default_factory=list, max_length=8)
+
+
+@router.get("/devices")
+def list_usb_devices(user: User = Depends(require_permission("settings.manage"))):
+    """ホストにつながっている、作業場へ渡せる USB 機器（シリアル・adb）。読むだけ。管理者だけ。"""
+    from app.maintenance import devices
+
+    return {"devices": devices.list_devices()}
+
+
+@router.put("/workspaces/{name}/devices")
+def set_workspace_devices(
+    name: str, body: DevicesBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """作業場へ渡す機器を選ぶ（既定は無し）。箱の中の AI はこの API を呼べない（箱の中継は許可した道だけ通す）。"""
+    from app.maintenance import workspaces
+
+    try:
+        result = workspaces.set_devices(name, user.username, body.devices)
+    except workspaces.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    for action, items in (("opencode.workspace.device_attach", result["added"]),
+                          ("opencode.workspace.device_detach", result["removed"])):
+        for item in items:
+            audit.record(db, action, user=user, resource_type="opencode_workspace", resource_id=name,
+                         request=request, metadata={"kind": item["kind"], "device": item["id"]})
+    return result
+
+
 @router.delete("/workspaces/{name}")
 def delete_workspace(
     name: str, request: Request, confirm: bool = False,
