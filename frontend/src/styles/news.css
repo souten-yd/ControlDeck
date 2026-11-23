@@ -99,7 +99,7 @@
 .nw-card.read { opacity: .62; }
 .card-media { position: relative; aspect-ratio: 16 / 9; background: #000; flex: 0 0 auto; }
 .card-media img, .card-media .nw-fallback { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.card-media .nw-ai-mark { position: absolute; right: 6px; bottom: 6px; z-index: 1; padding: 1px 6px; border-radius: 4px; font-size: 10px; line-height: 1.5; color: #fff; background: rgb(0 0 0 / 0.55); pointer-events: none; }
+.card-media .nw-ai-mark, .nwd-lead-media .nw-ai-mark, .nw-screen-inner .nw-ai-mark { position: absolute; right: 6px; bottom: 6px; z-index: 1; padding: 1px 6px; border-radius: 4px; font-size: 10px; line-height: 1.5; color: #fff; background: rgb(0 0 0 / 0.55); pointer-events: none; }
 .card-media .nw-badge { position: absolute; left: 8px; top: 8px; z-index: 1; }
 .card-body { display: flex; flex-direction: column; gap: 8px; padding: 12px; min-width: 0; flex: 1 1 auto; }
 .card-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: .72rem; color: var(--nw-muted); align-items: center; min-width: 0; }
@@ -374,3 +374,5 @@
 .nwh-digest-text { -webkit-line-clamp: 4; }
 .nw.nwh[data-design="text"] .nwh-telop { border-radius: 0; }
 @container (min-width: 760px) { .nwh-lead .nwd-lead-media.nw-noimg { flex: 0 0 5px !important; width: 5px; height: auto; align-self: stretch; } }
+/* ON AIR の大きな画面では印を少し大きく（2026-11-24 本番で ON AIR に印が出ていなかった） */
+.nw-screen-inner .nw-ai-mark { right: 10px; bottom: 10px; font-size: 12px; padding: 2px 8px; }
