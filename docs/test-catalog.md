@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 230 ファイル、2168 テスト（目的の未記入 93 ファイル）
+- backend: 231 ファイル、2173 テスト（目的の未記入 93 ファイル）
 - E2E: 121 spec、249 テスト
 
 ## backend（backend/tests）
@@ -1003,6 +1003,16 @@
 - `test_human_form_cancel_and_timeout_use_typed_error_routes`
 - `test_human_approval_rejects_wrong_assignee`
 - `test_jobs_api_lifecycle` — ジョブ基盤: 作成 → 進捗 → 完了が API で追える。
+
+### backend/tests/test_event_loop_offload.py
+
+目的: 重い同期処理を event loop の上で走らせていないことの試験。 診断で、loop のスレッドが manifest の読み込み・DB・subprocess・SSL コンテキストの生成で 数秒止まっていた。重い関数をわざと遅くし、その間に loop の別のタスクが進むことを確かめる。
+
+- `test_manifest_load_is_cached_until_file_changes`
+- `test_addon_health_poll_does_not_block_loop`
+- `test_pause_recovery_does_not_block_loop`
+- `test_runtime_environment_probes_run_off_loop`
+- `test_shared_ssl_context_is_reused`
 
 ### backend/tests/test_fake_addon_harness.py
 

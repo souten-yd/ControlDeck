@@ -109,6 +109,19 @@ def test_root_itself_not_deletable(admin_client):
 
 
 def test_viewer_cannot_write(client):
+    # 閲覧専用の利用者 ro は前は test_auth.py が作っていた。単独や関門の一部の実行（dev-check）では無くて 401 で落ちたので、
+    # ここでも作る（あれば作らない）
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Role, User
+    from app.security.passwords import hash_password
+
+    with SessionLocal() as db:
+        role = db.execute(select(Role).where(Role.name == "viewer")).scalar_one()
+        if not db.execute(select(User).where(User.username == "ro")).scalar_one_or_none():
+            db.add(User(username="ro", password_hash=hash_password("viewer-pass-123"), role_id=role.id))
+            db.commit()
     client.cookies.clear()
     r = client.post(
         "/api/v1/auth/login",
