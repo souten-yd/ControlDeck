@@ -94,14 +94,14 @@ export interface NewsRuntimeSettings {
   digest_daily: { enabled: boolean; time: string };
   digest_weekly: { enabled: boolean; weekday: number; time: string };
   quiet: { enabled: boolean; start: string; end: string };
-  llm: { digest_model: string; gist_enabled: boolean; gist_model: string; digest_focus: string; translate_enabled: boolean };
+  llm: { digest_model: string; gist_enabled: boolean; gist_model: string; digest_focus: string; prep_enabled: boolean; prep_max_per_run: number };
   rag: { enabled: boolean; fulltext: boolean; on_prune: "keep" | "delete" };
   imagegen: { enabled: boolean; tier: ImagegenTierId; threads: number; max_per_run: number };
 }
 export type ImagegenTierId = "small" | "medium" | "large";
 /** 画像生成のモデルの精度（小・中・大）。1 枚の目安の時間・取得の大きさ・RAM の目安と、導入済みか。 */
 export interface ImagegenTier { id: ImagegenTierId; label: string; installed: boolean; megabytes: number; time_seconds: number; ram_gb: number; note: string; max_per_run: number }
-export interface NewsSettingsResponse { settings: NewsRuntimeSettings; weekdays: string[]; interval_minutes: number; imagegen_available?: boolean; imagegen_tiers?: ImagegenTier[] }
+export interface NewsSettingsResponse { settings: NewsRuntimeSettings; weekdays: string[]; interval_minutes: number; prep_calls_today?: number; imagegen_available?: boolean; imagegen_tiers?: ImagegenTier[] }
 export interface LlmOptions {
   local: { id: string; name: string }[];
   cloud: { id: string; name: string; provider: string; free: boolean; paid: boolean }[];

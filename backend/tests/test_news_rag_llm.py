@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -624,64 +625,149 @@ def test_broken_answers_fall_back_to_headlines(monkeypatch):
 
 def test_focus_setting_is_validated_and_limited(admin_client):
     hdr = {"X-Requested-With": "ControlDeck"}
-    assert settings.normalize({})["llm"]["digest_focus"] == "" and settings.normalize({})["llm"]["translate_enabled"] is True
+    assert settings.normalize({})["llm"]["digest_focus"] == "" and settings.normalize({})["llm"]["prep_enabled"] is True and settings.normalize({})["llm"]["prep_max_per_run"] == 100
     ok = admin_client.put("/api/v1/news/settings", json={"llm": {"digest_focus": "AI 技術の最新動向\n\x00AI モデルの最新動向"}}, headers=hdr)
     assert ok.status_code == 200 and ok.json()["settings"]["llm"]["digest_focus"] == "AI 技術の最新動向\nAI モデルの最新動向"
     too_long = admin_client.put("/api/v1/news/settings", json={"llm": {"digest_focus": "あ" * 1001}}, headers=hdr)
     assert too_long.status_code == 422 or too_long.status_code == 400
 
 
-def test_english_detection():
-    en = {"title": "ROCm 7.2 released with RDNA4 improvements", "summary": "Performance work for gfx1201 and new HIP features across the stack."}
-    assert gist.is_english(en)
-    assert not gist.is_english({"title": "Qwen の新モデル", "summary": "量子化に対応した新しいモデルが公開された"})
-    assert not gist.is_english({"title": "R9700 review", "summary": "412 点 · 187 コメント"})
-    assert not gist.is_english({"title": "English title only", "summary": ""})
-
-
-def _english_rows(count: int, tag: str = "e"):
+def _rows(count: int, tag: str = "e"):
     ids = [add(f"https://{tag}.test/{i}", title=f"Title number {i} of the day", summary=f"This is an English excerpt number {i} about new GPU drivers and models.",
                published=datetime.now(timezone.utc)) for i in range(count)]
     with news_db.session() as db:
         return ids, [store.item_dict(r) for r in db.scalars(select(NewsItem).where(NewsItem.id.in_(ids)).order_by(NewsItem.id))]
 
 
-def test_translation_batches_20_per_call_saves_and_presents(monkeypatch):
-    """目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
-    根拠: 2026-11-23 利用者「英語のニュースとかは日本語に訳して概要を記載してほしいし、題名はそのままでいい」。"""
-    ids, rows = _english_rows(21)
+@pytest.fixture
+def prep_counter(tmp_path, monkeypatch):
+    from app.news import prep
+
+    monkeypatch.setattr(prep, "_counter_path", lambda: tmp_path / "news" / "prep-calls.json")
+    return prep
+
+
+def _answer(messages, *, skip=(), bad=()):
+    count = len([ln for ln in messages[1]["content"].splitlines() if ln[:1].isdigit() and ". " in ln[:5]])
+    body = {str(n): {"ja": f"新しい GPU ドライバーとモデルの記事です {n}", "img": f"a graphics card on a desk number {n}", "topics": ["GPU", "ドライバー"]}
+            for n in range(1, count + 1) if n not in skip}
+    for n in bad:
+        body[str(n)] = {"ja": "english only", "img": ""}
+    return json.dumps(body, ensure_ascii=False)
+
+
+def test_prep_batches_20_per_call_saves_and_presents(monkeypatch, prep_counter):
+    """目的: 下ごしらえは 20 件で 1 回の呼び出し。日本語の概要・画像の描写・話題の語を保存し、一覧は訳を出して元の抜粋も返すこと。呼び出し回数を数えること。切のときは呼ばない。
+    根拠: 2026-11-24 利用者「ある程度のまとまりを送って構造的に個別に返してもらう…1 回としてできる」「参照元の記事の名前や概要をそのまま記載し、変換が終わったものから順次変えていく」。"""
+    ids, rows = _rows(21)
     calls = []
 
     async def fake(model, messages, **kw):
         calls.append((model, messages))
-        count = len([ln for ln in messages[1]["content"].splitlines() if ln[:1].isdigit() and ". " in ln[:5]])
-        return "\n".join(f"{n}|新しい GPU ドライバーとモデルの英語の記事です {n}" for n in range(1, count + 1))
+        return _answer(messages)
 
     monkeypatch.setattr(llm, "complete", fake)
-    out = run(gist.translate(rows))
-    assert out == {"done": 21, "error": ""} and len(calls) == 2           # 20 + 1
-    assert "題は訳さない" in calls[0][1][1]["content"]
+    out = run(prep_counter.run(rows))
+    assert out == {"done": 21, "calls": 2, "error": ""} and len(calls) == 2           # 20 + 1
+    assert prep_counter.calls_today() == 2
     with news_db.session() as db:
         row = db.get(NewsItem, ids[0])
-        assert row.summary_ja.startswith("新しい GPU") and row.title == "Title number 0 of the day"
+        assert row.summary_ja.startswith("新しい GPU") and row.title == "Title number 0 of the day" and row.img_prompt.startswith("a graphics card")
+        assert row.prep_tries == prep_counter.PREP_DONE and "GPU" in row.topics
         shown = store.present(row, {})
     assert shown["translated"] is True and shown["summary"] == row.summary_ja and "English excerpt number 0" in shown["summary_original"]
-    # 訳済み・日本語の記事・設定が切のときは呼ばない
+    # 切のときは呼ばない（済みの記事は再送もしない）
     calls.clear()
+    cfg = settings.load(); cfg["llm"]["prep_enabled"] = False; settings.save(cfg)
+    _, rows3 = _rows(1, "e2")
+    assert run(prep_counter.run(rows3))["done"] == 0 and calls == []
+
+
+def test_prep_parse_rejects_broken_and_misnumbered_replies(prep_counter):
+    """目的: JSON が壊れていれば ValueError、番号が範囲外・整数でない項目は捨て、コードの囲み・配列の形も読み、英語だけの ja は使わないこと。"""
+    with pytest.raises(ValueError):
+        prep_counter.parse("すみません、できません", 2)
+    with pytest.raises(ValueError):
+        prep_counter.parse("{broken", 2)
+    ok = prep_counter.parse('```json\n{"1": {"ja": "日本語の概要", "img": "a red rocket", "topics": ["A","B","C","D"]}, "7": {"ja": "範囲外"}, "x": {"ja": "番号が違う"}}\n```', 2)
+    assert list(ok) == [1] and ok[1]["topics"] == ["A", "B", "C"]
+    arr = prep_counter.parse('[{"n": 2, "ja": "二番目の概要", "img": "wind turbines"}]', 2)
+    assert list(arr) == [2]
+    assert prep_counter.parse('{"1": {"ja": "english only", "img": ""}}', 1) == {}
+
+
+def test_prep_resends_only_missing_once_then_leaves_to_next_fetch(monkeypatch, prep_counter):
+    """目的: 欠けた・合わない記事だけを同じ回の中で 1 回だけ送り直し、それでもだめな記事は試行を +1 して次の取得へ回す（3 回で諦める）こと。"""
+    ids, rows = _rows(4)
+    sent = []
+
+    async def fake(model, messages, **kw):
+        sent.append(messages[1]["content"])
+        if len(sent) == 1:
+            return _answer(messages, skip=(2,), bad=(3,))        # 2 は欠け、3 は英語だけ
+        return _answer(messages, skip=(1,))                      # 送り直しの 1 番目（= 欠けていた記事）はまた返さない
+
+    monkeypatch.setattr(llm, "complete", fake)
+    out = run(prep_counter.run(rows))
+    assert len(sent) == 2 and out["calls"] == 2 and out["done"] == 3
+    assert "Title number 1 of the day" in sent[1] and "Title number 2 of the day" in sent[1] and "Title number 0 of the day" not in sent[1]
     with news_db.session() as db:
-        rows2 = [store.item_dict(r) for r in db.scalars(select(NewsItem))]
-    assert run(gist.translate(rows2))["done"] == 0 and calls == []
-    cfg = settings.load(); cfg["llm"]["translate_enabled"] = False; settings.save(cfg)
-    _, rows3 = _english_rows(1, "e2")
-    assert run(gist.translate([dict(r, summary_ja="") for r in rows3]))["done"] == 0 and calls == []
+        got = {r.id: r for r in db.scalars(select(NewsItem))}
+    assert got[ids[1]].prep_tries == 1 and got[ids[1]].summary_ja == "" and got[ids[0]].prep_tries == prep_counter.PREP_DONE
+    # 次の取得: 新着が無くても、前に失敗した記事を拾って送る
+    sent.clear()
+    async def ok(model, messages, **kw):
+        sent.append(1)
+        return _answer(messages)
+    monkeypatch.setattr(llm, "complete", ok)
+    out = run(prep_counter.run([]))
+    assert out["done"] == 1 and len(sent) == 1
+    # 試行が上限に達した記事は送らない
+    with news_db.session() as db:
+        db.get(NewsItem, ids[1]).prep_tries = prep_counter.MAX_TRIES
+        db.commit()
+    assert run(prep_counter.run([])) == {"done": 0, "calls": 0, "error": ""}
 
 
-def test_translation_without_egress_permission_does_nothing(monkeypatch):
-    _, rows = _english_rows(2)
+def test_prep_respects_per_run_limit_and_unreadable_reply(monkeypatch, prep_counter):
+    """目的: 1 回の取得の上限（既定 100 件 = 5 回）を超えて送らないこと。JSON が読めない返事は、記事を済みにしないこと。"""
+    _, rows = _rows(130)
+    calls = []
+
+    async def fake(model, messages, **kw):
+        calls.append(1)
+        return _answer(messages)
+
+    monkeypatch.setattr(llm, "complete", fake)
+    out = run(prep_counter.run(rows))
+    assert out["done"] == 100 and len(calls) == 5
+    _, rows2 = _rows(2, "bad")
+
+    async def junk(model, messages, **kw):
+        return "not json"
+
+    monkeypatch.setattr(llm, "complete", junk)
+    out = run(prep_counter.run(rows2))
+    assert out["done"] == 0 and out["calls"] == 2           # 送り直しは 1 回だけ
+    with news_db.session() as db:
+        assert all(r.prep_tries == 1 for r in db.scalars(select(NewsItem).where(NewsItem.id.in_([r["id"] for r in rows2]))))
+
+
+def test_prep_without_egress_permission_does_nothing(prep_counter):
+    _, rows = _rows(2)
     cfg = settings.load(); cfg["llm"]["gist_model"] = "cloud:openrouter/meta/llama:free"; settings.save(cfg)
     configure_openrouter(["meta/llama:free"], egress=False)
-    out = run(gist.translate(rows))
+    out = run(prep_counter.run(rows))
     assert out["done"] == 0 and "許可されていません" in out["error"]
+
+
+def test_prep_calls_shown_in_settings_and_day_rollover(admin_client, prep_counter, monkeypatch):
+    """目的: 設定の画面に「今日の下ごしらえの呼び出し n 回」を出す値があり、日付が変われば 0 に戻ること（無料のモデルの 1 日の上限 50 回に気づけるように）。"""
+    assert admin_client.get("/api/v1/news/settings").json()["prep_calls_today"] == 0
+    prep_counter._count_call(); prep_counter._count_call()
+    assert admin_client.get("/api/v1/news/settings").json()["prep_calls_today"] == 2
+    monkeypatch.setattr(prep_counter, "_today", lambda: "2099-01-01")
+    assert prep_counter.calls_today() == 0
 
 
 def test_digest_rejects_english_and_retries_once():

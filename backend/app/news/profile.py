@@ -6,6 +6,8 @@
 - 利用者が「外した」語（data_dir/news/muted.json）は 0 にする。
 おすすめの点 = 新しさ（3 日で半減。日単位で減衰）× (1 + 興味)。興味 = (話題の重みの合計 + ソースの重み) / 4 を [-0.8, 4] に収める。
 dislike した記事は点を 5 分の 1 にする（hide した記事は一覧に出さない）。
+チャンネルに合う記事は点を FIT_FACTOR 倍、どのチャンネルにも合わない記事は NO_FIT_FACTOR 倍にする（2026-11-24 利用者の本番: ON AIR とホームの 1 位が
+Hacker News のトップ「Bored.com…」だった）。消さずに順位だけを動かす。「新着」「アーカイブ」の並びは変えない（おすすめの点だけ）。
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import data_dir
 from app.models import Conversation
 from app.news.db import NewsAction, NewsItem
+from app.news import channels as ch
 from app.news import prefs
 from app.news.topics import extract_topics
 
@@ -33,6 +36,8 @@ CHAT_WEIGHT = 0.5
 ACTION_WEIGHTS = {"open": (1.0, 0.5), "like": (3.0, 2.0), "star": (3.0, 2.0), "dislike": (-3.0, -4.0), "hide": (-2.0, -1.0)}
 INTEREST_SCALE = 4.0
 DISLIKED_FACTOR = 0.2
+FIT_FACTOR = 2.5
+NO_FIT_FACTOR = 0.25
 _UTC = timezone.utc
 _muted_lock = threading.Lock()
 
@@ -155,8 +160,14 @@ def score(item: NewsItem, found: dict, state: dict, now: datetime, strength: flo
     return value * DISLIKED_FACTOR if state.get("dislike") else value
 
 
+def fits_channel(row: NewsItem, channels: list[dict]) -> bool:
+    """どれかのチャンネルに合う記事か（channels.matches と同じ判定）。"""
+    return any(ch.matches(c, kind=row.kind, source_key=row.source_key, title=row.title, summary=row.summary or "") for c in channels)
+
+
 def rank(db: Session, user_id: int, rows: list[NewsItem], states: dict[int, dict], now: datetime) -> list[tuple[NewsItem, float]]:
     found = interests(db, user_id, now)
     strength = prefs.taste(user_id)["strength"]
-    scored = [(row, score(row, found, states.get(row.id, {}), now, strength)) for row in rows]
+    chans = ch.load()["channels"]
+    scored = [(row, score(row, found, states.get(row.id, {}), now, strength) * (FIT_FACTOR if fits_channel(row, chans) else NO_FIT_FACTOR)) for row in rows]
     return sorted(scored, key=lambda pair: (-pair[1], -pair[0].id))

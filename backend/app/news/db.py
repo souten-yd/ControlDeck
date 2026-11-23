@@ -57,6 +57,10 @@ class NewsItem(Base):
     image_tried: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 英語の抜粋の日本語訳（LLM。2026-11-23 利用者「英語のニュースは日本語に訳して概要を記載」）。空なら訳していない。題は訳さない
     summary_ja: Mapped[str] = mapped_column(Text, default="")
+    # 下ごしらえ（app/news/prep.py）が付けた、画像生成のための英語の短い描写。空なら無い
+    img_prompt: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # 下ごしらえの試行の回数（失敗のたびに +1。PREP_DONE なら済み。3 回で諦めて次の取得でも送らない）
+    prep_tries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class NewsAction(Base):
@@ -91,7 +95,8 @@ class NewsDigest(Base):
 
 
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
-_LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''")]
+_LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''"),
+                                        ("news_items", "img_prompt", "TEXT DEFAULT ''"), ("news_items", "prep_tries", "INTEGER NOT NULL DEFAULT 0")]
 
 _engines: dict[str, Engine] = {}
 _lock = threading.Lock()

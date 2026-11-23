@@ -90,8 +90,12 @@ def _mostly_english(text: str) -> bool:
     return letters >= 12 and len(_NON_ASCII.findall(text)) <= max(2, len(text) // 10)
 
 
-def build_prompt(title: str, summary: str = "", kind: str = "news", topics: list[str] | tuple[str, ...] = ()) -> str:
-    """見出しと抜粋から英語のプロンプトを作る（LLM を使わない）。見出しが英語ならそのまま、日本語なら語の対応表と種類の決まり文句。"""
+def build_prompt(title: str, summary: str = "", kind: str = "news", topics: list[str] | tuple[str, ...] = (), img: str = "") -> str:
+    """見出しと抜粋から英語のプロンプトを作る。下ごしらえ（prep.py）の英語の描写 img があればそれを使う（2026-11-24 利用者の試し: 日本語の題が
+    決まり文句に落ち、3 件が同じ地球儀の絵になった）。無ければ LLM を使わない規則: 見出しが英語ならそのまま、日本語なら語の対応表と種類の決まり文句。"""
+    img = re.sub(r"\s+", " ", str(img or "")).strip()
+    if img and img.isascii():
+        return f"{img[:200]}, {STYLE}"
     title = re.sub(r"\s+", " ", str(title or "")).strip()
     summary = re.sub(r"\s+", " ", str(summary or "")).strip()
     if _mostly_english(title):
@@ -252,7 +256,7 @@ def pending(limit: int) -> list[dict]:
                 topics = [t for t in json.loads(r.topics or "[]") if isinstance(t, str)]
             except ValueError:
                 topics = []
-            out.append({"id": r.id, "title": r.title, "summary": r.summary or "", "kind": r.kind, "topics": topics})
+            out.append({"id": r.id, "title": r.title, "summary": r.summary or "", "kind": r.kind, "topics": topics, "img": r.img_prompt or ""})
         return out
 
 
@@ -276,7 +280,7 @@ def generate_pending(cfg: dict, *, runner=None) -> dict:
             return {"done": 0, "failed": 0, "skipped": "nothing"}
         job = {"tier": tier, "models_dir": str(models_dir()), "out_dir": str(images_dir()), "threads": threads,
                "deadline_seconds": _job_timeout(tier) - 60,
-               "items": [{"id": i["id"], "prompt": build_prompt(i["title"], i["summary"], i["kind"], i["topics"]), "seed": i["id"]} for i in items]}
+               "items": [{"id": i["id"], "prompt": build_prompt(i["title"], i["summary"], i["kind"], i["topics"], i.get("img", "")), "seed": i["id"]} for i in items]}
         started = time.monotonic()
         rows = (runner or _run_worker)(job)
         ok_ids = [r["id"] for r in rows if r.get("ok") is True and image_path(r["id"]) is not None]

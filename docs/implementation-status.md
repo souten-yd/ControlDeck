@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-24 ニュース: 記事の下ごしらえを 1 回に・関心の順位・Google ニュースの画像・古い記事の画像・ロゴの除外
+- 利用者「記事一個一個ずつやっていたらすごく費用がかかりそう…ある程度のまとまりを送って構造的に個別に返してもらう…1 回としてできる」。本番の撮影: ON AIR・ホームの 1 位が HN の Bored.com（チャンネルに合わない）、Google ニュースの記事は画像 0 件、既存 860 件は image_tried=0、日本語の題は決まり文句で同じ地球儀の絵、フォーラムは全投稿に同じロゴ。
+- 下ごしらえ: `app/news/prep.py`（`gist.translate` を置き換え）。20 件ずつ 1 回の呼び出しで JSON `{"1": {ja, img, topics}}`。返事の検査（JSON・番号・欠け）→ 合わない記事だけ同じ回に 1 回送り直し、だめなら `prep_tries`+1 で次の取得へ（3 回で諦め）。`news_items` に `img_prompt`・`prep_tries` を後から足す列として追加。呼び出し回数は `data/news/prep-calls.json`（日ごと）→ 設定の画面「今日の下ごしらえの呼び出し n 回」。設定 `llm.prep_enabled`（既定入）・`llm.prep_max_per_run`（既定 100 = 5 回）。`translate_enabled` は廃止。`imagegen.build_prompt` は `img` があれば使う。
+- 順位: `profile.rank` の点にチャンネルに合う ×2.5・合わない ×0.25。ON AIR は合う記事の先頭（無ければ全体の 1 位）。新着・アーカイブは変えない。
+- Google ニュース: `app/news/gnews.py`。出典: googlenewsdecoder（SSujitX/google-news-url-decoder の `_parse.py`・`decoder.py`、MIT）、huksley の gist（bc3cb046157a99cd9d1517b32f91a99e、旧形式のオフライン復号）。旧形式（ID の中に URL）は通信なし、`AU_yqL` の新形式は `/rss/articles/<id>?hl&gl&ceid` のページから `data-n-a-sg`・`data-n-a-ts` を読み、`batchexecute`（rpcids Fbv4je・`garturlreq`）へ POST して `garturlres` から元の URL。解けなければ画像生成へ。記事の url は変えない。
+- 古い記事: `images.fill` が新着に加え、`image_tried` が 0 の古い記事を新しい順に最大 40 件（合計 60 件の中）。ロゴ: `images.drop_logos`（同じドメインの 2 件以上に同じ画像 URL → 外して画像生成へ。既存分も）。
+- 試験: `backend/tests/test_news_prep_gnews_rank.py`・`test_news_rag_llm.py`（prep）・`test_news_images_presets.py`（埋め合わせ・ロゴ・Google ニュース）、`frontend/e2e/news-prep.spec.ts`。
+
 ## 2026-11-23 OpenRouter のモデル選択: 一覧を取り直すボタン・アカウントの設定で除外された件数・数の言葉
 
 - 利用者「フリーモデルを、制限しないにしてるにもかかわらず 200 件しか取れず、無料は 1 件」「モデル設定を更新した。モデルリストが更新もされない」。
