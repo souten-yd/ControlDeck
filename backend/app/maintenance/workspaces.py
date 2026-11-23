@@ -160,6 +160,8 @@ def summary(box: Sandbox) -> dict:
         "capabilities": [c for c in sandbox.CAPABILITIES if c in box.capabilities], "adopt": box.adopt_mode,
         # OpenCode（会話サーバー）がこの作業場で作業中か。消すときの確認の文言が強くなる
         "working": busy(box),
+        # この作業場のモデルの並び（OpenCode は会話のモデルではなく、この先頭から使う。ヘッダの札に出す）
+        "model_chain": sandbox.model_chain(box),
     }
 
 
@@ -959,7 +961,8 @@ def _autosave_commit(box: Sandbox, conversation_id: str) -> dict:
     if code != 0:
         return {"committed": False, "count": count, "skipped": "error", "free_gib": round(free, 1),
                 "error": (err.strip() or f"終了コード {code}")[:200]}
-    _update_meta(box.name, autosave_count=count)
+    # 保存の前に覚えた probe（dirty）は古い。捨てて、次の一覧が箱から調べ直すようにする
+    _update_meta(box.name, autosave_count=count, probe=None)
     try:
         sha = _box_head(box)
     except SandboxError:

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 231 ファイル、2173 テスト（目的の未記入 93 ファイル）
-- E2E: 121 spec、249 テスト
+- backend: 231 ファイル、2180 テスト（目的の未記入 93 ファイル）
+- E2E: 122 spec、250 テスト
 
 ## backend（backend/tests）
 
@@ -882,6 +882,8 @@
 - `test_restore_rejects_commits_outside_this_workspace_history`
 - `test_restore_refuses_when_unsaved_changes_cannot_be_saved`
 - `test_restore_api_404_409_and_audit`
+- `test_agent_made_commit_is_listed_and_restorable`
+- `test_autosave_drops_the_stale_probe_cache`
 
 ### backend/tests/test_dev_workspace_targets.py
 
@@ -1006,7 +1008,7 @@
 
 ### backend/tests/test_event_loop_offload.py
 
-目的: 重い同期処理を event loop の上で走らせていないことの試験。 診断で、loop のスレッドが manifest の読み込み・DB・subprocess・SSL コンテキストの生成で 数秒止まっていた。重い関数をわざと遅くし、その間に loop の別のタスクが進むことを確かめる。
+目的: 重い同期処理を event loop の上で走らせていないことの試験。 目的: 画面の応答（event loop）を止める重い同期処理が、loop の外で動くこと。 診断で、loop のスレッドが manifest の読み込み・DB・subprocess・SSL コンテキストの生成で 数秒止まっていた。重い関数をわざと遅くし、その間に loop の別のタスクが進むことを確かめる。 根拠: 2026-11-23 の本番の診断（直近 24 時間）で、Add-on の見張り 6.1 秒・Workflow の回復 2.9 秒・ランタイムの状態 3.0 秒・ SSL の生成 2〜3 秒など、画面の応答が数秒ずつ止まっていた。
 
 - `test_manifest_load_is_cached_until_file_changes`
 - `test_addon_health_poll_does_not_block_loop`
@@ -2189,6 +2191,8 @@
 - `test_resume_cannot_be_done_twice_for_the_same_turn`
 - `test_resume_refuses_while_the_session_still_runs` — ControlDeck の再起動の後も OpenCode のセッションが箱の中で動き続けていれば、続きからは送らずに 409 で知らせる
 - `test_turn_records_checkpoint_and_sends_restore_note_to_the_agent`
+- `test_turn_records_checkpoint_when_the_agent_committed_by_itself`
+- `test_turn_without_new_commit_has_no_checkpoint`
 
 ### backend/tests/test_passkeys.py
 
@@ -3084,6 +3088,9 @@
 - `test_check_visual_high_fails_medium_warns`
 - `test_check_visual_no_model_is_skipped_not_failed`
 - `test_check_visual_skip_option_and_error`
+- `test_review_switches_to_the_next_vision_model_when_the_first_refuses_images`
+- `test_review_skips_with_a_clear_message_when_no_model_reads_images`
+- `test_other_gateway_errors_still_fail_instead_of_switching`
 
 ### backend/tests/test_visual_review_in_box.py
 
@@ -3609,6 +3616,12 @@
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
+
+### frontend/e2e/assistant-workspace-header-and-plan-card.spec.ts
+
+目的: 目的: (1) 作業場を選んだ OpenCode のヘッダの札は、会話のモデル（auto）ではなく作業場のモデルの並びの先頭 （opencode-go/glm-5.3 → 「GLM-5.3（作業場）」）を出すこと。(2) ファイルを変えていない回（プラン）の完了カードには 「レビューして」を出さず、ファイルを変えた回には出すこと。 根拠: 2026-11-23 の評価（ヘッダが auto のままで、どのモデルが動くか分からない・プランの回にレビューが出る）、ROADMAP U22。 API は page.route で模擬する（箱・OpenCode・LLM を動かさない）。
+
+- header shows the workspace model; plan turn has no review button (${width}px)
 
 ### frontend/e2e/assistant-workspace-resume.spec.ts
 

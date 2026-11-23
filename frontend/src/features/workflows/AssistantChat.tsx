@@ -29,7 +29,7 @@ import { type MessageAction } from "./MessageActions";
 import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
 import { RestoreDialog, restoreCode, type RestoreChoice } from "./RestoreDialog";
-import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceValue, type DevWorkspace, type WorkspaceProgressItem } from "./DevWorkspace";
+import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceModelPill, workspaceValue, type DevWorkspace, type WorkspaceProgressItem } from "./DevWorkspace";
 import { LS_CONV, targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
 import { writeClipboard } from "../../lib/clipboard";
 import {
@@ -1647,6 +1647,8 @@ export default function AssistantChat() {
   const wsEffectiveTarget = wsTarget && !(wsTarget === "controldeck" && !(wsIsBody && wsCanManage)) ? wsTarget
     : wsIsBody && wsCanManage ? "controldeck" : "llm_app";
   const chosenWorkspace = selectedWorkspace(codeProject, workspaces);
+  // 作業場を選んだ OpenCode は会話のモデルではなく作業場のモデルの並びで動くので、札もそれを出す
+  const headerPill = effectiveMode === "code" && workspaceModelPill(chosenWorkspace) || modelPill;
   const devTarget: DevTargetState | null = effectiveMode !== "code" ? null
     : codeProject === WS_NEW ? {
       mode: "create", target: wsEffectiveTarget,
@@ -1819,14 +1821,14 @@ export default function AssistantChat() {
             onClick={() => setShowSettings((v) => !v)}
             aria-label={showSettings ? "AI設定を閉じる" : "AI設定を開く"}
             aria-expanded={showSettings}
-            title={modelPill ? `${modelPill}（押してモデルを選ぶ）` : "設定"}
+            title={headerPill ? `${headerPill}（押してモデルを選ぶ）` : "設定"}
             data-model-pill
             className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-colors ${
               showSettings ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-400" : "text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-800"
             }`}
           >
             <IconChip className="shrink-0 text-lg" />
-            <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[13rem]">{modelPill || "設定"}</span>
+            <span className="max-w-[5.5rem] truncate max-[359px]:hidden sm:max-w-[13rem]">{headerPill || "設定"}</span>
           </button>
           <button
             type="button"

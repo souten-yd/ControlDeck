@@ -141,7 +141,7 @@ def test_check_visual_high_fails_medium_warns():
 def test_check_visual_no_model_is_skipped_not_failed():
     shots = [("frontend/test-results/a.png", 200.0)]
     r = dc.check_visual(FE, shots, 100.0, vr.ReviewResult("skipped", vr.NO_MODEL_MESSAGE))
-    assert r.status == dc.SKIP and "画像を読めるローカルのモデルがありません" in r.message
+    assert r.status == dc.SKIP and "画像を読めるモデルがありません" in r.message
 
 
 def test_check_visual_skip_option_and_error():
@@ -150,3 +150,50 @@ def test_check_visual_skip_option_and_error():
     assert dc.check_visual(FE, shots, 100.0, None, error="答えが読めません").status == dc.NG
     text, passed = dc.render_report([dc.check_visual(FE, [], 100.0, None, skip=True)])
     assert "--skip-visual" in text and passed
+
+
+# 目的: 載っているモデルが画像を読めない（一覧は vision なのにゲートウェイが 400「does not read images」）とき、
+# 画像を読める登録済みの次のモデルへ切り替えること。無ければ不合格にせず分かる言葉で未実施にすること。
+# どのモデルで見たかが結果に残ること。根拠: 2026-11-23 の評価（見た目の関門が読めないモデルで落ちた）、ROADMAP U22。
+def _refusing_client(models, refuse):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": models})
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if model in refuse:
+            return httpx.Response(400, json={"error": {"message": f"{model} does not read images"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"issues": [], "summary": "良い"})}}]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+def test_review_switches_to_the_next_vision_model_when_the_first_refuses_images(tmp_path):
+    models = [{"id": "vl-a", "runtime": "strata", "vision": True, "loaded": True},
+              {"id": "vl-b", "runtime": "llama.cpp", "vision": True, "loaded": False}]
+    client, seen = _refusing_client(models, {"vl-a"})
+    result = vr.review(_png(tmp_path, 1), client=client)
+    assert result.status == "ok" and result.model == "vl-b" and result.switched_from == ["vl-a"]
+    assert seen == ["vl-a", "vl-b"]
+    assert "vl-b" in vr.render(result) and "vl-a は画像を読めなかった" in vr.render(result)
+
+
+def test_review_skips_with_a_clear_message_when_no_model_reads_images(tmp_path):
+    client, _ = _refusing_client([{"id": "vl-a", "runtime": "strata", "vision": True, "loaded": True}], {"vl-a"})
+    result = vr.review(_png(tmp_path, 1), client=client)
+    assert result.status == "skipped" and "画像を読めるモデルがありません" in result.message and "Inkling" in result.message
+    assert "vl-a" in result.message
+    empty = vr.review(_png(tmp_path, 1), client=_client([{"id": "t", "runtime": "llama.cpp", "vision": False}], []))
+    assert empty.status == "skipped" and "Vision の部品" in empty.message
+
+
+def test_other_gateway_errors_still_fail_instead_of_switching(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "vl-a", "runtime": "strata", "vision": True}]})
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(vr.ReviewError):
+        vr.review(_png(tmp_path, 1), client=httpx.Client(transport=httpx.MockTransport(handler)))

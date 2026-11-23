@@ -1497,6 +1497,8 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                     logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
 
+            turn_head = {"sha": ""}      # ターンの始めの HEAD（AI が自分でコミットしたかを見分ける）
+
             async def autosave_turn(status: str) -> None:
                 """1 ターンの終わりに、作業場の未コミットの変更を箱の中でコミットする（成功・失敗・止めた、どれでも）。
                 保存に失敗しても回答の保存は止めない。ディスクの空きが下回れば会話へ 1 行出す。"""
@@ -1517,10 +1519,18 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                     logger.warning("作業場 %s の自動保存に失敗しました: %s", server.workspace, type(exc).__name__)
                     return
                 job.log("autosave", saved=saved, status=status)
-                if saved.get("sha"):
+                sha, count = saved.get("sha") or "", saved["count"]
+                if not sha and saved.get("skipped") == "clean" and turn_head["sha"]:
+                    # AI が自分でコミットして clean のとき。ターンの始めから HEAD が動いていれば、その HEAD を時点にする
+                    try:
+                        head = await asyncio.to_thread(lambda: workspaces._box_head(_sandbox.load(server.workspace)))
+                    except Exception:  # noqa: BLE001 - 目印が付かないだけで回答の保存は止めない
+                        head = ""
+                    if head and head != turn_head["sha"]:
+                        sha, count = head, 0
+                if sha:
                     # 「この時点に戻す」の目印（コードの保存の時点）。このあとの checkpoint で発言の meta に載る
-                    buf["meta"]["checkpoint"] = {"sha": saved["sha"], "count": saved["count"],
-                                                 "workspace": server.workspace}
+                    buf["meta"]["checkpoint"] = {"sha": sha, "count": count, "workspace": server.workspace}
                 if saved["skipped"] == "disk":
                     await on_text(f"\n\n（ディスクの空きが少ないので保存できません。残り {saved['free_gib']:.0f} GiB）")
                     from app.alerts.events import notify_event
@@ -1548,6 +1558,16 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                         return []
 
                 chain = await asyncio.to_thread(box_chain)
+
+                def box_head() -> str:
+                    from app.maintenance import workspaces
+
+                    try:
+                        return workspaces._box_head(_sandbox.load(server.workspace))
+                    except _sandbox.SandboxError:
+                        return ""
+
+                turn_head["sha"] = await asyncio.to_thread(box_head)
                 model_index = await asyncio.to_thread(_previous_model_index, session_id)
             else:
                 model_index = 0

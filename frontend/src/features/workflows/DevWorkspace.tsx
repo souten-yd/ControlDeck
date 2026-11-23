@@ -18,7 +18,18 @@ export type DevWorkspace = {
   target?: string; target_label?: string; capabilities?: string[]; adopt?: "pr" | "branch";
   /** OpenCode（会話サーバー）がこの作業場で今も動いているか（消すときの確認を強くする） */
   working?: boolean;
+  /** 作業場で使うモデルの並び（先頭から使う。古い API では無い）。ヘッダの札に先頭を出す */
+  model_chain?: string[];
 };
+
+/** 作業場のモデルの並びの先頭を、ヘッダの札の文言にする（例 opencode-go/glm-5.3 → GLM-5.3（作業場））。 */
+export function workspaceModelPill(workspace: DevWorkspace | undefined): string {
+  const head = workspace?.model_chain?.[0];
+  if (!head) return "";
+  const name = head.split("/").pop() ?? head;
+  if (head === "controldeck/auto") return "ローカル LLM（作業場）";
+  return `${name.replace(/^[a-z]{2,4}(?=-)/, (m) => m.toUpperCase())}（作業場）`;
+}
 
 export type WorkspaceCheck = {
   passed: boolean; at: number; stale: boolean; head: string;
@@ -157,7 +168,12 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const wasRunning = useRef(running);
   useEffect(() => {
     // OpenCode の回が終わったら結果を読み直して開く
-    if (wasBusy.current && !busy) { void qc.invalidateQueries({ queryKey: changesKey }); setOpen(true); }
+    // 作業場の一覧（未保存の表示の元）も取り直す。ターンの終わりの自動保存で dirty が変わるため
+    if (wasBusy.current && !busy) {
+      void qc.invalidateQueries({ queryKey: changesKey });
+      void qc.invalidateQueries({ queryKey: ["opencode-workspaces"] });
+      setOpen(true);
+    }
     wasBusy.current = busy;
   }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
