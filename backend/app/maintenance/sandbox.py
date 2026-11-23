@@ -762,6 +762,7 @@ def mirror_start(box: Sandbox) -> dict:
     if "mirror" not in box.capabilities:
         raise SandboxError("この作業場には ControlDeck の複製（mirror）の機能がありません（開発対象が ControlDeck 本体の作業場だけ）")
     mirror_stop(box)
+    lab_stop(box)          # 同じ公開ポート（box.port）を使うので、作業場のアプリは止める
     config = mirror_config(box)
     venv_python = Path(box.meta["source"]) / ".venv" / "bin" / "python"
     if not venv_python.exists():
@@ -793,6 +794,92 @@ def mirror_start(box: Sandbox) -> dict:
 def mirror_stop(box: Sandbox) -> None:
     podman = shutil.which("podman") or "podman"
     subprocess.run([podman, "rm", "-f", mirror_container(box)], capture_output=True, timeout=60, check=False)
+
+
+LAB_COMMAND_MAX = 500
+LAB_LOG_TAIL = 4096
+
+
+def lab_container(box: Sandbox) -> str:
+    return f"{CONTAINER_PREFIX}{box.name}-lab"
+
+
+def _container_running(name: str) -> bool:
+    podman = shutil.which("podman") or "podman"
+    result = subprocess.run([podman, "ps", "--filter", f"name=^{name}$", "-q"],
+                            capture_output=True, text=True, timeout=30, check=False)
+    return bool(result.stdout.strip())
+
+
+def _listening(port: int) -> bool:
+    """127.0.0.1:port へ TCP で繋がるか（pod の公開ポート経由で、箱の中のアプリが待ち受けているか）。"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def lab_token(name: str, started_at: str) -> str:
+    """作業場の preview の鍵。lab を起こし直すと変わる（古い URL は使えなくなる）。"""
+    from app.security.crypto import keyed_digest
+
+    return keyed_digest("workspace-lab-preview", f"{name}:{started_at}")
+
+
+def lab_base(name: str, started_at: str) -> str:
+    """preview の URL の接頭辞。command の {base} へ渡すと、HMR も同じ接頭辞で繋ぎに来る。"""
+    return f"/project-view/w/{name}/{lab_token(name, started_at)}/"
+
+
+def lab_start(box: Sandbox, command: str, *, by: str = "") -> dict:
+    """作業場の中でアプリを動かす（preview 用）。ControlDeck の複製と同じ公開ポート（box.port）を使う。
+
+    command の {port}・{host}・{base} を置き換えて、箱の中の bash へ位置引数（$1）で渡す
+    （文字列へ埋め込まない）。箱の中では 0.0.0.0 で待たないと pod の公開ポートへ届かない。
+    {base} は起こすたびに変わる鍵付きの接頭辞なので、鍵（started_at）をここで決める。
+    """
+    from datetime import datetime, timezone
+
+    command = command.strip()
+    if not command or len(command) > LAB_COMMAND_MAX:
+        raise SandboxError(f"コマンドは 1〜{LAB_COMMAND_MAX} 文字で入れてください")
+    if _container_running(mirror_container(box)):
+        raise SandboxError("ControlDeck の複製が動いています。止めてから動かしてください")
+    lab_stop(box)
+    started_at = datetime.now(timezone.utc).isoformat()
+    actual = (command.replace("{port}", str(box.port)).replace("{host}", "0.0.0.0")
+              .replace("{base}", lab_base(box.name, started_at)))
+    lab_dir = box.path / "lab"
+    lab_dir.mkdir(mode=0o700, exist_ok=True)
+    log = lab_dir / "run.log"
+    log.write_text("", encoding="utf-8")        # 開始ごとに作り直す
+    env = {"PORT": str(box.port), "HOST": "0.0.0.0"}
+    argv = podman_argv(box, ["/bin/bash", "-c", 'exec /bin/bash -c "$1" >>"$2" 2>&1', "bash", actual, str(log)],
+                       name=lab_container(box), detach=True, env=env)
+    subprocess.run(argv, capture_output=True, text=True, timeout=60, check=True)
+    meta = _read_meta(box.path)
+    meta["lab"] = {"command": command, "started_at": started_at, "by": by}
+    _save_meta(box.path, meta)
+    box.meta["lab"] = meta["lab"]
+    return lab_state(box)
+
+
+def lab_stop(box: Sandbox) -> None:
+    podman = shutil.which("podman") or "podman"
+    subprocess.run([podman, "rm", "-f", lab_container(box)], capture_output=True, timeout=60, check=False)
+
+
+def lab_state(box: Sandbox) -> dict:
+    lab = box.meta.get("lab") if isinstance(box.meta.get("lab"), dict) else {}
+    running = _container_running(lab_container(box))
+    try:
+        tail = (box.path / "lab" / "run.log").read_text(encoding="utf-8", errors="replace")[-LAB_LOG_TAIL:]
+    except OSError:
+        tail = ""
+    return {"running": running, "listening": running and _listening(box.port),
+            "command": str(lab.get("command") or ""), "started_at": str(lab.get("started_at") or ""),
+            "log_tail": tail}
 
 
 def _health(port: int) -> bool:
@@ -1108,6 +1195,7 @@ def opencode_argv(box: Sandbox, *, message: str = "", session: str = "", model: 
 def destroy(name: str) -> None:
     box = load(name, verify=False)
     mirror_stop(box)
+    lab_stop(box)
     gateway_stop(box)
     pod_remove(box)
     target = box.path.resolve()

@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-23 作業場を箱の中で動かして preview（U12）
+
+- Project Lab の「作業場」に「動かす」欄。箱（podman）の中でアプリを動かし、待ち受けたら preview（iframe・別タブ）を出す。
+- `sandbox.lab_start/lab_stop/lab_state`（ControlDeck の複製と同じ並び・同じ公開ポート `box.port`）。command は箱の bash へ位置引数（`$1`）で渡し、`{port}`・`{host}`（0.0.0.0）・`{base}` だけを置き換える。複製が動いているときは断る。ログは `<箱>/lab/run.log`（開始ごとに作り直す）。
+- API: `GET /opencode/workspaces/{name}/lab`、`POST .../lab/run`、`POST .../lab/stop`（terminal.use・持ち主だけ・監査 `workspace.lab.run`）。
+- 中継: `/project-view/w/{name}/{token}/...`（HTTP・WebSocket）。鍵は起こすたびに変わり、鍵違い 404・停止中 409・待ち受け前 425。Cookie・認証は上流へ渡さず、応答に CSP `sandbox`（allow-same-origin なし）を付けるので、別タブで開いても箱の中のアプリは ControlDeck の API に触れない。`_proxy_http`・WebSocket の中継は送り先のポートを受ける形にした（run の入口の振る舞いは同じ）。
+- テスト: `test_workspace_lab.py`、E2E `project-lab-workspaces.spec.ts`。実際の箱での通しは未。
+
 ## 2026-11-23 取り込みの PR の題（U18）
 
 - 前は最後のコミットの件名を PR の題にしていたので、ターンの終わりの自動保存（「作業途中の保存 #N（会話 … のターン）」）が題になっていた。

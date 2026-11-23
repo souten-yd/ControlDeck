@@ -343,6 +343,63 @@ def _owned_box(name: str, user: User):
         raise _workspace_error(exc) from exc
 
 
+def _lab_payload(box) -> dict:
+    from app.maintenance import sandbox
+
+    state = sandbox.lab_state(box)
+    # preview の URL は動いている間だけ（鍵は起こすたびに変わる）
+    state["preview_url"] = sandbox.lab_base(box.name, state["started_at"]) if state["running"] else None
+    return state
+
+
+@router.get("/workspaces/{name}/lab")
+async def workspace_lab_state(name: str, user: User = Depends(require_permission("terminal.use"))):
+    """作業場の中で動かしているアプリの状態（動いている・待ち受け中・ログの末尾・preview の URL）。"""
+    import asyncio
+
+    box = _owned_box(name, user)
+    return await asyncio.to_thread(_lab_payload, box)
+
+
+class LabRunBody(BaseModel):
+    command: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/workspaces/{name}/lab/run")
+async def workspace_lab_run(
+    name: str, body: LabRunBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """作業場の箱の中でアプリを動かす。command の {port}・{host}・{base} は置き換える。前に動かしたものは止める。"""
+    import asyncio
+
+    from app.maintenance import sandbox
+
+    box = _owned_box(name, user)
+    try:
+        await asyncio.to_thread(sandbox.lab_start, box, body.command, by=user.username)
+    except sandbox.SandboxError as exc:
+        raise _workspace_error(exc) from exc
+    audit.record(db, "workspace.lab.run", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request, metadata={"command": body.command.strip()[:200]})
+    return await asyncio.to_thread(_lab_payload, box)
+
+
+@router.post("/workspaces/{name}/lab/stop")
+async def workspace_lab_stop(
+    name: str, request: Request, user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    import asyncio
+
+    from app.maintenance import sandbox
+
+    box = _owned_box(name, user)
+    await asyncio.to_thread(sandbox.lab_stop, box)
+    audit.record(db, "workspace.lab.stop", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request)
+    return await asyncio.to_thread(_lab_payload, box)
+
+
 @router.get("/workspaces/{name}/changes")
 async def workspace_changes(name: str, user: User = Depends(require_permission("terminal.use"))):
     """作業場の、元からの差分の要約（ファイル・増減・未コミット・コミット・関門の結果）。中身は返さない。"""
