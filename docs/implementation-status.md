@@ -10,6 +10,12 @@
 - `AssistantChat.tsx`（3,239 行）から、発言の表示の部品（`GenStatsBadge`・`ThinkingBlock`・`CodeTimeline`・`RoleModels`・`MessageBubble`・`UnsettledNotice`・`QualityBadge`・`SpeakerToggle` ほか）を `ChatMessage.tsx` へ、コンポーネントの外の補助（`uploadWithProgress`・`extendTimeline`・`settledStatus`・`restoreMessage`・`readHistoryCollapsed`・`loadSettings`・`MODES`・`Msg` などの型）を `chatState.ts` へ移した。本体は 2,381 行。
 - 移しただけで、振る舞い・DOM・文言は変えていない。import は ChatMessage → chatState、AssistantChat → 両方で、循環は無い。`MarkdownMessage` の遅延読み込みは使う側（ChatMessage）へ。外から AssistantChat を import するのは default export のみで変更なし。
 - ROADMAP Q1 は backend 側（chat_persist.py）が残るので ☐ のまま。
+## 2026-11-23 chat_persist.py を分ける（ROADMAP Q1 の backend 側・途中）
+
+- `backend/app/workflows/chat_persist.py` から、添付（`_archive_path`〜`get_attachment`）を `chat_attachments.py`、送信待ちの要望（`_queue_out`〜`dispatch_queue_now`）を `chat_queue.py` へ移した。移しただけで、URL・応答・ルートの数と順序は変えていない（ルート一覧と OpenAPI を分ける前後で比べて同じ）。
+- 各モジュールは自分の `APIRouter` を持ち、chat_persist の router が元の位置で `include_router` する（prefix `/chat`・tags `chat-persist` は chat_persist が付ける）。元の名前は chat_persist からも使える（再 export）。
+- chat_queue は chat_persist に残る関数（`_start_send`・`opencode_image_problem` など）を `cp.<名前>` で実行時に参照する。chat_attachments の文書登録は chat_persist の `register_chat_document` を実行時に引く（テストの差し替えが効く）。
+- テスト: 件数は分ける前と同じ（2421 件通過・3 件スキップ）。`test_knowledge_rebuild.py` の `_collection_embed_override` の差し替え先を chat_attachments へ直した。
 
 ## 2026-11-23 作業場を箱の中で動かして preview（U12）
 

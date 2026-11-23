@@ -66,7 +66,7 @@ def test_chat_answers_are_saved_as_inference(client, monkeypatch):
     from app.models import Conversation
 
     _fake_embed(monkeypatch)
-    monkeypatch.setattr(chat_persist, "_collection_embed_override", lambda: {})
+    monkeypatch.setattr("app.workflows.chat_attachments._collection_embed_override", lambda: {})   # register_chat_document は chat_attachments にある
     with SessionLocal() as db:   # DB はテスト全体で共有。会話の行が要る
         if db.get(Conversation, "rb-conv") is None:
             db.add(Conversation(id="rb-conv", owner_user_id=None))
