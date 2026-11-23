@@ -403,8 +403,47 @@ test("a streamed answer with markdown is read without skipping or reading symbol
   // 書式の中の「！」では切らない。閉じた後の文の終わりで切る
   expect(stablePrefix("**結論！** これ")).toBe("");
   expect(stablePrefix("**結論！** これは大事です。次")).toBe("**結論！** これは大事です。");
-  // 回した文が食い違っても飛ばさない（食い違った所から読み直す）
+  // 回した文が食い違っても飛ばさない（食い違った所から読む）
   expect(nextSpoken("あいう。えお。", "あいX", true).text).toBe("う。えお。");
+});
+
+test("a finished answer that differs from the streamed one is not read twice nor skipped", () => {
+  // 2026-11-23 利用者「会話モードにしたら、TTS が 2 回くらい同じ文字を読んだ」。生成中と確定で文が変わると、食い違った所から読み直していた
+  const read = (streamed: string, final: string, finalIsDone = true) => {
+    const first = nextSpoken(streamed, "", false);
+    const rest = nextSpoken(final, first.queued, finalIsDone);
+    return { first: first.text, rest: rest.text, all: first.text + rest.text };
+  };
+  const head = "今日は横浜、終日晴れで最高気温は十五度くらいだよ。";
+  // 出典の番号が確定で付いた（先頭近く）
+  let r = read(`${head}夕方からは風が出るよ。`, `今日は横浜、終日晴れ[R1]で最高気温は十五度くらいだよ。[R2]夕方からは風が出るよ。傘は要らないよ。`);
+  expect(r.first).toBe(`${head}夕方からは風が出るよ。`);
+  expect(r.rest).toBe("傘は要らないよ。");
+  // 空白・記号が変わった
+  r = read("今日は 横浜、晴れ。気温は十五度。", "今日は横浜,晴れ。 気温は十五度。 夜は冷えるよ。");
+  expect(r.rest).toBe("夜は冷えるよ。");
+  // 道具の呼び出しの文字が確定で消えた（先頭近くが違い、あとは同じ）
+  r = read("調べるよ。<tool_call>{\"name\":\"web_search\"}</tool_call>結果はこうだよ。", "調べるよ。結果はこうだよ。続きがあるよ。");
+  expect(r.rest).toBe("続きがあるよ。");
+  // 文が丸ごと変わった: 聞いていない文なので全部読む
+  r = read("おはよう。いい天気だよ。", "こんにちは。今日は雨が降るよ。");
+  expect(r.rest).toBe("こんにちは。今日は雨が降るよ。");
+  // 確定のほうが短い・同じ: 読む分は無い
+  expect(nextSpoken("おはよう。", "おはよう。いい天気だよ。", true).text).toBe("");
+  // 文の途中で切れていた（回した分の終わりが文の途中）: 続きから読む
+  const cut = nextSpoken("今日は晴れ[R1]で、最高気温は十五度だよ。", "今日は晴れで、最高気", true);
+  expect(cut.text).toBe("温は十五度だよ。");
+  // 生成中の細かい刻みでも、確定で変わった後でも、同じ文字を 2 度読まない
+  const answer = "今日は横浜、終日晴れ[R1]で最高気温は十五度くらいだよ。[R2]夕方からは風が出るよ。";
+  let queued = "";
+  const parts: string[] = [];
+  for (let i = 1; i < answer.length; i++) {
+    const next = nextSpoken(i % 7 ? answer.slice(0, i).replace("[R1]", "") : answer.slice(0, i), queued, false);
+    queued = next.queued;
+    if (next.text) parts.push(next.text);
+  }
+  parts.push(nextSpoken(answer, queued, true).text);
+  expect(parts.join("")).toBe(speakableText(answer));
 });
 
 test("turning reading off mid-answer silences it, and the rest of the stream does not restart it", async ({ page, context }) => {

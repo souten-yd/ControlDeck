@@ -2137,8 +2137,11 @@ async def _intent_research(job: jobs.Job, buf: dict, conv_id: str, mode: str, qu
     base_url, model = params["base_url"], params["model"]
     budget = context_budget.for_model(base_url, model)
 
+    started = time.monotonic()
+
     def progress(phase: str, label: str) -> None:
-        item = {"phase": phase, "label": label, "iteration": 0}
+        # elapsed: 調べ始めてからの秒（段の間の差で、遅い所を後で見られる）
+        item = {"phase": phase, "label": label, "iteration": 0, "elapsed": round(time.monotonic() - started, 1)}
         buf.setdefault("meta", {}).setdefault("progress", []).append(item)
         job.log("progress", **item)
         if checkpoint_fn is not None:
@@ -2158,9 +2161,13 @@ async def _intent_research(job: jobs.Job, buf: dict, conv_id: str, mode: str, qu
     papers: list[dict] = []
     inv = ri.Investigation(intent=intent)
     if mode in ("web", "research"):
+        from app.workflows import research_keys
+
+        limits = await asyncio.to_thread(research_keys.limits)   # 設定の「読むページ数」「出典の上限」
         searx = research_tools.searx_for(params, base_url, model)
         inv = await ri.investigate(intent, searx=searx, base_url=base_url, model=model, progress=progress,
-                                   rounds=ri.ROUNDS["simple"] if intent.simple else ri.ROUNDS["normal"])
+                                   rounds=ri.ROUNDS["simple"] if intent.simple else ri.ROUNDS["normal"],
+                                   read_base=limits["read_per_aspect"], max_sources=limits["max_sources"])
     if mode in ("academic", "research"):
         queries = [q for a in intent.aspects for q in a.queries][:6]
         progress("search", "論文を検索しています: " + " / ".join(queries))

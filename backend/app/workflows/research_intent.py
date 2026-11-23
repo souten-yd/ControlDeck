@@ -28,7 +28,9 @@ from app.workflows import research_tools as rt
 logger = logging.getLogger("control_deck.workflows.research_intent")
 
 ROUNDS = {"simple": 1, "normal": 3, "deep": 5}
-READ_PER_ASPECT = 3
+READ_BY_DEPTH = {"simple": -2, "normal": 0, "deep": 3}   # 設定の「観点ごとに読むページ数」（ふつう）からの差。既定 5 なら 速い 3・ふつう 5・深い 8
+READ_LATEST_MIN = 5        # 「ニュース」「最新」「今日」など時事の依頼は、速い調査でも最低これだけ読む
+READ_PARALLEL = 4          # ページを同時に読む数
 MIN_RERANK = 0.05          # reranker の点数（0〜1）がこれ未満の結果は、観点に関係が薄いとして落とす（最上位は残す）
 MAX_QUERIES_PER_ASPECT = 3
 
@@ -94,6 +96,14 @@ class Intent:
 # ---- 依頼の理解 ----
 
 _REQUEST = re.compile(r"(について|に関して|のことを?|を|は|って)?\s*(詳しく|くわしく|できるだけ|ざっくり)?\s*(調べて|しらべて|調査して|検索して|探して|教えて|知りたい|まとめて|ください|くれ)+.*$")
+
+
+def read_per_aspect(depth: str, intent: "Intent", base: int = 5) -> int:
+    """観点ごとに読むページ数。深さ（simple/normal/deep）で変え、時事の依頼は最低 READ_LATEST_MIN 件。"""
+    count = max(2, min(10, base + READ_BY_DEPTH.get(depth, 0)))
+    if intent.freshness == "latest" or intent.date_sensitive:
+        count = max(count, READ_LATEST_MIN)
+    return count
 
 
 def _norm(text: str) -> str:
@@ -253,7 +263,7 @@ async def read_and_judge(results: list[dict], *, window, today: dt.date, focus: 
                          ranker=rt.rerank_scores, max_chars: int = 3500) -> list[dict]:
     """上位の結果を read_page で読み、ページの日付が依頼の期間に合うかを判定する。window が None なら照合しない。
     各要素: {result, page|None, status(match/mismatch/unknown/any/unread), date}。読めなかったものは unread（要約だけ）。"""
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(READ_PARALLEL)
 
     async def one(r: dict) -> dict:
         async with sem:
@@ -345,7 +355,7 @@ async def _evaluate(intent: Intent, inv: Investigation, base_url: str, model: st
 
 async def investigate(intent: Intent, *, searx, base_url: str, model: str, progress=None, rounds: int | None = None,
                       now: dt.datetime | None = None, llm=None, read=rt.read_page, ranker=rt.rerank_scores,
-                      site_limit: int = 10) -> Investigation:
+                      site_limit: int = 10, read_base: int = 5, max_sources: int = 20) -> Investigation:
     """観点ごとに 検索 → 選別 → 本文を読む（時期が大事なら日付も確かめる）→ 足りない観点だけ追加、を rounds 回まで。"""
     say = progress or (lambda phase, label: None)
     today = (now or rtime.now_jst()).astimezone(rtime.TZ).date()
@@ -357,6 +367,8 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
         time_range = "year"
     inv = Investigation(intent=intent)
     rounds = max(1, rounds or (ROUNDS["simple"] if intent.simple else ROUNDS["normal"]))
+    depth = "simple" if rounds <= ROUNDS["simple"] else "deep" if rounds >= ROUNDS["deep"] else "normal"
+    per_aspect = read_per_aspect(depth, intent, read_base)
     pending = {i: list(a.queries) for i, a in enumerate(intent.aspects)}
     seen_urls: set[str] = set()
     say("plan", "調べること: " + "・".join(a.text[:40] for a in intent.aspects))
@@ -378,7 +390,7 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
         batches = await asyncio.gather(*[search_aspect(i, qs) for i, qs in pending.items() if qs])
         for i, results in batches:
             fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls]  # noqa: SLF001
-            chosen = await select_results(intent.aspects[i].text, intent.subjects, fresh, READ_PER_ASPECT + (1 if intent.sites else 0),
+            chosen = await select_results(intent.aspects[i].text, intent.subjects, fresh, per_aspect + (1 if intent.sites else 0),
                                           ranker=ranker)
             seen_urls.update(rt._norm_url(r["url"]) for r in fresh)  # noqa: SLF001
             say("read", f"観点{i + 1}: {len(results)} 件から {len(chosen)} 件を読みます")
@@ -405,7 +417,16 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
         pending = {i: qs for i, qs in pending.items() if qs}
         if not pending:
             break
+    _cap_sources(inv, max_sources)
     return inv
+
+
+def _cap_sources(inv: Investigation, limit: int) -> None:
+    """出典（別の URL）が limit 件を超えたら、期間に合うもの・日付を問わないもの・読めたものを優先して残す。"""
+    rank = {"match": 0, "any": 1, "unknown": 2, "unread": 3}
+    urls = list(dict.fromkeys(e.url for e in sorted(inv.evidence, key=lambda e: rank.get(e.status, 4))))
+    keep = set(urls[:limit])
+    inv.evidence = [e for e in inv.evidence if e.url in keep]
 
 
 # ---- 答えの資料 ----
