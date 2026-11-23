@@ -92,7 +92,8 @@ export function WorkspaceMediaSection({ name, ago }: { name: string; ago: (secon
     onSuccess: (done) => { setConfirming(false); refresh(); show(`${done.count} 件（${formatBytes(done.size)}）を消しました`); },
     onError: (e) => show(e instanceof Error ? e.message : "消せませんでした", "error"),
   });
-  if (!data || data.count === 0) return null;
+  // 古い本体・失敗の応答では items が無いことがある（2026-11-23: 一覧の map で画面ごと落ちた）
+  if (!data || !Array.isArray(data.items) || data.items.length === 0) return null;
   return (
     <div data-testid="workspace-media" className="min-w-0">
       <p className="font-medium text-zinc-700 dark:text-zinc-200">画面の記録（{data.count} 件・{formatBytes(data.total_size)}）</p>
