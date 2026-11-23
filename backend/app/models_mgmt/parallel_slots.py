@@ -64,7 +64,7 @@ def is_local(base_url: str) -> bool:
 
 
 def background_parallel(base_url: str, model: str, override: int = 0) -> int:
-    """調査（ページを読む・要約する）を同時に何本流すか。override は設定の値（0 は自動）。"""
+    """調査で LLM を呼ぶ処理（観点ごとの要約・判定）を同時に何本流すか。override は設定の値（0 は自動）。"""
     item = resolve_instance(base_url, model)
     if item is None:
         if override > 0 and not is_local(base_url):

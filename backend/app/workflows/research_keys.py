@@ -23,8 +23,8 @@ DEFAULT_FORUMS = (
 )
 MAX_EXTRA = 30
 # 読むページ数と出典の上限（2026-11-23 利用者「ニュースを調べて 3 件くらいしか文献を調査していない。エビデンスを増やせるか」）
-# read_parallel: 調査で同時に読む本数。0 は自動（モデルの並列のスロット数から。会話に 1 つ残す）、1〜8 は固定の上書き
-LIMITS = {"read_per_aspect": (2, 10, 5), "max_sources": (5, 30, 20), "read_parallel": (0, 8, 0)}   # 名前: (最小, 最大, 既定)
+# llm_parallel: 調査で LLM を呼ぶ処理の同時数。0 は自動（モデルの並列のスロット数から。会話に 1 つ残す）、1〜8 は固定の上書き
+LIMITS = {"read_per_aspect": (2, 10, 5), "max_sources": (5, 30, 20), "llm_parallel": (0, 8, 0)}   # 名前: (最小, 最大, 既定)
 
 
 class ResearchKeyError(ValueError):

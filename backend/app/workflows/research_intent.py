@@ -30,7 +30,7 @@ logger = logging.getLogger("control_deck.workflows.research_intent")
 ROUNDS = {"simple": 1, "normal": 3, "deep": 5}
 READ_BY_DEPTH = {"simple": -2, "normal": 0, "deep": 3}   # 設定の「観点ごとに読むページ数」（ふつう）からの差。既定 5 なら 速い 3・ふつう 5・深い 8
 READ_LATEST_MIN = 5        # 「ニュース」「最新」「今日」など時事の依頼は、速い調査でも最低これだけ読む
-READ_PARALLEL = 4          # ページを同時に読む数の既定（モデルを特定できない道具の経路。調査本体はモデルの並列のスロット数から決める: models_mgmt/parallel_slots）
+READ_PARALLEL = 4          # ページを同時に読む数（HTTP と reranker だけでチャットの LLM を使わないので、モデルのスロット数とは無関係）
 MIN_RERANK = 0.05          # reranker の点数（0〜1）がこれ未満の結果は、観点に関係が薄いとして落とす（最上位は残す）
 MAX_QUERIES_PER_ASPECT = 3
 
@@ -260,10 +260,11 @@ async def select_results(aspect: str, subjects: list[str], results: list[dict], 
 
 
 async def read_and_judge(results: list[dict], *, window, today: dt.date, focus: str, limit: int, read=rt.read_page,
-                         ranker=rt.rerank_scores, max_chars: int = 3500, parallel: int | None = None) -> list[dict]:
+                         ranker=rt.rerank_scores, max_chars: int = 3500, parallel: int | None = None,
+                         gate: asyncio.Semaphore | None = None) -> list[dict]:
     """上位の結果を read_page で読み、ページの日付が依頼の期間に合うかを判定する。window が None なら照合しない。
     各要素: {result, page|None, status(match/mismatch/unknown/any/unread), date}。読めなかったものは unread（要約だけ）。"""
-    sem = asyncio.Semaphore(max(1, parallel or READ_PARALLEL))
+    sem = gate or asyncio.Semaphore(max(1, parallel or READ_PARALLEL))   # gate は観点をまたいで共有する（全体で READ_PARALLEL 本）
 
     async def one(r: dict) -> dict:
         async with sem:
@@ -355,7 +356,7 @@ async def _evaluate(intent: Intent, inv: Investigation, base_url: str, model: st
 
 async def investigate(intent: Intent, *, searx, base_url: str, model: str, progress=None, rounds: int | None = None,
                       now: dt.datetime | None = None, llm=None, read=rt.read_page, ranker=rt.rerank_scores,
-                      site_limit: int = 10, read_base: int = 5, max_sources: int = 20) -> Investigation:
+                      site_limit: int = 10, read_base: int = 5, max_sources: int = 20, digest=None) -> Investigation:
     """観点ごとに 検索 → 選別 → 本文を読む（時期が大事なら日付も確かめる）→ 足りない観点だけ追加、を rounds 回まで。"""
     say = progress or (lambda phase, label: None)
     today = (now or rtime.now_jst()).astimezone(rtime.TZ).date()
@@ -371,11 +372,13 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
     per_aspect = read_per_aspect(depth, intent, read_base)
     from app.models_mgmt import parallel_slots
 
-    # 同時に読む本数: モデルの並列のスロット数から（会話に 1 つ残す）。設定の read_parallel があればそれを上限に使う
+    # LLM を呼ぶ処理の同時数: モデルの並列のスロット数から（会話に 1 つ残す）。設定の llm_parallel があればそれを使う
     from app.workflows import research_keys
 
-    override = await asyncio.to_thread(lambda: research_keys.limits()["read_parallel"])
-    parallel = await asyncio.to_thread(parallel_slots.background_parallel, base_url, model, override)
+    override = await asyncio.to_thread(lambda: research_keys.limits()["llm_parallel"])
+    llm_parallel = await asyncio.to_thread(parallel_slots.background_parallel, base_url, model, override)
+    llm_gate = asyncio.Semaphore(max(1, llm_parallel))
+    read_gate = asyncio.Semaphore(READ_PARALLEL)   # 観点が並んでも、ページを読む総数は READ_PARALLEL 本
     pending = {i: list(a.queries) for i, a in enumerate(intent.aspects)}
     seen_urls: set[str] = set()
     say("plan", "調べること: " + "・".join(a.text[:40] for a in intent.aspects))
@@ -395,14 +398,25 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
             return i, merged
 
         batches = await asyncio.gather(*[search_aspect(i, qs) for i, qs in pending.items() if qs])
-        for i, results in batches:
+        fresh_by_aspect = []
+        for i, results in batches:   # 観点をまたぐ重複の除外は、並べる前に順に決める（競合させない）
             fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls]  # noqa: SLF001
+            seen_urls.update(rt._norm_url(r["url"]) for r in fresh)  # noqa: SLF001
+            fresh_by_aspect.append((i, len(results), fresh))
+
+        async def process_aspect(i: int, found: int, fresh: list[dict]) -> tuple[int, list[dict]]:
             chosen = await select_results(intent.aspects[i].text, intent.subjects, fresh, per_aspect + (1 if intent.sites else 0),
                                           ranker=ranker)
-            seen_urls.update(rt._norm_url(r["url"]) for r in fresh)  # noqa: SLF001
-            say("read", f"観点{i + 1}: {len(results)} 件から {len(chosen)} 件を読みます")
+            say("read", f"観点{i + 1}: {found} 件から {len(chosen)} 件を読みます")
+            # ページの読み取りは HTTP と reranker だけ（チャットの LLM を使わない）ので、スロット数と無関係に READ_PARALLEL 本
             judged = await read_and_judge(chosen, window=window, today=today, focus=intent.aspects[i].text,
-                                          limit=len(chosen), read=read, ranker=ranker, parallel=parallel)
+                                          limit=len(chosen), read=read, ranker=ranker, gate=read_gate)
+            if digest is not None:   # その観点の LLM の要約・判定。スロットから決めた本数までしか同時に走らせない
+                async with llm_gate:
+                    judged = await digest(i, judged) or judged
+            return i, judged
+
+        for i, judged in await asyncio.gather(*[process_aspect(*x) for x in fresh_by_aspect]):
             for j in judged:
                 if j["status"] == "mismatch":
                     inv.dropped_dates += 1

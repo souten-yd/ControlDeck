@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 241 ファイル、2352 テスト（目的の未記入 93 ファイル）
+- backend: 241 ファイル、2353 テスト（目的の未記入 93 ファイル）
 - E2E: 128 spec、279 テスト
 
 ## backend（backend/tests）
@@ -2371,14 +2371,15 @@
 
 ### backend/tests/test_parallel_slots.py
 
-目的: ローカル LLM の並列のスロット数から調査の同時実行数を決める部分のテスト（LLM・GPU・通信はすべてモック）。 目的: ランタイムの種類・設定の上書き・読めないときの安全側の値を固定し、調査のページ読み取りが決めた本数を超えて同時に走らないことを守る。 根拠: 2026-11-23 利用者「並列数が 5 並列なら、1 並列でメインの会話を継続して、あとの 4 並列で調査の要約など。並列数は事前に設定した ものを読み取って。並列 1 の場合は従来通り」。2026-11-15 の実測: Radiance・llama.cpp は並列で伸び、Strata は伸びず、Maya-S は並列で起動しない。
+目的: ローカル LLM の並列のスロット数から調査の同時実行数を決める部分のテスト（LLM・GPU・通信はすべてモック）。 目的: ランタイムの種類・設定の上書き・読めないときの安全側の値を固定し、調査で LLM を呼ぶ処理がスロット由来の本数を超えず、LLM を使わないページ読み取りはスロットに縛られないことを守る。 根拠: 2026-11-23 利用者「並列数が 5 並列なら、1 並列でメインの会話を継続して、あとの 4 並列で調査の要約など。並列数は事前に設定した ものを読み取って。並列 1 の場合は従来通り」。2026-11-15 の実測: Radiance・llama.cpp は並列で伸び、Strata は伸びず、Maya-S は並列で起動しない。
 
 - `test_helper_count_by_runtime`
 - `test_override_is_capped_by_slots_and_zero_means_auto`
 - `test_unreadable_config_is_one_for_local_and_default_for_external`
 - `test_model_alias_is_used_when_port_is_not_a_model`
 - `test_limit_setting_accepts_zero_to_eight`
-- `test_reads_never_exceed_the_parallel_limit`
+- `test_page_reads_ignore_slots_and_llm_work_is_capped_by_slots`
+- `test_reads_per_aspect_never_exceed_read_parallel`
 
 ### backend/tests/test_passkeys.py
 

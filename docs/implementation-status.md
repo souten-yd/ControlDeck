@@ -41,7 +41,7 @@
 - 試験: `backend/tests/test_news_images_presets.py`、E2E `frontend/e2e/news-sources-images.spec.ts`（書いただけ・未実行）。
 ## 2026-11-23 並列のスロット数に応じた役割分担（設計 `docs/design-parallel-roles.md` と第 1 段）
 - 利用者「5 並列なら 1 本で会話を続け、残り 4 本で調査の要約など。並列 1 は従来どおり。OpenCode でも計画は大きいモデル・実装は Radiance の並列に」。
-- 第 1 段: 調査のページ読み取りの同時数を固定 4 本から、使うモデルのスロット数で決めるように（`models_mgmt/parallel_slots.py`）。スロット n が 2 以上なら会話に 1 つ残して n-1 本（上限 8）、1 なら 1 本ずつ、Strata・Maya-S は常に 1、読めないローカルは 1、外部 API は従来の 4。設定 → API キー → 調べる量の「同時に読む本数」（0 は自動、1〜8 は上書き。スロット数を超えない）。
+- 第 1 段（レビューで修正）: ページの読み取りは HTTP と reranker だけで LLM を使わないので、スロットと切り離して 4 本のまま（観点が並んでも総数 4）。スロットで決めるのは LLM を呼ぶ処理の同時数（`models_mgmt/parallel_slots.py`）。`investigate` が観点をまたいで並べ、`digest`（観点ごとの LLM 処理。接続は第 2 段）を n-1 本（上限 8）までに絞る。1 なら順に、Strata・Maya-S は 1、読めないローカルは 1、外部 API は 4。設定 → API キー → 調べる量の「LLM を同時に使う本数」（0 は自動、1〜8 は上書き）。
 - 設計書に案 A（会話の LLM がルーター）・B（決まった割り当て、採用）・C（OpenCode の計画 → 並列実装 → 確認）の比較、第 2 段以降のファイルと測ること、載せ替えの費用の扱いを記した。試験 `tests/test_parallel_slots.py`。
 
 ## 2026-11-23 ニュース: Release の機能を切った Codeberg のリポジトリ（Radiance）はタグから更新を読む（本番で HTTP 404 だった）。
