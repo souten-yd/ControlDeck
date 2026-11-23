@@ -93,8 +93,18 @@ def test_save_index_validates_and_broken_file_falls_back(root, tmp_path):
 
 
 def test_driver_guide_command(root, monkeypatch):
-    assert "sudo modprobe nct6775" in system_packages.install_command("system-nct6775")
-    assert "/etc/modules-load.d/nct6775.conf" in system_packages.install_command("system-nct6775")
-    chip(root, "hwmon1", "nct6799", {1: (1, 1)})
+    """目的: 板に合うファンのドライバの読み込みと、再起動後も読み込む設定のコマンドを出すこと。読み込み済みなら空。
+
+    根拠: 2026-11-24 本番の ASRock X870 Taichi Creator で `modprobe nct6775` は「No such device」、
+    `modprobe nct6683 force=1` で NCT6686D が見つかり fan1〜fan7 が出た。ほかの板（NCT67xx）は nct6775。
+    """
+    other = system_packages.fan_driver_command("Gigabyte Technology Co., Ltd.")
+    assert other.startswith("sudo modprobe nct6775") and "/etc/modules-load.d/nct6775.conf" in other
+    asrock = system_packages.fan_driver_command("ASRock")
+    assert "modprobe nct6683 force=1" in asrock and "options nct6683 force=1" in asrock and "/etc/modules-load.d/nct6683.conf" in asrock
+    assert "nct6775" not in asrock
+    monkeypatch.setattr(system_packages, "fan_driver_command", lambda board_vendor=None: "CMD")
+    assert system_packages.install_command("system-nct6775") == "CMD"
+    chip(root, "hwmon1", "nct6686", {1: (1, 1)})
     assert system_packages.missing_packages("system-nct6775") == []
     assert system_packages.install_command("system-nct6775") == ""
