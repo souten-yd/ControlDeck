@@ -22,6 +22,10 @@ DEFAULT_FORUMS = (
     "community.home-assistant.io", "forums.developer.nvidia.com",
 )
 MAX_EXTRA = 30
+# 読むページ数と出典の上限（2026-11-23 利用者「ニュースを調べて 3 件くらいしか文献を調査していない。エビデンスを増やせるか」）
+LIMITS = {"read_per_aspect": (2, 10, 5), "max_sources": (5, 30, 20)}   # 名前: (最小, 最大, 既定)
+# 読むページ数と出典の上限（2026-11-23 利用者「トランプ大統領のニュースで 3 件くらいしか調べていない。エビデンスを増やせるか」）
+LIMITS = {"read_per_aspect": (2, 10, 5), "max_sources": (5, 30, 20)}   # 名前: (最小, 最大, 既定)
 
 
 class ResearchKeyError(ValueError):
@@ -122,3 +126,42 @@ def set_extra_forums(domains: list[str]) -> None:
 def forums() -> list[str]:
     """調べる Discourse のドメイン（既定＋足したもの）。"""
     return list(dict.fromkeys([*DEFAULT_FORUMS, *extra_forums()]))
+
+
+def limits() -> dict[str, int]:
+    """観点ごとに読むページ数（ふつうの深さ。速い・深いはここから決まる）と出典の上限。範囲外・壊れた値は範囲へ寄せる。"""
+    raw = _load().get("limits", {})
+    out = {}
+    for name, (low, high, default) in LIMITS.items():
+        try:
+            out[name] = max(low, min(high, int(raw.get(name, default))))
+        except (TypeError, ValueError):
+            out[name] = default
+    return out
+
+
+def set_limits(values: dict[str, str]) -> None:
+    """読むページ数・出典の上限を保存する（範囲外・数字でない値は拒む）。"""
+    cleaned = {}
+    for name, value in values.items():
+        if name not in LIMITS:
+            raise ResearchKeyError("知らない項目です")
+        low, high, _ = LIMITS[name]
+        try:
+            number = int(str(value).strip())
+        except ValueError as exc:
+            raise ResearchKeyError("数字で入れてください") from exc
+        if not low <= number <= high:
+            raise ResearchKeyError(f"{low}〜{high} の間で入れてください")
+        cleaned[name] = number
+    with _lock:
+        raw = _load()
+        raw["limits"] = {**raw.get("limits", {}), **cleaned}
+        _save(raw)
+
+
+def reset_limits() -> None:
+    with _lock:
+        raw = _load()
+        raw.pop("limits", None)
+        _save(raw)

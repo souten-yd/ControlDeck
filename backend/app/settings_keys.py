@@ -107,6 +107,16 @@ def _research() -> list[dict]:
          "signup": "", "configured": bool(extra), "hint": f"{len(extra)} 件" if extra else "",
          "fields": [{"name": "domains", "label": "足すドメイン（例: forum.example.com, discuss.example.org）", "configured": bool(extra), "plain": True}],
          "used_by": "AI アシスタントの調査（web_search の sites・read_page）", "manage": ""},
+        {"id": "research:limits", "group": "research", "name": "調べる量（読むページ数・出典の上限）",
+         "note": "「観点ごとに読むページ数」はふつうの深さの値。速い調査は 2 少なく、深い調査は 3 多く読む（ニュースなど時事の依頼は最低 5 件）。"
+                 "増やすほど確かだが時間がかかる。キーは不要。空の欄は今のまま",
+         "signup": "", "configured": rk.limits() != {n: v[2] for n, v in rk.LIMITS.items()},
+         "hint": f"{rk.limits()['read_per_aspect']} 件・上限 {rk.limits()['max_sources']} 件",
+         "fields": [{"name": "read_per_aspect", "label": f"観点ごとに読むページ数（{rk.LIMITS['read_per_aspect'][0]}〜{rk.LIMITS['read_per_aspect'][1]}。今 {rk.limits()['read_per_aspect']}）",
+                     "configured": True, "plain": True},
+                    {"name": "max_sources", "label": f"出典の上限（{rk.LIMITS['max_sources'][0]}〜{rk.LIMITS['max_sources'][1]}。今 {rk.limits()['max_sources']}）",
+                     "configured": True, "plain": True}],
+         "used_by": "AI アシスタントの Web 調査・調査モード", "manage": ""},
     ]
 
 
@@ -155,12 +165,15 @@ def _apply(key_id: str, values: dict[str, str], db) -> None:
         from app.workflows import research_keys as rk
 
         allowed = {"reddit": {"reddit_client_id", "reddit_client_secret", "reddit_username"},
-                   "stackexchange": {"stackexchange_key"}, "forums": {"domains"}}.get(name)
+                   "stackexchange": {"stackexchange_key"}, "forums": {"domains"},
+                   "limits": set(rk.LIMITS)}.get(name)
         if allowed is None or set(values) - allowed:
             raise HTTPException(status_code=422 if allowed else 404, detail="この項目は保存できません" if allowed else "知らないキーです")
         try:
             if name == "forums":
                 rk.set_extra_forums([*rk.extra_forums(), *[d for d in re.split(r"[,\s、]+", values["domains"]) if d]])
+            elif name == "limits":
+                rk.set_limits(values)
             else:
                 rk.set_keys(values)
         except rk.ResearchKeyError as exc:
@@ -208,12 +221,14 @@ def delete_key(key_id: str, request: Request, user: User = MANAGE, db=Depends(ge
         from app.workflows import research_keys as rk
 
         fields = {"reddit": ("reddit_client_id", "reddit_client_secret", "reddit_username"), "stackexchange": ("stackexchange_key",),
-                  "forums": ()}.get(name)
+                  "forums": (), "limits": ()}.get(name)
         if fields is None:
             raise HTTPException(status_code=404, detail="知らないキーです")
         rk.set_keys({f: "" for f in fields})
         if name == "forums":
             rk.set_extra_forums([])
+        elif name == "limits":
+            rk.reset_limits()
     elif key_id == "dev:opencode-zen":
         from app.integrations.opencode import zen
 

@@ -27,6 +27,7 @@ export function speakableText(markdown: string, maxChars = MAX_SPOKEN_CHARS): st
   }).join("\n");
   text = text
     .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<tool_call>[\s\S]*?(<\/tool_call>|$)/g, "")      // 道具の呼び出しの印（確定で本文から除かれる。生成中に読むと確定で食い違う）
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")              // 画像
     .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, "$1")         // リンクは文字だけ
     .replace(/https?:\/\/\S+/g, "")                      // むき出しの URL
@@ -107,16 +108,51 @@ export function stablePrefix(markdown: string): string {
   return "";
 }
 
+/** 文字と数字だけにした形（空白・記号・句読点・出典の印の残りを除く）と、その各文字が元の文の何文字目かの対応 */
+function squash(text: string): { text: string; at: number[] } {
+  let out = "";
+  const at: number[] = [];
+  let i = 0;
+  for (const ch of text) {
+    if (/[\p{L}\p{N}]/u.test(ch)) { out += ch.toLowerCase(); at.push(i); }
+    i += ch.length;
+  }
+  return { text: out, at };
+}
+
+/** 回した文（queued）の続きが、今の文（spoken）の何文字目から始まるか。
+ *  生成中と確定で文が変わる（出典の番号・空白や記号・道具の呼び出しの印の除去・差し替え）ことがある。
+ *  2026-11-23 利用者「会話モードにしたら、TTS が 2 回くらい同じ文字を読んだ」: 食い違った所から読み直していたので、
+ *  先頭近くの違いで、読んだ文をもう一度読んでいた。文字と数字だけにして比べ、続きの位置を探す。
+ *  見つからなければ、食い違った所から読む（丸ごと差し替わったときは聞いていない文なので読む）。 */
+function resumeAt(spoken: string, queued: string): number {
+  if (spoken.startsWith(queued)) return queued.length;
+  let at = squashedResumeAt(spoken, queued);
+  while (at > 0 && at < spoken.length && /[。！？!?.、，,」』）)\s]/.test(spoken[at])) at++;   // 読んだ文の後ろに付く句読点は読まない
+  return at;
+}
+
+function squashedResumeAt(spoken: string, queued: string): number {
+  const a = squash(queued), b = squash(spoken);
+  if (b.text.startsWith(a.text)) return a.text ? b.at[a.text.length - 1] + 1 : 0;   // 見た目だけの違い
+  if (a.text.startsWith(b.text)) return spoken.length;                                // 回した文のほうが長い（読む分は無い）
+  let common = 0;
+  while (common < a.text.length && common < b.text.length && a.text[common] === b.text[common]) common++;
+  // 途中が違うだけなら、回した文の終わり（24・12・6 文字）が今の文のどこかにある。そこから先を読む
+  for (const size of [24, 12, 6]) {
+    if (a.text.length < size) continue;
+    const found = b.text.indexOf(a.text.slice(-size), Math.max(0, common - size));
+    if (found >= 0) return b.at[found + size - 1] + 1;
+  }
+  return common ? b.at[common - 1] + 1 : 0;
+}
+
 /** 読み上げる文のうち、まだ回していない続き。queued はこれまでに回した文そのもの。
  *  生成中は文の終わりまで。上限を超えたら「続きは画面」で終える。
- *  回した文が今の文の頭と食い違ったら（書式の解釈が変わった等）、食い違った所から読み直す（飛ばさない）。 */
+ *  回した文が今の文と食い違ったら（書式の解釈・出典の番号・差し替え）、回した分の続きの位置を探して読む（二度読まない・飛ばさない）。 */
 export function nextSpoken(markdown: string, queued: string, done: boolean): { text: string; queued: string; capped: boolean } {
   const spoken = speakableText(done ? markdown : stablePrefix(markdown), Number.POSITIVE_INFINITY);
-  let start = queued.length;
-  if (!spoken.startsWith(queued)) {
-    start = 0;
-    while (start < queued.length && start < spoken.length && spoken[start] === queued[start]) start++;
-  }
+  const start = resumeAt(spoken, queued);
   let rest = spoken.slice(start);
   if (!done) {
     const end = Math.max(...["。", "！", "？", "!", "?", ".", "」", "』"].map((mark) => rest.lastIndexOf(mark)));

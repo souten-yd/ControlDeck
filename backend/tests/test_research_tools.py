@@ -427,3 +427,57 @@ def test_investigation_stops_at_the_round_limit_and_says_when_nothing_matches():
     one = run(ri.investigate(ri.Intent(goal="g", aspects=[ri.Aspect("観点", ["x one"])], simple=True), searx=searx, base_url="b", model="m",
                              rounds=ri.ROUNDS["simple"], now=NOW, llm=llm, read=read, ranker=ranker))
     assert one.rounds == 1 and ri.ROUNDS == {"simple": 1, "normal": 3, "deep": 5}
+
+
+def _count_reads(intent, **kwargs):
+    """30 件の候補を返す検索と、読んだ URL を数える読み取りで investigate を回す（通信・LLM は使わない）。"""
+    read_urls = []
+
+    async def searx(query, limit, time_range, pageno):
+        return [{"title": f"記事{n}", "url": f"https://n.test/{n}", "snippet": "x"} for n in range(30)] if pageno == 1 else []
+
+    async def read(url, focus="", max_chars=0, **kw):
+        read_urls.append(url)
+        return {**_page("普通の記事 x " * 30), "url": url}
+
+    async def ranker(q, texts, keep):
+        return [0.9] * len(texts)
+
+    inv = run(ri.investigate(intent, searx=searx, base_url="b", model="m", now=NOW, read=read, ranker=ranker, **kwargs))
+    return inv, read_urls
+
+
+def test_pages_read_per_aspect_follow_depth_setting_and_latest_floor():
+    """読む件数は深さ（速い 3・ふつう 5・深い 8）で変わり、設定の値が基準になる。時事は速くても最低 5 件。"""
+    plain = lambda **kw: ri.Intent(goal="g", subjects=["x"], aspects=[ri.Aspect("観点", ["x one"])], **kw)  # noqa: E731
+    assert [ri.read_per_aspect(d, plain()) for d in ("simple", "normal", "deep")] == [3, 5, 8]
+    assert [ri.read_per_aspect(d, plain(), 8) for d in ("simple", "normal", "deep")] == [6, 8, 10]    # 設定を増やすと全部増える（上限 10）
+    assert ri.read_per_aspect("simple", plain(freshness="latest")) == 5 and ri.read_per_aspect("simple", plain(date_sensitive=True)) == 5
+    _, quick = _count_reads(plain(simple=True), rounds=1)
+    _, normal = _count_reads(plain(), rounds=3)
+    _, deep = _count_reads(plain(), rounds=5)
+    _, news = _count_reads(plain(simple=True, freshness="latest"), rounds=1)
+    assert (len(quick), len(normal), len(deep), len(news)) == (3, 5, 8, 5)
+    _, more = _count_reads(plain(simple=True), rounds=1, read_base=9)
+    assert len(more) == 7
+
+
+def test_source_cap_keeps_matching_pages_first():
+    intent = ri.Intent(goal="g", subjects=["x"], aspects=[ri.Aspect("観点", ["x one"])])
+    inv, urls = _count_reads(intent, rounds=5, read_base=10, max_sources=6)
+    assert len(urls) == 10                                                   # 読む数は出典の上限に左右されない
+    assert len(inv.sources()) == 6 and len(inv.evidence) == 6                # 答えに使う出典だけが上限で絞られる
+
+
+def test_research_limits_are_clamped_and_saved(monkeypatch, tmp_path):
+    from app.workflows import research_keys as rk
+
+    monkeypatch.setattr(rk, "data_dir", lambda: tmp_path)
+    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20}
+    rk.set_limits({"read_per_aspect": "8", "max_sources": "30"})
+    assert rk.limits() == {"read_per_aspect": 8, "max_sources": 30}
+    for bad in ({"read_per_aspect": "1"}, {"max_sources": "99"}, {"read_per_aspect": "abc"}, {"x": "3"}):
+        with pytest.raises(rk.ResearchKeyError):
+            rk.set_limits(bad)
+    rk.reset_limits()
+    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20}

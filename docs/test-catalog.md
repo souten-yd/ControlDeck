@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 235 ファイル、2263 テスト（目的の未記入 93 ファイル）
-- E2E: 124 spec、262 テスト
+- backend: 235 ファイル、2267 テスト（目的の未記入 93 ファイル）
+- E2E: 124 spec、265 テスト
 
 ## backend（backend/tests）
 
@@ -1952,7 +1952,7 @@
 
 ### backend/tests/test_news.py
 
-目的: ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして」 「過去のニュースはアーカイブにして、いつでも閲覧できるようにすること」。 守ること: ソースの整形（外から来た文は平文・url は http/https だけ）・同じ url は更新だけ・1 つのソースの失敗が他を止めない・ event はその人宛てだけ（秘密の会話の題は伏せたまま）・好みの重み（秘密の会話は使わない）・50,000 件の切り捨てで star が残る・移行の up/down。
+目的: 目的: ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして」 「過去のニュースはアーカイブにして、いつでも閲覧できるようにすること」。 守ること: ソースの整形（外から来た文は平文・url は http/https だけ）・同じ url は更新だけ・1 つのソースの失敗が他を止めない・ event はその人宛てだけ（秘密の会話の題は伏せたまま）・好みの重み（秘密の会話は使わない）・50,000 件の切り捨てで star が残る・移行の up/down。
 
 - `test_topics_use_dictionary_proper_nouns_and_skip_versions`
 - `test_release_items_for_github_and_codeberg_skip_drafts_and_flatten_markdown`
@@ -1981,7 +1981,7 @@
 
 ### backend/tests/test_news_channels.py
 
-目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・ 設定の検査（チャンネル・表示・好み）・好みの強さがおすすめの順位に効く・ミュートの語とソース・書き出し（JSON・CSV の式の無害化）。
+目的: 目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・ 設定の検査（チャンネル・表示・好み）・好みの強さがおすすめの順位に効く・ミュートの語とソース・書き出し（JSON・CSV の式の無害化）。
 
 - `test_matching_terms_exclude_kinds_and_search_origin`
 - `test_default_channels_are_valid_and_cover_the_examples`
@@ -2005,7 +2005,7 @@
 
 ### backend/tests/test_news_rag_llm.py
 
-目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ 利用したりできるようにして。ニュース用のデータベースは他と分けておいて。」 守ること: - 記事は知識基盤の分野 news（public）へ入り、横断検索（クラウド向けを含む）に出る。本文の取り込みは設定を入れたときだけ。 - クラウドのモデルを選んでいて外部への送信が許可されていなければ、ローカルへ黙って切り替えず、その回のまとめを作らない（理由を残す）。 - クラウドへ出来事・チャットの題・好みは送らない。LLM が落ちたら、印つきの見出しの一覧のまとめになる。 - まとめの時刻・曜日・取得しない時間帯・通知。
+目的: 目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ 利用したりできるようにして。ニュース用のデータベースは他と分けておいて。」 守ること: - 記事は知識基盤の分野 news（public）へ入り、横断検索（クラウド向けを含む）に出る。本文の取り込みは設定を入れたときだけ。 - クラウドのモデルを選んでいて外部への送信が許可されていなければ、ローカルへ黙って切り替えず、その回のまとめを作らない（理由を残す）。 - クラウドへ出来事・チャットの題・好みは送らない。LLM が落ちたら、印つきの見出しの一覧のまとめになる。 - まとめの時刻・曜日・取得しない時間帯・通知。
 
 - `test_items_go_to_the_news_shard_as_public_and_show_in_cross_search`
 - `test_same_url_is_updated_not_duplicated_and_unchanged_is_skipped`
@@ -2036,6 +2036,7 @@
 - `test_quiet_hours_including_past_midnight`
 - `test_run_due_makes_each_missing_digest_once`
 - `test_news_loop_skips_fetch_in_quiet_hours`
+- `test_news_settings_reject_paid_cloud_models` — 目的: ニュースのまとめ・一言要約に有料のクラウドのモデルを選べないこと。
 
 ### backend/tests/test_notify_events.py
 
@@ -2675,6 +2676,9 @@
 - `test_selection_drops_irrelevant_results_with_reranker_or_words`
 - `test_investigation_drops_stale_pages_and_searches_again_only_for_gaps`
 - `test_investigation_stops_at_the_round_limit_and_says_when_nothing_matches`
+- `test_pages_read_per_aspect_follow_depth_setting_and_latest_floor` — 読む件数は深さ（速い 3・ふつう 5・深い 8）で変わり、設定の値が基準になる。時事は速くても最低 5 件。
+- `test_source_cap_keeps_matching_pages_first`
+- `test_research_limits_are_clamped_and_saved`
 
 ### backend/tests/test_resource_api.py
 
@@ -3718,6 +3722,7 @@
 - a long answer is played in order with a sentence-sized pause between pieces
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
+- a finished answer that differs from the streamed one is not read twice nor skipped
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
 
 ### frontend/e2e/assistant-workspace-header-and-plan-card.spec.ts
@@ -3970,7 +3975,9 @@
 
 - ニュース（放送局）: ON AIR・テロップ・区画・数字・チャンネルの切り替え（${width}px）
 - ニュース: 設定でデザイン・表示を変えると見た目が変わり、チャンネルを足せる
-- ニュース: コンパクト（見出しの一覧）は携帯でも 1 列で横にあふれない
+- ニュース: 5 つのデザインを順に選ぶ（並び・特徴の要素・保存・撮影）
+- ニュース: ダークでも 5 つのデザインが読める（背景と文字が違う色）
+- ニュース: 保存済みの「紙面」「コンパクト」は経済紙・テキスト一覧として扱う
 - ニュース: 動きを減らす設定でテロップが止まる
 - ニュース: 新着・チャンネル・絞り込み・👍・隠す・アーカイブ・検索（${width}px）
 - ニュース: ホームのカード・メニュー・設定の入口
