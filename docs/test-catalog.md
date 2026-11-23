@@ -387,7 +387,7 @@
 - `test_allowed_command_health_uses_fixed_systemd_unit_and_hides_output`
 - `test_command_health_is_fail_closed_without_registered_id`
 - `test_health_command_catalog_does_not_expose_argv`
-- `test_the_cpu_fan_is_only_reported_when_something_names_it`
+- `test_the_cpu_fan_uses_the_label_then_the_chosen_number`
 - `test_a_non_super_io_chip_is_never_read_as_the_cpu_fan` — PSU や GPU の fan を CPU fan として出さない。
 - `test_the_sensors_naming_is_used_when_the_driver_gives_no_label` — ドライバが番号しか出さない板でも、/etc/sensors.d が名付けていれば拾える。
 
