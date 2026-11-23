@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 240 ファイル、2358 テスト（目的の未記入 93 ファイル）
-- E2E: 128 spec、280 テスト
+- backend: 242 ファイル、2382 テスト（目的の未記入 93 ファイル）
+- E2E: 129 spec、282 テスト
 
 ## backend（backend/tests）
 
@@ -2067,6 +2067,28 @@
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
 - `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
 
+### backend/tests/test_news_imagegen.py
+
+目的: 目的: ニュースの「画像の無い記事に AI でイメージ画像を作る」（CPU の専用実行）の組み立て・上限・置き場・配る API・削除・未導入の振る舞いの試験。 子プロセス（モデル）は全部モック。外へは通信せず、GPU も使わない。 根拠: 2026-11-23 利用者「ニュースから画像が取れない場合は本文の意図を汲み取って、AI で生成画像をする…CPU と RAM の利用のみ…画像を生成したらすぐに アンロード…連続で生成…メディアフォージとかを使わずに、ニュースフィード独自の生成 AI を保有してほしい」。 精度の段（2026-11-23 利用者「このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」）: 設定の既定は小・未導入の段は何も作らない・ 段ごとに台本の引数（段・スレッド・seed=記事の id・時間の上限）と件数の上限（大は少なめ）が変わる・段ごとに導入・削除できる（小は消せない）。 守ること: - プロンプトは LLM を使わない規則（英語の見出しはそのまま・日本語は対応表か種類の決まり文句）で、文字・ロゴ・顔を避ける言い回しを含む。 - 設定が切・機能が未導入なら何もしない。件数・スレッド数の上限を子へ渡す。失敗した記事は再起動まで試さない。 - 画像は id（整数）だけでパスを組み、置き場の外・リンクは返さない。API はログインした人だけ、その人に見える記事だけ。 - 古い記事を消すと画像も消える。
+
+- `test_prompt_english_title_kept_japanese_mapped_and_style_guards`
+- `test_disabled_or_not_installed_does_nothing`
+- `test_generates_with_limits_sets_url_and_remembers_failures`
+- `test_worker_timeout_is_passed_and_child_killed`
+- `test_image_path_only_inside_dir_and_no_symlink`
+- `test_images_api_needs_login_and_visibility`
+- `test_prune_deletes_generated_images`
+- `test_settings_defaults_and_validation`
+- `test_feature_is_python_lib_with_pinned_cpu_only_packages_and_models`
+- `test_tier_normalize_and_models_ready_per_tier`
+- `test_selected_tier_not_installed_skips_with_tier`
+- `test_job_carries_tier_seed_and_per_tier_cap_and_timeout`
+- `test_worker_args_per_tier` — 段ごとの台本の引数（子プロセスはモック）。
+- `test_tier_specs_are_consistent`
+- `test_lcm_schedule_and_guidance_embedding`
+- `test_remove_models_by_tier_keeps_other_tiers`
+- `test_feature_model_tier_install_and_remove`
+
 ### backend/tests/test_news_images_presets.py
 
 目的: 目的: ニュースの「画像の取得」「自分のリポジトリの除外」「プリセット」「チャンネルの語を変えたときの振り分け」「ホームの表示数」の試験。外へ通信しない（HTTP は全部モック）。 根拠: 2026-11-23 利用者「本来ここには、ソースから取得した画像が表示されるべき…極力画像を撮ってほしい」「私が作っているコントロールデックとか私のリポジトリのデータは特に表示する必要はない」 「ニュースのソースの右側にプリセットボタン…無料のものを優先」「チャンネル02…以前設定していた AMD とか GPU とかの設定がそのまま残っている」「ホームに出す記事の数をどこかで設定できるように」。 守ること: og:image・twitter:image の取り出しと壊れた HTML・私的な IP・大きすぎる応答・取れなかった記事を再試行しない・自分のリポジトリは設定の移行（1 回）と一覧・チャンネルから除く・ プリセットの形（https・重複なし・分野・有料のサイトを入れない・設定の検査を通る）・語を変えたとき古い検索の結果が出ない・検索のやり直しの対象・home_items の範囲。
@@ -2380,6 +2402,18 @@
 - `test_turn_records_checkpoint_and_sends_restore_note_to_the_agent`
 - `test_turn_records_checkpoint_when_the_agent_committed_by_itself`
 - `test_turn_without_new_commit_has_no_checkpoint`
+
+### backend/tests/test_parallel_slots.py
+
+目的: ローカル LLM の並列のスロット数から調査の同時実行数を決める部分のテスト（LLM・GPU・通信はすべてモック）。 目的: ランタイムの種類・設定の上書き・読めないときの安全側の値を固定し、調査で LLM を呼ぶ処理がスロット由来の本数を超えず、LLM を使わないページ読み取りはスロットに縛られないことを守る。 根拠: 2026-11-23 利用者「並列数が 5 並列なら、1 並列でメインの会話を継続して、あとの 4 並列で調査の要約など。並列数は事前に設定した ものを読み取って。並列 1 の場合は従来通り」。2026-11-15 の実測: Radiance・llama.cpp は並列で伸び、Strata は伸びず、Maya-S は並列で起動しない。
+
+- `test_helper_count_by_runtime`
+- `test_override_is_capped_by_slots_and_zero_means_auto`
+- `test_unreadable_config_is_one_for_local_and_default_for_external`
+- `test_model_alias_is_used_when_port_is_not_a_model`
+- `test_limit_setting_accepts_zero_to_eight`
+- `test_page_reads_ignore_slots_and_llm_work_is_capped_by_slots`
+- `test_reads_per_aspect_never_exceed_read_parallel`
 
 ### backend/tests/test_passkeys.py
 
@@ -4250,6 +4284,13 @@
 目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
 
 - Settings: API キー（${width}px）
+
+### frontend/e2e/settings-news-imagegen-tiers.spec.ts
+
+目的: 設定 → ニュースの「モデルの精度」（小・中・大）と、機能と拡張の段ごとの導入ボタン。API は page.route で模擬する（モデルは取得しない）。 根拠: 2026-11-23 利用者「もうちょい精度の高いモデル使えないか？…このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」。 */
+
+- ニュースの画像生成: 精度の選択（${width}px）
+- ニュースの画像生成: 機能と拡張で段ごとに導入（${width}px）
 
 ### frontend/e2e/settings-playwright-browsers.spec.ts
 
