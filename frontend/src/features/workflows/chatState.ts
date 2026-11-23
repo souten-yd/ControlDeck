@@ -79,7 +79,8 @@ export interface PersistMsg {
   meta?: { changes?: CodeChange[]; reverted?: boolean; resumed?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
     tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode; confidential?: boolean; checkpoint?: { sha: string; count: number; workspace: string };
-    media?: ChatMedia };
+    media?: ChatMedia;
+    memory?: { count: number; ids: number[] }; memory_created?: { created: number; pending: number } };
 }
 
 export interface ChatMedia { workspace: string; items: { path: string; kind: "image" | "video"; size: number }[] }
@@ -107,6 +108,9 @@ export interface Msg {
   answeredBy?: string;
   /** オフライン調査（外部へ調査しない）で答えた。外部の検索・取得はしていない */
   confidentialAnswer?: boolean;
+  /** 答えに使った記憶（件数と ID。本文は持たない）と、この回で作った記憶 */
+  memoryUsed?: { count: number; ids: number[] };
+  memoryCreated?: { created: number; pending: number };
   /** OpenCode のエージェント（plan は計画だけ。何も変えない） */
   agent?: "build" | "plan";
   /** 自動の会話から、LLM の判断で OpenCode に任せた作業（2026-11-20 利用者「自動でも適切に OpenCode へ。すぐ移る」） */
@@ -168,6 +172,8 @@ export function restoreMessage(convId: string, m: PersistMsg): Msg {
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     confidentialAnswer: m.meta?.confidential,
+    memoryUsed: m.meta?.memory,
+    memoryCreated: m.meta?.memory_created,
     agent: m.meta?.agent,
     autoHandoff: m.meta?.auto_handoff?.task,
     timeline: m.meta?.timeline,

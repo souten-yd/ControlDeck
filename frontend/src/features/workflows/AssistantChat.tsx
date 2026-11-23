@@ -56,6 +56,8 @@ const ARCHIVE_ONLY_PROMPT = "添付した圧縮ファイルの中身を確認し
 const ARCHIVE_RE = /\.(zip|7z|rar|tar|tgz|tbz2|txz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 const ARCHIVE_MAX_BYTES = 200 * 1024 * 1024;
 
+interface MemoryFlags { no_use: boolean; no_save: boolean }
+const NO_MEMORY_FLAGS: MemoryFlags = { no_use: false, no_save: false };
 const NEW_CHAT_TITLE = "新しいチャット";
 const LS_TTS_REPLY = "cd-assistant-tts-reply"; // TTS 返答（回答を読み上げる）を端末ごとに覚える
 /** 会話モードの段階。話し終わりは、最後の声から TALK_TURN_END_MS 黙ったとき */
@@ -439,6 +441,7 @@ export default function AssistantChat() {
             return { ...m, permissions: list.some((p) => p.id === item.id)
               ? list.map((p) => (p.id === item.id ? { ...p, ...item } : p)) : [...list, item] };
           });
+          else if (d.type === "memory") patchMsg((m) => ({ ...m, memoryUsed: { count: Number(d.count) || 0, ids: Array.isArray(d.ids) ? d.ids.map(Number) : [] } }));
           else if (d.type === "progress" && d.phase === "offline") patchMsg((m) => ({ ...m, confidentialAnswer: true }));
           else if (d.type === "progress") patchMsg((m) => ({
             ...m, progress: [...(m.progress ?? []), { phase: d.phase, label: d.label, iteration: d.iteration, details: d.details }],
@@ -563,6 +566,7 @@ export default function AssistantChat() {
   };
 
   const resetConversationChoices = () => {
+    setMemFlagsNew(NO_MEMORY_FLAGS);
     setModeChoice("auto");
     setResearchDepth("auto");
     setCodeAgent("build");
@@ -603,12 +607,15 @@ export default function AssistantChat() {
   };
 
   const [deletingConversation, setDeletingConversation] = useState<ConversationSummary | null>(null);
+  const [deleteMemories, setDeleteMemories] = useState(false);   // 「この会話から作った記憶も消す」
   const confirmDeleteConversation = async () => {
     const target = deletingConversation;
+    const withMemories = deleteMemories;
     setDeletingConversation(null);
+    setDeleteMemories(false);
     if (!target) return;
     try {
-      await api(`/chat/conversations/${target.id}`, { method: "DELETE" });
+      await api(`/chat/conversations/${target.id}${withMemories ? "?delete_memories=true" : ""}`, { method: "DELETE" });
       if (target.id === convIdRef.current) {
         wsRef.current?.close();
         localStorage.removeItem(LS_CONV);
@@ -765,11 +772,34 @@ export default function AssistantChat() {
 
   const convIdRef = useRef(convId);
   convIdRef.current = convId;
+  // 会話ごとの記憶の切り替え（この会話で記憶を使わない／この会話を記憶に残さない）。会話を作る前は手元に持ち、作った直後に送る
+  const [memFlagsNew, setMemFlagsNew] = useState<MemoryFlags>(NO_MEMORY_FLAGS);
+  const { data: memFlagsSaved } = useQuery({
+    queryKey: ["memory-flags", convId],
+    queryFn: () => api<MemoryFlags>(`/memory/conversations/${convId}/flags`),
+    enabled: !!convId,
+  });
+  const memFlags = convId ? (memFlagsSaved ?? NO_MEMORY_FLAGS) : memFlagsNew;
+  const setMemFlag = async (key: keyof MemoryFlags, value: boolean) => {
+    if (!convId) { setMemFlagsNew((prev) => ({ ...prev, [key]: value })); return; }
+    try {
+      const next = await api<MemoryFlags>(`/memory/conversations/${convId}/flags`, { method: "PUT", json: { [key]: value } });
+      qc.setQueryData(["memory-flags", convId], next);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const ensureConversation = async (): Promise<string> => {
     if (convIdRef.current) return convIdRef.current;
     const c = await api<{ id: string }>("/chat/conversations", { method: "POST", json: { confidential: newSecret } });
     localStorage.setItem(LS_CONV, c.id);
     convIdRef.current = c.id;
+    if (memFlagsNew.no_use || memFlagsNew.no_save) {
+      try {
+        qc.setQueryData(["memory-flags", c.id], await api<MemoryFlags>(`/memory/conversations/${c.id}/flags`, { method: "PUT", json: memFlagsNew }));
+      } catch { /* 切り替えが届かなくても会話は始める（記憶の既定の動きになる） */ }
+      setMemFlagsNew(NO_MEMORY_FLAGS);
+    }
     setConvId(c.id);
     setConfidential(newSecret);
     setNewSecret(false);
@@ -1771,8 +1801,13 @@ export default function AssistantChat() {
           message={`「${deletingConversation.title}」を削除します。発言・添付・会話の資料も消え、元に戻せません。`}
           confirmLabel="削除する"
           onConfirm={() => void confirmDeleteConversation()}
-          onClose={() => setDeletingConversation(null)}
-        />
+          onClose={() => { setDeletingConversation(null); setDeleteMemories(false); }}
+        >
+          <label className="mt-3 flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" checked={deleteMemories} onChange={(e) => setDeleteMemories(e.target.checked)} className="h-5 w-5 shrink-0" />
+            この会話から作った記憶も消す
+          </label>
+        </ConfirmDialog>
       )}
 
       <div data-assistant-main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -1926,6 +1961,17 @@ export default function AssistantChat() {
                   </span>
                 </label>
               )}
+            </div>
+            <div data-memory-conversation className="min-w-0 rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-xs leading-relaxed dark:border-zinc-700 dark:bg-zinc-900 sm:col-span-2">
+              <p className="pt-1 text-zinc-500 dark:text-zinc-400">記憶（設定の「AI の記憶」で全体の設定を変えられます）</p>
+              <label className="flex min-h-11 min-w-0 items-center gap-2">
+                <input type="checkbox" checked={memFlags.no_use} onChange={(e) => void setMemFlag("no_use", e.target.checked)} className="h-5 w-5 shrink-0" />
+                <span className="min-w-0 text-sm font-medium text-zinc-800 dark:text-zinc-100">この会話で記憶を使わない</span>
+              </label>
+              <label className="flex min-h-11 min-w-0 items-center gap-2">
+                <input type="checkbox" checked={memFlags.no_save} onChange={(e) => void setMemFlag("no_save", e.target.checked)} className="h-5 w-5 shrink-0" />
+                <span className="min-w-0 text-sm font-medium text-zinc-800 dark:text-zinc-100">この会話を記憶に残さない</span>
+              </label>
             </div>
             {effectiveMode === "deep" && (
               <div className="space-y-2 sm:col-span-2">

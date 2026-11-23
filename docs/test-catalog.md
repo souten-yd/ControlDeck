@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 235 ファイル、2267 テスト（目的の未記入 93 ファイル）
-- E2E: 124 spec、265 テスト
+- backend: 236 ファイル、2295 テスト（目的の未記入 93 ファイル）
+- E2E: 125 spec、267 テスト
 
 ## backend（backend/tests）
 
@@ -520,6 +520,39 @@
 - `test_english_choice_never_falls_back_to_a_japanese_engine` — 英語（Parakeet）を選んだら、日本語専用の Haas へは回さない（英語を片仮名の意味の無い文にして送らない）。
 - `test_filter_rejects_segments_without_speech_and_does_not_fall_back` — 入力フィルター（Silero VAD）で声が無いとされた区切りは文字にせず、控えのエンジンにも回さない。
 - `test_auto_ja_en_routes_each_segment_by_detected_language` — 日英自動: 区切りごとに言語を判定し、日本語は Haas、英語は Parakeet に渡す。応答の言語・モデルも判定に従う。
+
+### backend/tests/test_chat_memory.py
+
+目的: AI アシスタントの会話をまたぐ記憶（app/memory）。情報の流出を防ぐ守りを厚く確かめる。 目的: - 置き場: 本文が DB ファイル（WAL 含む）に平文で無い・秘密の会話と特許の流れから作った記憶は必ず protected・守りを外せない。 - 入れ分け（policy）: protected は秘密の会話の中にだけ入る・秘密でない会話には本文も件数も出ない・外部の LLM には既定で入らず、 設定で入れても normal だけ・OpenCode は既定で入らず、設定で入れても normal だけ。 - 検索への漏れ: 記憶は答えを作る段にだけ入り、Web 検索の語を作る段（_server_search に渡す文）・道具の引数に渡らない。 モデルが記憶の言葉を道具の引数へ写したときは、道具を実行する前に止める。 - 作る側: 取り出しは必ずローカルの LLM（会話がクラウドでも）。ローカルが無ければ作らない。切／明示／確認／自動・会話ごとの切り替え。 - 消す・見せる: 削除・会話と一緒に消す・一覧／使った記憶の API は秘密でない会話に protected を返さない。監査に本文が無い。 根拠: 2026-11-23 利用者「保護された会話や特許のアイデア関連の記憶はインターネット検索を保護されていない会話には露呈できない」。 実際の LLM・外部へは通信しない（すべてモック）。
+
+- `test_text_is_encrypted_in_the_database_file`
+- `test_confidential_and_patent_origin_are_forced_protected_and_cannot_be_unprotected`
+- `test_unknown_sensitivity_falls_back_to_protected`
+- `test_midway_secret_pulls_existing_memories_of_that_conversation_to_protected`
+- `test_patent_flag_is_one_way`
+- `test_policy_matrix`
+- `test_rank_never_returns_a_kind_that_is_not_allowed`
+- `test_rank_keeps_top_five_and_prefers_pinned_and_matches`
+- `test_leak_guard_flags_copied_words_but_not_the_users_own`
+- `test_protected_memory_enters_only_secret_conversation_and_is_not_even_counted_elsewhere`
+- `test_memory_is_not_given_when_disabled_or_conversation_opted_out`
+- `test_external_llm_conversation_gets_memory_only_when_enabled_and_only_normal`
+- `test_search_query_stage_never_receives_memory_but_the_answer_stage_does` — Web 検索の語を作る段（_server_search。research_intent を呼ぶ）へ渡る文に、記憶は入らない。答えの段には入る。
+- `test_tool_arguments_that_copy_memory_are_blocked_before_any_search` — モデルが記憶の言葉を検索語へ写しても、通信の前に止める（記憶が検索エンジンへ漏れない）。
+- `test_opencode_turn_gets_memory_only_by_setting_and_only_normal`
+- `test_extraction_always_goes_to_the_local_model_even_for_a_cloud_conversation`
+- `test_no_local_model_means_no_memory_and_no_outbound_call`
+- `test_creation_modes_off_explicit_confirm_auto`
+- `test_conversation_opt_out_of_saving`
+- `test_secret_and_patent_conversations_create_protected_memory`
+- `test_secret_looking_text_and_bad_output_are_not_remembered`
+- `test_patent_collection_detection`
+- `test_api_settings_items_and_protection_rules`
+- `test_used_endpoint_never_returns_protected_to_a_normal_conversation`
+- `test_conversation_flags_api_and_delete_with_memories`
+- `test_midway_secret_api_protects_memories_made_before`
+- `test_audit_records_create_and_delete_without_the_text`
+- `test_new_database_file_is_separate_from_the_main_database`
 
 ### backend/tests/test_chat_persist.py
 
@@ -3767,6 +3800,13 @@
 目的: Patent と Knowledge のボタンを、入力を入れて押し、結果まで確かめる（検証用インスタンス・1280px）。 根拠: 2026-11-21 利用者「各ボタンなどの機能動作も確認して」。 検証用インスタンスにはローカルのモデル・埋め込みが無いので、AI のボタンは「押せない理由が出ること」までを確かめる （AI の実行結果は本番の評価 ~/ControlDeck-評価/ で確かめる）。外部へ送るボタン（取得する・いま取得）は押さない。 押したボタンと結果の一覧は test-results/button-sweep.json に書く。 */
 
 - Patent と Knowledge のボタンの動作（1280px）
+
+### frontend/e2e/chat-memory.spec.ts
+
+目的: 目的: AI の記憶の画面（設定の一覧・編集・削除・守る・すべて消す）と、答えの下の「記憶を n 件使いました」、 AI 設定の「この会話で記憶を使わない／この会話を記憶に残さない」の切り替えを守る（PC 1280・モバイル 320）。 守りの要点: 守られた記憶は印つきで出る・秘密の会話・特許から作った記憶は「守りを外す」が押せない・ 秘密でない会話の答えの下の記憶には守られた記憶が出ない（件数もサーバーが数えた normal だけ）。 根拠: 2026-11-23 利用者「保護された会話や特許のアイデア関連の記憶はインターネット検索を保護されていない会話には露呈できない」。 API は page.route で差し替える（LLM・記憶の保存先を動かさない）。撮影は test-results/ へ。
+
+- memory settings: list, edit, protect, delete, clear (${width}px)
+- answer shows the memories used; toggles are per conversation (${width}px)
 
 ### frontend/e2e/client-id.spec.ts
 

@@ -61,22 +61,39 @@ class LocalModelUnavailable(Exception):
     pass
 
 
+def _is_local(url: str, name: str) -> bool:
+    """接続先（解決済み）がこの機械のループバックか。cloud: ・ゲートウェイ経由・外部ホストは False。"""
+    from urllib.parse import urlsplit
+
+    from app.models_mgmt import gateway
+
+    if str(name or "").startswith("cloud:"):
+        return False
+    host = (urlsplit(url).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost", "::1") and not gateway.is_gateway_url(url)
+
+
+def is_local_endpoint(base_url: str, model: str) -> bool:
+    """この会話の LLM がローカルか（解決できないときは外部とみなす＝守る側）。記憶の入れ分けに使う。"""
+    from fastapi import HTTPException
+
+    from app.models_mgmt.runtime_provider import resolve_target
+
+    try:
+        return _is_local(*resolve_target(base_url, model))
+    except HTTPException:
+        return False
+
+
 def local_target(base_url: str, model: str) -> tuple[str, str]:
     """秘密の会話で使うモデルの接続先。ローカル（この機械のループバック）ならそのまま、外部（cloud: ・外部の endpoint）なら
     ローカルの既定のモデルへ替える。ローカルのモデルが無ければ LocalModelUnavailable（外部へは流さない）。"""
-    from urllib.parse import urlsplit
-
     from fastapi import HTTPException
 
     from app.models_mgmt import gateway
     from app.models_mgmt.runtime_provider import resolve_target
 
-    def is_local(url: str, name: str) -> bool:
-        if str(name or "").startswith("cloud:"):
-            return False
-        host = (urlsplit(url).hostname or "").lower()
-        return host in ("127.0.0.1", "localhost", "::1") and not gateway.is_gateway_url(url)
-
+    is_local = _is_local
     try:
         resolved = resolve_target(base_url, model)
         if is_local(*resolved):

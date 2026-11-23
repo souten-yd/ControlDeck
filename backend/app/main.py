@@ -312,6 +312,7 @@ from app.workflows.knowledge_router import router as knowledge_router  # noqa: E
 from app.patents.router import router as patents_router  # noqa: E402
 from app.knowledge.router import router as knowledge_v2_router  # noqa: E402
 from app.settings_keys import router as settings_keys_router  # noqa: E402
+from app.memory.router import router as memory_router  # noqa: E402
 from app.workflows.chat_router import router as chat_router  # noqa: E402
 from app.workflows.samplebook import router as samplebook_router  # noqa: E402
 from app.workflows.hooks_router import router as hooks_router  # noqa: E402
@@ -370,6 +371,7 @@ app.include_router(knowledge_router, prefix=API)
 app.include_router(patents_router, prefix=API)
 app.include_router(knowledge_v2_router, prefix=API)
 app.include_router(settings_keys_router, prefix=API)
+app.include_router(memory_router, prefix=API)
 app.include_router(chat_router, prefix=API)
 app.include_router(chat_persist_router, prefix=API)
 app.include_router(chat_asr_router, prefix=API)
