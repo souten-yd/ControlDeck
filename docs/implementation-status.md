@@ -6,6 +6,14 @@
 - 直し方: manifest は inode・mtime・size が同じ間は前回の検証結果を使い回す。health の poll・再確認、pause の回復、`runtime_environment`、`/llama/status`、providers の候補は `asyncio.to_thread` へ。httpx の SSL コンテキストは `app/http_tls.py` で 1 つを使い回し、起動時に thread で温める。振る舞いは変えていない。
 - 直さなかったもの: `chat_persist.on_status`（メモリ上の `job.log` だけで同期 I/O は無く、機械の負荷で出た見かけ）・`compression`・`swap_scheduler.acquire`（待っているだけ）。
 - テスト: `test_event_loop_offload.py`（重い関数を遅くしても loop の tick が進む・manifest キャッシュ・SSL コンテキストの再利用）。
+## 2026-11-23 評価で見つかった AI 開発環境の不具合 5 件（ROADMAP U22〜U26）
+
+- 作業場の欄の「未保存の変更あり」が古いまま: 一覧（`/opencode/workspaces`）は AI アシスタントで 30 秒キャッシュされ、ターンの終わりの自動保存のあとに取り直していなかった。さらに自動保存がコミットしたあとも、コミット前に覚えた probe（dirty）が 30 秒残っていた。回が終わったら一覧を invalidate し、`workspaces._autosave_commit` が probe の覚えを捨てる。
+- AI が自分でコミットして clean のターンに「この時点に戻す」が付かなかった: `autosave_turn` がターンの始めの HEAD を覚え（`_box_head` 1 回）、終わりが clean で HEAD が動いていれば、その HEAD を `meta.checkpoint` にする（箱への問い合わせは 1 ターン 2 回まで）。`workspaces.checkpoints` は起点からの全コミットを返すので戻す側は変えていない。
+- 見た目の関門（`visual_review.py`）: 画像を断る（400「does not read images」など）モデルは飛ばして、読める登録済みの次のモデルで見る。無ければ「画像を読めるモデルがありません（例: Inkling は Vision の部品をモデルの隣に置くと読めます）」で未実施（不合格にしない）。見たモデルと切り替え元を結果に出す。
+- ヘッダの札: 作業場を選んだ OpenCode は作業場のモデルの並び（`/opencode/workspaces` の各作業場に `model_chain` を追加）の先頭を「GLM-5.3（作業場）」と出す。
+- プランの回（変更ファイル 0）の完了カードに「レビューして」を出さない。
+- テスト: `test_dev_workspace_persist.py`・`test_opencode_workspace_persist.py`・`test_visual_review.py`、E2E `assistant-workspace-header-and-plan-card.spec.ts`（書いただけ。未実行）。
 
 ## 2026-11-23 調査の道具に Reddit の API・Discourse・Stack Exchange の入口
 

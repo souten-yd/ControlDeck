@@ -139,7 +139,7 @@ def check_visual(changed: list[str], shots: list[tuple[str, float]], newest_chan
                       ["ゲートウェイと画像を読めるモデルの状態を見て、dev-check をもう一度流す"])
     if review is None or review.status == "skipped":
         why = review.message if review is not None else "モデルを選べません"
-        return Result(name, SKIP, f"{why}ので流せませんでした（不合格にはしていません。画面は人の確認が要ります）")
+        return Result(name, SKIP, f"{why}。流せませんでした（不合格にはしていません。画面は人の確認が要ります）")
     high = [i for i in review.issues if i["severity"] == "high"]
     medium = [i for i in review.issues if i["severity"] == "medium"]
     tail = f"（{review.model}、{review.reviewed} 枚" + (f"、飛ばした画像 {len(review.skipped_images)} 枚" if review.skipped_images else "") + "）"

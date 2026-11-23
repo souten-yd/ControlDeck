@@ -25,7 +25,10 @@ IMAGES_PER_CALL = 4
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_IMAGES = 16
 SEVERITIES = ("high", "medium", "low")
-NO_MODEL_MESSAGE = "画像を読めるローカルのモデルがありません"
+NO_MODEL_MESSAGE = ("画像を読めるモデルがありません"
+                    "（例: Inkling は Vision の部品をモデルの隣に置くと読めます）")
+NO_IMAGE_PATTERN = re.compile(r"(does not|doesn't|cannot|can't|not) (read|support|accept|see)[^\"]{0,30}image|image[^\"]{0,30}not supported",
+                              re.I)
 GATEWAY_ENV = "CONTROL_DECK_GATEWAY_URL"
 DEFAULT_GATEWAY = "http://127.0.0.1:8765/api/v1/llm/v1"
 NO_RELAY_MESSAGE = "この作業場はローカル LLM を借りないので、画像を読めるモデルへ届きません（借りる作業場で流れます）"
@@ -51,6 +54,10 @@ class ReviewError(Exception):
     """答えが読めない・通信できない。関門では不合格でも未実施でもなく「失敗」。"""
 
 
+class NoImageSupport(ReviewError):
+    """載っているモデルが画像を読めない（ゲートウェイが 400「does not read images」などを返した）。次の候補へ切り替える。"""
+
+
 @dataclass
 class ReviewResult:
     status: str                       # "ok" | "skipped"（未実施）
@@ -60,14 +67,15 @@ class ReviewResult:
     summaries: list[str] = field(default_factory=list)
     skipped_images: list[str] = field(default_factory=list)   # 大きすぎる・読めない画像
     reviewed: int = 0
+    switched_from: list[str] = field(default_factory=list)   # 画像を読めず、切り替えたモデル
 
     def count(self, severity: str) -> int:
         return sum(1 for i in self.issues if i["severity"] == severity)
 
 
 # ---------------------------------------------------------------- 判定（純粋な関数）
-def pick_model(entries: list[dict], *, allow_load: bool = True) -> str | None:
-    """画像を読めるローカルのモデルの id。cloud:・外部・auto は使わない。
+def pick_models(entries: list[dict], *, allow_load: bool = True) -> list[str]:
+    """画像を読めるローカルのモデルの id を、使いたい順（起動中が先）に。cloud:・外部・auto は使わない。
 
     起動中のものを優先し、無ければ起動していないものも選ぶ（ゲートウェイが呼ばれたときにロードする。
     ほかの呼び出しと同じ動き。2026-11-22 利用者「アンロードしていても呼ばれたらロードして答える方式は変えない」）。
@@ -83,12 +91,13 @@ def pick_model(entries: list[dict], *, allow_load: bool = True) -> str | None:
             continue
         if entry.get("vision") is True:
             candidates.append(entry)
-    if not candidates:
-        return None
-    loaded = [c for c in candidates if c.get("loaded")]
-    if loaded:
-        return str(loaded[0]["id"])
-    return str(candidates[0]["id"]) if allow_load else None
+    loaded = [str(c["id"]) for c in candidates if c.get("loaded")]
+    return loaded + ([str(c["id"]) for c in candidates if not c.get("loaded")] if allow_load else [])
+
+
+def pick_model(entries: list[dict], *, allow_load: bool = True) -> str | None:
+    found = pick_models(entries, allow_load=allow_load)
+    return found[0] if found else None
 
 
 def parse_answer(text: str) -> tuple[list[dict], str]:
@@ -198,6 +207,8 @@ def ask(client, model: str, names: list[str], images: list[bytes], spec: str) ->
             "max_tokens": 3000, "stream": False}
     response = client.post(f"{_gateway()}/chat/completions", json=body, headers=_headers())
     if response.status_code >= 400:
+        if response.status_code in (400, 422) and NO_IMAGE_PATTERN.search(response.text):
+            raise NoImageSupport(f"{model} は画像を読めません: {response.text[:120]}")
         raise ReviewError(f"ゲートウェイが {response.status_code} を返しました: {response.text[:200]}")
     try:
         return str(response.json()["choices"][0]["message"]["content"] or "")
@@ -218,28 +229,36 @@ def review(paths: list[Path], spec: str = "", *, client=None, max_images: int = 
     client = client or httpx.Client(timeout=TIMEOUT_SECONDS)
     try:
         try:
-            model = pick_model(list_entries(client), allow_load=allow_load)
+            models = pick_models(list_entries(client), allow_load=allow_load)
         except httpx.HTTPError as exc:
             raise ReviewError(f"ゲートウェイへ届きません: {exc}") from exc
-        if model is None:
+        if not models:
             return ReviewResult("skipped", NO_MODEL_MESSAGE)
         ready, skipped = prepare_images(paths)
         if len(ready) > max_images:
             skipped += [f"{n}: 上限 {max_images} 枚を超えたので見ていません" for n, _ in ready[max_images:]]
             ready = ready[:max_images]
-        result = ReviewResult("ok", model=model, skipped_images=skipped, reviewed=len(ready))
-        for i in range(0, len(ready), IMAGES_PER_CALL):
-            batch = ready[i:i + IMAGES_PER_CALL]
+        batches = [ready[i:i + IMAGES_PER_CALL] for i in range(0, len(ready), IMAGES_PER_CALL)]
+        refused: list[str] = []
+        # 画像を読めないと断られたモデルは飛ばして、読める登録済みの次のモデルで見る
+        for model in models:
+            result = ReviewResult("ok", model=model, skipped_images=skipped, reviewed=len(ready), switched_from=refused[:])
             try:
-                text = ask(client, model, [n for n, _ in batch], [d for _, d in batch], spec)
-            except httpx.HTTPError as exc:
-                raise ReviewError(f"ゲートウェイへ届きません: {exc}") from exc
-            issues, summary = parse_answer(text)
-            for issue in issues:
-                issue["images"] = [n for n, _ in batch]
-            result.issues += issues
-            result.summaries.append(summary)
-        return result
+                for batch in batches:
+                    try:
+                        text = ask(client, model, [n for n, _ in batch], [d for _, d in batch], spec)
+                    except httpx.HTTPError as exc:
+                        raise ReviewError(f"ゲートウェイへ届きません: {exc}") from exc
+                    issues, summary = parse_answer(text)
+                    for issue in issues:
+                        issue["images"] = [n for n, _ in batch]
+                    result.issues += issues
+                    result.summaries.append(summary)
+            except NoImageSupport:
+                refused.append(model)
+                continue
+            return result
+        return ReviewResult("skipped", f"{NO_MODEL_MESSAGE}。載っているモデル（{', '.join(refused)}）は画像を断りました")
     finally:
         if owned:
             client.close()
@@ -249,6 +268,8 @@ def render(result: ReviewResult) -> str:
     if result.status == "skipped":
         return f"[未実施] {result.message}"
     lines = [f"モデル: {result.model}（{result.reviewed} 枚を見ました）"]
+    if result.switched_from:
+        lines.append(f"{', '.join(result.switched_from)} は画像を読めなかったので切り替えました")
     for sev in SEVERITIES:
         for issue in (i for i in result.issues if i["severity"] == sev):
             lines.append(f"[{sev}] {issue['where']}: {issue['what']} → {issue['fix']}")

@@ -182,7 +182,8 @@ export function CodeDoneCard({ content, todos, changeCount }: {
       <p className="num mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-zinc-600 dark:text-zinc-300">
         {!!todos?.length && <span>ToDo {done}/{todos.length} 完了</span>}
         {changeCount > 0 && <span>変更 {changeCount} ファイル</span>}
-        <ReviewButton />
+        {/* ファイルを変えていない回（プランなど）には、見るものが無いので出さない */}
+        {changeCount > 0 && <ReviewButton />}
         {hasResult && (
           <button type="button" data-code-done-result
             onClick={() => document.querySelector("[data-testid='workspace-result']")?.scrollIntoView({ block: "center", behavior: "smooth" })}

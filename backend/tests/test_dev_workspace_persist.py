@@ -599,3 +599,26 @@ def test_restore_api_404_409_and_audit(box, api, monkeypatch, external):  # noqa
     assert r.status_code == 200, r.text
     with SessionLocal() as db:
         assert db.execute(select(AuditLog).where(AuditLog.action == "workspace.restore")).scalars().first() is not None
+
+
+# 目的: AI が自分でコミットした時点（autosave が作らない）も checkpoints に並び、そこへ戻せること。
+# autosave がコミットしたとき、覚えていた probe（dirty）が捨てられ、一覧が古い「未保存」を返さないこと。
+# 根拠: 2026-11-23 の評価、ROADMAP U22。
+
+def test_agent_made_commit_is_listed_and_restorable(box, external):  # noqa: F811
+    first, _ = _two_saves(box)
+    (box.repo / "w.txt").write_text("by agent\n")
+    git(box.repo, "add", "-A")
+    git(box.repo, "commit", "-q", "-m", "feat: AI のコミット")
+    head = git(box.repo, "rev-parse", "HEAD")
+    assert workspaces.checkpoints(box)[0]["sha"] == head
+    workspaces.restore(box, first, "admin")
+    assert git(box.repo, "rev-parse", "HEAD") == first
+
+
+def test_autosave_drops_the_stale_probe_cache(box, external):  # noqa: F811
+    (box.repo / "w.txt").write_text("work\n")
+    assert sandbox.probe(box, fresh=True)["dirty"]          # probe を覚える
+    workspaces.autosave(box, "conv1")
+    assert sandbox._read_meta(box.path).get("probe") is None
+    assert workspaces.summary(box)["dirty"] is False

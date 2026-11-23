@@ -24,7 +24,7 @@ def _server(tmp_path, workspace="ws1"):
                               started_at=0, last_used=0, workspace=workspace)
 
 
-def _fake(monkeypatch, tmp_path, turn, *, autosave_results=None, chain=None, switch=None):
+def _fake(monkeypatch, tmp_path, turn, *, autosave_results=None, chain=None, switch=None, heads=None):
     """作業場の会話サーバーと OpenCode・自動保存を偽物へ替え、呼び出しを記録して返す。"""
     from app.integrations.opencode import chat_server
     from app.maintenance import sandbox as _sandbox, workspaces
@@ -68,6 +68,13 @@ def _fake(monkeypatch, tmp_path, turn, *, autosave_results=None, chain=None, swi
         return autosaves.pop(0) if autosaves else CLEAN
 
     monkeypatch.setattr(workspaces, "autosave", fake_autosave)
+    head_list = list(heads or [])
+
+    def fake_head(box):
+        calls["head_calls"] = calls.get("head_calls", 0) + 1
+        return head_list.pop(0) if head_list else ""
+
+    monkeypatch.setattr(workspaces, "_box_head", fake_head)
     monkeypatch.setattr(workspaces, "take_restore_note", lambda box: calls.pop("restore_note", ""))
     monkeypatch.setattr(_sandbox, "load", lambda name: None)
     monkeypatch.setattr(_sandbox, "model_chain", lambda b: list(chain or []))
@@ -449,3 +456,22 @@ def test_turn_records_checkpoint_and_sends_restore_note_to_the_agent(admin_clien
     assert sent.index("利用者がコードを戻しました。") < sent.index("続けて")
     msgs = admin_client.get(f"/api/v1/chat/conversations/{conv_id}/messages").json()["messages"]
     assert [m["content"] for m in msgs if m["role"] == "user"] == ["続けて"], "画面の発言は変えない"
+
+
+# 目的: AI が自分でコミットして clean のターン（autosave は何もしない）でも、ターンの始めから HEAD が動いて
+# いれば、その HEAD を「この時点に戻す」の目印にする。動いていなければ付けない。箱への問い合わせは 1 ターン 2 回まで。
+# 根拠: 2026-11-23 の評価（AI が自分でコミットしたターンに保存の時点が付かなかった）、ROADMAP U22。
+
+def test_turn_records_checkpoint_when_the_agent_committed_by_itself(admin_client, monkeypatch, tmp_path):
+    server, calls = _fake(monkeypatch, tmp_path, _ok, heads=["a" * 40, "b" * 40])
+    conv_id = _new_conversation(admin_client)
+    final = _wait_done(admin_client, conv_id, _send(admin_client, conv_id))
+    assert final["meta"]["checkpoint"] == {"sha": "b" * 40, "count": 0, "workspace": server.workspace}
+    assert calls["head_calls"] == 2
+
+
+def test_turn_without_new_commit_has_no_checkpoint(admin_client, monkeypatch, tmp_path):
+    server, calls = _fake(monkeypatch, tmp_path, _ok, heads=["a" * 40, "a" * 40])
+    conv_id = _new_conversation(admin_client)
+    final = _wait_done(admin_client, conv_id, _send(admin_client, conv_id))
+    assert "checkpoint" not in (final["meta"] or {})
