@@ -180,7 +180,7 @@ test("OpenRouter の費用・入力の扱い・残高が見え、並べ替えと
 
   // 保存しない経路があるものだけに絞る。
   await sheet.getByRole("checkbox", { name: "保存しない経路あり（ZDR）だけ" }).check();
-  await expect(sheet.getByText(/^491 件/)).toBeVisible();
+  await expect(sheet.getByText(/^該当 491 件/)).toBeVisible();
   await expect(rows).toHaveCount(100);
   await expect(rows.filter({ hasText: "この設定では送られません" })).toHaveCount(0);
   await sheet.getByRole("searchbox").fill("llama");
@@ -209,8 +209,8 @@ for (const width of [320, 1280]) {
     // 期待する件数はモックのデータから数える（画面と同じ条件を、別の書き方で）。
     type Row = { id: string; params_b: number | null; context_length: number; modalities: string[]; tools: boolean; reasoning: boolean; vendor: string; free: boolean; price_input: number; price_output: number };
     const all = remoteModels() as unknown as Row[];
-    const count = (pick: (m: Row) => boolean) => `${all.filter(pick).length.toLocaleString()} 件`;
-    const total = sheet.getByText(/^[\d,]+ 件 · 選択/);
+    const count = (pick: (m: Row) => boolean) => `該当 ${all.filter(pick).length.toLocaleString()} 件`;
+    const total = sheet.getByText(/^該当 [\d,]+ 件（全 [\d,]+ 件） · 選んだ/);
     await expect(total).toContainText(count(() => true));
 
     // 行には規模の目安が出る。非公開のモデルは「不明」。
@@ -264,5 +264,53 @@ for (const width of [320, 1280]) {
 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/frontier-filters-${width}.png` });
+  });
+}
+
+for (const width of [320, 1280]) {
+  test(`一覧を取り直せて、アカウントの設定で除外されたモデルが見える（${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "E2E credentials are required");
+    await page.setViewportSize({ width, height: width === 320 ? 700 : 900 });
+    const state = emptyCloud();
+    Object.assign(state.providers[0], { configured: true, key_hint: "9f3c", enabled: true, models: [] });
+    const excluded = {
+      count: 2, free_count: 1,
+      models: [
+        { id: "hidden/paid-model", name: "Hidden Paid", free: false },
+        { id: "hidden/free-model:free", name: "Hidden Free", free: true },
+      ],
+    };
+    const puts = await mockCloud(page, state, { remote: remoteModels(30), excluded, fetchedAt: [1_760_000_000, 1_760_003_600] });
+    await establishSession(page, context);
+    await page.goto("/models?tab=frontier");
+    const card = page.locator("li", { has: page.getByRole("button", { name: /^OpenRouter/ }) });
+    await card.getByRole("button", { name: "モデルを選ぶ" }).click();
+    const sheet = page.getByRole("dialog", { name: "OpenRouter のモデルを選ぶ" });
+
+    // 件数の言葉は「件数」と「選べる上限」を取り違えない。
+    await expect(sheet.getByText(/該当 32 件（全 32 件）/)).toBeVisible();
+    await expect(sheet.getByText(/選んだ 0 件（最大 200）/)).toBeVisible();
+
+    // 除外の件数・説明・リンク。
+    const summary = sheet.getByText("アカウントの設定で除外: 2 件（うち無料 1 件）");
+    await expect(summary).toBeVisible();
+    await summary.click();
+    await expect(sheet.getByText("OpenRouter の Settings → Privacy（学習・ZDR）や、API キーの Guardrails で絞られています。")).toBeVisible();
+    const link = sheet.getByRole("link", { name: "openrouter.ai/settings/privacy" });
+    await expect(link).toHaveAttribute("href", "https://openrouter.ai/settings/privacy");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+    const hidden = sheet.getByRole("list", { name: "除外されたモデル" });
+    await expect(hidden).toContainText("hidden/free-model:free");
+    // 選べない（チェックボックスが無い）。
+    await expect(hidden.getByRole("checkbox")).toHaveCount(0);
+
+    // 取り直す: refresh=true で問い合わせ直し、取得時刻が更新される。
+    const before = await sheet.getByText(/^最後に取得/).textContent();
+    await sheet.getByRole("button", { name: "一覧を取り直す" }).click();
+    await expect.poll(() => puts.filter((p) => p.path === "remote-models-refresh").length).toBe(1);
+    await expect(sheet.getByText(/^最後に取得/)).not.toHaveText(before ?? "");
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/openrouter-excluded-${width}.png` });
   });
 }

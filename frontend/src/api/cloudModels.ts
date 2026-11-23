@@ -149,8 +149,23 @@ export const saveCloudProvider = (provider: string, patch: CloudProviderPatch) =
 export const saveCloudEgress = (patch: Record<string, boolean>) =>
   api<CloudState>("/models/cloud/egress", { method: "PUT", json: patch });
 
-export const listCloudRemoteModels = (provider: string) =>
-  api<{ models: CloudRemoteModel[] }>(`/models/cloud/${encodeURIComponent(provider)}/remote-models`);
+/** アカウントの設定で一覧から除かれたモデル（OpenRouter のみ。公開の一覧が取れなければ null）。 */
+export interface CloudExcludedModels {
+  count: number;
+  free_count: number;
+  models: Array<{ id: string; name: string; free: boolean }>;
+}
+
+export interface CloudRemoteModelsReport {
+  models: CloudRemoteModel[];
+  excluded?: CloudExcludedModels | null;
+  /** 取得した時刻（unix 秒）。 */
+  fetched_at?: number;
+}
+
+/** refresh のときはサーバーの覚えも使わず、問い合わせ直す。 */
+export const listCloudRemoteModels = (provider: string, refresh = false) =>
+  api<CloudRemoteModelsReport>(`/models/cloud/${encodeURIComponent(provider)}/remote-models${refresh ? "?refresh=true" : ""}`);
 
 export const getCloudAccount = (provider: string) =>
   api<CloudAccount>(`/models/cloud/${encodeURIComponent(provider)}/account`);
