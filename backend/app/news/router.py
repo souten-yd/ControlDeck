@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import digest, home, llm, prefs, profile, rag, service, sources, store
+from app.news import digest, home, llm, prefs, presets, profile, rag, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -114,6 +115,12 @@ def get_sources(user: User = Depends(get_current_user)):
             "limit": sources.MAX_PER_LIST, **service.status()}
 
 
+@router.get("/presets")
+def get_presets(user: User = Depends(get_current_user)):
+    """設定 → ニュース → ソースの「プリセット」。分野ごとの無料のフィード・Release・フォーラム（確かめた日つき）。"""
+    return presets.listing()
+
+
 @router.put("/sources")
 def put_sources(body: dict, user: User = Depends(require_permission("settings.manage"))):
     try:
@@ -136,12 +143,36 @@ def get_channels(user: User = Depends(get_current_user)):
             "limits": {"channels": channels_mod.MAX_CHANNELS, "terms": channels_mod.MAX_TERMS, "palette": list(channels_mod.PALETTE)}}
 
 
+_background: set[asyncio.Task] = set()
+
+
+def changed_search_channels(old: dict[str, dict], new: list[dict]) -> list[str]:
+    """検索をやり直すチャンネルの id: 検索が有効で、新しい・含める語・言語・検索の有無が変わったもの。"""
+    out = []
+    for c in new:
+        if not c["search"]:
+            continue
+        before = old.get(c["id"])
+        if before is None or any(c[k] != before[k] for k in ("include", "lang", "search")):
+            out.append(c["id"])
+    return out
+
+
 @router.put("/channels")
-def put_channels(body: dict, user: User = Depends(require_permission("settings.manage"))):
+async def put_channels(body: dict, user: User = Depends(require_permission("settings.manage"))):
+    """チャンネルを保存する。語・言語・検索の有無が変わった（新しい）チャンネルは、その検索を裏でやり直す
+    （古い語で取った記事は、所属の判定が新しい語で外すので、新しい語の記事で埋まる）。"""
+    old = {c["id"]: c for c in channels_mod.load()["channels"]}
     try:
-        return channels_mod.save(body)
+        saved = await asyncio.to_thread(channels_mod.save, body)
     except sources.ConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    changed = changed_search_channels(old, saved["channels"])
+    if changed and os.environ.get("CONTROL_DECK_NEWS_AUTO") != "0":      # 試験では外へ通信しない
+        task = asyncio.create_task(service.refresh(force=True, channel_ids=changed))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+    return saved
 
 
 @router.get("/prefs")

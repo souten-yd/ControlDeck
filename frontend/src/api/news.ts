@@ -35,13 +35,15 @@ export const LEGACY_DESIGNS: Record<string, NewsDesign> = { paper: "finance", co
 export interface NewsDisplay {
   design: NewsDesign; accent: string; font_size: "s" | "m" | "l"; density: "relaxed" | "normal" | "tight"; images: boolean;
   columns: "auto" | "1" | "2" | "3"; ticker: boolean; onair: boolean; numbers: boolean; reduce_motion: boolean;
+  /** ホームのニュースのカードに出す記事の数（1〜10） */
+  home_items: number;
 }
 export interface NewsTaste {
   strength: number; use_chat: boolean; half_life_days: number; mute_terms: string[]; mute_sources: string[]; dim_read: boolean;
 }
 export interface NewsPrefs { display: NewsDisplay; taste: NewsTaste }
 export const DEFAULT_PREFS: NewsPrefs = {
-  display: { design: "broadcast", accent: "", font_size: "m", density: "normal", images: true, columns: "auto", ticker: true, onair: true, numbers: true, reduce_motion: false },
+  display: { design: "broadcast", accent: "", font_size: "m", density: "normal", images: true, columns: "auto", ticker: true, onair: true, numbers: true, reduce_motion: false, home_items: 5 },
   taste: { strength: 0.5, use_chat: true, half_life_days: 30, mute_terms: [], mute_sources: [], dim_read: true },
 };
 
@@ -71,6 +73,12 @@ export interface NewsConfig {
   enabled: Record<string, boolean>; github: string[]; codeberg: string[]; rss: { name: string; url: string }[];
   hackernews: boolean; huggingface: boolean; discourse: string[]; reddit: string[];
 }
+/** 設定 → ニュース → ソース →「プリセット」（backend/app/news/presets.py）。 */
+export interface NewsPreset {
+  id: string; group: string; kind: "rss" | "github" | "codeberg" | "discourse" | "reddit"; name: string; value: string;
+  lang: "ja" | "en"; note: string; key: boolean; verified: string;
+}
+export interface NewsPresets { groups: { id: string; label: string; hint: string; count: number }[]; items: NewsPreset[]; verified: string }
 export interface SourceStatus {
   source_key: string; label: string; kind: string; ok: boolean; skipped: string; error: string; count: number; at: string;
 }
@@ -140,6 +148,9 @@ export const useNewsPrefs = () =>
   useQuery({ queryKey: [...key, "prefs"], queryFn: () => api<NewsPrefs>("/news/prefs"), staleTime: 60_000 });
 export const useNewsSources = () =>
   useQuery({ queryKey: [...key, "sources"], queryFn: () => api<NewsSources>("/news/sources"), staleTime: 15_000 });
+
+export const useNewsPresets = (enabled = true) =>
+  useQuery({ queryKey: [...key, "presets"], queryFn: () => api<NewsPresets>("/news/presets"), staleTime: 3_600_000, enabled });
 
 export const useNewsSettings = () =>
   useQuery({ queryKey: [...key, "settings"], queryFn: () => api<NewsSettingsResponse>("/news/settings"), staleTime: 15_000 });

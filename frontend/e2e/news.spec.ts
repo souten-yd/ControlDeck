@@ -437,7 +437,7 @@ for (const width of [1280, 320]) {
     const { opened } = await mockNews(page);
     await establishSession(page, context);
     await page.goto("/news");
-    await expect(page.getByText("取れなかったソースが 1 件あります")).toBeVisible();
+    await expect(page.getByText(/取れなかったソース/)).toHaveCount(0);      // 2026-11-23 利用者: ニュースのページには出さない（設定 → ニュース → ソースの状態に残す）
 
     // 見出しを開くと open を記録する
     const link = page.getByTestId("section-local-llm").getByRole("link", { name: /Qwen の新しいモデル/ }).first();

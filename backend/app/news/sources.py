@@ -27,14 +27,14 @@ logger = logging.getLogger("control_deck.news.sources")
 
 KINDS = ("release", "news", "model", "forum", "reddit", "event")
 KIND_LABELS = {"release": "更新", "news": "ニュース", "model": "モデル", "forum": "フォーラム", "reddit": "Reddit", "event": "出来事"}
-MAX_PER_LIST = 30
+MAX_PER_LIST = 200      # プリセットを足しても入る数（分野ごとに 15〜60 件）
 MAX_PER_SOURCE = 30
 SUMMARY_CHARS = 300
 TITLE_CHARS = 300
 
 DEFAULT_CONFIG: dict = {
     "enabled": {kind: True for kind in KINDS},
-    "github": ["Niko1221/Strata", "ggml-org/llama.cpp", "sst/opencode", "souten-yd/ControlDeck"],
+    "github": ["Niko1221/Strata", "ggml-org/llama.cpp", "sst/opencode"],
     "codeberg": ["StillDeadcode/radiance"],
     "rss": [{"name": "GIGAZINE", "url": "https://gigazine.net/news/rss_2.0/"},
             {"name": "Phoronix", "url": "https://www.phoronix.com/rss.php"}],
@@ -43,6 +43,12 @@ DEFAULT_CONFIG: dict = {
     "discourse": ["forum.level1techs.com", "discuss.huggingface.co"],
     "reddit": ["LocalLLaMA"],
 }
+
+# 利用者自身のリポジトリの記事は出さない（2026-11-23 利用者「私が作っているコントロールデックとか私のリポジトリのデータは特に表示する必要はない」）。
+# source_key の先頭で判定する（貯まった記事の一覧・ホーム・まとめ・チャンネルから除く）。
+HIDDEN_SOURCE_PREFIXES = ("github:souten-yd/",)
+HIDDEN_REPO_OWNERS = ("souten-yd/",)
+MIGRATION_OWN_REPO = "own-repo-removed"
 
 _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 _SUB = re.compile(r"^[A-Za-z0-9_]{2,21}$")
@@ -116,6 +122,8 @@ def normalize(raw: object) -> dict:
             raise ConfigError(str(exc)) from exc
 
     out["github"] = names("github", repo)
+    done = raw.get("migrated", [])
+    out["migrated"] = [m for m in done if isinstance(m, str)][:10] if isinstance(done, list) else []
     out["codeberg"] = names("codeberg", repo)
     out["discourse"] = names("discourse", domain)
     out["reddit"] = names("reddit", sub)
@@ -137,15 +145,33 @@ def normalize(raw: object) -> dict:
     return out
 
 
+def _migrate_own_repo(cfg: dict) -> bool:
+    """保存済みの設定から自分のリポジトリを 1 回だけ外す（印は migrated）。外す・印を付けたら True（呼び出し側が書き戻す）。"""
+    if MIGRATION_OWN_REPO in cfg["migrated"]:
+        return False
+    cfg["github"] = [r for r in cfg["github"] if not r.lower().startswith(HIDDEN_REPO_OWNERS)]
+    cfg["migrated"] = [*cfg["migrated"], MIGRATION_OWN_REPO]
+    return True
+
+
 def load_config() -> dict:
     try:
-        return normalize(json.loads(_path().read_text(encoding="utf-8")))
+        raw = json.loads(_path().read_text(encoding="utf-8"))
+        cfg = normalize(raw)
     except (OSError, ValueError):   # 無い・壊れているときは既定（ConfigError も ValueError）
         return normalize(DEFAULT_CONFIG)
+    if _migrate_own_repo(cfg):
+        try:
+            save_config(cfg)
+        except OSError:
+            logger.warning("ニュースのソースの設定を書き戻せませんでした")
+    return cfg
 
 
 def save_config(raw: object) -> dict:
     cfg = normalize(raw)
+    if MIGRATION_OWN_REPO not in cfg["migrated"]:      # 利用者が保存した後は、足した自分のリポジトリを勝手に外さない
+        cfg["migrated"] = [*cfg["migrated"], MIGRATION_OWN_REPO]
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -281,11 +307,30 @@ def release_items(rows: object, *, host: str, repo: str) -> list[dict]:
     return out
 
 
+def github_atom_items(raw: bytes, repo: str) -> list[dict]:
+    """GitHub の releases.atom（API の上限に当たったときの代わり。認証なしの API は 1 時間 60 回まで）を Release の記事にする。"""
+    out = []
+    for item in parse_feed(raw, url=f"https://github.com/{repo}/releases.atom", name=f"GitHub {repo}"):
+        item.update(kind="release", source=f"GitHub {repo}", source_key=f"github:{repo}", image_url=None, extra_topics=(repo.split("/")[-1],))
+        out.append(item)
+    return out
+
+
 async def fetch_github(repo: str) -> list[dict]:
+    from app.knowledge.sources import http_get
     from app.workflows import research_tools as rt
 
-    rows = await rt._get_json(f"https://api.github.com/repos/{repo}/releases", params={"per_page": 10},
-                              headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+    try:
+        rows = await rt._get_json(f"https://api.github.com/repos/{repo}/releases", params={"per_page": 10},
+                                  headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+    except rt.HttpError as exc:
+        if exc.status not in (403, 429):      # 上限（認証なしは 1 時間 60 回）なら Atom で取る。ほかの失敗はそのまま
+            raise
+        raw = await asyncio.to_thread(http_get, f"https://github.com/{repo}/releases.atom", pace=1.0, timeout=25)
+        try:
+            return github_atom_items(raw, repo)
+        except ET.ParseError as exc2:
+            raise RuntimeError(f"フィードを読めません: {exc2}") from exc2
     return release_items(rows, host="GitHub", repo=repo)
 
 

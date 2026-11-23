@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 239 ファイル、2329 テスト（目的の未記入 93 ファイル）
-- E2E: 127 spec、274 テスト
+- backend: 240 ファイル、2346 テスト（目的の未記入 93 ファイル）
+- E2E: 128 spec、279 テスト
 
 ## backend（backend/tests）
 
@@ -2065,7 +2065,29 @@
 - `test_archive_keep_prunes_but_keeps_starred`
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
-- `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースは入れる）。
+- `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
+
+### backend/tests/test_news_images_presets.py
+
+目的: 目的: ニュースの「画像の取得」「自分のリポジトリの除外」「プリセット」「チャンネルの語を変えたときの振り分け」「ホームの表示数」の試験。外へ通信しない（HTTP は全部モック）。 根拠: 2026-11-23 利用者「本来ここには、ソースから取得した画像が表示されるべき…極力画像を撮ってほしい」「私が作っているコントロールデックとか私のリポジトリのデータは特に表示する必要はない」 「ニュースのソースの右側にプリセットボタン…無料のものを優先」「チャンネル02…以前設定していた AMD とか GPU とかの設定がそのまま残っている」「ホームに出す記事の数をどこかで設定できるように」。 守ること: og:image・twitter:image の取り出しと壊れた HTML・私的な IP・大きすぎる応答・取れなかった記事を再試行しない・自分のリポジトリは設定の移行（1 回）と一覧・チャンネルから除く・ プリセットの形（https・重複なし・分野・有料のサイトを入れない・設定の検査を通る）・語を変えたとき古い検索の結果が出ない・検索のやり直しの対象・home_items の範囲。
+
+- `test_extract_image_prefers_og_then_twitter_and_resolves_relative`
+- `test_extract_image_rejects_unsafe_and_survives_broken_html`
+- `test_rss_media_enclosure_and_first_img_are_used`
+- `test_fetch_page_image_reads_only_the_head_and_follows_redirects`
+- `test_fetch_page_image_refuses_private_addresses` — 実物の guarded_client を使う（私的・loopback の IP は接続前に断る。外へは出ない）。
+- `test_fill_only_new_items_without_image_and_never_retries`
+- `test_fill_is_capped_per_run`
+- `test_upsert_reports_new_ids`
+- `test_own_repo_not_in_defaults_and_removed_once_from_saved_config`
+- `test_own_repo_items_hidden_from_list_home_channels_and_digest`
+- `test_preset_list_shape`
+- `test_presets_exclude_paid_sites_and_pass_source_validation`
+- `test_presets_api`
+- `test_old_search_results_do_not_show_after_terms_change`
+- `test_changed_search_channels_detects_term_lang_and_new_channels`
+- `test_refresh_with_channel_ids_fetches_only_those_searches`
+- `test_home_items_pref_range`
 
 ### backend/tests/test_news_rag_llm.py
 
@@ -4067,6 +4089,16 @@
 目的: 設定 → 表示の「メニューの表示」: メニュー（PC のサイドバー・携帯のドロワー）の項目を 1 つずつ隠せる。 隠した項目は「よく使う」からも消える。Settings は隠せない（隠すと戻れない）。選択は端末に残る。 Add-on の項目も同じ一覧から選べる（effective addons を差し替えて確かめる）。 根拠: 2026-11-23 利用者「設定で表示っていう項目があれば、そこの中にメインメニューの項目を任意に 表示、非表示の選択ができるようにしてほしい。新しく導入されたプラグインや今後導入される機能、今開発中の パテントなども含めて…汎用的に開発すること」。 */
 
 - メニューの項目を隠せる（${width}px）
+
+### frontend/e2e/news-sources-images.spec.ts
+
+目的: ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・プリセット・取得の失敗の件数を出さないこと。API は page.route で差し替える。 根拠: 2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…アクセントラインだけにして、表示を小さくする」「取れなかった総数が1件ありますと表示されてますけれども、ニュースのところで表示しないでほしい」 「ニュースのソースの右側にプリセットボタン」「ホームのニュースに、今日（無ければ昨日）のまとめの概要と、記事を何個か。何個かは設定できるように」。 撮影は test-results/news-noimg-*.png・news-home-digest-{today,yesterday,none}-{390,1280}.png・news-presets-{320,1280}.png。 */
+
+- ニュース: 画像の無い記事は大きな箱でなく細いアクセントラインで、取得の失敗の件数は出ない
+- ニュース: ホームのカード（まとめ: ${name}）はテロップ・まとめの概要・記事 5 件
+- ニュース: テロップは押すと止まり、動きを減らす設定では流さない
+- ニュース: 設定でホームに出す記事の数を変えると表示が変わる
+- ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる
 
 ### frontend/e2e/news.spec.ts
 

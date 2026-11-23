@@ -81,3 +81,10 @@
 
 実装: デザインの id は broadcast・magazine・newspaper・finance（経済紙）・text（テキスト一覧）。保存済みの `paper` は finance、`compact` は text として扱う（backend/app/news/prefs.py の LEGACY_DESIGNS と frontend の LEGACY_DESIGNS）。
 放送局は BroadcastHome、ほかは `frontend/src/features/news/DesignHomes.tsx`。区画・興味と話題・数字・アーカイブは BroadcastHome の共通部品を使い、データの取り方は重ねない。色は `news.css` の変数（ダークは `:root.dark`）、外部フォントは読まない。設定の見本は CSS で描いた縮小図（画像ファイルなし）。
+
+## 2026-11-23 追記: 画像・プリセット・ホームのカード
+
+- 画像の無い記事は大きな箱にせず、チャンネル色の 5px の線だけにする（画像の読み込み失敗も同じ）。画像は新着だけ、記事のページの og:image・twitter:image を取る（`app/news/images.py`）。
+- 自分のリポジトリ（`github:souten-yd/`）の記事は出さない。ソースのプリセットは `app/news/presets.py` の 1 か所（無料・読めると確かめたものだけ）。
+- チャンネルの含める語に合わない検索の結果は、Google ニュースも含めて出さない。語を変えて保存したらそのチャンネルの検索だけ取り直す。
+- ホームのカード: テロップ → まとめの概要（今日、無ければ昨日）→ 記事 N 件（設定の「ホームに出す記事の数」）。

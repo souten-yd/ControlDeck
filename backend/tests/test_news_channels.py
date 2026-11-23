@@ -51,7 +51,8 @@ def test_matching_terms_exclude_kinds_and_search_origin():
     assert m(c, "別の話", summary="llama.cpp 対応")      # 抜粋でも判定
     assert not m(c, "Qwen の広告記事")                    # 外す語が勝つ
     assert not m(c, "無関係な話")
-    assert m(c, "語が入っていない題", source_key="search:t:gnews-ja")   # 検索で取った記事はそのチャンネルのもの
+    assert m(c, "Qwen を使う", source_key="search:t:gnews-ja")          # 検索で取った記事も、今の語が題か抜粋に入っていれば所属する
+    assert not m(c, "語が入っていない題", source_key="search:t:gnews-ja")   # 入っていなければ所属しない（語を変えても前の語の結果が残らない。2026-11-23）
     assert not m(c, "Qwen の広告", source_key="search:t:gnews-ja")      # 検索で取っても外す語は効く
     assert not m(c, "語が入っていない題", source_key="search:other:gnews-ja")
     rel = ch(include=[], kinds=["release"])
@@ -164,10 +165,10 @@ def test_hn_discourse_reddit_search_use_the_channel_terms(monkeypatch):
 
 def test_search_results_are_saved_and_belong_to_the_channel():
     with news_db.session() as db:
-        item = sources.make_item(kind="news", source="ITmedia NEWS", source_key="search:t:gnews-ja", title="題に語がない", url="https://news.google.com/rss/articles/x")
+        item = sources.make_item(kind="news", source="ITmedia NEWS", source_key="search:t:gnews-ja", title="Qwen の話題", url="https://news.google.com/rss/articles/x")
         store.upsert_items(db, [item])
         row = db.query(NewsItem).one()
-        assert channels.first_channel([ch()], row) == "t" and channels.first_channel([ch(id="z")], row) is None
+        assert channels.first_channel([ch()], row) == "t" and channels.first_channel([ch(include=["別の語"])], row) is None
 
 
 # ---- 画面の取得（/home・/items?channel=） ----
@@ -376,7 +377,7 @@ def test_refresh_uses_channel_search_sources(monkeypatch):
 
 
 def test_forum_search_drops_posts_without_the_channel_terms(monkeypatch):
-    """目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースは入れる）。
+    """目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
 
     根拠: 2026-11-23 本番で「特許」のチャンネルに Level1Techs の「Linux quirks you should know」などが 30 件ずつ入っていた
     （検索の結果なら中身を見ずに入れていた）。チャンネルの語の既定から一般の英単語 Strata も外した（地層・建築の記事が入った）。
@@ -392,7 +393,8 @@ def test_forum_search_drops_posts_without_the_channel_terms(monkeypatch):
     c = ch(include=["特許", "patent"])
     got = asyncio.run(sources.fetch_discourse_search(c, "forum.example.com"))
     assert [i["title"] for i in got] == ["特許の調べ方"]
-    # すでに貯まった無関係な投稿も、フォーラムの検索の印だけではチャンネルに入らない。Google ニュースの結果は入る
+    # すでに貯まった無関係な投稿は、検索の印だけではチャンネルに入らない（Google ニュースも今の語が無ければ入らない）
     assert not channels_mod.matches(c, kind="news", source_key="search:t:discourse-forum.example.com", title="Linux quirks")
-    assert channels_mod.matches(c, kind="news", source_key="search:t:gnews-ja", title="知財の動き")
+    assert not channels_mod.matches(c, kind="news", source_key="search:t:gnews-ja", title="知財の動き")
+    assert channels_mod.matches(c, kind="news", source_key="search:t:gnews-ja", title="特許の動き")
     assert "Strata" not in channels_mod.DEFAULT_CHANNELS[0]["include"]

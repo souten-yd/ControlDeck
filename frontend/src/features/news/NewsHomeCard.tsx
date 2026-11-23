@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   DEFAULT_PREFS, KIND_STYLE, LEGACY_DESIGNS, relativeTime, useDigests, useNewsAction, useNewsChannels, useNewsItems, useNewsPrefs, useNewsSettings,
@@ -9,20 +9,49 @@ import { Media } from "./NewsCard";
 import { chNo, newsRootProps } from "./newsTheme";
 import "../../styles/news.css";
 
-const SHOWN = 5;
 
 /** 今日の日付（YYYY-MM-DD・利用者の端末の時刻）。日刊のまとめの day と比べる。 */
-const today = () => new Date().toLocaleDateString("en-CA");
+const dayString = (offset = 0) => { const d = new Date(); d.setDate(d.getDate() + offset); return d.toLocaleDateString("en-CA"); };
+const today = () => dayString(0);
+
+const clean = (line: string) => line.replace(/^[-・*]\s*/, "").replace(/\s*\[\d{1,3}\]/g, "").trim();
+const TOP3 = /^#{1,4}\s*今日の\s*3\s*行/;
+
+/** まとめの本文の概要の行。「## 今日の 3 行」があればその箇条書き（最大 4 行）、無ければ（古い形）最初の見出しでない 3 行。 */
+export function digestLines(body: string): string[] {
+  const rows = body.split("\n").map((l) => l.trim());
+  const at = rows.findIndex((l) => TOP3.test(l));
+  let picked: string[];
+  if (at >= 0) {
+    const rest = rows.slice(at + 1);
+    const end = rest.findIndex((l) => l.startsWith("#"));
+    picked = (end < 0 ? rest : rest.slice(0, end)).filter(Boolean);
+  } else {
+    picked = rows.filter((l) => l && !l.startsWith("#")).slice(0, 3);
+  }
+  return picked.map(clean).filter(Boolean).slice(0, 4);
+}
+
+export interface DigestSummary { label: string; lines: string[]; day: string }
+
+/** 今日の日刊のまとめ、無ければ昨日の日刊のまとめの概要。どちらも作れていない（本文が空・見出しの一覧だけ）なら null。 */
+export function digestSummary(digests: (Digest | null | undefined)[], day = today(), yesterday = dayString(-1)): DigestSummary | null {
+  const daily = digests.filter((d): d is Digest => !!d && d.period === "daily" && !!d.body && !d.fallback);
+  for (const [want, label] of [[day, "今朝のまとめ"], [yesterday, "昨日のまとめ"]] as const) {
+    const found = daily.find((d) => d.day === want);
+    const lines = found ? digestLines(found.body) : [];
+    if (found && lines.length) return { label, lines, day: want };
+  }
+  return null;
+}
 
 /** 今日の日刊のまとめの本文の最初の 1〜2 文（平文）。今日の分でない・作られなかった・見出しの一覧（LLM なし）なら null。 */
 export function digestLead(digest: Digest | null | undefined, day = today()): string | null {
   if (!digest || digest.period !== "daily" || digest.day !== day || !digest.body || digest.fallback) return null;
-  const line = digest.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  const line = digestLines(digest.body)[0];
   if (!line) return null;
-  const plain = line.replace(/^[-・*]\s*/, "").replace(/\s*\[\d{1,3}\]/g, "").trim();
-  const sentences = plain.match(/[^。！？]+[。！？]?/g) ?? [plain];
-  const text = sentences.slice(0, 2).join("").trim();
-  return text || null;
+  const sentences = line.match(/[^。！？]+[。！？]?/g) ?? [line];
+  return sentences.slice(0, 2).join("").trim() || null;
 }
 
 const hostOf = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
@@ -34,11 +63,16 @@ export function NewsHomeCard() {
   const { data, isLoading, isError } = useNewsItems({ view: "recommended", kinds: "", q: "", date: "", topic: "", source: "" }, true, feedMinutes);
   const prefs = useNewsPrefs().data ?? DEFAULT_PREFS;
   const channels = useNewsChannels().data?.channels ?? [];
-  const digest = useDigests().data?.latest.daily;
+  const digests = useDigests().data;
   const act = useNewsAction();
-  const items = (data?.pages[0]?.items ?? []).filter((i) => !i.state.hide).slice(0, SHOWN);
+  const [paused, setPaused] = useState(false);
+  const shown = Math.min(10, Math.max(1, prefs.display.home_items ?? 5));       // 設定 → ニュース → 表示「ホームに出す記事の数」
+  const all = (data?.pages[0]?.items ?? []).filter((i) => !i.state.hide);
+  const items = all.slice(0, shown);
   const design = LEGACY_DESIGNS[prefs.display.design] ?? prefs.display.design;
-  const lead = useMemo(() => digestLead(digest), [digest]);
+  const summary = useMemo(() => digestSummary([digests?.latest.daily, ...(digests?.digests ?? [])]), [digests]);
+  // テロップに流す項目の配列（共通の Marquee 部品へつなぐ形）: まとめの各行、無ければ新しい見出しの上位数件
+  const telop = useMemo(() => (summary ? summary.lines : all.slice(0, 5).map((i) => i.title)), [summary, all]);
   if (isError) return null;
 
   const channelOf = (item: NewsItem) => {
@@ -63,15 +97,26 @@ export function NewsHomeCard() {
 
   const [first, ...rest] = items;
   return (
-    <section aria-labelledby="home-news" data-news-home-card {...newsRootProps(prefs.display)} className="nw nwh">
+    <section aria-labelledby="home-news" data-news-home-card {...newsRootProps(prefs.display, paused)} className="nw nwh">
       <div className="nwh-head">
         <h2 id="home-news" className="nw-head nwh-title">ニュース</h2>
         <Link to="/news" className="nwh-open">ニュースを開く</Link>
       </div>
-      {lead && (
-        <Link to="/news" className="nwh-digest" data-testid="home-digest" aria-label={`今朝のまとめ: ${lead}`}>
-          <span className="nw-badge">今朝のまとめ</span>
-          <span className="nwh-digest-text">{lead}</span>
+      {telop.length > 0 && (
+        <div className="nw-ticker nwh-telop" data-testid="home-telop" role="group" aria-label="テロップ">
+          <span className="nw-ticker-label">NEWS</span>
+          <div className="nw-ticker-lane"><div className="nw-ticker-track" style={{ animationDuration: `${Math.max(18, telop[0].length * 0.5)}s` }}>
+            {/* 切れ目なく流すため同じ文を 2 回出す（2 回目は読み上げない）。複数あるときの 1 件ずつのめくりは共通の Marquee へ */}
+            <span className="nw-ticker-set" data-testid="home-telop-text">{telop[0]}</span>
+            <span className="nw-dup" aria-hidden>{telop[0]}</span>
+          </div></div>
+          <button type="button" className="nw-ticker-pause" aria-label={paused ? "テロップを流す" : "テロップを止める"} aria-pressed={paused} onClick={() => setPaused((p) => !p)}>{paused ? "▶" : "❚❚"}</button>
+        </div>
+      )}
+      {summary && (
+        <Link to="/news" className="nwh-digest" data-testid="home-digest" aria-label={`${summary.label}: ${summary.lines.join(" ")}`}>
+          <span className="nw-badge">{summary.label}</span>
+          <span className="nwh-digest-text">{summary.lines.join(" ・ ")}</span>
         </Link>
       )}
       {isLoading ? <Skeleton className="h-24" /> : items.length === 0 ? (

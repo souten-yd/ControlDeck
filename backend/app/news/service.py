@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.news import channels, gist, rag, settings, sources, store
+from app.news import channels, gist, images, rag, settings, sources, store
 from app.news import db as news_db
 from app.news.db import NewsItem
 
@@ -89,8 +89,9 @@ async def _after_save(saved: dict, cfg: dict) -> dict:
     return info
 
 
-async def refresh(*, force: bool = False) -> dict:
+async def refresh(*, force: bool = False, channel_ids: list[str] | None = None) -> dict:
     """全ソースを取り直す。実行中・直前に取ったばかりなら取らない（force で間隔だけ無視）。
+    channel_ids を渡すと、そのチャンネルの検索（source_key が search:<id>:）だけを取り直す（チャンネルの語を変えた直後。ほかのソースの状態は触らない）。
     {"started": bool, "reason": ..., "new": 件数, "failed": 失敗したソース数}。"""
     if not _running.acquire(blocking=False):
         return {"started": False, "reason": "running"}
@@ -101,15 +102,23 @@ async def refresh(*, force: bool = False) -> dict:
         cfg = sources.load_config()
         conf = settings.load()
         listing = sources.build_sources(cfg, channels.load()["channels"])
+        if channel_ids is not None:
+            prefixes = tuple(f"search:{cid}:" for cid in channel_ids)
+            listing = [s for s in listing if s.key.startswith(prefixes)]
         gate = asyncio.Semaphore(CONCURRENCY)
         results = await asyncio.gather(*[_fetch_one(s, gate) for s in listing])
         items = [item for _, got, _ in results for item in got]
         saved = await asyncio.to_thread(_save, items, conf["rag"]["on_prune"])
+        try:     # 画像の無い新着へ、記事のページの og:image を付ける（失敗しても取得は成功）
+            saved["images"] = await images.fill(saved.get("new_ids", []))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("記事の画像の取得に失敗しました: %s", exc)
         # 設定から外したソースの状態は残さない
-        keep = {s.key for s in listing}
-        for key in list(_status):
-            if key not in keep:
-                _status.pop(key)
+        if channel_ids is None:
+            keep = {s.key for s in listing}
+            for key in list(_status):
+                if key not in keep:
+                    _status.pop(key)
         for source, _, info in results:
             _status[source.key] = info
         _last.update(finished=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), new=saved["new"])

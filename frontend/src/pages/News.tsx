@@ -55,14 +55,13 @@ export default function NewsPage() {
   const listError = useRag ? rag.isError : items.isError;
   const chList = (home.data?.channels ?? channels.data?.channels.map((c, i) => ({ ...c, number: i + 1 })) ?? []);
   const chById = new Map(chList.map((c) => [c.id, c]));
-  const failed = (sources.data?.sources ?? []).filter((s) => !s.ok);
   const notes = (sources.data?.sources ?? []).filter((s) => s.skipped);
 
   const pickTopic = (t: string) => { setTopic(t); setTab((cur) => (cur === "home" ? "latest" : cur)); };
   const pickChannel = (id: string) => { setChannel(id); setTab("latest"); setDate(""); setStarred(false); };
   const runRefresh = () => refresh.mutate(undefined, {
     onSuccess: (r) => toast(!r.started ? (r.reason === "running" ? "取得中です。しばらくお待ちください" : "直前に取得したばかりです")
-      : `取り直しました（新着 ${r.new ?? 0} 件${r.failed ? `・取れなかったソース ${r.failed} 件` : ""}）`, r.started ? "success" : "info"),
+      : `取り直しました（新着 ${r.new ?? 0} 件）`, r.started ? "success" : "info"),
     onError: () => toast("取り直せませんでした", "error"),
   });
   const title = searching ? `「${q.trim()}」の${useRag ? "意味での検索結果" : "検索結果"}` : topic ? `話題「${topic}」` : date ? `${date} の記事` : starred ? "保存した記事" : "";
@@ -98,11 +97,10 @@ export default function NewsPage() {
             </div>
           </div>
         </div>
-        {(failed.length > 0 || notes.length > 0) && (
+        {notes.length > 0 && (
           <details className="nw-note">
-            <summary style={{ cursor: "pointer" }}>{failed.length > 0 ? `取れなかったソースが ${failed.length} 件あります` : "取得していないソースがあります"}</summary>
+            <summary style={{ cursor: "pointer" }}>取得していないソースがあります</summary>
             <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-              {failed.map((s) => <li key={s.source_key}>{s.label}: {s.error}</li>)}
               {notes.map((s) => <li key={s.source_key}>{s.label}: {s.skipped}</li>)}
             </ul>
           </details>

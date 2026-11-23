@@ -53,6 +53,8 @@ class NewsItem(Base):
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # 一言要約（LLM。任意）。空なら使わない
     gist: Mapped[str] = mapped_column(Text, default="")
+    # 記事のページから画像を取ろうとした印（取れなくても True。再試行しない）。app/news/images.py
+    image_tried: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class NewsAction(Base):
@@ -87,7 +89,7 @@ class NewsDigest(Base):
 
 
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
-_LATE_COLUMNS: list[tuple[str, str, str]] = []
+_LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0")]
 
 _engines: dict[str, Engine] = {}
 _lock = threading.Lock()
