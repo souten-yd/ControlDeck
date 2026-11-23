@@ -445,9 +445,18 @@ async def fetch_gnews(channel: dict, lang: str) -> list[dict]:
 
 
 def tag_search(items: list[dict], channel: dict, engine: str) -> list[dict]:
+    """検索の結果にチャンネルの印を付ける。Google ニュース以外（フォーラム・HN・Reddit）の検索は、見出しか抜粋に
+    チャンネルの語が無いものを捨てる（本文の奥で一致しただけの無関係な投稿が入っていた。2026-11-23 本番で「特許」に
+    Level1Techs の「Linux の癖」などが 30 件ずつ入った）。"""
+    from app.news import channels as ch
+
+    out = []
     for item in items:
+        if not engine.startswith("gnews") and not ch.has_terms(f"{item.get('title') or ''}\n{item.get('summary') or ''}", channel["include"]):
+            continue
         item["source_key"] = _search_key(channel, engine)
-    return items
+        out.append(item)
+    return out
 
 
 async def fetch_hn_search(channel: dict) -> list[dict]:
