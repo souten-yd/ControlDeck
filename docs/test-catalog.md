@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 229 ファイル、2156 テスト（目的の未記入 93 ファイル）
-- E2E: 119 spec、245 テスト
+- backend: 229 ファイル、2157 テスト（目的の未記入 93 ファイル）
+- E2E: 119 spec、246 テスト
 
 ## backend（backend/tests）
 
@@ -3302,7 +3302,8 @@
 目的: 作業場（箱）の中でアプリを動かして preview する（U12）。 目的: - lab_start は利用者の command を文字列へ埋め込まず、箱の中の bash へ位置引数（$1）で渡す。{port}・{host}・{base} だけを 置き換え、環境変数 PORT・HOST も渡す。ControlDeck の複製が動いているときは同じ公開ポートを使うので断る。 - API は持ち主だけ（他人は 404 相当の 422）・command は 1〜500 文字・監査に command を 200 文字に切って残す。 - preview の入口は URL の鍵（起こすたびに変わる）で通す。鍵違いは 404・止まっていれば 409・待ち受け前は 425。 ControlDeck の Cookie は上流へ渡さない。{base} を渡した command は接頭辞を付けたまま上流へ送る。 根拠: ROADMAP U12。箱の隔離（pod の公開ポートだけが外へ出る）を保ったまま、作った画面を見られるようにする。 podman は呼ばない（モック）。上流は小さな HTTP サーバー。
 
 - `test_lab_start_passes_command_as_positional_argument`
-- `test_lab_start_stops_the_previous_one_and_resets_log`
+- `test_lab_start_stops_the_previous_one_and_host_never_writes_the_log` — 前の lab は止める。ログを空にするのは箱の中（argv の `: >"$2"`）で、ホストは box.path の中のログを書かない。
+- `test_box_file_tail_does_not_follow_symlinked_folder` — lab/ そのものを symlink にされても辿らない（ミラーの server.log も同じ読み方）。
 - `test_lab_start_refuses_while_mirror_runs_and_checks_length`
 - `test_lab_state_reports_listening_and_log_tail`
 - `test_lab_api_owner_only_validation_and_audit`
@@ -3806,6 +3807,7 @@
 - keeps Workflows below the logo with an iPhone standalone safe area
 - migrates the saved Play destination to Workflows
 - pins up to six favorites at the top of the drawer
+- sidebar has no 
 
 ### frontend/e2e/notification-settings.spec.ts
 

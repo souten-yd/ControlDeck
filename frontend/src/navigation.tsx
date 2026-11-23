@@ -17,10 +17,9 @@ import {
 import { PRODUCT_NAMES } from "./constants/productNames";
 
 /** ドロワー／サイドバーでのまとまり。並びは NAV_GROUPS の順。 */
-export type NavigationGroup = "main" | "dev" | "ai" | "system";
+export type NavigationGroup = "dev" | "ai" | "system";
 
 export const NAV_GROUPS: { id: NavigationGroup; label: string }[] = [
-  { id: "main", label: "メイン" },
   { id: "dev", label: "開発" },
   { id: "ai", label: "AI" },
   { id: "system", label: "管理" },
@@ -42,14 +41,16 @@ export function canAccessNavigationItem(item: NavigationItem, can: (permission: 
   return true;
 }
 
+// 「メイン」のまとまりは無くした（2026-11-23 利用者）。Remote・Files は「管理」へ。Home・Apps は既定で
+// 「よく使う」に固定されていて、外したときは「管理」に出る。並び（よく使うの設定の一覧などに使う）は変えない
 export const NAVIGATION: NavigationItem[] = [
-  { to: "/", group: "main", label: "Home", icon: IconHome },
-  { to: "/apps", group: "main", label: "Apps", icon: IconGrid, permission: "apps.view" },
+  { to: "/", group: "system", label: "Home", icon: IconHome },
+  { to: "/apps", group: "system", label: "Apps", icon: IconGrid, permission: "apps.view" },
   { to: "/workflows", group: "dev", label: "Workflows", icon: IconFlow, anyPermission: ["workflows.run", "workflows.edit"] },
   { to: "/applications", group: "dev", label: PRODUCT_NAMES.appStudio, icon: IconPackage, permission: "application_builder.view" },
   { to: "/project-lab", group: "dev", label: "Project Lab", icon: IconFlask, permission: "project_lab.view" },
-  { to: "/remote", group: "main", label: "Remote", icon: IconRemote, feature: "remote-desktop", permission: "remote_desktop.use" },
-  { to: "/files", group: "main", label: "Files", icon: IconFile, permission: "files.view" },
+  { to: "/remote", group: "system", label: "Remote", icon: IconRemote, feature: "remote-desktop", permission: "remote_desktop.use" },
+  { to: "/files", group: "system", label: "Files", icon: IconFile, permission: "files.view" },
   { to: "/terminal", group: "dev", label: "Terminal", icon: IconTerminal, permission: "terminal.use" },
   { to: "/assistant", group: "ai", label: "AI Assistant", icon: IconAssistant },
   { to: "/github", group: "dev", label: "GitHub", icon: IconBranch, permission: "apps.view" },

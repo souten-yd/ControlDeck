@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-23 メニューの「メイン」をなくす
+
+- 利用者「メインメニューのファイルズとリモートを管理に回して、メインという謎の項目を消して」。`navigation.tsx` のまとまり「メイン」を消し、Remote・Files を「管理」へ。Home・Apps は既定で「よく使う」に固定されていて、外したときは「管理」に出る。並びは変えない。
+- テスト: E2E `navigation-layout.spec.ts`（「メイン」が無く Files が「管理」の下）。
+
 ## 2026-11-23 AssistantChat.tsx を分ける（ROADMAP Q1 の画面側）
 
 - `AssistantChat.tsx`（3,239 行）から、発言の表示の部品（`GenStatsBadge`・`ThinkingBlock`・`CodeTimeline`・`RoleModels`・`MessageBubble`・`UnsettledNotice`・`QualityBadge`・`SpeakerToggle` ほか）を `ChatMessage.tsx` へ、コンポーネントの外の補助（`uploadWithProgress`・`extendTimeline`・`settledStatus`・`restoreMessage`・`readHistoryCollapsed`・`loadSettings`・`MODES`・`Msg` などの型）を `chatState.ts` へ移した。本体は 2,381 行。

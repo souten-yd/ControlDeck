@@ -157,3 +157,21 @@ test("pins up to six favorites at the top of the drawer", async ({ page }) => {
   const overflow = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
   expect(overflow.document).toBeLessThanOrEqual(overflow.viewport);
 });
+
+// 目的: サイドバーに「メイン」のまとまりが無く、Remote・Files は「管理」の中に出ること。
+// 根拠: 2026-11-23 利用者「メインメニューのファイルズとリモートを管理に回して、メインという謎の項目を消して」。
+test("sidebar has no 'メイン' group and lists Files under 管理", async ({ page }) => {
+  test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/");
+  await page.getByLabel("ユーザー名").fill(username!);
+  await page.getByLabel("パスワード").fill(password!);
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
+  const nav = page.getByRole("navigation").filter({ has: page.getByRole("link", { name: "Settings" }) }).first();
+  await expect(nav.getByRole("link", { name: "Files" })).toBeVisible();
+  await expect(nav.getByText("メイン", { exact: true })).toHaveCount(0);
+  const text = await nav.innerText();
+  expect(text.indexOf("管理")).toBeGreaterThan(-1);
+  expect(text.indexOf("Files")).toBeGreaterThan(text.indexOf("管理"));
+  await page.screenshot({ path: "test-results/navigation-sidebar-1280.png" });
+});
