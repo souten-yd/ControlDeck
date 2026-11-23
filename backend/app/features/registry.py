@@ -143,6 +143,16 @@ FEATURES: dict[str, dict] = {
         "route_gated": False,
         "summary": "このPCで動くメタ検索エンジン。Deep Research・Workflow の Web 検索が使い、検索の時だけ起動する。起動・停止は Apps",
     },
+    # Playwright のブラウザ。3 つの版（E2E・本体の Python・Playwright MCP）が別々の置き場を使う（app/features/playwright_browsers.py）。
+    # 外部から取得するので、導入は利用者のボタン操作のときだけ（自動更新にも入れない）。
+    "playwright-browsers": {
+        "name": "Playwright のブラウザ（画面の試験・画面確認係・録画）",
+        "kind": "playwright-browsers",
+        "category": "search",
+        "route_gated": False,
+        "summary": "画面の試験（./deck.sh e2e）、Workflow のブラウザ操作、画面確認係の録画で使うブラウザ。版ごとに別の置き場（data/cache/ms-playwright・"
+                   "ms-playwright-py・ms-playwright-mcp）へ入れ、互いを消さない。全部で約 1GB（chromium・webkit など）",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -198,6 +208,11 @@ FEATURES: dict[str, dict] = {
         "summary": "31 言語の音声合成（CPU）。導入時に音声モデルも入れ、ソース一式を保管庫へ保存する。使うかは Models の TTS / ASR で選ぶ",
     },
 }
+
+
+from app.features import system_packages as _system_packages  # noqa: E402
+
+FEATURES.update(_system_packages.FEATURES)
 
 
 # 画面での分け方。導入・更新の仕組み（kind）ではなく、利用者から見た用途で分ける。
@@ -370,6 +385,8 @@ def _python_lib_version(spec: dict, python: Path) -> str:
 
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] in ("playwright-browsers", "system-packages"):
+        return None   # 実行ファイルを持たない（置き場・OS のパッケージを状態で見る）
     if spec["kind"] == "speech-engine":
         from app.speech import supertonic
 
@@ -471,12 +488,53 @@ def _speech_engine_status(feature_id: str, spec: dict) -> dict:
     }
 
 
+def _plain_status(feature_id: str, spec: dict, **fields) -> dict:
+    """バイナリを持たない種類（Playwright のブラウザ・OS のパッケージ）の状態の共通の形。"""
+    installed = bool(fields.pop("installed"))
+    error = str(fields.pop("error", ""))
+    return {
+        "id": feature_id, "name": spec["name"], "summary": spec["summary"], "kind": spec["kind"],
+        "category": category(feature_id), "route_gated": False, "requires": "", "preview": False,
+        "requires_installed": True, "available": bool(fields.pop("available", True)), "installed": installed,
+        "managed": bool(fields.pop("managed", False)), "enabled": installed, "requested_enabled": True,
+        "version": "", "health": "healthy" if installed else "not-installed", "error": error, "executable": "",
+        **fields,
+    }
+
+
+def _playwright_browsers_status(feature_id: str, spec: dict) -> dict:
+    from app.features import playwright_browsers
+
+    detail = playwright_browsers.overview()
+    return _plain_status(
+        feature_id, spec, installed=detail["complete"], available=detail["available"],
+        # 更新ボタンの入口。比べられる版が 1 つでもあれば、足りない分を入れ直せる
+        managed=detail["available"], components=detail["components"],
+        error=("足りない: " + " / ".join(detail["missing"])) if detail["missing"] else "",
+    )
+
+
+def _system_packages_status(feature_id: str, spec: dict) -> dict:
+    from app.features import system_packages
+
+    missing = system_packages.missing_packages(feature_id)
+    return _plain_status(
+        feature_id, spec, installed=not missing, missing_packages=missing,
+        # 画面はこれをコピーさせる。ボタンで sudo は実行しない
+        install_command=system_packages.install_command(feature_id),
+    )
+
+
 def status(feature_id: str) -> dict:
     spec = FEATURES[_known(feature_id)]
     if spec["kind"] == "gpu-runtime":
         return _gpu_runtime_status(feature_id, spec)
     if spec["kind"] == "speech-engine":
         return _speech_engine_status(feature_id, spec)
+    if spec["kind"] == "playwright-browsers":
+        return _playwright_browsers_status(feature_id, spec)
+    if spec["kind"] == "system-packages":
+        return _system_packages_status(feature_id, spec)
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
     # この PC の Chrome は ControlDeck の管理ではない（更新・削除のボタンを出さない）
@@ -690,6 +748,12 @@ def install(feature_id: str) -> dict:
     if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime / speech を直接呼ぶ。
         raise FeatureError(f"{name}の導入は非同期ジョブから実行してください")
+    if FEATURES[feature_id]["kind"] == "system-packages":
+        from app.features import system_packages
+
+        raise FeatureError(f"{name}は sudo が要るのでボタンでは入れられません。ターミナルで {system_packages.guide(feature_id)}")
+    if FEATURES[feature_id]["kind"] == "playwright-browsers":
+        return _install_playwright_browsers()
     required = FEATURES[feature_id].get("requires")
     if required and not status(required)["installed"]:
         raise FeatureError(f"先に{FEATURES[required]['name']}を導入してください")
@@ -706,6 +770,24 @@ def install(feature_id: str) -> dict:
         raise FeatureError(f"{name}の管理導入に失敗しました{_tail(result)}")
     _autoconfigure(feature_id)
     return status(feature_id)
+
+
+def _install_playwright_browsers() -> dict:
+    """足りない分を、それぞれの版・それぞれの置き場へ入れる（導入と更新で同じ）。外部から取得する。"""
+    from app.features import playwright_browsers
+
+    if not playwright_browsers.overview()["available"]:
+        raise FeatureError("入れる先の Playwright が見つかりません（画面の依存・本体の playwright・Playwright MCP のどれも未導入）")
+    try:
+        playwright_browsers.install_missing()
+    except playwright_browsers.PlaywrightBrowsersError as exc:
+        invalidate_feature_cache()
+        raise FeatureError(str(exc)) from exc
+    invalidate_feature_cache()
+    result = status("playwright-browsers")
+    if not result["installed"]:
+        raise FeatureError(f"導入しましたが、まだ足りないものがあります（{result['error']}）")
+    return result
 
 
 def _autoconfigure(feature_id: str) -> None:
@@ -730,6 +812,11 @@ def update(feature_id: str) -> dict:
         raise FeatureError(f"{name}の更新は非同期ジョブから実行してください")
     if FEATURES[feature_id]["kind"] == "speech-engine":
         raise FeatureError(f"{name}は開発が終了しているため更新はありません（保管庫の版を使います）")
+    if FEATURES[feature_id]["kind"] == "playwright-browsers":
+        previous = status(feature_id)["version"]
+        return {**_install_playwright_browsers(), "previous_version": previous}
+    if FEATURES[feature_id]["kind"] == "system-packages":
+        raise FeatureError(f"{name}は OS のパッケージです。ターミナルで sudo apt update && sudo apt upgrade してください")
     if not _managed_executable(feature_id).is_file():
         raise FeatureError(f"Control Deckが導入した{name}のみ更新できます")
     previous = status(feature_id)["version"]
@@ -895,6 +982,9 @@ def disable(feature_id: str) -> dict:
 
 
 def uninstall(feature_id: str) -> dict:
+    if FEATURES[_known(feature_id)]["kind"] in ("playwright-browsers", "system-packages"):
+        # ブラウザの置き場は E2E・箱・Workflow が共有で使う。OS のパッケージは ControlDeck の管理ではない
+        raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません")
     disable(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "speech-engine":
         from app.speech import supertonic

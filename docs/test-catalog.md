@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 236 ファイル、2295 テスト（目的の未記入 93 ファイル）
-- E2E: 125 spec、267 テスト
+- backend: 237 ファイル、2308 テスト（目的の未記入 93 ファイル）
+- E2E: 126 spec、268 テスト
 
 ## backend（backend/tests）
 
@@ -2416,6 +2416,24 @@
 - `test_pages_are_placed_in_the_project_once`
 - `test_links_in_the_project_are_not_followed` — プロジェクトはモデルが書ける。リンクを置かれても箱の外へ書かない。
 
+### backend/tests/test_playwright_browsers_feature.py
+
+目的: 機能と拡張: Playwright のブラウザ（3 つの版・別々の置き場）と、OS のパッケージ（apt）の案内の項目。 目的: - E2E（frontend）・本体の Python・Playwright MCP が別々の置き場を使い、箱から見えること（同じ置き場だと、版の違う `playwright install` が互いのブラウザを消す。2026-11-23 に MCP で `install ffmpeg` したら E2E の chromium-1228 などが消えた）。 - 状態は置き場の中身と、その版が求める revision（browsers.json）の比較で決まり、足りないものが分かること。 - 導入は argv（shell なし）で、版ごとに別の PLAYWRIGHT_BROWSERS_PATH で走り、MCP が未導入なら飛ばすこと。実際には走らせない（run はモック）。 - apt のパッケージは sudo が要るのでボタンでは入れず、足りないものだけのコマンドをコピーさせること。エラーの文が項目を案内すること。 根拠: 2026-11-23 利用者「設定の機能の追加のところに導入ボタンを」「追加で入れないといけないものについては機能と拡張に導入ボタンを付けること」。
+
+- `test_three_versions_use_separate_stores`
+- `test_sandbox_sees_e2e_and_mcp_stores_read_only`
+- `test_mcp_environment_points_to_its_own_store`
+- `test_status_lists_what_is_missing_then_complete`
+- `test_old_revision_counts_as_missing_after_version_bump`
+- `test_install_runs_each_version_into_its_own_store_without_shell`
+- `test_install_skips_mcp_when_not_installed_and_complete_parts`
+- `test_install_failure_is_reported_in_japanese`
+- `test_registry_feature_never_auto_updates_and_installs_through_module`
+- `test_system_packages_status_and_copyable_command`
+- `test_system_packages_are_never_installed_by_a_button`
+- `test_errors_point_to_the_feature_item`
+- `test_maya_tokenizers_guidance_and_ensure`
+
 ### backend/tests/test_plugin_sdk.py
 
 目的: **未記入**
@@ -4145,6 +4163,12 @@
 目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
 
 - Settings: API キー（${width}px）
+
+### frontend/e2e/settings-playwright-browsers.spec.ts
+
+目的: 機能と拡張: 「Playwright のブラウザ」の項目と導入ボタン、OS のパッケージ（sudo が要る）はコピーできるコマンドだけ。 API は page.route で模擬する（実際には Playwright のブラウザを取得しない・sudo を実行しない）。 根拠: 2026-11-23 利用者「設定の機能の追加のところに導入ボタンを」「追加で入れないといけないものについては導入ボタンを」。 */
+
+- 機能と拡張: Playwright のブラウザ（${width}px）
 
 ### frontend/e2e/settings-search-tools.spec.ts
 

@@ -142,6 +142,37 @@ def available() -> bool:
     return sys.platform == "linux" and platform.machine().lower() in ("x86_64", "amd64")
 
 
+# DeepSeek 系の pack が使う tokenizers。Maya のエンジンの venv（<engine>/.venv）へ入れる。
+# 以前は「手で pip install してください」と案内するだけだった（2026-11-23 利用者「追加で入れないといけないものは
+# 機能と拡張に導入ボタンを」）。導入・更新（Maya-S の機能のボタン）の中で、venv ができていれば入れる。
+TOKENIZERS_PACKAGE = "tokenizers==0.23.3"
+
+
+def _venv_python() -> Path:
+    return source() / ".venv" / "bin" / "python"
+
+
+def tokenizers_installed() -> bool:
+    python = _venv_python()
+    if not python.is_file():
+        return False
+    try:
+        return subprocess.run([str(python), "-I", "-c", "import tokenizers"], capture_output=True, timeout=60,
+                              check=False, stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def ensure_tokenizers() -> bool:
+    """エンジンの venv に tokenizers が無ければ入れる。venv が無い（エンジン未構築）なら何もしない。入ったら True。"""
+    python = _venv_python()
+    if not python.is_file() or tokenizers_installed():
+        return tokenizers_installed()
+    result = subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", TOKENIZERS_PACKAGE],
+                            capture_output=True, text=True, timeout=900, check=False, stdin=subprocess.DEVNULL)
+    return result.returncode == 0 and tokenizers_installed()
+
+
 def installed() -> bool:
     return (_marker().is_file() and not _marker().is_symlink()
             and entrypoint().is_file() and not source().is_symlink()
@@ -282,6 +313,7 @@ def _update() -> dict:
     tag = _latest_release()
     current = runtime_status()["version"]
     if current == tag:
+        ensure_tokenizers()   # 版が同じでも、足りない tokenizers は入れる（更新ボタンが直す入口）
         return runtime_status()
     # Source stays in place so generated local configs are retained. Never reset dirty code.
     if _exec(["git", "status", "--porcelain", "--untracked-files=no"],
@@ -319,6 +351,7 @@ def _update() -> dict:
                 raise MayaError("Maya更新とコード復旧に失敗しました。手動確認が必要です") from None
         raise
     _enable_fit_max_tokens(keep_env)
+    ensure_tokenizers()
     _marker().write_text(json.dumps({"source": _REPO, "tag": tag}), encoding="utf-8")
     return runtime_status()
 
@@ -426,6 +459,7 @@ def _prepare_model(*, gpu_index: int = 0, download_dir: str = "") -> dict:
     if _find_config() is None:
         raise MayaError("セットアップは終了しましたがHIP設定を確認できません")
     _enable_fit_max_tokens()
+    ensure_tokenizers()
     _prepared_marker().write_text(json.dumps({
         "model": _MODEL, "gpu_index": gpu_index, "port": _PORT
     }), encoding="utf-8")

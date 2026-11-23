@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-23 機能と拡張に「Playwright のブラウザ」と、追加で入れるもの（apt・Maya の tokenizers）の項目
+
+- 事故: Playwright は 3 つの版が同じ置き場 `data/cache/ms-playwright` を使っていた（E2E の @playwright/test 1.61・本体の venv の playwright 1.62・Playwright MCP の playwright-core 1.66）。`playwright install` は自分の版が知らない版のブラウザを片付けるので、2026-11-23 に 1.66 で `install ffmpeg` したら E2E の chromium-1228 などが消えた。
+- 置き場を分けた: E2E は `ms-playwright`（従来どおり。箱・deck.sh e2e の指定は不変）、本体の Python（Workflow のブラウザ操作）は `ms-playwright-py`、Playwright MCP（録画用 ffmpeg だけ）は `ms-playwright-mcp`。MCP の設定に `environment.PLAYWRIGHT_BROWSERS_PATH` を足し、箱へは読み取り専用で見せる（`sandbox._tool_dirs`・provider の readonly）。既存の置き場の中身は消さず・移さない（新しい置き場へは導入ボタンで入れる）。
+- 項目 `playwright-browsers`（分類「検索と収集」、`features/playwright_browsers.py`）: 状態＝各置き場の中身と、各版の browsers.json が求める revision の比較（「足りない: …」）。導入・更新＝足りない分だけを版ごとに argv（shell なし）で `install`。MCP が未導入なら飛ばす。外部取得なので利用者のボタンだけ（自動更新の対象外）。アンインストールは無し。
+- `./deck.sh e2e` は E2E のブラウザが足りないとき、勝手に入れず「設定 → 機能と拡張 → Playwright のブラウザ を導入してください」で止まる。`ensure_playwright_browser` は `ms-playwright-py` へ入れる。
+- 追加で入れるもの（利用者「追加で入れないといけないものは機能と拡張に導入ボタンを」）: OS のパッケージ（poppler・tesseract=`system-ocr`、`system-zstd`、`system-gh`）は sudo が要るのでボタンでは入れず、足りないものだけの `sudo apt install -y …` をコピーさせる（`features/system_packages.py`）。gh も案内だけにした（Release の tar の版固定・検証・ログインまで要り、deck.sh の apt と二重になるため小さい方）。Maya の tokenizers は Maya-S の更新・準備の中でエンジンの venv へ入れる。各エラーの文は「設定 → 機能と拡張 → <項目名> から導入してください」に直した。
+- テスト: `test_playwright_browsers_feature.py`、E2E `settings-playwright-browsers.spec.ts`（API は page.route）。実際の `playwright install`・apt・pip は走らせていない。
+
 ## 2026-11-23 画面の撮影・操作テストの動画をチャットに出し、個別・一斉に消せる（ROADMAP U34・U28）
 
 - 撮る: 作業場の ui-verifier の Playwright MCP に `--caps=devtools`（`browser_start_video` / `browser_stop_video` / `browser_video_chapter`）を足し、出力先を `repo/.controldeck/media` にした（`sandbox.opencode_config`。中に `.gitignore`（`*`）を置き、自動保存・差分・関門に混ざらない）。ui-verifier の指示に操作テストの録画の手順を、主の指示（`agent-notes.md`）に「画面を変えたら ui-verifier に頼める」を足した。

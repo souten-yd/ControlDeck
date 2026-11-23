@@ -277,7 +277,11 @@ ensure_playwright_browser() {
   [ -f "$stamp" ] && return 0
   if "$VENV/bin/python" -c "import playwright" 2>/dev/null; then
     info "Playwright ブラウザ（Chromium）を導入しています ..."
-    if "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
+    # 本体の Python の playwright 専用の置き場（E2E の ms-playwright・MCP の置き場と分ける。playwright install は
+    # 自分の版が知らないブラウザを消すので、共有すると互いを壊す。2026-11-23）
+    local py_browsers; py_browsers="$(deck_data_dir)/cache/ms-playwright-py"
+    mkdir -p "$py_browsers" 2>/dev/null || true
+    if PLAYWRIGHT_BROWSERS_PATH="$py_browsers" "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
       touch "$stamp"
     else
       warn "Playwright ブラウザの導入に失敗しました。ブラウザ操作ノードは利用できません"
@@ -598,6 +602,9 @@ cmd_e2e() {
   check_root; check_python; ensure_venv
   command -v npx >/dev/null || die "npx が必要です"
   export_cache_paths
+  # E2E のブラウザが足りないときは、勝手に入れず止める（外部から取得するので、入れるのは利用者のボタン操作だけ）
+  (cd "$REPO_ROOT/backend" && env -u CONTROL_DECK_CONFIG "$VENV/bin/python" -m app.features.playwright_browsers \
+    e2e-check "$(deck_data_dir)" "$PLAYWRIGHT_BROWSERS_PATH") || die "E2E のブラウザを導入してから、もう一度実行してください"
   [ -f "$REPO_ROOT/frontend/dist/index.html" ] || (cd "$REPO_ROOT/frontend" && npm run build) || die "frontend のビルドに失敗しました"
   local port="${CONTROL_DECK_E2E_PORT:-18765}"
   if curl -fsS -o /dev/null "http://127.0.0.1:$port/api/v1/health" 2>/dev/null; then
