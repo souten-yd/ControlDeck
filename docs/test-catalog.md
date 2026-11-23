@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 229 ファイル、2159 テスト（目的の未記入 93 ファイル）
-- E2E: 120 spec、248 テスト
+- backend: 230 ファイル、2168 テスト（目的の未記入 93 ファイル）
+- E2E: 121 spec、249 テスト
 
 ## backend（backend/tests）
 
@@ -2536,6 +2536,20 @@
 - `test_helper_accepts_enable_disable_and_rejects_unknown` — 補助が enable/disable を受け付け、一覧に無い id・不正な action を断る（subprocess はモック）。
 - `test_isolated_instance_never_touches_the_machine_service` — 検証用インスタンスは機械の xrdp を操作しない。
 
+### backend/tests/test_research_forums.py
+
+目的: 調査の道具の新しい入口（Reddit の OAuth・Discourse 系のフォーラム・Stack Exchange）と、設定 → API キーの「調査」群のテスト （HTTP はすべてモック。外へは通信しない）。 目的と根拠: 2026-11-23 利用者「Reddit の API を登録するところを作って、入っていたらそれを使って検索できるように。XDA や他の技術的に有望な フォーラムも検索したい」。2026-11-22 の実測で Reddit の未認証の JSON・RSS は拒否された。守ること: キーがあれば OAuth を先に使いトークンを 使い回す・キーが無い／失敗なら今の経路へ・403 は「承認が要る可能性」と平易に言う・キーの値を応答・例外・ログ・監査に出さない・ ドメインは形だけ許す（localhost・IP は断る）・秘密の会話は外へ出ない・Stack Exchange は site 名に直してキーを付ける。
+
+- `test_reddit_oauth_token_is_cached_and_search_uses_the_api`
+- `test_reddit_thread_uses_oauth_and_without_keys_the_old_path_is_used`
+- `test_reddit_oauth_failure_falls_back_and_403_is_explained`
+- `test_keys_never_appear_in_errors_or_logs`
+- `test_discourse_search_and_read`
+- `test_user_added_forum_is_searched_and_bad_domains_are_refused`
+- `test_stackexchange_site_names_key_and_read`
+- `test_xda_stays_on_searxng_and_confidential_conversations_do_not_connect`
+- `test_settings_group_save_test_and_delete`
+
 ### backend/tests/test_research_tools.py
 
 目的: サイト指定の調査・依頼の理解・時の解決・本文での日付の確認のテスト（HTTP・LLM・SearXNG はすべてモック）。 目的と根拠: 2026-11-22 利用者の依頼（Reddit・GIGAZINE・公式ページの中を調べる／『なんとかについて調べて』で関係ないものを選ぶ／ 『今日の横浜の天気』で過去の天気を拾う）。守ること: 検索の件数が足りること（語を広げても site を保つ）、ページは focus に近い段落が上に来て リンクを辿れること、今日がいつかを全部の段へ渡し「今日」を日付に直すこと、日付の合わないページを捨てて探し直すこと、 秘密の会話・社内のアドレスへは通信しないこと。
@@ -3924,6 +3938,12 @@
 目的: **未記入**
 
 - runtime startup preferences can be selected and saved at ${width}px
+
+### frontend/e2e/settings-keys-research.spec.ts
+
+目的: Settings →「API キー」の「調査（フォーラム・検索）」群: Reddit のキーを保存し、「つながりを確かめる」の結果が 1 行で出る。 根拠: 2026-11-23 利用者「Reddit の API を登録するところを作って、入っていたらそれを使って検索できるように。API の登録のところにまとめて」。 守ること: 群が出る・値は画面に出ない・Reddit に断られたときは「承認」と平易に言う・320px で横にはみ出さない。 API は page.route でモックする（Reddit へは繋がない・本番のキーも変えない）。 */
+
+- Settings: 調査のキー（${width}px）
 
 ### frontend/e2e/settings-keys.spec.ts
 

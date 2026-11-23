@@ -104,3 +104,10 @@
   利用者の了承で PyPI から trafilatura 2.3.1 を検証用 venv に入れて確認（実サイト 3 件 success）。本番の「導入」も了承済み。
 
 - 2026-11-21 Claude: 調査（`research-web-collector.md`）と計画・引き継ぎ資料を作成。設計案からの変更: Trafilatura は取得済み HTML の抽出だけ・別プロセス、HTTP は解決した IP に接続、ブラウザは中継プロキシ、Crawlee は入れない、JPO を取得先に追加。
+
+- 2026-11-23 Claude: 利用者「Reddit の API を登録して使えるように。XDA など有望なフォーラムも検索できるように」。調べた結果と入口:
+  - **Reddit**: OAuth の application-only（`grant_type=client_credentials`、client_id・client_secret の Basic 認証、`POST https://www.reddit.com/api/v1/access_token`）。トークンは 1 時間・refresh なし。呼び出しは `https://oauth.reddit.com`（`/search`・`/r/{sub}/search`・`/comments/{id}`、`raw_json=1`）。User-Agent は `<platform>:<app id>:<version> (by /u/<username>)`（`linux:controldeck-research:1.0 (by /u/<ユーザー名>)`）。無料は 1 分 100 件程度。新しいアプリに Reddit の承認が要るという情報が多い（**未確認**）ので、設定の「つながりを確かめる」で 403 を「承認が要る可能性」と見せる。キーが無い・失敗なら従来の経路（未認証 JSON → RSS → SearXNG）。
+  - **Discourse**（Level1Techs・Hugging Face・PyTorch・Ubuntu・Fedora・Framework・NixOS・Rust・Home Assistant・NVIDIA）: 公開の `https://{domain}/search.json?q=` が匿名で使える（時期は q に `after:YYYY-MM-DD`）。話題は `/t/{id}.json`（posts の cooked が本文 HTML）。一覧は `research_keys.DEFAULT_FORUMS`＋設定で足したドメイン（形だけ検査。localhost・IP・内部の名前は不可）。
+  - **Stack Exchange**: `api.stackexchange.com/2.3/search/advanced`（キーなし 1 日 300、キー（stackapps.com）で 10,000）。回答は `/questions/{id}/answers?filter=withbody&sort=votes`。stackoverflow・superuser・serverfault・askubuntu・mathoverflow.net・`*.stackexchange.com` を site 名に直す。
+  - **XDA（xdaforums.com、XenForo）**: 外から使える検索の API は無い。SearXNG の `site:` と read_page（HTML）で扱う（入口は作らない）。
+  - 実装: `workflows/research_keys.py`（キー・フォーラム一覧）、`research_tools.py`（`_reddit_oauth`・`discourse_search`・`stackexchange_search` ほか）、`settings_keys.py`（群 research・test）。通信は全部 `guarded_client`＋`ensure_external_allowed`。認証のヘッダーは別のホストへのリダイレクトに付けない。実際の Reddit・各フォーラムへは繋いでいない（テストはモック）。
