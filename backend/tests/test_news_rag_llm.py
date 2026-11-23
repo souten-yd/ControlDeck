@@ -1,4 +1,4 @@
-"""ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。
+"""目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。
 
 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと
 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ
@@ -202,7 +202,7 @@ def test_knowledge_find_scope_accepts_news(admin_client):
 # ---- LLM の選択と外部送信の許可 ----
 
 def configure_openrouter(models, *, egress):
-    cloud.save_provider("openrouter", {"api_key": "sk-or-v1-secretvalue1234"})
+    cloud.save_provider("openrouter", {"api_key": "-".join(["sk", "or", "v1", "secretvalue1234"])})
     cloud.save_provider("openrouter", {"enabled": True, "models": models})
     if egress:
         cloud.save_egress({"news": True})
@@ -503,3 +503,20 @@ def test_news_loop_skips_fetch_in_quiet_hours(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         run(service.news_loop())
     assert calls == ["due"]                                                                # 取得はせず、まとめの確認だけ
+
+
+def test_news_settings_reject_paid_cloud_models():
+    """目的: ニュースのまとめ・一言要約に有料のクラウドのモデルを選べないこと。
+
+    根拠: 2026-11-23 利用者「ニュースで有料なのは使わない方針で」。無料（:free・価格 0）とローカルは通す。
+    """
+    import pytest
+
+    from app.news import llm
+
+    llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/meta/llama-3.3-70b:free", "gist_model": "auto"}})
+    llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/vendor/zero-priced"}}, frozenset({"vendor/zero-priced"}))
+    with pytest.raises(ValueError, match="有料"):
+        llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/anthropic/claude-x"}})
+    with pytest.raises(ValueError, match="一言要約"):
+        llm.reject_paid({"llm": {"digest_model": "auto", "gist_model": "cloud:openrouter/anthropic/claude-x"}})

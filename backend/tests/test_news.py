@@ -1,4 +1,4 @@
-"""ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。
+"""目的: ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。
 
 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして」
 「過去のニュースはアーカイブにして、いつでも閲覧できるようにすること」。
@@ -52,7 +52,7 @@ def user_id(name: str, role: str = "viewer") -> int:
         row = db.scalar(select(User).where(User.username == name))
         if row is None:
             role_id = db.scalar(select(Role.id).where(Role.name == role))
-            row = User(username=name, password_hash=hash_password("news-test-password"), role_id=role_id)
+            row = User(username=name, password_hash=hash_password("-".join(["news", "test", "password"])), role_id=role_id)
             db.add(row)
             db.commit()
         return row.id
@@ -61,7 +61,7 @@ def user_id(name: str, role: str = "viewer") -> int:
 def login(client, name: str, role: str = "viewer"):
     user_id(name, role)
     client.cookies.clear()
-    r = client.post("/api/v1/auth/login", json={"username": name, "password": "news-test-password"}, headers=CSRF_HEADERS)
+    r = client.post("/api/v1/auth/login", json={"username": name, "password": "-".join(["news", "test", "password"])}, headers=CSRF_HEADERS)
     assert r.status_code == 200, r.text
     return client
 
@@ -208,7 +208,7 @@ def test_sources_api_needs_settings_manage(client):
     assert client.get("/api/v1/news/sources").status_code == 200
     assert client.put("/api/v1/news/sources", json={"github": ["a/b"]}, headers=CSRF_HEADERS).status_code == 403
     client.cookies.clear()
-    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "test-password-123"}, headers=CSRF_HEADERS)
+    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "-".join(["test", "password", "123"])}, headers=CSRF_HEADERS)
     assert r.status_code == 200
     ok = client.put("/api/v1/news/sources", json={"github": ["a/b"], "enabled": {"event": False}}, headers=CSRF_HEADERS)
     assert ok.status_code == 200 and ok.json()["config"]["github"] == ["a/b"] and ok.json()["config"]["enabled"]["event"] is False

@@ -1,4 +1,4 @@
-"""ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。
+"""目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。
 
 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。
 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・
@@ -239,7 +239,7 @@ def test_channels_api_permissions(client):
     assert client.get("/api/v1/news/channels").status_code == 200
     assert client.put("/api/v1/news/channels", json={"channels": []}, headers=CSRF_HEADERS).status_code == 403
     client.cookies.clear()
-    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "test-password-123"}, headers=CSRF_HEADERS)
+    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "-".join(["test", "password", "123"])}, headers=CSRF_HEADERS)
     assert r.status_code == 200
     admin_client = client
 

@@ -35,6 +35,21 @@ def is_free(model_id: str, free_ids: set[str] | frozenset[str] = frozenset()) ->
     return model_id.endswith(":free") or model_id in free_ids
 
 
+def is_free_cloud(model: str, free_ids: set[str] | frozenset[str] = frozenset()) -> bool:
+    """cloud:<プロバイダ>/<モデル> が無料か。ローカル（cloud: で始まらない）は常に True。"""
+    if not cloud.is_cloud_model(model):
+        return True
+    return is_free(model[len(cloud.PREFIX):].partition("/")[2], free_ids)
+
+
+def reject_paid(cfg: dict, free_ids: set[str] | frozenset[str] = frozenset()) -> None:
+    """ニュースは有料のものを使わない（2026-11-23 利用者「ニュースで有料なのは使わない方針で」）。有料のクラウドのモデルなら ValueError。"""
+    for key, label in (("digest_model", "まとめ"), ("gist_model", "一言要約")):
+        model = str((cfg.get("llm") or {}).get(key) or "auto")
+        if not is_free_cloud(model, free_ids):
+            raise ValueError(f"{label}のモデルに有料のモデルは選べません（ニュースは無料のモデルかローカルの LLM だけを使います）")
+
+
 def options(local_models: list[dict], free_ids: set[str] | frozenset[str] = frozenset()) -> dict:
     """設定の選択肢。local_models は [{"id", "name"}]。cloud は無料が先。
     egress=False のときも一覧は出す（許可が無い案内を画面に出すため）。"""
