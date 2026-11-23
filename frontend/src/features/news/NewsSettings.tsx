@@ -1,23 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Toggle } from "../models/formControls";
 import { DEFAULT_PREFS, useNewsChannels, useNewsPrefs, useSaveChannels, useSavePrefs, type ChannelsConfig, type NewsChannel, type NewsDesign, type NewsDisplay, type NewsPrefs, type NewsTaste } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
 import { NewsSourcesSettings } from "./NewsSourcesSettings";
-
-const card = "rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5";
-const field = "h-10 min-w-0 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-const ghost = "min-h-10 rounded-lg border border-zinc-300 px-3 text-xs font-medium hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700";
-const primary = "min-h-10 rounded-lg bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40";
-
-function Card({ id, title, hint, children }: { id: string; title: string; hint?: string; children: ReactNode }) {
-  return (
-    <section aria-labelledby={id} className={card}>
-      <h2 id={id} className="text-sm font-semibold text-zinc-500">{title}</h2>
-      {hint && <p className="mt-1 text-xs leading-relaxed text-zinc-400">{hint}</p>}
-      <div className="mt-3 space-y-3">{children}</div>
-    </section>
-  );
-}
+import { NewsRuntimeCards } from "./NewsRuntimeSettings";
+import { Card, field, ghost, primary } from "./settingsUi";
 
 /** 語の入力（Enter か読点・カンマで追加、× で外す）。 */
 export function TermsInput({ label, value, onChange, placeholder, disabled }: { label: string; value: string[]; onChange: (v: string[]) => void; placeholder?: string; disabled?: boolean }) {
@@ -192,18 +179,15 @@ function ArchiveCard() {
   const toast = useToasts((s) => s.show);
   const canEdit = useAuth((s) => s.can)("settings.manage");
   const [keep, setKeep] = useState("");
-  const [interval, setInterval] = useState("");
-  useEffect(() => { if (data) { setKeep(String(data.archive_keep)); setInterval(String(data.interval_minutes)); } }, [data]);
+  useEffect(() => { if (data) setKeep(String(data.archive_keep)); }, [data]);
   if (!data) return null;
-  const commit = () => save.mutate({ channels: data.channels, archive_keep: Number(keep), interval_minutes: Number(interval) },
+  const commit = () => save.mutate({ channels: data.channels, archive_keep: Number(keep), interval_minutes: data.interval_minutes },
     { onSuccess: () => toast("保存しました", "success"), onError: (e) => toast(e instanceof Error ? e.message : "保存できませんでした", "error") });
   return (
     <Card id="news-archive" title="アーカイブ" hint="古い記事は消えずに残ります。上限を超えたときだけ、古いものから消します（☆ 保存した記事は消しません）。">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs text-zinc-500">残す件数（1,000〜200,000）
           <input type="number" aria-label="残す件数" min={1000} max={200000} step={1000} value={keep} disabled={!canEdit} onChange={(e) => setKeep(e.target.value)} className={`${field} mt-1 w-full`} /></label>
-        <label className="block text-xs text-zinc-500">取得の間隔（分。15〜360）
-          <input type="number" aria-label="取得の間隔" min={15} max={360} value={interval} disabled={!canEdit} onChange={(e) => setInterval(e.target.value)} className={`${field} mt-1 w-full`} /></label>
       </div>
       {canEdit && <button type="button" onClick={commit} disabled={save.isPending} className={primary}>保存</button>}
       <div className="flex flex-wrap items-center gap-2">
@@ -215,12 +199,13 @@ function ArchiveCard() {
   );
 }
 
-/** 設定 → ニュース。チャンネル・ソース・表示・好み・アーカイブ。 */
+/** 設定 → ニュース。チャンネル・ソース・更新・LLM・RAG・表示・好み・アーカイブ。 */
 export function NewsSettings() {
   return (
     <>
       <ChannelsCard />
       <NewsSourcesSettings />
+      <NewsRuntimeCards />
       <PrefsCards />
       <ArchiveCard />
     </>

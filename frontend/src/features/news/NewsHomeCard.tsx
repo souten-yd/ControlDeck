@@ -1,10 +1,11 @@
 import { Link } from "react-router-dom";
-import { KIND_STYLE, relativeTime, useNewsAction, useNewsItems } from "../../api/news";
+import { KIND_STYLE, relativeTime, useNewsAction, useNewsItems, useNewsSettings } from "../../api/news";
 import { Skeleton } from "../../components/ui";
 
 /** ホームの小さなニュースのカード: おすすめの上位 5 件。 */
 export function NewsHomeCard() {
-  const { data, isLoading, isError } = useNewsItems({ view: "recommended", kinds: "", q: "", date: "", topic: "", source: "" });
+  const feedMinutes = useNewsSettings().data?.settings.feed_refresh_minutes ?? 0;      // 設定「ホームのフィードの更新の間隔」
+  const { data, isLoading, isError } = useNewsItems({ view: "recommended", kinds: "", q: "", date: "", topic: "", source: "" }, true, feedMinutes);
   const act = useNewsAction();
   const items = (data?.pages[0]?.items ?? []).filter((i) => !i.state.hide).slice(0, 5);
   if (isError) return null;

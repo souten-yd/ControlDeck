@@ -17,12 +17,13 @@ import pytest
 from sqlalchemy import delete, select
 
 from app.database import SessionLocal
-from app.models import Conversation, NewsAction, NewsItem, User
+from app.news import db as news_db
+from app.models import Conversation, User
+from app.news.db import NewsAction, NewsItem
 from app.news import profile, service, sources, store
 from app.news.topics import extract_topics
 from app.security.passwords import hash_password
 from tests.conftest import CSRF_HEADERS
-from tests.test_migrations import _run
 
 NOW = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
 
@@ -32,9 +33,11 @@ def clean_news(client, tmp_path, monkeypatch):
     """記事・操作・チャットの題は試験ごとに空から。設定・外した語のファイルも試験ごとの場所へ。"""
     monkeypatch.setattr(sources, "_path", lambda: tmp_path / "news" / "sources.json")
     monkeypatch.setattr(profile, "_muted_path", lambda: tmp_path / "news" / "muted.json")
-    with SessionLocal() as db:
+    with news_db.session() as db:
         db.execute(delete(NewsAction))
         db.execute(delete(NewsItem))
+        db.commit()
+    with SessionLocal() as db:
         db.execute(delete(Conversation).where(Conversation.id.like("newstest%")))
         db.commit()
     service._status.clear()
@@ -64,7 +67,7 @@ def login(client, name: str, role: str = "viewer"):
 
 
 def add(url: str, *, title="記事", kind="news", source="S", source_key="rss:s", topics=(), published=NOW, summary="", uid=None, image=None) -> int:
-    with SessionLocal() as db:
+    with news_db.session() as db:
         row = NewsItem(kind=kind, source=source, source_key=source_key, title=title, url=url, summary=summary, image_url=image,
                        published_at=published, fetched_at=NOW, topics=json.dumps(list(topics), ensure_ascii=False), user_id=uid)
         db.add(row)
@@ -73,7 +76,7 @@ def add(url: str, *, title="記事", kind="news", source="S", source_key="rss:s"
 
 
 def act(uid: int, item_id: int, action: str, at=NOW):
-    with SessionLocal() as db:
+    with news_db.session() as db:
         db.add(NewsAction(user_id=uid, item_id=item_id, action=action, at=at))
         db.commit()
 
@@ -222,11 +225,11 @@ def _item(url, title="t", key="k", kind="news", published=NOW):
 
 def test_same_url_updates_without_moving_published_at():
     first = datetime.now(timezone.utc) - timedelta(days=1)
-    with SessionLocal() as db:
-        assert store.upsert_items(db, [_item("https://a.test/1", "古い題", published=first)]) == {"new": 1, "updated": 0}
+    with news_db.session() as db:
+        assert store.upsert_items(db, [_item("https://a.test/1", "古い題", published=first)]) ["new"] == 1
         later = sources.make_item(kind="news", source="k", source_key="k", title="新しい題 Qwen", url="https://a.test/1", published=first + timedelta(hours=3),
                                   image="https://a.test/i.png")
-        assert store.upsert_items(db, [later]) == {"new": 0, "updated": 1}
+        assert store.upsert_items(db, [later]) ["updated"] == 1
         rows = db.scalars(select(NewsItem)).all()
     assert len(rows) == 1 and rows[0].title == "新しい題 Qwen" and rows[0].image_url == "https://a.test/i.png"
     assert abs(store.as_utc(rows[0].published_at) - first) < timedelta(seconds=1) and "Qwen" in rows[0].topics
@@ -256,7 +259,7 @@ def test_one_failing_source_does_not_stop_others(monkeypatch):
     assert not by["boom"]["ok"] and "HTTP 500" in by["boom"]["error"]
     assert not by["slow"]["ok"] and "以内" in by["slow"]["error"]
     assert by["skip"]["ok"] and "キー" in by["skip"]["skipped"]
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert db.scalar(select(NewsItem.url)) == "https://a.test/ok"
 
 
@@ -299,7 +302,7 @@ def test_events_are_recorded_for_recipients_only_even_when_disabled_or_quiet(cli
     events.local_now = lambda: datetime(2026, 11, 23, 23, 30)                       # お休み中でも残す
     result = events.notify_event("update", title="更新が終わりました", body="v1.2 に更新", url="/settings/system", user_ids=[alice])
     assert result == {"users": 0}                                                    # 通知は出ない
-    with SessionLocal() as db:
+    with news_db.session() as db:
         rows = db.scalars(select(NewsItem).where(NewsItem.kind == "event")).all()
     assert len(rows) == 1 and rows[0].user_id == alice and rows[0].title == "更新が終わりました" and rows[0].source == "ControlDeck"
     assert "/settings/system" in rows[0].url
@@ -321,12 +324,12 @@ def test_event_per_permission_and_secret_chat_title_stays_hidden(monkeypatch):
     monkeypatch.setattr(webpush, "send_in_background", lambda **kw: None)
     admin = user_id("admin")
     events.notify_event("alert", title="警報", body="CPU", permission="settings.manage")      # 権限で宛先を決める（購読が無くても残す）
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert db.scalar(select(NewsItem.user_id).where(NewsItem.title == "警報")) == admin
     owner = user_id("news-owner")
     info = {"title": "特許の秘密の発明メモ", "secret": True, "owner": owner, "status": "completed", "content": "秘密の本文", "meta": {}}
     chat_events._send("code_done", "newstestsecret", info, "コード開発が終わりました", summary="秘密の要約")
-    with SessionLocal() as db:
+    with news_db.session() as db:
         row = db.scalar(select(NewsItem).where(NewsItem.user_id == owner))
     assert row.title == "秘密の会話" and "秘密の" not in row.summary.replace("秘密の会話", "") and "特許" not in row.title + row.summary
 
@@ -349,6 +352,7 @@ def test_interest_weights_from_actions_and_chats_exclude_secret_chats():
             Conversation(id="newstest4", title="Phoronix 他人の話 GLM", owner_user_id=other, updated_at=NOW),
         ])
         db.commit()
+    with news_db.session() as db:
         found = profile.interests(db, me, NOW)
     t, s = found["topics"], found["sources"]
     assert t["Qwen"] == pytest.approx(3.0) and t["Ollama"] == pytest.approx(1.0) and t["Spam"] == pytest.approx(-3.0) and t["Ads"] == pytest.approx(-2.0)
@@ -356,7 +360,7 @@ def test_interest_weights_from_actions_and_chats_exclude_secret_chats():
     assert "Radeon" in t and 0 < t["Radeon"] < 0.5                      # チャットの題は少しだけ（1 日で少し減る）
     assert "Gemma" not in t and "Mistral" not in t and "GLM" not in t   # 秘密の会話・30 日より前・他人の会話は使わない
     old = datetime(2026, 11, 23, tzinfo=timezone.utc) + timedelta(days=30)
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert profile.interests(db, me, old)["topics"]["Qwen"] == pytest.approx(1.5, abs=0.02)   # 30 日で半減
 
 
@@ -463,7 +467,7 @@ def test_filters_pagination_search_archive_trends_starred(client):
     only = client.get("/api/v1/news/archive?kind=release").json()
     assert only["total"] == 1
     # 話題の動き: 基準日を固定して直接（API は今日が基準）
-    with SessionLocal() as db:
+    with news_db.session() as db:
         tr = store.trends(db, me, 14, now=base)
     assert tr["days"][-1] == store.local_day(base) and len(tr["days"]) == 14
     top = tr["topics"][0]
@@ -479,7 +483,7 @@ def test_filters_pagination_search_archive_trends_starred(client):
 
 
 def test_response_urls_are_http_or_internal_only(client):
-    with SessionLocal() as db:
+    with news_db.session() as db:
         now = datetime.now(timezone.utc)
         db.add(NewsItem(kind="news", source="S", source_key="k", title="危ない", url="javascript:alert(1)", summary="", image_url="data:image/png;base64,AAA",
                         published_at=now, fetched_at=now, topics="[]"))
@@ -498,7 +502,7 @@ def test_prune_keeps_starred_and_removes_oldest(monkeypatch):
     me = user_id("news-prune")
     ids = [add(f"https://a.test/p{i}", published=NOW - timedelta(days=10 - i)) for i in range(10)]    # p0 が一番古い
     act(me, ids[0], "star")
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert store.prune(db, 10) == 0
         assert store.prune(db, 6) == 4
         left = {r.url for r in db.scalars(select(NewsItem))}
@@ -508,41 +512,52 @@ def test_prune_keeps_starred_and_removes_oldest(monkeypatch):
         assert store.prune(db) == 4 and db.scalar(select(NewsItem.id).where(NewsItem.id == ids[0])) == ids[0]
 
 
-# ---- 移行 ----
+# ---- 別の DB ----
 
-def test_migration_up_down_and_fts_triggers(tmp_path: Path):
-    database = tmp_path / "news.db"
-    up = _run(database, """
-from sqlalchemy import text
-from app.bootstrap import init_db
-from app.database import engine
-init_db()
-with engine.begin() as c:
-    c.execute(text("INSERT INTO news_items (kind, source, source_key, title, url, summary, published_at, fetched_at, topics) "
-                   "VALUES ('news','S','k','日本語のタイトルです','https://a.test/1','summary','2026-11-23','2026-11-23','[]')"))
-    c.execute(text("UPDATE news_items SET title = '書き換えた題名です' WHERE id = 1"))
-    print(c.execute(text("SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH '\\"題名で\\"'")).all())
-    print(c.execute(text("SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH '\\"タイトル\\"'")).all())
-""")
-    assert up.returncode == 0, up.stderr
-    assert up.stdout.strip().splitlines()[-2:] == ["[(1,)]", "[]"]
-    with sqlite3.connect(database) as c:
+def test_news_tables_live_in_their_own_file_not_the_main_db():
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.database import engine as main_engine
+
+    assert not [t for t in sa_inspect(main_engine).get_table_names() if t.startswith("news_")]
+    file = news_db.path()
+    assert file.name == "news.sqlite3" and file.parent.name == "news" and file.exists()
+    with sqlite3.connect(file) as c:
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master")}
-    assert {"news_items", "news_actions", "news_items_fts", "news_items_ai", "news_items_ad", "news_items_au"} <= names
-    down = _run(database, """
-from alembic import command
-from app.database.migrations import _alembic_config
-command.downgrade(_alembic_config(), "b5e1c7a93d20")
-""")
-    assert down.returncode == 0, down.stderr
-    with sqlite3.connect(database) as c:
-        names = {r[0] for r in c.execute("SELECT name FROM sqlite_master")}
-        assert not [n for n in names if n.startswith("news_")]
-    again = _run(database, """
-from alembic import command
-from app.database.migrations import _alembic_config
-command.upgrade(_alembic_config(), "head")
-""")
-    assert again.returncode == 0, again.stderr
-    with sqlite3.connect(database) as c:
-        assert "news_items_fts" in {r[0] for r in c.execute("SELECT name FROM sqlite_master")}
+        assert {"news_items", "news_actions", "news_digests", "news_items_fts", "news_items_ai", "news_items_ad", "news_items_au"} <= names
+        assert "users" not in names
+        assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_fts_triggers_follow_insert_update_delete():
+    add("https://a.test/1", title="日本語のタイトルです")
+    with news_db.session() as db:
+        row = db.scalar(select(NewsItem))
+        row.title = "書き換えた題名です"
+        db.commit()
+    with sqlite3.connect(news_db.path()) as c:
+        assert c.execute("SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH '\"題名で\"'").fetchall() != []
+        assert c.execute("SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH '\"タイトル\"'").fetchall() == []
+    with news_db.session() as db:
+        db.execute(delete(NewsItem))
+        db.commit()
+    with sqlite3.connect(news_db.path()) as c:
+        assert c.execute("SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH '\"題名で\"'").fetchall() == []
+
+
+def test_late_columns_are_added_to_an_existing_file(tmp_path, monkeypatch):
+    """あとから足した列は、古いファイルを開いたとき 1 回足される（知識基盤と同じ仕組み）。"""
+    from app.news import db as module
+
+    file = tmp_path / "old" / "news" / "news.sqlite3"
+    file.parent.mkdir(parents=True)
+    with sqlite3.connect(file) as c:
+        c.execute("CREATE TABLE news_items (id INTEGER PRIMARY KEY, kind TEXT)")
+    monkeypatch.setattr(module, "path", lambda: file)
+    monkeypatch.setattr(module, "_LATE_COLUMNS", [("news_items", "extra_note", "TEXT NOT NULL DEFAULT ''")])
+    try:
+        module.engine()
+        with sqlite3.connect(file) as c:
+            assert "extra_note" in {r[1] for r in c.execute("PRAGMA table_info(news_items)")}
+    finally:
+        module._engines.pop(str(file), None)

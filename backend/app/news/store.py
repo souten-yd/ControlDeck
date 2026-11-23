@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -17,8 +16,9 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import and_, delete, exists, func, not_, or_, select, text
 from sqlalchemy.orm import Session
 
-from app.models import NewsAction, NewsItem
 from app.news import channels as channels_mod
+from app.news import db as news_db
+from app.news.db import NewsAction, NewsItem
 from app.news import prefs, profile
 from app.news.sources import plain, safe_url
 from app.news.topics import extract_topics
@@ -59,26 +59,6 @@ def day_range(day: str) -> tuple[datetime, datetime]:
     return utc_naive(start), utc_naive(start + timedelta(days=1))
 
 
-# ---- 全文検索の準備 ----
-
-_fts_ready = threading.Event()
-
-
-def ensure_fts() -> None:
-    """既存の DB を採用して移行が走らなかった場合にも、全文検索の索引を用意する（冪等）。"""
-    if _fts_ready.is_set():
-        return
-    from app.database import engine
-    from app.news.fts import create_fts
-
-    try:
-        with engine.begin() as conn:
-            create_fts(conn)
-    except Exception as exc:  # noqa: BLE001 - 検索は LIKE に落ちる
-        logger.warning("全文検索の索引を用意できません: %s", exc)
-    _fts_ready.set()
-
-
 # ---- 保存 ----
 
 def topics_of(item: NewsItem) -> list[str]:
@@ -89,8 +69,14 @@ def topics_of(item: NewsItem) -> list[str]:
     return [t for t in value if isinstance(t, str)] if isinstance(value, list) else []
 
 
+def item_dict(item: NewsItem) -> dict:
+    """RAG・LLM へ渡す記事の形（出来事は呼ぶ側で除く）。"""
+    return {"id": item.id, "kind": item.kind, "source": item.source, "source_key": item.source_key, "title": item.title, "url": item.url,
+            "summary": item.summary or "", "published_at": iso(item.published_at), "topics": topics_of(item), "gist": item.gist or ""}
+
+
 def upsert_items(db: Session, items: list[dict]) -> dict:
-    """記事を保存する。同じ url は更新だけ。{"new": 件数, "updated": 件数}。"""
+    """記事を保存する。同じ url は更新だけ。{"new": 件数, "updated": 件数, "changed": 新しい・題か抜粋が変わった記事の dict}。"""
     now = datetime.now(_UTC)
     by_url = {item["url"]: item for item in items}   # 同じ回の重複は後勝ち
     existing: dict[str, NewsItem] = {}
@@ -99,25 +85,33 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
         for row in db.execute(select(NewsItem).where(NewsItem.url.in_(urls[i:i + 400]))).scalars():
             existing[row.url] = row
     new = updated = 0
+    touched: list[NewsItem] = []
     for url, data in by_url.items():
         topics = json.dumps(extract_topics(data["title"], data["summary"], data.get("extra_topics", ())), ensure_ascii=False)
         row = existing.get(url)
         if row is None:
-            db.add(NewsItem(kind=data["kind"], source=data["source"], source_key=data["source_key"], title=data["title"], url=url,
-                            summary=data["summary"], image_url=data.get("image_url"), published_at=data["published_at"],
-                            fetched_at=now, topics=topics, user_id=data.get("user_id")))
+            row = NewsItem(kind=data["kind"], source=data["source"], source_key=data["source_key"], title=data["title"], url=url,
+                           summary=data["summary"], image_url=data.get("image_url"), published_at=data["published_at"],
+                           fetched_at=now, topics=topics, user_id=data.get("user_id"))
+            db.add(row)
+            touched.append(row)
             new += 1
         else:
+            if (row.title, row.summary) != (data["title"], data["summary"]):
+                touched.append(row)
             row.kind, row.source, row.source_key = data["kind"], data["source"], data["source_key"]
+            if row.gist:      # LLM が付けた話題の語は、取り直しで消さない
+                topics = json.dumps(list(dict.fromkeys(topics_of(row) + json.loads(topics))), ensure_ascii=False)
             row.title, row.summary, row.topics, row.fetched_at = data["title"], data["summary"], topics, now
             row.image_url = data.get("image_url") or row.image_url
             updated += 1
     db.commit()
-    return {"new": new, "updated": updated}
+    return {"new": new, "updated": updated, "changed": [item_dict(r) for r in touched if r.kind != "event"]}
 
 
-def prune(db: Session, limit: int | None = None) -> int:
-    """残す件数（設定のアーカイブ。既定 MAX_ITEMS）を超えた分を古い順に消す（star は残す）。消した件数。"""
+def prune(db: Session, limit: int | None = None, removed_urls: list[str] | None = None) -> int:
+    """残す件数（設定のアーカイブ。既定 MAX_ITEMS）を超えた分を古い順に消す（star は残す）。消した件数。
+    removed_urls を渡すと、消した記事の URL をそこへ足す（RAG から一緒に消す設定のとき）。"""
     cap = MAX_ITEMS if limit is None else limit
     total = db.scalar(select(func.count(NewsItem.id))) or 0
     if total <= cap:
@@ -125,6 +119,9 @@ def prune(db: Session, limit: int | None = None) -> int:
     starred = select(NewsAction.item_id).where(NewsAction.action == "star")
     ids = list(db.scalars(select(NewsItem.id).where(NewsItem.id.not_in(starred))
                           .order_by(NewsItem.published_at.asc(), NewsItem.id.asc()).limit(total - cap)))
+    if removed_urls is not None:
+        for i in range(0, len(ids), 500):
+            removed_urls += list(db.scalars(select(NewsItem.url).where(NewsItem.id.in_(ids[i:i + 500]), NewsItem.kind != "event")))
     for i in range(0, len(ids), 500):
         db.execute(delete(NewsItem).where(NewsItem.id.in_(ids[i:i + 500])))
     db.commit()
@@ -144,14 +141,15 @@ def record_event(kind: str, *, title: str, body: str = "", url: str = "/", user_
     from app.models import User
     from app.security.deps import user_permissions
 
-    with SessionLocal() as db:
+    with SessionLocal() as main:      # 利用者は本体の DB（ニュースの DB には利用者の表が無い）
         if user_ids is None:
-            users = db.scalars(select(User).where(User.is_active.is_(True))).all()
+            users = main.scalars(select(User).where(User.is_active.is_(True))).all()
             ids = [u.id for u in users if permission and permission in user_permissions(u)]
         else:
-            ids = [i for i in dict.fromkeys(user_ids) if db.get(User, i) is not None]
-        if not ids:
-            return 0
+            ids = [i for i in dict.fromkeys(user_ids) if main.get(User, i) is not None]
+    if not ids:
+        return 0
+    with news_db.session() as db:
         path = _internal_path(url or "/")
         label = KIND_BY_ID[kind].label
         stamp = time.time_ns()
@@ -179,7 +177,6 @@ def search_clause(db: Session, q: str):
     terms = [t for t in q.split() if t][:8]
     if not terms:
         return None
-    ensure_fts()
     if db.get_bind().dialect.name == "sqlite" and all(len(t) >= 3 for t in terms) and db.execute(
             text("SELECT 1 FROM sqlite_master WHERE name = 'news_items_fts'")).first():
         match = " ".join('"' + t.replace('"', '""') + '"' for t in terms)

@@ -2,7 +2,7 @@
 
 ResearchDataHub と PatentBuddy を ControlDeck へ統合するための正本（docs/PLAN-knowledge-platform.md）。
 
-- 分野（shard）ごとに SQLite ファイルを分ける: data_dir/knowledge/{general,patents,standards}.sqlite3。
+- 分野（shard）ごとに SQLite ファイルを分ける: data_dir/knowledge/{general,patents,standards,news}.sqlite3（news はニュースの記事。公開情報）。
   呼び出し側はコレクション名だけを渡し、どのファイルにあるかを意識しない。
   後で別のサーバーへ分けられるよう、ファイルをまたぐ JOIN・トランザクションは作らない。
 - 全文検索は ResearchDataHub と同じ日本語 2-gram（unicode61 + textproc）。2 文字語（「電圧」等）も当たる。
@@ -36,7 +36,7 @@ from app.knowledge import storage, textproc
 
 logger = logging.getLogger("control_deck.knowledge.store")
 
-SHARDS = ("general", "patents", "standards")
+SHARDS = ("general", "patents", "standards", "news")
 SENSITIVITY = ("confidential", "public")
 BASIS = ("source_fact", "model_inference", "user_authored")
 COLLECTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -215,7 +215,7 @@ def create_collection(name: str, *, shard: str = "general", kind: str = "general
     return require_collection(name)
 
 
-COLLECTION_KINDS = ("general", "conversation", "patent", "generic", "standard", "law", "classification")
+COLLECTION_KINDS = ("general", "conversation", "patent", "generic", "standard", "law", "classification", "news")
 
 
 def set_collection_kind(name: str, kind: str) -> CollectionRef:

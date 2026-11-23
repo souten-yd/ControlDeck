@@ -19,7 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import data_dir
-from app.models import Conversation, NewsAction, NewsItem
+from app.models import Conversation
+from app.news.db import NewsAction, NewsItem
 from app.news import prefs
 from app.news.topics import extract_topics
 
@@ -112,8 +113,13 @@ def interests(db: Session, user_id: int, now: datetime | None = None) -> dict:
     chats = 0
     # 秘密の会話は題も語も使わない（confidential_at が付いた会話は読まない）
     chat_since = (now - timedelta(days=CHAT_LOOKBACK_DAYS)).replace(tzinfo=None)
-    chat_rows = db.execute(select(Conversation.title, Conversation.updated_at).where(
-        Conversation.owner_user_id == user_id, Conversation.confidential_at.is_(None), Conversation.updated_at >= chat_since)) if taste["use_chat"] else []
+    chat_rows = []
+    if taste["use_chat"]:
+        from app.database import SessionLocal
+
+        with SessionLocal() as main:      # チャットの題は本体の DB（ニュースの DB とは別のファイル）
+            chat_rows = main.execute(select(Conversation.title, Conversation.updated_at).where(
+                Conversation.owner_user_id == user_id, Conversation.confidential_at.is_(None), Conversation.updated_at >= chat_since)).all()
     for title, updated in chat_rows:
         if not title or title == "新しい会話":
             continue

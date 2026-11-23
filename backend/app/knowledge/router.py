@@ -22,7 +22,7 @@ from app.security.deps import require_permission
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 VIEW = Depends(require_permission("workflows.run"))
 EDIT = require_permission("workflows.edit")
-SCOPES = {"all": None, "general": "general", "patents": "patents", "standards": "standards"}
+SCOPES = {"all": None, "general": "general", "patents": "patents", "standards": "standards", "news": "news"}
 MAX_VIEW_CHARS = 400_000
 
 
@@ -35,7 +35,7 @@ def _wrap(fn, *args, **kwargs):
 
 class FindBody(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
-    scope: str = Field(default="all", pattern="^(all|general|patents|standards)$")
+    scope: str = Field(default="all", pattern="^(all|general|patents|standards|news)$")
     limit: int = Field(default=10, ge=1, le=30)
     include_conversations: bool = False
 

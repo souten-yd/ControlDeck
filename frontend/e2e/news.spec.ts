@@ -83,7 +83,7 @@ function buildHome(items: Item[], channels: Channel[]) {
   };
 }
 
-async function mockNews(page: Page, opts: { empty?: boolean } = {}) {
+async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean } = {}) {
   const items = opts.empty ? [] : ITEMS.map((i) => ({ ...i, state: { ...i.state } }));
   const channels: Channel[] = CHANNELS.map((c) => ({ ...c }));
   const prefs = DEFAULT_PREFS();
@@ -137,7 +137,34 @@ async function mockNews(page: Page, opts: { empty?: boolean } = {}) {
     sources: [{ source_key: "rss:bad", label: "Phoronix", kind: "news", ok: false, skipped: "", error: "HTTP 500", count: 0, at: at(0) },
       { source_key: "reddit:LocalLLaMA", label: "r/LocalLLaMA", kind: "reddit", ok: true, skipped: "Reddit のキーが未設定のため取得しません", error: "", count: 0, at: at(0) }],
     last: { finished: at(0.2), new: 3 }, running: false } }));
-  return { opened, saved, channels };
+  // 2 段目: まとめ・設定（更新・LLM・RAG）・意味で探す
+  const settings = {
+    feed_refresh_minutes: 15, digest_daily: { enabled: true, time: "06:30" }, digest_weekly: { enabled: true, weekday: 0, time: "07:00" },
+    quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto" },
+    rag: { enabled: true, fulltext: false, on_prune: "keep" },
+  };
+  const savedSettings: unknown[] = [];
+  const egress = { allowed: opts.egress ?? false };
+  const digestOf = (id: number, period: string, day: string, body: string, extra: object = {}) => ({
+    id, period, label: period === "daily" ? "今朝のまとめ" : "今週のまとめ", day, body, model: "cloud:openrouter/meta/llama-3.3-70b:free", created_at: at(1),
+    error: "", fallback: false, item_ids: [1, 2], sources: [{ id: 1, n: 1, title: ITEMS[0].title, source: "ITmedia NEWS", url: ITEMS[0].url }, { id: 2, n: 2, title: ITEMS[1].title, source: "GitHub", url: ITEMS[1].url }], ...extra });
+  const daily = digestOf(1, "daily", "2026-11-23", "## ローカル LLM\n- Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n## AMD・GPU\n- llama.cpp が ROCm の Flash Attention を高速化した。[2]");
+  const weekly = digestOf(2, "weekly", "2026-11-23", "## ローカル LLM\n- 見出しだけの一覧です。 [1]", { fallback: true, error: "接続できません", model: "auto" });
+  await page.route(/\/api\/v1\/news\/digests$/, (route) => route.fulfill({ json: { latest: { daily, weekly }, digests: [daily, weekly, digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" })] } }));
+  await page.route(/\/api\/v1\/news\/digests\/(\d+)$/, (route) => route.fulfill({ json: route.request().url().endsWith("/2") ? weekly : route.request().url().endsWith("/1") ? daily : digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" }) }));
+  await page.route(/\/api\/v1\/news\/settings$/, (route) => {
+    if (route.request().method() === "PUT") { Object.assign(settings, route.request().postDataJSON()); savedSettings.push(route.request().postDataJSON()); }
+    return route.fulfill({ json: { settings, weekdays: ["月", "火", "水", "木", "金", "土", "日"], interval_minutes: 30 } });
+  });
+  await page.route(/\/api\/v1\/news\/llm-options$/, (route) => route.fulfill({ json: {
+    local: [{ id: "auto", name: "auto（Models で選んだ既定）" }, { id: "qwen-local", name: "Qwen ローカル" }],
+    cloud: [{ id: "cloud:openrouter/meta/llama-3.3-70b:free", name: "OpenRouter / meta/llama-3.3-70b:free", provider: "openrouter", free: true, paid: false },
+      { id: "cloud:openrouter/anthropic/claude-x", name: "OpenRouter / anthropic/claude-x", provider: "openrouter", free: false, paid: true }],
+    egress: egress.allowed, caller_label: "ニュース（公開情報だけ）" } }));
+  await page.route(/\/api\/v1\/news\/semantic\?.*/, (route) => route.fulfill({ json: { semantic: true, items: [
+    { ...ITEMS[0], snippet: "Qwen の量子化版が公開された" },
+    { ...mk(0, "news", "Phoronix", "古い記事: Qwen 2 の登場", "", 900, ["Qwen"]), id: 0, archived: true, snippet: "RAG にだけ残る断片" }] } }));
+  return { opened, saved, channels, savedSettings };
 }
 
 /** 画面の中で縦に動く領域（アプリの殻）の全体が写るよう、撮影の間だけ viewport を伸ばす（fullPage は殻の内側までは写さない）。 */
@@ -394,4 +421,101 @@ test("ニュース: 記事が無いとき「今すぐ取得する」が出る", 
   await page.goto("/news");
   await expect(page.getByText("まだ記事がありません。")).toBeVisible();
   await expect(page.getByRole("button", { name: "今すぐ取得する" })).toBeVisible();
+});
+
+// ---- 2 段目: まとめ・更新と LLM の設定・意味で探す ----
+
+for (const [width, height] of [[1280, 900], [320, 700]] as const) {
+  test(`ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await mockNews(page);
+    await establishSession(page, context);
+    await page.goto("/news");
+    const daily = page.getByTestId("digest-daily");
+    const weekly = page.getByTestId("digest-weekly");
+    // 放送（ON AIR）より上にある
+    const top = await daily.boundingBox();
+    const onair = await page.getByRole("region", { name: "ON AIR" }).boundingBox();
+    expect(top!.y).toBeLessThan(onair!.y);
+    await expect(daily).toContainText("今朝のまとめ");
+    await expect(weekly).toContainText("今週のまとめ");
+    await expect(weekly.getByTestId("digest-fallback")).toContainText("見出しの一覧（LLM なし）");   // LLM なしの印
+    await daily.locator("summary").first().click();
+    await expect(daily.getByTestId("digest-body")).toContainText("Qwen の新モデルが公開され");
+    // 出典の [1] は記事へのリンク
+    const cite = daily.getByTestId("digest-body").getByRole("link", { name: "[1]" });
+    await expect(cite).toHaveAttribute("href", ITEMS[0].url);
+    await expect(cite).toHaveAttribute("rel", /noopener/);
+    await weekly.locator("summary").first().click();
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-digest-${width}.png`);
+    // アーカイブにまとめの一覧（作れなかった回は理由）
+    await page.getByRole("tab", { name: "アーカイブ" }).click();
+    await expect(page.getByRole("heading", { name: "まとめ" })).toBeVisible();
+    await page.getByRole("button", { name: /2026-11-22/ }).click();
+    await expect(page.getByText("外部への送信が許可されていません")).toBeVisible();
+    expect(await noOverflow(page)).toBe(true);
+  });
+}
+
+for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as const) {
+  test(`ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? "あり" : "なし"}）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    const { savedSettings } = await mockNews(page, { egress });
+    await establishSession(page, context);
+    await page.goto("/settings/news");
+    await expect(page.getByRole("heading", { name: "更新のタイミング" })).toBeVisible();
+    await expect(page.getByLabel("日刊の時刻")).toHaveValue("06:30");
+    await expect(page.getByLabel("週刊の曜日")).toHaveValue("0");
+    await expect(page.getByLabel("週刊の時刻")).toHaveValue("07:00");
+    await expect(page.getByRole("button", { name: "今すぐ日刊のまとめを作る" })).toBeVisible();
+    // LLM: 無料が先で「無料」「有料」の印
+    const select = page.getByLabel("まとめのモデル");
+    const options = await select.locator("option").allTextContents();
+    expect(options.findIndex((t) => t.startsWith("無料 ·"))).toBeLessThan(options.findIndex((t) => t.startsWith("有料 ·")));
+    await expect(page.getByRole("heading", { name: "検索（RAG）への蓄積" })).toBeVisible();
+    if (!egress) {
+      await expect(page.getByTestId("egress-missing")).toContainText("外部への送信が許可されていません");
+      await expect(page.getByRole("link", { name: "Models を開く" })).toBeVisible();
+    } else {
+      await expect(page.getByTestId("egress-missing")).toHaveCount(0);
+    }
+    // 有料を選ぶと警告
+    await select.selectOption("cloud:openrouter/anthropic/claude-x");
+    await expect(page.getByText("有料のモデルです")).toBeVisible();
+    await select.selectOption("cloud:openrouter/meta/llama-3.3-70b:free");
+    // 更新の設定を変えて保存
+    await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
+    await page.getByLabel("日刊の時刻").fill("05:45");
+    await page.getByLabel("週刊の曜日").selectOption("4");
+    await page.getByRole("checkbox", { name: /取得しない時間帯を決める/ }).check();
+    await page.getByLabel("古い記事を消すときの RAG").selectOption("delete");
+    await page.getByRole("button", { name: "保存", exact: true }).first().click();
+    await expect.poll(() => savedSettings.length).toBe(1);
+    expect(savedSettings[0]).toMatchObject({ feed_refresh_minutes: 5, digest_daily: { time: "05:45" }, digest_weekly: { weekday: 4 }, quiet: { enabled: true }, rag: { on_prune: "delete" } });
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-settings-llm-${width}.png`);
+  });
+}
+
+test("ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockNews(page);
+  await establishSession(page, context);
+  await page.goto("/news");
+  await page.getByRole("button", { name: "意味で探す" }).click();
+  await page.getByLabel("アーカイブ全体を検索").fill("Qwen");
+  await expect(page.getByRole("heading", { name: "「Qwen」の意味での検索結果" })).toBeVisible();
+  const cards = page.locator("[data-news-card]");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(1)).toContainText("アーカイブ（RAG にだけ残っている記事）");
+  await expect(cards.nth(1).getByRole("group", { name: "操作" })).toHaveCount(0);
+  await expect(cards.nth(0).getByRole("group", { name: "操作" })).toBeVisible();
+  expect(await noOverflow(page)).toBe(true);
+  await shot(page, "test-results/news-semantic-390.png");
+  await page.getByRole("button", { name: "全文", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "「Qwen」の検索結果" })).toBeVisible();
 });

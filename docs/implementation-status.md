@@ -8,6 +8,11 @@
 - チャット: ターンの終わり（`autosave_turn`）で、ターンの始めより新しい記録を最大 12 件 `meta.media` に。完了カードの下に縮小画像（押すと大きく）と `<video controls preload="metadata">`。消された記録は「消しました」。
 - 消す画面: 作業場の結果のカードの「画面の記録」（一覧・1 件ずつ・この作業場の全部を確認つき）と、設定 → 開発（作業場）の「画面の記録の容量」（合計・作業場ごと・一斉削除を確認つき・自動で消す設定）。
 - テスト: `test_workspace_media.py`（一覧・symlink・`..`・上限・Range・削除・持ち主・自動削除・meta.media・config）、`test_opencode_dev_tools.py`（caps）、E2E `assistant-workspace-media.spec.ts`（320・1280）。箱の中での実際の録画は未確認（本番で確かめる）。
+## 2026-11-23 ニュースの 2 段目（日刊・週刊のまとめ・別 DB・RAG・LLM の個別設定）
+
+- ニュースの表を本体の DB（Alembic の移行は削除）から `data_dir/news/news.sqlite3` へ分けた（`news/db.py`）。取った記事は知識基盤の分野 `news`（public）へ取り込み、横断検索・「意味で探す」に使う。本文の取り込み・古い記事を消すときの RAG の扱いは設定。
+- まとめ・一言要約の LLM を用途ごとに選べる（ローカル／OpenRouter。無料を上に印つき、有料は警告）。外部送信は呼び出し元 `news` の許可がある時だけ。許可が無いときはまとめを作らず理由を残す。LLM 失敗時は印つきの見出しの一覧。更新は取得の間隔・ホームのフィード・日刊・週刊・取得しない時間帯を個別に。通知 `news_digest`。
+- テスト: `test_news_rag_llm.py`（新規）ほか。E2E: `news.spec.ts`（まとめ・設定・意味で探す。撮影は `frontend/test-results/news-digest-*.png` ほか）。詳細は `docs/design-news-channel.md` 2b。
 
 ## 2026-11-23 event loop が数秒止まる原因（同期処理）を loop の外へ
 

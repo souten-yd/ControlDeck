@@ -1,7 +1,7 @@
 """SQLite の全文検索（FTS5、trigram）。日本語は単語に分けられないので、3 文字ずつの索引にする（部分一致で探せる）。
 
 外部コンテンツ表（content='news_items'）なので本文は二重に持たない。news_items への挿入・更新・削除はトリガーが追う。
-移行（alembic）と、既存の DB を採用して移行が走らなかった場合の実行時（store.ensure_fts）の両方から呼ぶ。冪等。
+ニュースの DB を開くとき（app/news/db.py）に呼ぶ。冪等。
 SQLite 以外・FTS5 が無いときは何もせず、検索は LIKE になる。"""
 from __future__ import annotations
 

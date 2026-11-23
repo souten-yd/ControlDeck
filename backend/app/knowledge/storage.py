@@ -35,7 +35,7 @@ MARKER = ".controldeck-knowledge"
 LOCAL = "local"
 TARGET_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
-SHARDS = ("general", "patents", "standards")
+SHARDS = ("general", "patents", "standards", "news")
 BLOB_CATEGORIES = ("originals", "figures", "extractions")
 CATEGORIES = {
     "db": "検索用データベース（分野ごと。SQLite）",
@@ -56,7 +56,7 @@ README = """ControlDeck ナレッジの保存先
 このディレクトリは ControlDeck が管理しています。中身を手で書き換えないでください。
 
   .controldeck-knowledge   保存先の目印（ID）。消すと ControlDeck はここを使わなくなる
-  {shard}.sqlite3          検索用データベース（general / patents / standards）。SQLite
+  {shard}.sqlite3          検索用データベース（general / patents / standards / news）。SQLite
   graphs/                  GraphRAG の三つ組（SQLite）
   blobs/ab/<sha256>        原本・図・抽出結果。名前は内容の SHA-256。書いたら変えない
   backups/<日時>/          バックアップの世代。manifest.json に各ファイルの SHA-256 と件数

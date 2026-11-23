@@ -169,3 +169,24 @@
 .nw-skel { border-radius: var(--nw-radius); background: var(--nw-surface); min-height: 160px; animation: nw-sk 1.4s ease-in-out infinite; }
 @keyframes nw-sk { 50% { opacity: .55; } }
 .nw[data-reduce="true"] .nw-skel { animation: none; }
+
+/* 日刊・週刊のまとめ */
+.nw-digests { display: grid; gap: var(--nw-gap); grid-template-columns: minmax(0, 1fr); margin-top: 0 !important; margin-bottom: var(--nw-gap); }
+@media (min-width: 900px) { .nw-digests { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } }
+.nw-digest { border: 1px solid var(--nw-line); border-left: 4px solid var(--nw-accent); border-radius: var(--nw-radius); background: var(--nw-surface); padding: 10px 14px; min-width: 0; box-shadow: var(--nw-shadow); }
+.nw-digest > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 40px; list-style: none; }
+.nw-digest > summary::-webkit-details-marker { display: none; }
+.nw-digest > summary::after { content: "＋"; margin-left: auto; color: var(--nw-muted); }
+.nw-digest[open] > summary::after { content: "－"; }
+.nw-digest-ch { font-size: .9rem; margin: 12px 0 4px; color: var(--nw-accent); }
+.nw-digest-list { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; line-height: 1.6; overflow-wrap: anywhere; }
+.nw-cite { color: var(--nw-accent); font-weight: 700; padding: 0 1px; }
+.nw-digest-src { margin-top: 10px; font-size: .78rem; }
+.nw-digest-src summary { cursor: pointer; color: var(--nw-muted); min-height: 32px; display: flex; align-items: center; }
+.nw-digest-src ol { margin: 4px 0 0; padding-left: 2em; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.nw-digest-src a { text-decoration: underline; }
+.nw-digest .nw-badge.line, .nw-digest-row .nw-badge.line { text-transform: none; letter-spacing: 0; font-weight: 600; border-color: var(--nw-line); }
+.nw-digest-archive { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.nw-digest-row { width: 100%; min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; text-align: left; padding: 6px 12px; border: 1px solid var(--nw-line); border-radius: var(--nw-radius); background: var(--nw-surface); }
+.nw-digest-archive > li > div, .nw-digest-archive > li > p { padding: 6px 12px 0; }
+.nw-sem-mode { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }

@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, not_, select
 from sqlalchemy.orm import Session
 
-from app.models import NewsAction, NewsItem
 from app.news import channels as ch
+from app.news.db import NewsAction, NewsItem
 from app.news import profile, store
 
 _UTC = timezone.utc

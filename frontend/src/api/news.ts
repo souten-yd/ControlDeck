@@ -12,6 +12,8 @@ export interface NewsItem {
   summary: string; image_url: string | null; published_at: string; topics: string[]; state: NewsState; score?: number;
   /** チャンネルの id（どのチャンネルに属するか。無ければ null） */
   channel?: string | null;
+  /** 意味で探す（RAG）の結果: 当たった断片。archived はニュースの DB から消えて RAG にだけ残る記事（id=0・操作はできない） */
+  snippet?: string; archived?: boolean;
 }
 export interface NewsPage { items: NewsItem[]; next: string | null }
 export interface NewsQuery { view: NewsView; kinds: string; q: string; date: string; topic: string; source: string; channel?: string }
@@ -74,14 +76,37 @@ export interface NewsSources {
   config: NewsConfig; kinds: Record<string, string>; reddit_key: boolean; limit: number;
   sources: SourceStatus[]; last: { finished: string | null; new: number }; running: boolean;
 }
+/** 更新・LLM・RAG の設定（backend/app/news/settings.py）。 */
+export interface NewsRuntimeSettings {
+  feed_refresh_minutes: number;
+  digest_daily: { enabled: boolean; time: string };
+  digest_weekly: { enabled: boolean; weekday: number; time: string };
+  quiet: { enabled: boolean; start: string; end: string };
+  llm: { digest_model: string; gist_enabled: boolean; gist_model: string };
+  rag: { enabled: boolean; fulltext: boolean; on_prune: "keep" | "delete" };
+}
+export interface NewsSettingsResponse { settings: NewsRuntimeSettings; weekdays: string[]; interval_minutes: number }
+export interface LlmOptions {
+  local: { id: string; name: string }[];
+  cloud: { id: string; name: string; provider: string; free: boolean; paid: boolean }[];
+  egress: boolean; caller_label: string;
+}
+/** 日刊・週刊のまとめ。body が空で error があるのは「作らなかった」回（外部への送信が許可されていない等）。fallback は LLM なしの見出しの一覧。 */
+export interface Digest {
+  id: number; period: "daily" | "weekly"; label: string; day: string; body: string; model: string; created_at: string;
+  error: string; fallback: boolean; item_ids: number[];
+  sources?: { id: number; n: number; title: string; source: string; url: string | null }[];
+}
+export interface DigestsResponse { latest: { daily: Digest | null; weekly: Digest | null }; digests: Digest[] }
 export interface RefreshResult { started: boolean; reason: string; new?: number; failed?: number }
 
 const key = ["news"] as const;
 
-export function useNewsItems(query: NewsQuery, enabled = true) {
+export function useNewsItems(query: NewsQuery, enabled = true, refetchMinutes = 0) {
   return useInfiniteQuery({
     queryKey: [...key, "items", query],
     enabled,
+    refetchInterval: refetchMinutes > 0 ? refetchMinutes * 60_000 : false,
     initialPageParam: "",
     queryFn: ({ pageParam }) => {
       const p = new URLSearchParams({ view: query.view, limit: "24" });
@@ -113,6 +138,35 @@ export const useNewsPrefs = () =>
   useQuery({ queryKey: [...key, "prefs"], queryFn: () => api<NewsPrefs>("/news/prefs"), staleTime: 60_000 });
 export const useNewsSources = () =>
   useQuery({ queryKey: [...key, "sources"], queryFn: () => api<NewsSources>("/news/sources"), staleTime: 15_000 });
+
+export const useNewsSettings = () =>
+  useQuery({ queryKey: [...key, "settings"], queryFn: () => api<NewsSettingsResponse>("/news/settings"), staleTime: 15_000 });
+export const useLlmOptions = () =>
+  useQuery({ queryKey: [...key, "llm-options"], queryFn: () => api<LlmOptions>("/news/llm-options"), staleTime: 15_000 });
+export const useDigests = () =>
+  useQuery({ queryKey: [...key, "digests"], queryFn: () => api<DigestsResponse>("/news/digests"), staleTime: 30_000 });
+export const useDigest = (id: number | null) =>
+  useQuery({ queryKey: [...key, "digest", id], queryFn: () => api<Digest>(`/news/digests/${id}`), enabled: id !== null, staleTime: 60_000 });
+/** 意味で探す（RAG）。全文検索の /news/items と並べて使う。 */
+export const useSemanticSearch = (q: string, enabled: boolean) =>
+  useQuery({ queryKey: [...key, "semantic", q], enabled: enabled && q.trim() !== "", staleTime: 30_000,
+    queryFn: () => api<{ items: NewsItem[]; semantic: boolean }>(`/news/semantic?${new URLSearchParams({ q: q.trim(), limit: "24" })}`) });
+
+export function useSaveNewsSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: NewsRuntimeSettings) => api<{ settings: NewsRuntimeSettings }>("/news/settings", { method: "PUT", json: settings }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...key, "settings"] }),
+  });
+}
+
+export function useRunDigest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (period: "daily" | "weekly") => api<Digest>("/news/digests/run", { method: "POST", json: { period } }),
+    onSettled: () => { qc.invalidateQueries({ queryKey: [...key, "digests"] }); qc.invalidateQueries({ queryKey: [...key, "digest"] }); },
+  });
+}
 
 /** 1 件の操作を送る。返ってきた状態を、開いているどの一覧にも反映する（隠した記事を一覧から外すのは画面側）。 */
 export function useNewsAction() {

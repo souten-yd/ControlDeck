@@ -40,6 +40,7 @@ GROUPS = (
     ("assistant", "AI アシスタント"),
     ("workspace", "作業場・Project"),
     ("media", "生成"),
+    ("news", "ニュース"),
     ("system", "システム"),
 )
 
@@ -57,6 +58,7 @@ KINDS: tuple[Kind, ...] = (
     Kind("workspace_disk", "workspace", "ディスクの空きが少ない", "空きが少なくて作業場を保存できなかったとき"),
     Kind("project_run", "workspace", "Project の実行の終わり", "Project Lab の実行が終わったとき（起動した人へ）"),
     Kind("media_done", "media", "画像・音楽・3D の生成", "メディアの生成・編集が完了・失敗したとき"),
+    Kind("news_digest", "news", "ニュースのまとめ", "日刊・週刊のまとめができたとき（News ページの「今朝のまとめ」「今週のまとめ」）"),
     Kind("model_error", "system", "モデルの読み込みの失敗", "モデルを起動できなかったとき（管理者）"),
     Kind("update", "system", "更新・承認待ち", "本番の更新の完了・失敗、承認待ち（通知チャンネル「この ControlDeck の通知」を選んだとき）"),
     Kind("alert", "system", "監視の警報", "アラートルールが発火したとき（通知チャンネル「この ControlDeck の通知」を選んだとき）"),

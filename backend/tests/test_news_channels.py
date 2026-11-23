@@ -14,7 +14,8 @@ import pytest
 from sqlalchemy import delete
 
 from app.database import SessionLocal
-from app.models import NewsAction, NewsItem
+from app.news import db as news_db
+from app.news.db import NewsAction, NewsItem
 from app.news import channels, home, prefs, profile, service, sources, store
 from tests.test_news import add, act, login, user_id  # noqa: F401  (試験の道具を使い回す)
 
@@ -26,7 +27,7 @@ def clean(client, tmp_path, monkeypatch):
     for mod, name in ((sources, "_path"), (channels, "_path"), (prefs, "_path")):
         monkeypatch.setattr(mod, name, lambda n=name, m=mod: tmp_path / "news" / f"{m.__name__.rsplit('.', 1)[-1]}.json")
     monkeypatch.setattr(profile, "_muted_path", lambda: tmp_path / "news" / "muted.json")
-    with SessionLocal() as db:
+    with news_db.session() as db:
         db.execute(delete(NewsAction))
         db.execute(delete(NewsItem))
         db.commit()
@@ -162,7 +163,7 @@ def test_hn_discourse_reddit_search_use_the_channel_terms(monkeypatch):
 
 
 def test_search_results_are_saved_and_belong_to_the_channel():
-    with SessionLocal() as db:
+    with news_db.session() as db:
         item = sources.make_item(kind="news", source="ITmedia NEWS", source_key="search:t:gnews-ja", title="題に語がない", url="https://news.google.com/rss/articles/x")
         store.upsert_items(db, [item])
         row = db.query(NewsItem).one()
@@ -184,7 +185,7 @@ def test_home_shape_and_channel_assignment(client, monkeypatch):
     channels.save({"channels": [ch(id="llm", name="LLM", include=["Qwen", "llama.cpp"]), ch(id="amd", name="AMD", include=["Radeon"]),
                                 ch(id="pat", name="特許", include=["特許"], exclude=["広告"]), ch(id="rel", name="更新", include=[], kinds=["release"], search=False)]})
     seed()
-    with SessionLocal() as db:
+    with news_db.session() as db:
         data = home.build(db, user_id("newsreader"), NOW)
     assert set(data) == {"channels", "onair", "ticker", "now", "today", "week", "sections", "interest", "trends", "numbers", "generated_at"}
     assert [c["number"] for c in data["channels"]] == [1, 2, 3, 4]
@@ -205,11 +206,11 @@ def test_numbers_count_reads_and_top_channel(client):
     channels.save({"channels": [ch(id="llm", name="LLM", include=["Qwen"]), ch(id="amd", name="AMD", include=["Radeon"])]})
     seed()
     uid = user_id("newsreader")
-    with SessionLocal() as db:
+    with news_db.session() as db:
         ids = {r.title: r.id for r in db.query(NewsItem)}
     act(uid, ids["Radeon の新ドライバ ROCm 7"], "open", at=NOW - timedelta(minutes=30))
     act(uid, ids["Qwen の新モデル"], "open", at=NOW - timedelta(days=1))
-    with SessionLocal() as db:
+    with news_db.session() as db:
         n = home.build(db, uid, NOW)["numbers"]
     assert n["read_30d"] == 2 and n["read_today"] == 1 and n["top_channel"]["reads"] == 1 and n["top_channel"]["id"] in ("llm", "amd")
 
@@ -219,7 +220,7 @@ def test_home_and_channel_items_api(client):
     channels.save({"channels": [ch(id="amd", name="AMD", include=["Radeon", "ROCm"])]})
     seed()
     # 取り込んだ時刻が NOW 固定のため、画面側の窓（21 日）に入るよう現在に近い日付で入れ直す
-    with SessionLocal() as db:
+    with news_db.session() as db:
         for row in db.query(NewsItem):
             row.published_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
         db.commit()
@@ -281,7 +282,7 @@ def test_taste_strength_changes_ranking():
 
     def order(strength: float) -> list[int]:
         prefs.save(uid, {"taste": {"strength": strength}})
-        with SessionLocal() as db:
+        with news_db.session() as db:
             rows = [db.get(NewsItem, i) for i in (new, old)]
             ranked = profile.rank(db, uid, rows, store.states(db, uid, [new, old]), NOW)
         return [r.id for r, _ in ranked]
@@ -295,10 +296,10 @@ def test_chat_toggle_and_half_life_reach_interests():
     item = add("https://t.test/x", title="Qwen", topics=["Qwen"], published=NOW)
     act(uid, item, "like", at=NOW - timedelta(days=30))
     prefs.save(uid, {"taste": {"half_life_days": 30}})
-    with SessionLocal() as db:
+    with news_db.session() as db:
         slow = profile.interests(db, uid, NOW)["topics"]["Qwen"]
     prefs.save(uid, {"taste": {"half_life_days": 3}})
-    with SessionLocal() as db:
+    with news_db.session() as db:
         fast = profile.interests(db, uid, NOW)["topics"]["Qwen"]
     assert slow == pytest.approx(1.5, rel=0.05) and fast < 0.01
 
@@ -308,14 +309,14 @@ def test_mute_terms_and_sources_hide_from_lists():
     add("https://m.test/1", title="広告つきの記事", source="Spam", source_key="rss:spam", published=datetime.now(timezone.utc))
     add("https://m.test/2", title="良い記事", source="Spam", source_key="rss:spam", published=datetime.now(timezone.utc))
     add("https://m.test/3", title="別の良い記事", source="Good", source_key="rss:good", published=datetime.now(timezone.utc))
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert len(store.list_items(db, uid, view="latest")["items"]) == 3
     prefs.save(uid, {"taste": {"mute_terms": ["広告"]}})
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert [i["title"] for i in store.list_items(db, uid, view="latest")["items"]] == ["別の良い記事", "良い記事"]
         assert len(store.list_items(db, uid, view="latest", q="広告")["items"]) == 1       # 検索では探せる
     prefs.save(uid, {"taste": {"mute_sources": ["Spam"]}})
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert [i["title"] for i in store.list_items(db, uid, view="latest")["items"]] == ["別の良い記事"]
 
 
@@ -326,7 +327,7 @@ def test_archive_keep_prunes_but_keeps_starred(client):
     ids = [add(f"https://k.test/{i}", title=f"k{i}", published=NOW - timedelta(days=i)) for i in range(5)]
     act(uid, ids[4], "star")
     channels.save({"channels": [ch()], "archive_keep": 1000})
-    with SessionLocal() as db:
+    with news_db.session() as db:
         assert store.prune(db, channels.load()["archive_keep"]) == 0
         assert store.prune(db, 2) == 3           # 古い順に消す。star の k4 は残る
         left = {r.title for r in db.query(NewsItem)}

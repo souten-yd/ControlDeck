@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { relativeTime, DEFAULT_PREFS, useNewsAction, useNewsChannels, useNewsHome, useNewsItems, useNewsPrefs, useNewsSources, useRefreshNews, type NewsItem, type NewsView } from "../api/news";
+import { relativeTime, DEFAULT_PREFS, useNewsAction, useNewsChannels, useNewsHome, useNewsItems, useNewsPrefs, useNewsSources, useRefreshNews, useSemanticSearch, type NewsItem, type NewsView } from "../api/news";
 import { useToasts } from "../stores";
 import { BroadcastHome } from "../features/news/BroadcastHome";
 import { NewsCard } from "../features/news/NewsCard";
 import { ArchiveDays } from "../features/news/NewsArchive";
+import { DigestArchive, DigestCards } from "../features/news/DigestCards";
 import { chNo, newsRootProps } from "../features/news/newsTheme";
 import "../styles/news.css";
 
@@ -26,6 +27,7 @@ export default function NewsPage() {
   const [topic, setTopic] = useState("");
   const [starred, setStarred] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [semantic, setSemantic] = useState(false);      // 検索を「意味で探す（RAG）」にする
   useEffect(() => {
     const t = setTimeout(() => setQ(draft), 300);
     return () => clearTimeout(t);
@@ -37,15 +39,19 @@ export default function NewsPage() {
   const view: NewsView = starred && tab === "archive" ? "starred" : "latest";
   const home = useNewsHome();
   const channels = useNewsChannels();
-  const items = useNewsItems({ view, kinds, q, date: tab === "archive" ? date : "", topic, source: "", channel }, !showHome && !archiveList);
+  const useRag = semantic && searching;
+  const items = useNewsItems({ view, kinds, q, date: tab === "archive" ? date : "", topic, source: "", channel }, !showHome && !archiveList && !useRag);
+  const rag = useSemanticSearch(q, useRag);
   const sources = useNewsSources();
   const refresh = useRefreshNews();
   const act = useNewsAction();
   const hideRemoves = tab !== "archive" && !searching;
   const list = useMemo(
-    () => (items.data?.pages.flatMap((p) => p.items) ?? []).filter((item) => !(hideRemoves && item.state.hide)),
-    [items.data, hideRemoves],
+    () => (useRag ? rag.data?.items ?? [] : (items.data?.pages.flatMap((p) => p.items) ?? []).filter((item) => !(hideRemoves && item.state.hide))),
+    [items.data, hideRemoves, useRag, rag.data],
   );
+  const listLoading = useRag ? rag.isLoading : items.isLoading;
+  const listError = useRag ? rag.isError : items.isError;
   const chList = (home.data?.channels ?? channels.data?.channels.map((c, i) => ({ ...c, number: i + 1 })) ?? []);
   const chById = new Map(chList.map((c) => [c.id, c]));
   const failed = (sources.data?.sources ?? []).filter((s) => !s.ok);
@@ -58,7 +64,7 @@ export default function NewsPage() {
       : `取り直しました（新着 ${r.new ?? 0} 件${r.failed ? `・取れなかったソース ${r.failed} 件` : ""}）`, r.started ? "success" : "info"),
     onError: () => toast("取り直せませんでした", "error"),
   });
-  const title = searching ? `「${q.trim()}」の検索結果` : topic ? `話題「${topic}」` : date ? `${date} の記事` : starred ? "保存した記事" : "";
+  const title = searching ? `「${q.trim()}」の${useRag ? "意味での検索結果" : "検索結果"}` : topic ? `話題「${topic}」` : date ? `${date} の記事` : starred ? "保存した記事" : "";
   const root = newsRootProps(prefs.display, paused);
   const filtered = Boolean(searching || topic || date || starred || kinds || channel);
 
@@ -82,7 +88,13 @@ export default function NewsPage() {
                 onClick={() => { setTab(id); setDate(""); setStarred(false); setTopic(""); if (id === "home") { setChannel(""); } }}>{label}</button>
             ))}
           </div>
-          <input type="search" className="nw-search" aria-label="アーカイブ全体を検索" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="アーカイブ全体を検索" />
+          <div className="nw-sem-mode">
+            <input type="search" className="nw-search" aria-label="アーカイブ全体を検索" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={semantic ? "意味で探す（RAG）" : "アーカイブ全体を検索"} />
+            <div role="group" aria-label="検索のしかた" className="nw-tabs">
+              <button type="button" className="nw-btn" aria-pressed={!semantic} onClick={() => setSemantic(false)}>全文</button>
+              <button type="button" className="nw-btn" aria-pressed={semantic} onClick={() => setSemantic(true)} title="意味の近さで探します（取り込んだ記事。ニュースのデータベースから消えた古い記事も出ます）">意味で探す</button>
+            </div>
+          </div>
         </div>
         {(failed.length > 0 || notes.length > 0) && (
           <details className="nw-note">
@@ -93,6 +105,7 @@ export default function NewsPage() {
             </ul>
           </details>
         )}
+        {showHome && <DigestCards />}
         {showHome ? (
           home.isLoading ? <div className="nw-skel" aria-busy="true" aria-label="読み込み中" style={{ minHeight: 320 }} /> : home.isError || !home.data ? (
             <p role="alert" className="nw-note">放送を読み込めませんでした。</p>
@@ -128,10 +141,11 @@ export default function NewsPage() {
             {archiveList && (
               <>
                 <button type="button" className="nw-btn" style={{ width: "100%", marginBottom: 8 }} onClick={() => setStarred(true)}>☆ 保存した記事を見る</button>
+                <DigestArchive />
                 <ArchiveDays onPick={setDate} />
               </>
             )}
-            {!archiveList && (items.isLoading ? <div className="nw-skel" aria-busy="true" aria-label="読み込み中" /> : items.isError ? (
+            {!archiveList && (listLoading ? <div className="nw-skel" aria-busy="true" aria-label="読み込み中" /> : listError ? (
               <p role="alert" className="nw-note">記事を読み込めませんでした。</p>
             ) : list.length === 0 ? (
               <div className="nw-empty">
@@ -144,7 +158,7 @@ export default function NewsPage() {
                   {list.map((item: NewsItem) => <NewsCard key={item.id} item={item} channel={item.channel ? chById.get(item.channel) : channel ? chById.get(channel) : null}
                     hideRemoves={hideRemoves} dimRead={prefs.taste.dim_read} onTopic={pickTopic} />)}
                 </div>
-                {items.hasNextPage && <button type="button" className="nw-btn" style={{ width: "100%", marginTop: 12 }} onClick={() => items.fetchNextPage()} disabled={items.isFetchingNextPage}>{items.isFetchingNextPage ? "読み込み中…" : "もっと見る"}</button>}
+                {!useRag && items.hasNextPage && <button type="button" className="nw-btn" style={{ width: "100%", marginTop: 12 }} onClick={() => items.fetchNextPage()} disabled={items.isFetchingNextPage}>{items.isFetchingNextPage ? "読み込み中…" : "もっと見る"}</button>}
               </>
             ))}
           </div>

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 234 ファイル、2232 テスト（目的の未記入 93 ファイル）
-- E2E: 124 spec、259 テスト
+- backend: 235 ファイル、2263 テスト（目的の未記入 93 ファイル）
+- E2E: 124 spec、262 テスト
 
 ## backend（backend/tests）
 
@@ -1975,7 +1975,9 @@
 - `test_filters_pagination_search_archive_trends_starred`
 - `test_response_urls_are_http_or_internal_only`
 - `test_prune_keeps_starred_and_removes_oldest`
-- `test_migration_up_down_and_fts_triggers`
+- `test_news_tables_live_in_their_own_file_not_the_main_db`
+- `test_fts_triggers_follow_insert_update_delete`
+- `test_late_columns_are_added_to_an_existing_file` — あとから足した列は、古いファイルを開いたとき 1 回足される（知識基盤と同じ仕組み）。
 
 ### backend/tests/test_news_channels.py
 
@@ -2000,6 +2002,40 @@
 - `test_archive_keep_prunes_but_keeps_starred`
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
+
+### backend/tests/test_news_rag_llm.py
+
+目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ 利用したりできるようにして。ニュース用のデータベースは他と分けておいて。」 守ること: - 記事は知識基盤の分野 news（public）へ入り、横断検索（クラウド向けを含む）に出る。本文の取り込みは設定を入れたときだけ。 - クラウドのモデルを選んでいて外部への送信が許可されていなければ、ローカルへ黙って切り替えず、その回のまとめを作らない（理由を残す）。 - クラウドへ出来事・チャットの題・好みは送らない。LLM が落ちたら、印つきの見出しの一覧のまとめになる。 - まとめの時刻・曜日・取得しない時間帯・通知。
+
+- `test_items_go_to_the_news_shard_as_public_and_show_in_cross_search`
+- `test_same_url_is_updated_not_duplicated_and_unchanged_is_skipped`
+- `test_events_are_never_put_in_rag`
+- `test_fulltext_is_read_only_when_the_setting_is_on`
+- `test_fulltext_stops_when_external_reading_is_blocked`
+- `test_prune_keeps_rag_by_default_and_removes_it_when_set`
+- `test_refresh_ingests_new_items_and_reports`
+- `test_rag_failure_does_not_fail_the_fetch`
+- `test_semantic_search_endpoint_marks_archived_items`
+- `test_knowledge_find_scope_accepts_news`
+- `test_news_is_a_cloud_caller_shown_in_the_egress_screen`
+- `test_options_put_free_models_first_and_mark_paid`
+- `test_cloud_model_without_permission_is_not_allowed_and_never_falls_back_to_local`
+- `test_cloud_call_goes_through_the_gateway_as_the_news_caller`
+- `test_llm_options_endpoint`
+- `test_digest_with_llm_cites_only_real_items_and_excludes_events_and_old_items`
+- `test_digest_cloud_without_permission_makes_nothing_and_does_not_use_local`
+- `test_cloud_digest_sends_only_public_article_fields`
+- `test_digest_falls_back_to_marked_headlines_when_llm_fails`
+- `test_digest_notifies_when_made_and_regenerate_replaces`
+- `test_digest_api_lists_and_returns_sources`
+- `test_gist_is_off_by_default_and_adds_gist_and_topics_when_on`
+- `test_gist_with_cloud_model_but_no_permission_does_nothing`
+- `test_settings_defaults_and_validation`
+- `test_daily_digest_is_due_after_the_time_only`
+- `test_weekly_digest_follows_weekday_and_time`
+- `test_quiet_hours_including_past_midnight`
+- `test_run_due_makes_each_missing_digest_once`
+- `test_news_loop_skips_fetch_in_quiet_hours`
 
 ### backend/tests/test_notify_events.py
 
@@ -3939,6 +3975,9 @@
 - ニュース: 新着・チャンネル・絞り込み・👍・隠す・アーカイブ・検索（${width}px）
 - ニュース: ホームのカード・メニュー・設定の入口
 - ニュース: 記事が無いとき「今すぐ取得する」が出る
+- ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
+- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
+- ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
 
 ### frontend/e2e/notification-settings.spec.ts
 
