@@ -39,12 +39,13 @@ for (const width of [320, 1280]) {
     const change = { file: "src/a.tsx", additions: 1, deletions: 0, status: "modified" };
     const meta = { mode: "code", project_path: REPO, agent: "build" };
     await mock(page, [msg("u0", "user", "計画して", { mode_choice: "code", agent_choice: "plan" }),
-      msg("a0", "assistant", "プランを作りました。", { ...meta, agent: "plan" }),
+      // プランの回: 「まとめ」の節があるので完了カードは出る（ファイルは変えていない）
+      msg("a0", "assistant", "## まとめ\nプランを作りました。決めてもらうことはありません。", { ...meta, agent: "plan" }),
       msg("u1", "user", "作って", { mode_choice: "code", agent_choice: "build" }),
-      msg("a1", "assistant", "作りました。", { ...meta, changes: [change] })]);
+      msg("a1", "assistant", "## 結果\n作りました。", { ...meta, changes: [change] })]);
     await page.goto("/assistant");
     const shell = page.locator("[data-assistant-shell]");
-    await expect(shell.getByText("プランを作りました。").first()).toBeVisible();
+    await expect(shell.getByText(/プランを作りました。/).first()).toBeVisible();
     await expect(shell.getByTitle(/GLM-5\.3（作業場）/)).toBeVisible();
     await expect(shell.getByTitle(/^auto/)).toHaveCount(0);
     const cards = shell.locator("[data-code-done]");
