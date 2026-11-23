@@ -292,8 +292,27 @@ async def fetch_github(repo: str) -> list[dict]:
 async def fetch_codeberg(repo: str) -> list[dict]:
     from app.workflows import research_tools as rt
 
-    rows = await rt._get_json(f"https://codeberg.org/api/v1/repos/{repo}/releases", params={"limit": 10})
+    try:
+        rows = await rt._get_json(f"https://codeberg.org/api/v1/repos/{repo}/releases", params={"limit": 10})
+    except rt.HttpError as exc:
+        # Release の機能を切ったリポジトリ（例 StillDeadcode/radiance）は /releases が 404。タグだけを出しているので、タグを Release として読む
+        if exc.status != 404:
+            raise
+        tags = await rt._get_json(f"https://codeberg.org/api/v1/repos/{repo}/tags", params={"limit": 10})
+        rows = codeberg_tags_as_releases(tags, repo)
     return release_items(rows, host="Codeberg", repo=repo)
+
+
+def codeberg_tags_as_releases(tags: object, repo: str) -> list[dict]:
+    """Codeberg（Gitea）のタグの一覧を、release_items が読める形へ。日時はタグのコミットの日時、本文はタグの文。"""
+    out = []
+    for tag in tags if isinstance(tags, list) else []:
+        if not isinstance(tag, dict) or not tag.get("name"):
+            continue
+        commit = tag.get("commit") if isinstance(tag.get("commit"), dict) else {}
+        out.append({"tag_name": tag["name"], "name": tag["name"], "body": str(tag.get("message") or ""),
+                    "html_url": f"https://codeberg.org/{repo}/src/tag/{tag['name']}", "created_at": commit.get("created")})
+    return out
 
 
 # ---- Hacker News・Hugging Face・Discourse・Reddit ----

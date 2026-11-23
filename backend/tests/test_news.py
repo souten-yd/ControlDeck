@@ -561,3 +561,34 @@ def test_late_columns_are_added_to_an_existing_file(tmp_path, monkeypatch):
             assert "extra_note" in {r[1] for r in c.execute("PRAGMA table_info(news_items)")}
     finally:
         module._engines.pop(str(file), None)
+
+
+def test_codeberg_without_releases_reads_tags(monkeypatch):
+    """目的: Release の機能を切った Codeberg のリポジトリでも、タグから更新の記事が取れること。
+
+    根拠: 2026-11-23 本番で「Codeberg StillDeadcode/radiance」が HTTP 404 で失敗していた（has_releases が false、タグ v2.2.0 などは有る）。
+    """
+    import asyncio
+
+    from app.news import sources
+    from app.workflows import research_tools as rt
+
+    async def fake_get(url, **_kw):
+        if url.endswith("/releases"):
+            raise rt.HttpError(404)
+        assert url.endswith("/tags")
+        return [{"name": "v2.2.0", "message": "radiance 2.2.0", "commit": {"created": "2026-11-19T22:29:27+01:00"}}]
+
+    monkeypatch.setattr(rt, "_get_json", fake_get)
+    items = asyncio.run(sources.fetch_codeberg("StillDeadcode/radiance"))
+    assert [i["title"] for i in items] == ["radiance v2.2.0"]
+    assert items[0]["url"] == "https://codeberg.org/StillDeadcode/radiance/src/tag/v2.2.0"
+
+    async def other_error(url, **_kw):
+        raise rt.HttpError(500)
+
+    monkeypatch.setattr(rt, "_get_json", other_error)
+    import pytest
+
+    with pytest.raises(rt.HttpError):
+        asyncio.run(sources.fetch_codeberg("StillDeadcode/radiance"))
