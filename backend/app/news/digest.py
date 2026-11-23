@@ -141,7 +141,21 @@ def validate_body(text: str, valid: int) -> str:
     cleaned = clean_body(body, valid)
     if not any(_TREND_LINE.match(ln.strip()) for ln in cleaned.splitlines()):
         raise BadDigest("「傾向」の行がありません")
+    if japanese_ratio(cleaned) < MIN_JAPANESE:
+        raise BadDigest("日本語で書かれていません")
     return cleaned
+
+
+MIN_JAPANESE = 0.25   # 本文の文字（記号・番号・空白を除く）のうち、かな・漢字の割合の下限。製品名・英語の固有名詞が多くても日本語の文なら 0.4 を超える
+
+
+def japanese_ratio(text: str) -> float:
+    """かな・漢字の割合。2026-11-23 本番で無料のモデル（Nemotron 3.5 Lightning）が、日本語でと指示しても英語でまとめを返した。"""
+    letters = [ch for ch in _CITE.sub("", text) if ch.isalnum()]
+    if not letters:
+        return 0.0
+    ja = sum(1 for ch in letters if "\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff")
+    return ja / len(letters)
 
 
 def headline_body(groups: list[dict]) -> str:
@@ -216,10 +230,18 @@ async def generate(period: str, day: str, *, now: datetime | None = None) -> dic
             row = await asyncio.to_thread(_save, period, day, body=headline_body([]), ids=[], model="", error="", fallback=True)
             return row
         try:
-            text = await llm.complete(model, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": _prompt(period, groups, focus)}],
-                                      max_tokens=MAX_TOKENS)
+            messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": _prompt(period, groups, focus)}]
+            text = await llm.complete(model, messages, max_tokens=MAX_TOKENS)
             try:
-                body = validate_body(text, count)
+                try:
+                    body = validate_body(text, count)
+                except BadDigest as first:
+                    # 1 回だけ、何が悪かったかを伝えてやり直させる（英語で返した・形が崩れた）。それでもだめなら見出しの一覧
+                    logger.info("まとめの返事を直させます（%s）: %s", model, first)
+                    retry = [*messages, {"role": "assistant", "content": text},
+                             {"role": "user", "content": f"直してください: {first}。上の書き方のとおり、必ず日本語で、出典の番号 [n] を付けて書き直してください。"}]
+                    text = await llm.complete(model, retry, max_tokens=MAX_TOKENS)
+                    body = validate_body(text, count)
                 row = await asyncio.to_thread(_save, period, day, body=body, ids=ids, model=model, error="", fallback=False)
             except BadDigest as exc:
                 logger.info("LLM の返事の形が壊れていたため見出しの一覧にします（%s）: %s", model, exc)

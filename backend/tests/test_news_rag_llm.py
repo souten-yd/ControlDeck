@@ -682,3 +682,21 @@ def test_translation_without_egress_permission_does_nothing(monkeypatch):
     configure_openrouter(["meta/llama:free"], egress=False)
     out = run(gist.translate(rows))
     assert out["done"] == 0 and "許可されていません" in out["error"]
+
+
+def test_digest_rejects_english_and_retries_once():
+    """目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
+
+    根拠: 2026-11-23 本番で無料のモデル（Nemotron 3.5 Lightning）が、日本語でと指示しても英語でまとめを返した。
+    """
+    import pytest
+
+    from app.news import digest
+
+    en = "## Local LLM\n- 傾向: x [1]\n- A new model was released with better efficiency and lower memory use [1]"
+    en = en.replace("傾向: x [1]", "傾向: Models are getting smaller and faster on laptops today [1]")
+    with pytest.raises(digest.BadDigest, match="日本語"):
+        digest.validate_body(en, 3)
+    ja = "## ローカル LLM\n- 傾向: ノート PC で動く小さなモデルが増えている [1]\n- 主な技術・製品: Inkling 2 Mini と Qwen 3.8 [2]"
+    assert digest.validate_body(ja, 3).startswith("## ローカル LLM")
+    assert digest.japanese_ratio(ja) > 0.4 > digest.japanese_ratio(en)
