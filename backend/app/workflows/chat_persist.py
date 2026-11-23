@@ -2161,6 +2161,9 @@ async def _intent_research(job: jobs.Job, buf: dict, conv_id: str, mode: str, qu
     papers: list[dict] = []
     inv = ri.Investigation(intent=intent)
     if mode in ("web", "research"):
+        from app.workflows import research_keys
+
+        limits = await asyncio.to_thread(research_keys.limits)   # 設定の「読むページ数」「出典の上限」
         searx = research_tools.searx_for(params, base_url, model)
         inv = await ri.investigate(intent, searx=searx, base_url=base_url, model=model, progress=progress,
                                    rounds=ri.ROUNDS["simple"] if intent.simple else ri.ROUNDS["normal"],
