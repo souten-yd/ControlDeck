@@ -31,6 +31,10 @@ test("previews artifacts and runs a source file without page scrolling", async (
     if (message.type() === "error") browserErrors.push(message.text());
   });
   await login(page);
+  // 成果物のある Project が CodeDEV に要る。検証用の環境（./deck.sh e2e）の CodeDEV は空なので、そこでは飛ばす
+  await page.goto("/project-lab");
+  await expect(page.getByText("プロジェクトがありません").or(page.getByRole("button", { name: "その他の操作" })).first()).toBeVisible();
+  test.skip(await page.getByText("プロジェクトがありません").isVisible(), "CodeDEV に Project が無い環境");
 
   for (const viewport of [{ width: 320, height: 700 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
