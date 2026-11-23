@@ -72,7 +72,10 @@ export function NewsHomeCard() {
   const design = LEGACY_DESIGNS[prefs.display.design] ?? prefs.display.design;
   const summary = useMemo(() => digestSummary([digests?.latest.daily, ...(digests?.digests ?? [])]), [digests]);
   // テロップに流す項目の配列（共通の Marquee 部品へつなぐ形）: まとめの各行、無ければ新しい見出しの上位数件
-  const telop = useMemo(() => (summary ? summary.lines : all.slice(0, 5).map((i) => i.title)), [summary, all]);
+  // 依存は読み直しで毎回新しくなる配列ではなく「文字」（同じ文字なら同じ配列を返し、Marquee の項目を作り直さない）
+  const telopText = summary ? summary.lines.join("\n") : all.slice(0, 5).map((i) => i.title).join("\n");
+  const telop = useMemo(() => (telopText ? telopText.split("\n") : []), [telopText]);
+  const telopItems = useMemo(() => telop.map((text, n) => ({ key: `${n}:${text}`, node: text })), [telop]);
   if (isError) return null;
 
   const channelOf = (item: NewsItem) => {
@@ -106,7 +109,7 @@ export function NewsHomeCard() {
         <div className="nw-ticker nwh-telop" data-testid="home-telop" role="group" aria-label="テロップ">
           <span className="nw-ticker-label">NEWS</span>
           {/* 流す項目は配列。複数なら 1 件ずつ流して縦にめくり、1 件ならそれを流し続ける（共通の Marquee）。ニュースの「動きを減らす」は CSS（data-reduce）で流れを止めて省略表示にする */}
-          <Marquee className="min-w-0 flex-1 text-[.85rem]" items={telop.map((text, n) => ({ key: `${n}:${text}`, node: text }))} />
+          <Marquee className="min-w-0 flex-1 text-[.85rem]" items={telopItems} />
         </div>
       )}
       {summary && (

@@ -42,11 +42,15 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
   const done = useRef(onDone);
   done.current = onDone;
   const [dist, setDist] = useState(0);
+  // 作り直しても位置（px）を保つための持ち越し。データの読み直しで dist・multi などが変わっても、流れが最初へ戻らない。
+  const carry = useRef<{ x: number; hold: number }>({ x: 0, hold: 0 });
+  const meta = useRef<{ pauseMs: number; move: number; dist: number; speed: number } | null>(null);
 
   useEffect(() => {
     const o = outer.current, i = inner.current;
     if (!o || !i) return;
-    const measure = () => setDist(Math.max(0, Math.ceil(i.scrollWidth - o.clientWidth)));
+    // 1px 以下の揺れ（小数の丸め）では測り直さない（アニメを付け直さない）
+    const measure = () => setDist((prev) => { const next = Math.max(0, Math.ceil(i.scrollWidth - o.clientWidth)); return next !== 0 && prev !== 0 && Math.abs(next - prev) <= 1 ? prev : next; });
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(o); ro.observe(i);
@@ -61,20 +65,32 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
     if (run) {
       const move = (dist / speed) * 1000;
       const total = pauseMs * 2 + move;
+      // transform（translate3d）だけで動かす。速さは px/秒で一定（距離 ÷ speed）
       a = i.animate([
-        { transform: "translateX(0)", offset: 0 },
-        { transform: "translateX(0)", offset: pauseMs / total },
-        { transform: `translateX(-${dist}px)`, offset: (pauseMs + move) / total },
-        { transform: `translateX(-${dist}px)`, offset: 1 },
+        { transform: "translate3d(0,0,0)", offset: 0 },
+        { transform: "translate3d(0,0,0)", offset: pauseMs / total },
+        { transform: `translate3d(-${dist}px,0,0)`, offset: (pauseMs + move) / total },
+        { transform: `translate3d(-${dist}px,0,0)`, offset: 1 },
       ], { duration: total, iterations: multi ? 1 : Infinity, easing: "linear" });
+      const x = Math.min(carry.current.x, dist);
+      if (x > 0) a.currentTime = pauseMs + (x / speed) * 1000;          // 前の位置から続ける
+      meta.current = { pauseMs, move, dist, speed };
     } else if (multi) {
       a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: holdMs });   // 見せる時間を数えるだけ
+      if (carry.current.hold > 0) a.currentTime = Math.min(carry.current.hold, holdMs - 1);
+      meta.current = null;
     }
     if (!a) return;
     if (multi) a.onfinish = () => done.current();
     if (pausedRef.current) a.pause();
     anim.current = a;
-    return () => { a?.cancel(); anim.current = null; };
+    return () => {
+      // 作り直す前に、いまの位置を覚える
+      const t = Number(a?.currentTime ?? 0), m = meta.current;
+      if (m) { const rel = t % (m.pauseMs * 2 + m.move); carry.current = { x: Math.min(m.dist, Math.max(0, ((rel - m.pauseMs) / m.move) * m.dist)), hold: 0 }; }
+      else carry.current = { x: 0, hold: t };
+      a?.cancel(); anim.current = null;
+    };
   }, [run, dist, speed, pauseMs, holdMs, multi]);
 
   useEffect(() => { if (paused) anim.current?.pause(); else anim.current?.play(); }, [paused]);
@@ -120,7 +136,7 @@ export function Marquee({ items, activeKey, onChange, className = "", speed = 50
   useLayoutEffect(() => {
     if (!flipped.current) return;
     flipped.current = false;
-    enter.current?.animate?.([{ transform: "translateY(100%)", opacity: 0 }, { transform: "translateY(0)", opacity: 1 }],
+    enter.current?.animate?.([{ transform: "translate3d(0,100%,0)", opacity: 0 }, { transform: "translate3d(0,0,0)", opacity: 1 }],
       { duration: flipMs, easing: "ease-out" });
   }, [cur?.key, flipMs]);
   useEffect(() => {
@@ -129,6 +145,11 @@ export function Marquee({ items, activeKey, onChange, className = "", speed = 50
     return () => window.clearTimeout(t);
   }, [leaving, flipMs]);
 
+  // 前の層を上へ抜く。ref を毎回新しい関数にすると再描画のたびに animate が付け直されて途中でやり直す（カクつきの原因の 1 つ）ので固定する
+  const leaveRef = useCallback((el: HTMLDivElement | null) => {
+    el?.animate?.([{ transform: "translate3d(0,0,0)", opacity: 1 }, { transform: "translate3d(0,-100%,0)", opacity: 0 }],
+      { duration: flipMs, easing: "ease-out", fill: "forwards" });
+  }, [flipMs]);
   const touchToggle = useRef(false);
   if (!cur) return null;
   return (
@@ -141,10 +162,8 @@ export function Marquee({ items, activeKey, onChange, className = "", speed = 50
           holdMs={holdMs} reduced={reduced} paused={paused} onDone={next} />
       </div>
       {leaving && (
-        <div className="pointer-events-none absolute inset-0 whitespace-nowrap"
-          ref={(el) => { el?.animate?.([{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(-100%)", opacity: 0 }],
-            { duration: flipMs, easing: "ease-in", fill: "forwards" }); }}>
-          <span className="inline-block" style={{ transform: `translateX(${leaving.x}px)` }}>{leaving.node}</span>
+        <div className="pointer-events-none absolute inset-0 whitespace-nowrap will-change-transform" ref={leaveRef}>
+          <span className="inline-block" style={{ transform: `translate3d(${leaving.x}px,0,0)` }}>{leaving.node}</span>
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useSwipe } from "../components/useSwipe";
 import { relativeTime, DEFAULT_PREFS, LEGACY_DESIGNS, useNewsAction, useNewsChannels, useNewsHome, useNewsItems, useNewsPrefs, useNewsSources, useRefreshNews, useSemanticSearch, type NewsDesign, type NewsItem, type NewsView } from "../api/news";
 import { useToasts } from "../stores";
 import { DesignHome } from "../features/news/DesignHomes";
@@ -28,6 +29,7 @@ export default function NewsPage() {
   const [topic, setTopic] = useState("");
   const [starred, setStarred] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);   // 狭い幅では検索窓はふだん虫めがねだけ。押すと広がる
   const [semantic, setSemantic] = useState(false);      // 検索を「意味で探す（RAG）」にする
   useEffect(() => {
     const t = setTimeout(() => setQ(draft), 300);
@@ -67,36 +69,46 @@ export default function NewsPage() {
   const title = searching ? `「${q.trim()}」の${useRag ? "意味での検索結果" : "検索結果"}` : topic ? `話題「${topic}」` : date ? `${date} の記事` : starred ? "保存した記事" : "";
   const root = newsRootProps(prefs.display, paused);
   const design = (LEGACY_DESIGNS[prefs.display.design] ?? prefs.display.design) as NewsDesign;
+  // 新着・アーカイブの記事の一覧: 左右に指でずらすと前後のチャンネル（全チャンネル → CH 01 → …）
+  const chOrder = ["", ...chList.map((c) => c.id)];
+  const listSwipe = useSwipe<HTMLDivElement>({ index: Math.max(0, chOrder.indexOf(channel)), count: chOrder.length, onIndex: (n) => setChannel(chOrder[n]), mode: "swap", disabled: showHome || archiveList || useRag });
   const filtered = Boolean(searching || topic || date || starred || kinds || channel);
 
   return (
     <div className="mx-auto max-w-6xl p-2 md:p-6">
       <div {...root} data-testid="news-root" data-news-root>
-        <header className="nw-top">
-          <div style={{ minWidth: 0 }}>
-            <p className="nw-kicker" style={{ margin: 0 }}>あなたの放送局</p>
-            <h1 className="nw-head" style={{ fontSize: "clamp(1.6rem, 5vw, 2.4rem)" }}>News</h1>
+        <header className="nw-bar" data-search={searchOpen || draft ? "open" : "closed"} data-testid="news-bar">
+          <div className="nw-bar-title">
+            <h1 className="nw-head">News</h1>
+            <p className="nw-kicker">あなたの放送局</p>
           </div>
-          <div className="nw-top-actions">
-            <button type="button" className="nw-btn" onClick={runRefresh} disabled={refresh.isPending}>{refresh.isPending ? "取得中…" : "取り直す"}</button>
-            <Link to="/settings/news" className="nw-btn">⚙ 設定</Link>
+          <div className="nw-bar-tools">
+            <button type="button" className="nw-icon" aria-label="取り直す" title="取り直す" onClick={runRefresh} disabled={refresh.isPending}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={refresh.isPending ? "nw-spin" : undefined}><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>
+            </button>
+            <button type="button" className="nw-icon nw-bar-searchbtn" aria-label="検索を開く" title="検索" aria-expanded={searchOpen} onClick={() => setSearchOpen(true)}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          </button>
+            <Link to="/settings/news" className="nw-icon" aria-label="設定" title="設定">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+            </Link>
           </div>
-        </header>
-        <div className="nw-top">
-          <div className="nw-tabs" role="tablist" aria-label="表示">
+          <div className="nw-utabs" role="tablist" aria-label="表示">
             {TABS.map(([id, label]) => (
-              <button key={id} type="button" role="tab" aria-selected={tab === id} aria-pressed={tab === id} className="nw-btn"
+              <button key={id} type="button" role="tab" aria-selected={tab === id} aria-pressed={tab === id}
                 onClick={() => { setTab(id); setDate(""); setStarred(false); setTopic(""); if (id === "home") { setChannel(""); } }}>{label}</button>
             ))}
           </div>
-          <div className="nw-sem-mode">
-            <input type="search" className="nw-search" aria-label="アーカイブ全体を検索" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={semantic ? "意味で探す（RAG）" : "アーカイブ全体を検索"} />
-            <div role="group" aria-label="検索のしかた" className="nw-tabs">
-              <button type="button" className="nw-btn" aria-pressed={!semantic} onClick={() => setSemantic(false)}>全文</button>
-              <button type="button" className="nw-btn" aria-pressed={semantic} onClick={() => setSemantic(true)} title="意味の近さで探します（取り込んだ記事。ニュースのデータベースから消えた古い記事も出ます）">意味で探す</button>
+          <div className="nw-bar-search">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden className="nw-bar-mag"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+            <input type="search" className="nw-search" aria-label="アーカイブ全体を検索" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={semantic ? "意味で探す" : "アーカイブ全体を検索"} />
+            <div role="group" aria-label="検索のしかた" className="nw-seg">
+              <button type="button" aria-pressed={!semantic} onClick={() => setSemantic(false)}>全文</button>
+              <button type="button" aria-pressed={semantic} aria-label="意味で探す" onClick={() => setSemantic(true)} title="意味の近さで探します（取り込んだ記事。ニュースのデータベースから消えた古い記事も出ます）">意味</button>
             </div>
+            <button type="button" className="nw-bar-close" aria-label="検索を閉じる" onClick={() => { setSearchOpen(false); setDraft(""); }}>×</button>
           </div>
-        </div>
+        </header>
         {notes.length > 0 && (
           <details className="nw-note">
             <summary style={{ cursor: "pointer" }}>取得していないソースがあります</summary>
@@ -133,6 +145,7 @@ export default function NewsPage() {
                 </div>
               </>
             )}
+            <div ref={listSwipe.ref} {...listSwipe.handlers} className="nw-swipe" data-testid="list-swipe">
             {(title || (tab === "archive" && !archiveList)) && (
               <div className="nw-top" style={{ justifyContent: "flex-start" }}>
                 {tab === "archive" && !searching && (date || starred) && <button type="button" className="nw-btn" onClick={() => { setDate(""); setStarred(false); }}>← 日付の一覧へ</button>}
@@ -163,6 +176,7 @@ export default function NewsPage() {
                 {!useRag && items.hasNextPage && <button type="button" className="nw-btn" style={{ width: "100%", marginTop: 12 }} onClick={() => items.fetchNextPage()} disabled={items.isFetchingNextPage}>{items.isFetchingNextPage ? "読み込み中…" : "もっと見る"}</button>}
               </>
             ))}
+            </div>
           </div>
         )}
         {sources.data?.last.finished && <p className="nw-muted" style={{ fontSize: ".7rem", marginTop: 20 }}>最後に取得: {relativeTime(sources.data.last.finished)}</p>}

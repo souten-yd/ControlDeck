@@ -1,5 +1,6 @@
 import { TranslatedMark } from "./TranslatedMark";
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useSwipe } from "../../components/useSwipe";
 import { relativeTime, type NewsHome, type NewsItem, type NewsPrefs } from "../../api/news";
 import { InterestPanel, TrendsPanel } from "./NewsAside";
 import { Media, NewsCard, type CardChannel } from "./NewsCard";
@@ -12,13 +13,16 @@ export const visible = (items: NewsItem[]) => items.filter((i) => !i.state.hide)
  *  携帯ではモニターが先頭（CSS の order）。 */
 function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string) => void; onOpen: (id: number) => void }) {
   const [choice, setChoice] = useState("all");
+  // 左右に指でずらすと前後のチャンネル（ALL → CH 01 → …、端で止まる）。ボタンも今まで通り押せる
+  const order = ["all", ...home.channels.map((c) => c.id)];
+  const swipe = useSwipe<HTMLElement>({ index: Math.max(0, order.indexOf(choice)), count: order.length, onIndex: (n) => setChoice(order[n]), mode: "swap" });
   const section = home.sections.find((s) => s.id === choice);
   const item = choice === "all" ? (home.onair && !home.onair.state.hide ? home.onair : null) : visible(section?.items ?? [])[0] ?? null;
   const channel = home.channels.find((c) => c.id === (choice === "all" ? item?.channel : choice));
   const color = channel?.color;
   const link = item?.url ? { href: item.url, ...(external(item.url) ? { target: "_blank", rel: "noopener noreferrer" } : {}), onClick: () => onOpen(item.id) } : null;
   return (
-    <section className="nw-onair" aria-label="ON AIR" style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
+    <section ref={swipe.ref} {...swipe.handlers} className="nw-onair nw-swipe" data-testid="onair-swipe" aria-label="ON AIR" style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
       <div className="nw-onair-copy">
         <p className="nw-live"><i aria-hidden /> ON AIR{channel && <span className="nw-kicker" data-testid="onair-channel"> · {chNo(channel.number)} · {channel.name}</span>}</p>
         {item ? (
@@ -51,12 +55,42 @@ function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string)
 }
 
 /** 2. テロップ: 新しい見出しが横に流れる。止められる（動きを減らす設定・OS の設定では止まる）。 */
+const TICKER_SPEED = 60;   // px/秒
+
+/** 流れる速さを px/秒で一定にする。CSS の animation（translate3d）はそのまま使い、duration だけを「1 組の幅 ÷ 速さ」にする。
+ *  項目が変わって幅が変わっても、いまの位置（px）を保って続ける（最初へ戻さない・飛ばさない）。 */
+function useTickerSpeed(track: React.RefObject<HTMLDivElement>, active: boolean) {
+  useEffect(() => {
+    const t = track.current, set = t?.firstElementChild as HTMLElement | null;
+    if (!active || !t || !set) return;
+    let prev: { w: number; dur: number } | null = null;
+    const apply = () => {
+      const w = set.getBoundingClientRect().width;
+      const a = t.getAnimations?.()[0];
+      if (w < 1 || !a || !a.effect) return;
+      const dur = (w / TICKER_SPEED) * 1000;
+      if (prev && Math.abs(prev.w - w) <= 1) return;
+      const x = prev ? ((Number(a.currentTime ?? 0) % prev.dur) / prev.dur) * prev.w : 0;
+      a.effect.updateTiming({ duration: dur });
+      a.currentTime = ((x / TICKER_SPEED) * 1000) % dur;
+      prev = { w, dur };
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(set);
+    return () => ro.disconnect();
+  }, [track, active]);
+}
+
 function Ticker({ home, paused, onPause }: { home: NewsHome; paused: boolean; onPause: () => void }) {
-  if (home.ticker.length === 0) return null;
+  const track = useRef<HTMLDivElement>(null);
+  const has = home.ticker.length > 0;
+  useTickerSpeed(track, has);
+  if (!has) return null;
   return (
     <section className="nw-ticker" aria-label="テロップ">
       <span className="nw-ticker-label">NOW SHOWING</span>
-      <div className="nw-ticker-lane"><div className="nw-ticker-track" data-testid="ticker-track">
+      <div className="nw-ticker-lane"><div ref={track} className="nw-ticker-track" data-testid="ticker-track">
         {/* 切れ目なく流すため同じ並びを 2 回出す（2 回目は読み上げない） */}
         {[0, 1].map((copy) => (
           <span key={copy} className={copy ? "nw-dup" : "nw-ticker-set"} aria-hidden={copy ? true : undefined}>

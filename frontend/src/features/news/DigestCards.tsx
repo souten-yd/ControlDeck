@@ -1,4 +1,5 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { useSwipe } from "../../components/useSwipe";
 import { useDigest, useDigests, type Digest } from "../../api/news";
 
 const external = (url: string) => /^https?:\/\//.test(url);
@@ -86,14 +87,37 @@ function DigestCard({ digest, period }: { digest: Digest | null; period: "daily"
   );
 }
 
-/** /news の上（放送の前）の「今朝のまとめ」「今週のまとめ」。 */
+/** 画面の幅が広いか（広いときは 2 枚を並べ、狭いときは 1 枚ずつのカルーセルにする）。 */
+function useWide(query = "(min-width: 900px)"): boolean {
+  const [wide, setWide] = useState(() => typeof matchMedia === "function" && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return;
+    const mq = matchMedia(query), on = () => setWide(mq.matches);
+    on(); mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, [query]);
+  return wide;
+}
+
+/** /news の上（放送の前）の「今朝のまとめ」「今週のまとめ」。狭い幅は 1 枚分の幅のカルーセル（指に付いて動き、離した位置と速さで切り替わる）、広い幅は 2 枚並び。 */
 export function DigestCards() {
   const { data, isError } = useDigests();
+  const [index, setIndex] = useState(0);
+  const wide = useWide();
+  const swipe = useSwipe<HTMLDivElement>({ index, count: 2, onIndex: setIndex, mode: "track", disabled: wide });
   if (isError || !data) return null;
+  const names = ["今朝のまとめ", "今週のまとめ"];
   return (
-    <section className="nw-digests" aria-label="まとめ">
-      <DigestCard digest={data.latest.daily} period="daily" />
-      <DigestCard digest={data.latest.weekly} period="weekly" />
+    <section className="nw-digests" aria-label="まとめ" data-testid="digests">
+      <div ref={swipe.ref} {...swipe.handlers} className="nw-digests-track nw-swipe" data-testid="digests-track" data-index={index}>
+        <div className="nw-digest-slide" data-testid="digest-slide-daily"><DigestCard digest={data.latest.daily} period="daily" /></div>
+        <div className="nw-digest-slide" data-testid="digest-slide-weekly"><DigestCard digest={data.latest.weekly} period="weekly" /></div>
+      </div>
+      {!wide && (
+        <div className="nw-dots" role="tablist" aria-label="まとめの切り替え">
+          {names.map((name, i) => <button key={name} type="button" role="tab" aria-selected={index === i} aria-label={name} onClick={() => setIndex(i)} />)}
+        </div>
+      )}
     </section>
   );
 }

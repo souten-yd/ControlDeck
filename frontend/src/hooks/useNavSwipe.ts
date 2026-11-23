@@ -22,8 +22,10 @@ const EDGE_PX = 20;
 const LOCK_PX = 10;
 const SETTLE_MS = 240;
 
-function startsInBlockedArea(target: EventTarget | null): boolean {
+function startsInBlockedArea(target: EventTarget | null, x: number): boolean {
   let el = target instanceof Element ? target : null;
+  // 画面の中に「左右にずらして切り替える」所（チャンネル・まとめのカード: useSwipe）があるときは、そちらを優先する。左右の端 EDGE_PX は今まで通りメニュー
+  if (el?.closest("[data-swipe-surface]") && x >= EDGE_PX && x <= window.innerWidth - EDGE_PX) return true;
   if (el?.closest("[data-no-nav-swipe], input, textarea, select, [contenteditable='true'], .xterm, canvas, iframe, video")) return true;
   while (el && el !== document.body) {
     if (el instanceof HTMLElement && el.scrollWidth > el.clientWidth + 1) {
@@ -129,7 +131,7 @@ export function useNavSwipe({ enabled, open, onOpen, onClose, onPeek }: {
         if (!(target instanceof Element && target.closest("[data-nav-backdrop]"))) return;
       } else {
         if (target instanceof Element && target.closest("[data-nav-drawer]")) return;
-        if (startsInBlockedArea(target)) return;
+        if (startsInBlockedArea(target, touch.clientX)) return;
         // 選んでいる文字があるとき（範囲選択の操作）は使わない
         if (String(window.getSelection?.() ?? "").length > 0) return;
       }

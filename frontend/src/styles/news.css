@@ -70,13 +70,13 @@
 .nw-ticker { display: flex; align-items: center; gap: 12px; border-block: 1px solid var(--nw-line); overflow: hidden; height: 44px; margin-top: calc(var(--nw-gap) * 1.5) !important; }
 .nw-ticker-label { flex: 0 0 auto; background: var(--nw-accent); color: var(--nw-accent-fg); padding: 4px 10px; font-weight: 800; font-size: .7rem; letter-spacing: .14em; border-radius: 4px; }
 .nw-ticker-lane { flex: 1 1 0; min-width: 0; overflow: hidden; mask-image: linear-gradient(90deg, #000 0, #000 96%, transparent); }
-.nw-ticker-track { display: inline-flex; white-space: nowrap; animation: nw-marquee 80s linear infinite; }
+.nw-ticker-track { display: inline-flex; white-space: nowrap; animation: nw-marquee 80s linear infinite; will-change: transform; }
 .nw-ticker-set, .nw-dup { display: inline-flex; gap: 40px; padding-right: 40px; }
 .nw-ticker-track:hover, .nw[data-paused="true"] .nw-ticker-track { animation-play-state: paused; }
 .nw[data-reduce="true"] .nw-ticker-track { animation: none; }
 .nw[data-reduce="true"] .nw-dup { display: none; }
 @media (prefers-reduced-motion: reduce) { .nw-ticker-track { animation: none; } .nw-dup { display: none; } .nw-live i { animation: none; } }
-@keyframes nw-marquee { to { transform: translateX(-50%); } }
+@keyframes nw-marquee { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-50%, 0, 0); } }
 .nw-ticker-track a { font-size: .85rem; } .nw-ticker-track a:hover { color: var(--nw-accent); }
 .nw-ticker-track span.src { color: var(--nw-muted); margin-right: 6px; font-size: .75rem; }
 .nw-ticker-pause { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--nw-line); background: var(--nw-surface); }
@@ -154,8 +154,8 @@
 .nw[data-reduce="true"] .nw-skel { animation: none; }
 
 /* 日刊・週刊のまとめ */
-.nw-digests { display: grid; gap: var(--nw-gap); grid-template-columns: minmax(0, 1fr); margin-top: 0 !important; margin-bottom: var(--nw-gap); }
-@media (min-width: 900px) { .nw-digests { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; } }
+.nw-digests { margin-top: 0 !important; margin-bottom: var(--nw-gap); overflow: hidden; }
+
 .nw-digest { border: 1px solid var(--nw-line); border-left: 4px solid var(--nw-accent); border-radius: var(--nw-radius); background: var(--nw-surface); padding: 10px 14px; min-width: 0; box-shadow: var(--nw-shadow); }
 .nw-digest > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 40px; list-style: none; }
 .nw-digest > summary::-webkit-details-marker { display: none; }
@@ -295,10 +295,6 @@
 .nw[data-design="finance"] .nw-panel, .nw[data-design="finance"] .nw-digest { border-color: var(--nw-line); }
 
 /* テキスト一覧 */
-.nw[data-design="text"] > header.nw-top { background: var(--nw-accent); color: var(--nw-accent-fg); padding: 4px 10px; margin-bottom: 8px; }
-.nw[data-design="text"] > header.nw-top .nw-kicker { color: inherit; }
-.nw[data-design="text"] > header.nw-top h1 { font-size: 1.1rem !important; }
-.nw[data-design="text"] > header.nw-top .nw-btn { min-height: 32px; border-radius: 2px; background: transparent; border-color: currentColor; }
 .nw[data-design="text"] .nw-btn { border-radius: 2px; }
 .nw[data-design="text"] .nwx-nav button { color: var(--nw-muted); }
 .nwx-list { list-style: none; margin: 0; padding: 0; }
@@ -376,3 +372,68 @@
 @container (min-width: 760px) { .nwh-lead .nwd-lead-media.nw-noimg { flex: 0 0 5px !important; width: 5px; height: auto; align-self: stretch; } }
 /* ON AIR の大きな画面では印を少し大きく（2026-11-24 本番で ON AIR に印が出ていなかった） */
 .nw-screen-inner .nw-ai-mark { right: 10px; bottom: 10px; font-size: 12px; padding: 2px 8px; }
+
+/* ===== 上の部分（見出し・取り直す・設定・表示・検索）: 狭い幅は 2 段（見出し+アイコン / タブ+検索）、広い幅は 1 行 ===== */
+.nw-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title tools" "tabs tabs" "search search"; align-items: center; gap: 2px 8px;
+  margin: 0 0 var(--nw-gap); padding-bottom: 4px; border-bottom: 1px solid var(--nw-line); }
+.nw-bar-title { grid-area: title; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.nw-bar-title h1 { font-size: clamp(1.4rem, 5vw, 1.9rem); }
+.nw-bar-title .nw-kicker { margin: 0; font-size: .64rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nw-bar-tools { grid-area: tools; display: flex; gap: 4px; }
+.nw-icon { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--nw-line); background: var(--nw-surface); display: inline-grid; place-items: center; padding: 0; }
+.nw-icon:hover { border-color: var(--nw-accent); color: var(--nw-accent); }
+.nw-icon:disabled { opacity: .6; cursor: default; }
+.nw-spin { animation: nw-spin .9s linear infinite; }
+@keyframes nw-spin { to { transform: rotate(360deg); } }
+.nw[data-reduce="true"] .nw-spin { animation-duration: 3s; }
+.nw-utabs { grid-area: tabs; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nw-utabs button { flex: 0 0 auto; min-height: 36px; padding: 0 12px; border: 0; background: transparent; font-size: .82rem; font-weight: 700; color: var(--nw-muted); border-bottom: 2px solid transparent; border-radius: 0; margin-bottom: -5px; }
+.nw-utabs button:hover { color: var(--nw-fg); }
+.nw-utabs button[aria-selected="true"] { color: var(--nw-fg); border-bottom-color: var(--nw-accent); }
+.nw-bar-search { grid-area: search; display: none; align-items: center; gap: 6px; position: relative; height: 38px; margin-top: 4px; border: 1px solid var(--nw-line); border-radius: 999px; background: var(--nw-surface); padding: 0 4px 0 12px; min-width: 0; }
+.nw-bar-search:focus-within { border-color: var(--nw-accent); }
+.nw-bar-mag { flex: 0 0 auto; color: var(--nw-muted); }
+.nw-bar-search .nw-search { flex: 1 1 0; min-width: 0; height: 100%; border: 0; background: transparent; padding: 0; max-width: none; border-radius: 0; outline: none !important; }
+.nw-seg { flex: 0 0 auto; display: inline-flex; border: 1px solid var(--nw-line); border-radius: 999px; overflow: hidden; }
+.nw-seg button { min-height: 28px; padding: 0 9px; border: 0; background: transparent; font-size: .72rem; font-weight: 700; color: var(--nw-muted); }
+.nw-seg button[aria-pressed="true"] { background: var(--nw-accent); color: var(--nw-accent-fg); }
+.nw-bar-close { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: 0; background: transparent; color: var(--nw-muted); font-size: 1.1rem; line-height: 1; }
+.nw-bar[data-search="open"] .nw-bar-search { display: flex; }
+.nw-bar[data-search="open"] .nw-utabs, .nw-bar[data-search="open"] .nw-bar-searchbtn { display: none; }
+@media (min-width: 900px) {
+  .nw-bar { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "title tabs search tools"; gap: 0 16px; padding-bottom: 0; }
+  .nw-bar-search { display: flex !important; margin: 0 0 0 auto; width: 100%; max-width: 340px; }
+  .nw-bar .nw-utabs { display: flex !important; }
+  .nw-bar-searchbtn, .nw-bar-close { display: none !important; }
+  .nw-utabs button { margin-bottom: -1px; }
+  .nw-bar-title { flex-direction: column; gap: 0; }
+}
+/* デザインごと */
+.nw[data-design="newspaper"] .nw-bar { border-bottom: 2px solid var(--nw-nav); }
+.nw[data-design="newspaper"] .nw-utabs button[aria-selected="true"] { border-bottom-color: var(--nw-nav); }
+.nw[data-design="newspaper"] .nw-icon, .nw[data-design="newspaper"] .nw-bar-search, .nw[data-design="newspaper"] .nw-seg { border-radius: 2px; }
+.nw[data-design="newspaper"] .nw-seg button[aria-pressed="true"] { background: var(--nw-nav); color: #fff; }
+.nw[data-design="magazine"] .nw-bar { border-bottom: 3px solid var(--nw-fg); }
+.nw[data-design="magazine"] .nw-icon, .nw[data-design="magazine"] .nw-bar-search, .nw[data-design="magazine"] .nw-seg { border-radius: 4px; }
+.nw[data-design="finance"] .nw-bar { border-bottom: 1px solid var(--nw-fg); }
+.nw[data-design="finance"] .nw-icon, .nw[data-design="finance"] .nw-bar-search, .nw[data-design="finance"] .nw-seg { border-radius: 0; }
+.nw[data-design="text"] .nw-bar { background: var(--nw-accent); color: var(--nw-accent-fg); padding: 2px 8px; border: 0; }
+.nw[data-design="text"] .nw-bar .nw-kicker, .nw[data-design="text"] .nw-utabs button { color: inherit; }
+.nw[data-design="text"] .nw-utabs button[aria-selected="true"] { border-bottom-color: currentColor; }
+.nw[data-design="text"] .nw-bar-title h1 { font-size: 1.1rem; }
+.nw[data-design="text"] .nw-icon, .nw[data-design="text"] .nw-bar-search, .nw[data-design="text"] .nw-seg { border-radius: 2px; background: transparent; border-color: currentColor; color: inherit; }
+.nw[data-design="text"] .nw-bar-search { background: var(--nw-bg); color: var(--nw-fg); }
+
+/* ===== 指でずらす（チャンネル・まとめ）===== */
+.nw-swipe { touch-action: pan-y; }
+.nw-digests-track { display: flex; align-items: flex-start; transition: transform 240ms ease-out; will-change: transform; }
+.nw-digest-slide { flex: 0 0 100%; min-width: 0; }
+.nw-dots { display: flex; justify-content: center; gap: 2px; margin-top: 4px; }
+.nw-dots button { width: 24px; height: 20px; border: 0; background: transparent; padding: 0; display: grid; place-items: center; }
+.nw-dots button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--nw-line); transition: background-color 160ms ease-out, transform 160ms ease-out; }
+.nw-dots button[aria-selected="true"]::before { background: var(--nw-accent); transform: scale(1.25); }
+@media (min-width: 900px) {
+  .nw-digests-track { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--nw-gap); transform: none !important; transition: none; will-change: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .nw-digests-track { transition-duration: 80ms; } }
+.nw[data-reduce="true"] .nw-digests-track { transition-duration: 80ms; }
