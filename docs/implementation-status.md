@@ -8,6 +8,16 @@
 - チャット: ターンの終わり（`autosave_turn`）で、ターンの始めより新しい記録を最大 12 件 `meta.media` に。完了カードの下に縮小画像（押すと大きく）と `<video controls preload="metadata">`。消された記録は「消しました」。
 - 消す画面: 作業場の結果のカードの「画面の記録」（一覧・1 件ずつ・この作業場の全部を確認つき）と、設定 → 開発（作業場）の「画面の記録の容量」（合計・作業場ごと・一斉削除を確認つき・自動で消す設定）。
 - テスト: `test_workspace_media.py`（一覧・symlink・`..`・上限・Range・削除・持ち主・自動削除・meta.media・config）、`test_opencode_dev_tools.py`（caps）、E2E `assistant-workspace-media.spec.ts`（320・1280）。箱の中での実際の録画は未確認（本番で確かめる）。
+## 2026-11-23 ニュースの表示のデザインを 5 つに（マガジン・新聞・経済紙・テキスト一覧を追加）
+
+- 放送局（既定）は据え置き。The Verge・日経・FT の色・HN の型を参考に、色だけでなく並びも変えた（`DesignHomes.tsx`。共通のデータ・部品、並べ方だけ別）。旧「紙面」「コンパクト」は経済紙・テキスト一覧へ移し替え（backend の正規化と frontend の両方）。設定に見本の縮小図つきの選択。
+- 確認: 型検査・build・news の E2E 17 件・backend の news テスト 72 件。撮影は frontend/test-results/news-theme-*.png。
+
+## 2026-11-23 ニュースの 2 段目（日刊・週刊のまとめ・別 DB・RAG・LLM の個別設定）
+
+- ニュースの表を本体の DB（Alembic の移行は削除）から `data_dir/news/news.sqlite3` へ分けた（`news/db.py`）。取った記事は知識基盤の分野 `news`（public）へ取り込み、横断検索・「意味で探す」に使う。本文の取り込み・古い記事を消すときの RAG の扱いは設定。
+- まとめ・一言要約の LLM を用途ごとに選べる（ローカル／OpenRouter。無料を上に印つき、有料は警告）。外部送信は呼び出し元 `news` の許可がある時だけ。許可が無いときはまとめを作らず理由を残す。LLM 失敗時は印つきの見出しの一覧。更新は取得の間隔・ホームのフィード・日刊・週刊・取得しない時間帯を個別に。通知 `news_digest`。
+- テスト: `test_news_rag_llm.py`（新規）ほか。E2E: `news.spec.ts`（まとめ・設定・意味で探す。撮影は `frontend/test-results/news-digest-*.png` ほか）。詳細は `docs/design-news-channel.md` 2b。
 
 ## 2026-11-23 event loop が数秒止まる原因（同期処理）を loop の外へ
 
@@ -23,6 +33,26 @@
 - ヘッダの札: 作業場を選んだ OpenCode は作業場のモデルの並び（`/opencode/workspaces` の各作業場に `model_chain` を追加）の先頭を「GLM-5.3（作業場）」と出す。
 - プランの回（変更ファイル 0）の完了カードに「レビューして」を出さない。
 - テスト: `test_dev_workspace_persist.py`・`test_opencode_workspace_persist.py`・`test_visual_review.py`、E2E `assistant-workspace-header-and-plan-card.spec.ts`（書いただけ。未実行）。
+## 2026-11-23 ニュースチャンネル（1.5 段目: 放送局のデザイン・チャンネル＝検索テーマ・詳細な設定）
+
+- 利用者「https://www.ozy.com/ こういうページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。設計は `docs/design-news-channel.md`。OZY のロゴ・文言・画像は使わず、色・書体の雰囲気・構成の型（モニターの枠の ON AIR・CH 切り替え・テロップ・「CH 0N · 名前」の札・3 列カード・大きな数字）だけを取り入れた。
+- チャンネル＝検索テーマ（`app/news/channels.py`、設定は `data_dir/news/channels.json`）: 名前・色・含める語・外す語・ソースの絞り込み（記事の種類）・言語・件数・検索するか。並び順＝CH 番号。既定は ローカル LLM／AMD・GPU／特許／開発ツール／使っているソフトの更新（kind=release）。所属は問い合わせ時の判定（外す語 → 種類 → 検索で取った記事（source_key `search:<id>:…`）→ 含める語）。
+- 検索の取得（`sources.search_sources`）: Google ニュースの検索 RSS（日本語 `hl=ja&gl=JP`・英語 `hl=en-US&gl=US`。配信元を題の末尾から分ける。既存の `http_get`＝安全な出口）・HN の Algolia の `search_by_date`・設定済み Discourse の `/search.json`・Reddit の `/search`（キーがあるときだけ）。日本語だけのチャンネルは HN・Reddit を引かない。取得の間隔とアーカイブの残す件数も全体の設定（`channels.json`）。
+- API: `GET/PUT /news/channels`（PUT は settings.manage）、`GET /news/items?channel=`、`GET /news/home`（ON AIR・テロップ・NOW/TODAY/THIS WEEK・チャンネルごとの上位・興味・話題の動き・数字を 1 回で）、`GET/PUT /news/prefs`（利用者ごと: 表示のデザインと好み）、`GET /news/export?format=json|csv&channel=`（CSV は式の無害化と BOM）。
+- 好み（`prefs.py`）: おすすめの強さ（0＝新しさだけ、0.5＝従来、1＝興味を 2 倍）・半減の日数・チャットの話題を使うか・ミュートの語とソース（一覧・ホームに効く。検索では探せる）・既読を薄く。
+- 画面（`pages/News.tsx`・`features/news/`・`styles/news.css`）: 放送（ON AIR のモニター＋CH 切り替え・テロップ（止められる）・NOW/TODAY/THIS WEEK・チャンネルの区画・興味と話題の動き・数字・アーカイブへ）／新着（チャンネル・種類で絞る）／アーカイブ。デザインは 放送局・紙面・コンパクト（CSS の変数で切り替え。外部フォントなし）。携帯は 1 列でモニターが先頭。動きを減らす設定と OS の設定でテロップ・点滅が止まる。
+- 設定: 設定に「ニュース」の節（チャンネル・ソース（設定 → 表示から移動）・表示のデザイン・好み・アーカイブと書き出し）。ニュースのページの「⚙ 設定」から開ける。
+- テスト: `test_news_channels.py`（所属判定・外す語・RSS 整形・検索のソース・/home の形・設定の検査・好みの強さ・ミュート・書き出し）、E2E `news.spec.ts`（放送局の各区画・CH 切り替え・デザイン変更・チャンネル追加・携帯 390/320・撮影）。
+
+## 2026-11-23 ニュースの専門ページ（1 段目）
+
+- 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして。グラフィカルな感じで。検索機能が不足であれば拡張して」「有料は使わない」「ホームのニュースフィードとは別に専門ページ。過去のニュースはアーカイブにして、いつでも閲覧できるように」。画面は `/news`（メニューの新しいまとまり「情報」）、ホームに「ニュース」の小さなカード（おすすめ上位 5 件）、設定 → 表示に「ニュースのソース」。
+- DB（Alembic `a3c5e7f9b1d2`）: `news_items`（kind・source・source_key・title・url 一意・summary・image_url・published_at・fetched_at・topics・user_id＝event の宛先だけ）、`news_actions`（open・like・dislike・hide・star。1 人・1 記事・1 種類で 1 行）、SQLite の FTS5（trigram）の仮想表とトリガー（`app/news/fts.py`。日本語は 3 文字以上。短い語・FTS5 が無い DB は LIKE）。
+- 取得（`app/news/`）: ソースは `data_dir/news/sources.json`（既定: GitHub Release 4・Codeberg radiance・GIGAZINE と Phoronix の RSS・Hacker News 上位・Hugging Face の話題の GGUF（90 日以内）・Discourse 2 つ・r/LocalLLaMA（Reddit のキーがあるときだけ））。通信は既存の `research_tools`（guarded_client）・`knowledge/sources.http_get`・`hf_search` を使い回し、新しい生の httpx は無い。30 分ごとに見張りが取り、ソースごとに 45 秒で打ち切り・失敗は記録して他を止めない。同じ url は更新だけ（published_at は動かさない）、同時に 1 回だけ（`POST /news/refresh` は 30 秒の間隔）、外から来た文は平文・url と画像は http/https だけ。
+- 出来事: `notify_event` が、種類の有効・お休みに関係なく宛先の人ごとに kind=event の行を残す（伏せた文のまま。秘密の会話は「秘密の会話」）。その人にしか見えない。
+- 保存期間: 消さない。50,000 件を超えたら古い順（star は残す）。
+- 好み: 開いた・👍・☆ は正、👎・隠すは負（30 日で半減）、チャットの題（直近 30 日・秘密の会話を除く・本人のもの）を少し足す。おすすめの点 = 3 日で半減する新しさ ×（1 + 興味）。語ごとに外せる（`muted.json`）。`GET /news/profile` は画面の「あなたの興味」。
+- テスト: `test_news.py`（ソースの整形・設定の検査・失敗の分離・event の宛先・好みの重み・アーカイブ／検索／trends・50,000 件の切り捨て・移行の up/down）、E2E `news.spec.ts`（書いただけ。未実行）。2 段目（日刊・週刊の AI のまとめ、Bluesky・Mastodon）は未着手。
 
 ## 2026-11-23 調査の道具に Reddit の API・Discourse・Stack Exchange の入口
 

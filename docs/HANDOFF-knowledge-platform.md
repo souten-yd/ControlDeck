@@ -48,7 +48,7 @@ ControlDeck 本体は「関門を通せばマージと Release を毎回尋ね�
 
 ```
 backend/app/knowledge/
-  store.py             分野別 SQLite（general / patents / standards）。collections・documents・bodies・chunks・
+  store.py             分野別 SQLite（general / patents / standards / news。news はニュースの記事＝公開情報、2026-11-23 追加）。collections・documents・bodies・chunks・
                        chunks_fts（2-gram）・vectors・blobs・document_assets・annotations・legacy_imports
   textproc.py          日本語 2-gram・規格番号の正規化・請求項の分割（RDH から移植）
   migrate.py           旧 data/rag/*.db（初回利用時にも）・RDH の library.sqlite3 の取り込み

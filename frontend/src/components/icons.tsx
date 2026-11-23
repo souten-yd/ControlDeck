@@ -116,6 +116,13 @@ export const IconBook = (p: SVGProps<SVGSVGElement>) => (
     <path d="M4 5v14" />
   </Icon>
 );
+export const IconNews = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M5 4h12a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1z" />
+    <path d="M19 9h2v9a2 2 0 0 1-2 2" />
+    <path d="M8 8h7M8 12h7M8 16h4" />
+  </Icon>
+);
 export const IconFolder = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />

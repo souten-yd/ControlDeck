@@ -240,6 +240,14 @@ async def _list_query(client, *, params: list[tuple[str, str]], want: int) -> li
     return out
 
 
+async def trending_gguf(limit: int = 20) -> list[dict]:
+    """話題の GGUF（trendingScore の高い順）。ニュースの専門ページ（app/news）が AI モデルの新着として使う。
+    1 行は summarize と同じ形（id・url・created・downloads・likes・pipeline・params_b …）。"""
+    async with httpx.AsyncClient(timeout=30, headers=_headers(), follow_redirects=True) as client:
+        rows = await _list_query(client, params=[("filter", "gguf"), ("sort", "trendingScore"), ("direction", "-1")], want=limit)
+    return [summarize(row, via="trending") for row in rows[:limit]]
+
+
 async def _tree(client, repo: str) -> list[dict]:
     """repo の GGUF ファイルと大きさ（分割は 1 本ずつ）。"""
     key = (repo, "main")

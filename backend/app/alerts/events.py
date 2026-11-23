@@ -40,6 +40,7 @@ GROUPS = (
     ("assistant", "AI アシスタント"),
     ("workspace", "作業場・Project"),
     ("media", "生成"),
+    ("news", "ニュース"),
     ("system", "システム"),
 )
 
@@ -57,6 +58,7 @@ KINDS: tuple[Kind, ...] = (
     Kind("workspace_disk", "workspace", "ディスクの空きが少ない", "空きが少なくて作業場を保存できなかったとき"),
     Kind("project_run", "workspace", "Project の実行の終わり", "Project Lab の実行が終わったとき（起動した人へ）"),
     Kind("media_done", "media", "画像・音楽・3D の生成", "メディアの生成・編集が完了・失敗したとき"),
+    Kind("news_digest", "news", "ニュースのまとめ", "日刊・週刊のまとめができたとき（News ページの「今朝のまとめ」「今週のまとめ」）"),
     Kind("model_error", "system", "モデルの読み込みの失敗", "モデルを起動できなかったとき（管理者）"),
     Kind("update", "system", "更新・承認待ち", "本番の更新の完了・失敗、承認待ち（通知チャンネル「この ControlDeck の通知」を選んだとき）"),
     Kind("alert", "system", "監視の警報", "アラートルールが発火したとき（通知チャンネル「この ControlDeck の通知」を選んだとき）"),
@@ -168,6 +170,17 @@ def _users_with_permission(permission: str) -> list[int]:
         return [user.id for user in users if permission in user_permissions(user)]
 
 
+def _record_news(kind: str, *, title: str, body: str, url: str, user_ids: list[int] | None, permission: str | None) -> None:
+    """ニュースの専門ページ（app/news）の「出来事」へ残す。種類の有効・お休みに関係なく、宛先の人ごとに記録する。
+    title・body は呼び出し側が伏せた後の文なので、そのまま入れてよい。失敗しても通知を止めない。"""
+    try:
+        from app.news.store import record_event
+
+        record_event(kind, title=title, body=body, url=url, user_ids=user_ids, permission=permission)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ニュースの出来事を記録できません (%s): %s", kind, exc)
+
+
 _last_sent: dict[tuple[str, str], float] = {}
 
 
@@ -188,6 +201,7 @@ def notify_event(kind: str, *, title: str, body: str = "", url: str = "/", tag: 
             if now - _last_sent.get((kind, tag), -1e12) < cooldown:
                 return none
             _last_sent[(kind, tag)] = now
+        _record_news(kind, title=title, body=body, url=url, user_ids=user_ids, permission=permission)
         candidates = user_ids if user_ids is not None else _users_with_permission(permission or "")
         now_local = local_now()
         allowed = []

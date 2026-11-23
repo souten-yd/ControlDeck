@@ -1,7 +1,7 @@
 /** ナレッジ（横断検索・文書・規格・PDF の取り込み）API の型。backend/app/knowledge/router.py と対になる。 */
 import { api } from "./client";
 
-export type KnowledgeScope = "all" | "general" | "patents" | "standards";
+export type KnowledgeScope = "all" | "general" | "patents" | "standards" | "news";
 export interface FoundDocument {
   ref: string; title: string; collection: string; relation: string; via: string; sensitivity: string;
   passages: { text: string; locator: Record<string, unknown> }[];

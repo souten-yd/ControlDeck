@@ -13,6 +13,7 @@ import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 import { NavigationVisibilitySettings } from "../features/settings/NavigationVisibilitySettings";
+import { NewsSettings } from "../features/news/NewsSettings";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
@@ -22,7 +23,7 @@ import { UpdateHistoryList } from "../features/settings/UpdateHistory";
 import { OPENCODE_SETUP_KEYS, OpenCodeFeatureSetup, setupPending, useOpenCodeWorkflow } from "../features/opencode/FeatureSetup";
 import { addonLabel, useInstalledAddons, type AddonActivity, type InstalledAddon } from "../api/addons";
 import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
-import { IconBell, IconChevronRight, IconChip, IconKey, IconMenu, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
+import { IconBell, IconChevronRight, IconChip, IconKey, IconMenu, IconNews, IconPalette, IconPlugin, IconSearch, IconShield, IconUser, IconUsers } from "../components/icons";
 import { KeysSettings } from "../features/settings/KeysSettings";
 import { DevWorkspaceSettings } from "../features/settings/DevWorkspaceSettings";
 import { RemoteDesktopSettings } from "../features/settings/RemoteDesktopSettings";
@@ -72,7 +73,7 @@ export default function SettingsPage() {
   return <SettingsLayout />;
 }
 
-type SectionId = "account" | "users" | "appearance" | "experience" | "notifications" | "features" | "keys" | "dev" | "gpu" | "hardware" | "system";
+type SectionId = "account" | "users" | "appearance" | "experience" | "news" | "notifications" | "features" | "keys" | "dev" | "gpu" | "hardware" | "system";
 type Can = (permission: string) => boolean;
 
 interface SettingsSectionDef {
@@ -92,6 +93,9 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     allowed: () => true },
   { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・メニューの項目",
     icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル", "メニュー", "表示", "非表示", "隠す"],
+    allowed: () => true },
+  { id: "news", label: "ニュース", summary: "チャンネル（検索テーマ）・ソース・表示のデザイン・好み・アーカイブ",
+    icon: IconNews, keywords: ["ニュース", "チャンネル", "検索テーマ", "RSS", "ソース", "放送局", "紙面", "コンパクト", "テロップ", "ON AIR", "ミュート", "おすすめ", "アーカイブ", "書き出し", "Google ニュース"],
     allowed: () => true },
   { id: "experience", label: "操作性", summary: "フリックでメニュー・画面を消さない・題名で先頭へ",
     icon: IconMenu, keywords: ["フリック", "スワイプ", "メニュー", "ジェスチャー", "画面", "スリープ", "消灯", "読み上げ", "先頭", "スクロール", "便利"],
@@ -220,6 +224,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
     case "appearance": return <><AppearanceSection /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
+    case "news": return <NewsSettings />;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
     case "keys": return <KeysSettings />;

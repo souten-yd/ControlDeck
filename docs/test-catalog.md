@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 232 ファイル、2191 テスト（目的の未記入 93 ファイル）
-- E2E: 123 spec、252 テスト
+- backend: 235 ファイル、2263 テスト（目的の未記入 93 ファイル）
+- E2E: 124 spec、262 テスト
 
 ## backend（backend/tests）
 
@@ -1950,6 +1950,93 @@
 - `test_think_normalize_and_config` — think の正規化と個別設定の保存/クリア。
 - `test_native_base_helper`
 
+### backend/tests/test_news.py
+
+目的: ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして」 「過去のニュースはアーカイブにして、いつでも閲覧できるようにすること」。 守ること: ソースの整形（外から来た文は平文・url は http/https だけ）・同じ url は更新だけ・1 つのソースの失敗が他を止めない・ event はその人宛てだけ（秘密の会話の題は伏せたまま）・好みの重み（秘密の会話は使わない）・50,000 件の切り捨てで star が残る・移行の up/down。
+
+- `test_topics_use_dictionary_proper_nouns_and_skip_versions`
+- `test_release_items_for_github_and_codeberg_skip_drafts_and_flatten_markdown`
+- `test_rss_and_atom_pick_images_and_drop_unsafe_links`
+- `test_hn_hf_discourse_reddit_shapes`
+- `test_reddit_is_fetched_only_with_keys`
+- `test_non_http_urls_and_image_urls_are_dropped`
+- `test_config_defaults_and_validation`
+- `test_sources_api_needs_settings_manage`
+- `test_same_url_updates_without_moving_published_at`
+- `test_one_failing_source_does_not_stop_others`
+- `test_refresh_does_not_run_twice_at_once`
+- `test_refresh_api_runs_and_reports`
+- `test_events_are_recorded_for_recipients_only_even_when_disabled_or_quiet`
+- `test_event_per_permission_and_secret_chat_title_stays_hidden`
+- `test_interest_weights_from_actions_and_chats_exclude_secret_chats`
+- `test_recommended_orders_by_recency_times_interest_and_hides_hidden`
+- `test_profile_api_and_mute`
+- `test_actions_toggle_and_exclusive_like_dislike`
+- `test_filters_pagination_search_archive_trends_starred`
+- `test_response_urls_are_http_or_internal_only`
+- `test_prune_keeps_starred_and_removes_oldest`
+- `test_news_tables_live_in_their_own_file_not_the_main_db`
+- `test_fts_triggers_follow_insert_update_delete`
+- `test_late_columns_are_added_to_an_existing_file` — あとから足した列は、古いファイルを開いたとき 1 回足される（知識基盤と同じ仕組み）。
+
+### backend/tests/test_news_channels.py
+
+目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・ 設定の検査（チャンネル・表示・好み）・好みの強さがおすすめの順位に効く・ミュートの語とソース・書き出し（JSON・CSV の式の無害化）。
+
+- `test_matching_terms_exclude_kinds_and_search_origin`
+- `test_default_channels_are_valid_and_cover_the_examples`
+- `test_channels_validation_and_save_roundtrip`
+- `test_gnews_url_and_items`
+- `test_gnews_fetch_goes_through_safe_http_get`
+- `test_search_sources_follow_channels_languages_and_switches`
+- `test_hn_discourse_reddit_search_use_the_channel_terms`
+- `test_search_results_are_saved_and_belong_to_the_channel`
+- `test_home_shape_and_channel_assignment`
+- `test_numbers_count_reads_and_top_channel`
+- `test_home_and_channel_items_api`
+- `test_channels_api_permissions`
+- `test_prefs_defaults_validation_and_per_user_storage`
+- `test_taste_strength_changes_ranking` — 強さ 0 は新しさだけ、強さ 1 は興味が効いて古くても好みの記事が上へ来る。
+- `test_chat_toggle_and_half_life_reach_interests`
+- `test_mute_terms_and_sources_hide_from_lists`
+- `test_archive_keep_prunes_but_keeps_starred`
+- `test_export_json_csv_and_formula_guard`
+- `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
+
+### backend/tests/test_news_rag_llm.py
+
+目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ 利用したりできるようにして。ニュース用のデータベースは他と分けておいて。」 守ること: - 記事は知識基盤の分野 news（public）へ入り、横断検索（クラウド向けを含む）に出る。本文の取り込みは設定を入れたときだけ。 - クラウドのモデルを選んでいて外部への送信が許可されていなければ、ローカルへ黙って切り替えず、その回のまとめを作らない（理由を残す）。 - クラウドへ出来事・チャットの題・好みは送らない。LLM が落ちたら、印つきの見出しの一覧のまとめになる。 - まとめの時刻・曜日・取得しない時間帯・通知。
+
+- `test_items_go_to_the_news_shard_as_public_and_show_in_cross_search`
+- `test_same_url_is_updated_not_duplicated_and_unchanged_is_skipped`
+- `test_events_are_never_put_in_rag`
+- `test_fulltext_is_read_only_when_the_setting_is_on`
+- `test_fulltext_stops_when_external_reading_is_blocked`
+- `test_prune_keeps_rag_by_default_and_removes_it_when_set`
+- `test_refresh_ingests_new_items_and_reports`
+- `test_rag_failure_does_not_fail_the_fetch`
+- `test_semantic_search_endpoint_marks_archived_items`
+- `test_knowledge_find_scope_accepts_news`
+- `test_news_is_a_cloud_caller_shown_in_the_egress_screen`
+- `test_options_put_free_models_first_and_mark_paid`
+- `test_cloud_model_without_permission_is_not_allowed_and_never_falls_back_to_local`
+- `test_cloud_call_goes_through_the_gateway_as_the_news_caller`
+- `test_llm_options_endpoint`
+- `test_digest_with_llm_cites_only_real_items_and_excludes_events_and_old_items`
+- `test_digest_cloud_without_permission_makes_nothing_and_does_not_use_local`
+- `test_cloud_digest_sends_only_public_article_fields`
+- `test_digest_falls_back_to_marked_headlines_when_llm_fails`
+- `test_digest_notifies_when_made_and_regenerate_replaces`
+- `test_digest_api_lists_and_returns_sources`
+- `test_gist_is_off_by_default_and_adds_gist_and_topics_when_on`
+- `test_gist_with_cloud_model_but_no_permission_does_nothing`
+- `test_settings_defaults_and_validation`
+- `test_daily_digest_is_due_after_the_time_only`
+- `test_weekly_digest_follows_weekday_and_time`
+- `test_quiet_hours_including_past_midnight`
+- `test_run_due_makes_each_missing_digest_once`
+- `test_news_loop_skips_fetch_in_quiet_hours`
+
 ### backend/tests/test_notify_events.py
 
 目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」を有効にしたときだけ送る（既定は無効）。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
@@ -3876,6 +3963,21 @@
 目的: 設定 → 表示の「メニューの表示」: メニュー（PC のサイドバー・携帯のドロワー）の項目を 1 つずつ隠せる。 隠した項目は「よく使う」からも消える。Settings は隠せない（隠すと戻れない）。選択は端末に残る。 Add-on の項目も同じ一覧から選べる（effective addons を差し替えて確かめる）。 根拠: 2026-11-23 利用者「設定で表示っていう項目があれば、そこの中にメインメニューの項目を任意に 表示、非表示の選択ができるようにしてほしい。新しく導入されたプラグインや今後導入される機能、今開発中の パテントなども含めて…汎用的に開発すること」。 */
 
 - メニューの項目を隠せる（${width}px）
+
+### frontend/e2e/news.spec.ts
+
+目的: ニュースの専門ページ（/news）: 放送局のデザイン・チャンネル・設定。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 画像はテストの中で作る SVG の data URI（外部の画像の URL は使わない）。 守ること: ON AIR・チャンネルの切り替え・テロップ・NOW/TODAY/THIS WEEK・チャンネルの区画・数字が出る／チャンネルを押すと ON AIR が変わる／ 設定でデザインを変えると見た目が変わる／チャンネルを足せる／携帯（390・320px）で 1 列・横にあふれない／ 新着・アーカイブ・検索・👍・隠すは 1 段目のまま使える。撮影は test-results/ に残す。 根拠: 2026-11-23 利用者「OZY のようなページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。 */
+
+- ニュース（放送局）: ON AIR・テロップ・区画・数字・チャンネルの切り替え（${width}px）
+- ニュース: 設定でデザイン・表示を変えると見た目が変わり、チャンネルを足せる
+- ニュース: コンパクト（見出しの一覧）は携帯でも 1 列で横にあふれない
+- ニュース: 動きを減らす設定でテロップが止まる
+- ニュース: 新着・チャンネル・絞り込み・👍・隠す・アーカイブ・検索（${width}px）
+- ニュース: ホームのカード・メニュー・設定の入口
+- ニュース: 記事が無いとき「今すぐ取得する」が出る
+- ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
+- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
+- ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
 
 ### frontend/e2e/notification-settings.spec.ts
 

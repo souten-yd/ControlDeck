@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     from app.features.auto_update import feature_auto_update_loop
     from app.project_lab.runs import watch_runs_loop as project_run_watch_loop
     from app.integrations.opencode.chat_server import idle_reap_loop as opencode_chat_idle_reap_loop
+    from app.news.service import news_loop
     from app.maintenance.watchdog import (
         _loop_ticker,
         notify_ready,
@@ -153,6 +154,8 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(project_run_watch_loop()),
             # 使われていない OpenCode の会話サーバー（箱）を止める（前は次の会話を始めたときだけ止めていた）。
             asyncio.create_task(opencode_chat_idle_reap_loop()),
+            # ニュースの専門ページ: 30 分ごとに各ソースを取り直す（外へ通信するので検証用インスタンスでは動かさない）。
+            asyncio.create_task(news_loop()),
         ]
         # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
         from app.workflows import searxng
@@ -301,6 +304,7 @@ from app.flow_app.router import router as flow_app_router  # noqa: E402
 from app.project_lab.router import router as project_lab_router  # noqa: E402
 from app.alerts.router import router as alerts_router  # noqa: E402
 from app.alerts.push_router import router as push_router  # noqa: E402
+from app.news.router import router as news_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
 from app.remote_desktop.settings_router import router as remote_desktop_settings_router  # noqa: E402
 from app.gitrepos.router import router as gitrepos_router  # noqa: E402
@@ -355,6 +359,7 @@ app.include_router(project_lab_router, prefix=API)
 app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(push_router, prefix=API)
+app.include_router(news_router, prefix=API)
 app.include_router(remote_router, prefix=API)
 app.include_router(remote_desktop_settings_router, prefix=API)
 app.include_router(gitrepos_router, prefix=API)

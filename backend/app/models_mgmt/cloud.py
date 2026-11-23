@@ -29,9 +29,9 @@ from urllib.parse import urlsplit
 from app.config import data_dir
 
 PREFIX = "cloud:"
-CALLERS = ("opencode", "assistant", "workflows", "api")
+CALLERS = ("opencode", "assistant", "workflows", "news", "api")
 CALLER_LABELS = {"opencode": "OpenCode", "assistant": "AI アシスタント", "workflows": "Workflow",
-                 "api": "ゲートウェイを直接使う外部クライアント"}
+                 "news": "ニュース（公開情報だけ）", "api": "ゲートウェイを直接使う外部クライアント"}
 
 # OpenAI 互換の API。base_url は固定（任意の送信先へキーを渡さない）。custom だけ利用者が指定する。
 PROVIDERS: dict[str, dict[str, Any]] = {
@@ -205,6 +205,11 @@ def enabled_models() -> list[dict]:
                 rows.append({"id": f"{PREFIX}{provider_id}/{model}", "provider": provider_id,
                              "name": f"{PROVIDERS[provider_id]['name']} / {model}", "external": True})
     return rows
+
+
+def egress_allowed(caller: str) -> bool:
+    """その呼び出し元に、外部への送信が許可されているか（Models の「外部への送信」）。"""
+    return caller in CALLERS and bool(_read()["egress"].get(caller))
 
 
 def models_for(caller: str) -> list[dict]:

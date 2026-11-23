@@ -8,7 +8,7 @@ import { useToasts } from "../../stores";
 import { DocumentSheet } from "./DocumentSheet";
 
 const SCOPES: ReadonlyArray<readonly [KnowledgeScope, string]> = [
-  ["all", "すべて"], ["general", "資料"], ["patents", "特許"], ["standards", "規格"],
+  ["all", "すべて"], ["general", "資料"], ["patents", "特許"], ["standards", "規格"], ["news", "ニュース"],
 ];
 const input = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 

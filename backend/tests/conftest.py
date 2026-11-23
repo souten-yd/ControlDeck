@@ -22,6 +22,7 @@ files:
     encoding="utf-8",
 )
 os.environ["CONTROL_DECK_CONFIG"] = str(_config)
+os.environ["CONTROL_DECK_NEWS_AUTO"] = "0"  # ニュースの定期取得は外へ通信するので試験では動かさない
 os.environ["CONTROL_DECK_DB_URL"] = f"sqlite:///{_tmp}/test.db"
 
 from fastapi.testclient import TestClient  # noqa: E402
