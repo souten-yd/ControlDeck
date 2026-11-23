@@ -6,6 +6,10 @@
 - 出どころ: AssistantChat の send が、Web・学術・Deep・Research の送信直後に回答の content へ「🔎 検索中...（サーバー側で継続）」などを仮に置き、生成中の delta はその直後へ足され、確定でサーバーの本文に置き換わる（backend の progress は meta で、本文には入らない）。これを本文として読み、消えた後は位置合わせが外れて最初から読み直していた。
 - 直し（`frontend/src/features/workflows/speakable.ts`）: 仮の文は content に入れず `Msg.placeholder`（chatState.ts）へ置き、ChatMessage が本文が来るまでだけ出す（読み上げ・コピー・保存の対象外。文の形では見分けない）。`nextSpoken` は位置ではなく文ごとの指紋（文字と数字だけ。空白・記号・出典の [n]・Markdown を除く）の数え方つきの集合で、読んだ文を飛ばす。読んでいない文は先頭に差し込まれても読む。
 - 試験: `frontend/e2e/assistant-voice-modes.spec.ts` に「progress lines are not read…」を追加（関数だけの試験）。
+## 2026-11-23 Home: 通知の流れるテロップ・LLM カードの 1 行 ctx
+
+利用者の要望（通知は収まらなければ右から左へ自動で流す・複数なら 1 件ずつ流してめくる・LLM は見出しを大きく上に・ctx は 1 行で棒は右に半分幅）。共通部品 `components/Marquee.tsx`（items を 1 件ずつ流す→縦にめくる。1 件だけなら流し続ける。収まる項目は 4 秒見せる。触れる/押すで一時停止。reduced-motion は省略表示）。`HomeNoticeLine` は全通知を重要度順に回し、札は項目に合わせて切替・「n/total」表示・× は表示中の件。
+
 ## 2026-11-23 Home をモバイルで 1 画面に詰め、一番上に通知の 1 行（利用者「モバイルのホームは 1 画面で今の情報とニュースを」「最終的な通知を一行で、重要度で題名と色を変えて」）
 
 - モバイル（768px 未満）: CPU+RAM・GPU+VRAM を各 1 枚（2 本の線・凡例「CPU 9%」）で横 1 段。電力の 4 項目を 1 行。LLM カードは見出しの行に「ローカル · モデル名/未ロード」「OpenRouter · モデル名」、前処理と生成・平均と今日を横並び。PC は従来のまま。

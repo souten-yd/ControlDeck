@@ -4,9 +4,11 @@
  * 解決されたら消して次に優先度の高い内容を。重要度によって インフォメーション・アテンション・ワーニング・エラーの
  * 題名をつけて、色も変えて」。元は backend の /home-notices（警報・失敗したアプリ・更新の失敗・承認待ち）。
  * 色だけに頼らない: 札の文字（エラー・警告・注意・情報）と形の違うアイコンを必ず付ける。何も無ければ行ごと出さない。 */
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
+import { Marquee } from "../../components/Marquee";
 
 export type NoticeLevel = "error" | "warning" | "attention" | "info";
 export interface HomeNotice { key: string; level: NoticeLevel; title: string; message: string; to: string; at: number }
@@ -55,10 +57,19 @@ export function HomeNoticeLine() {
     mutationFn: (key: string) => api("/home-notices/dismiss", { method: "POST", json: { key } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["home-notices"] }),
   });
-  const top = data?.items[0];
+  const [key, setKey] = useState<string>();
+  const list = data?.items ?? [];
+  const idx = Math.max(0, list.findIndex((n) => n.key === key));
+  const top = list[idx];
   if (!top) return null;
   const style = LEVELS[top.level];
-  const more = (data?.total ?? 1) - 1;
+  const items = list.map((n) => ({
+    key: n.key,
+    node: <>
+      <span className="font-medium">{n.title}</span>
+      {n.message && n.message !== n.title && <span className="opacity-80"> — {n.message}</span>}
+    </>,
+  }));
   return (
     <div role={top.level === "error" ? "alert" : "status"} data-testid="home-notice" data-level={top.level}
       className={`flex min-w-0 items-center gap-1 rounded-xl border pl-2 text-xs ${style.row}`}>
@@ -66,14 +77,11 @@ export function HomeNoticeLine() {
         <span className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold leading-none ${style.badge}`}>
           <LevelIcon level={top.level} />{style.label}
         </span>
-        <span className="min-w-0 truncate">
-          <span className="font-medium">{top.title}</span>
-          {top.message && top.message !== top.title && <span className="opacity-80"> — {top.message}</span>}
-        </span>
-        {more > 0 && <span className="num shrink-0 text-[11px] opacity-75">ほか {more} 件</span>}
+        <Marquee items={items} activeKey={top.key} onChange={setKey} className="min-w-0 flex-1" />
+        {list.length > 1 && <span data-testid="home-notice-pos" className="num shrink-0 text-[10px] opacity-75">{idx + 1}/{list.length}</span>}
       </Link>
       <button type="button" onClick={() => dismiss.mutate(top.key)} disabled={dismiss.isPending}
-        aria-label="この件を閉じる（既読にする）" title="この件を閉じる（既読）"
+        aria-label="いま見えている件を閉じる（既読にする）" title="いま見えている件を閉じる（既読）"
         className="grid h-9 w-9 shrink-0 place-items-center rounded-lg opacity-70 hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>

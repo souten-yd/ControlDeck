@@ -55,11 +55,20 @@ function Row({ label, children, wide = false }: { label: string; children: React
   );
 }
 
-function CtxBar({ used, total }: { used: number | null | undefined; total: number | null | undefined }) {
+/** ctx は 1 行: モバイルは「ctx 12K / 131K」の右に幅半分ほどの棒を並べる（2 段にしない）。md 以上は従来どおり行の下に棒。 */
+function CtxRow({ used, total, children, className = "" }: {
+  used: number | null | undefined; total: number | null | undefined; children: React.ReactNode; className?: string;
+}) {
   const pct = used != null && total ? Math.min(100, (used / total) * 100) : 0;
   return (
-    <div className="mb-0.5 mt-px h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-      <div className={`h-full rounded-full ${pct >= 90 ? "bg-amber-500" : "bg-accent-500"}`} style={{ width: `${pct}%` }} />
+    <div className="col-span-2 flex items-center gap-2 md:contents">
+      <div className="num flex min-w-0 shrink-0 items-baseline gap-1.5 text-[11px] leading-tight md:justify-between md:text-[13px] md:leading-relaxed">
+        <span className="shrink-0 text-[9px] text-zinc-400 md:text-[11px]">ctx</span>
+        <span className={`shrink-0 whitespace-nowrap md:min-w-0 md:shrink md:truncate ${className}`}>{children}</span>
+      </div>
+      <div className="mb-0.5 mt-px h-1 min-w-4 max-w-[50%] flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700 md:max-w-none">
+        <div className={`h-full rounded-full ${pct >= 90 ? "bg-amber-500" : "bg-accent-500"}`} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
@@ -69,18 +78,17 @@ function Column({ heading, short, to, model, badge, children }: {
 }) {
   return (
     <div className="min-w-0">
-      {/* モバイルは「ローカル · 未ロード」「OpenRouter · モデル名」を 1 行に。md 以上は見出しの下にモデル名 */}
-      <div className="flex min-w-0 items-center gap-1 md:block">
+      {/* モバイルは 1 段目に大きめの見出し、2 段目に小さくモデル名。md 以上は見出しの下にモデル名 */}
+      <div className="min-w-0">
         <div className="flex shrink-0 items-center gap-1.5">
-          <Link to={to} className="text-[11px] font-semibold text-zinc-500 hover:underline md:text-xs">
+          <Link to={to} className="text-sm font-bold text-zinc-700 hover:underline dark:text-zinc-200 md:text-xs md:font-semibold md:text-zinc-500 md:dark:text-zinc-500">
             <span className="md:hidden">{short}</span><span className="hidden md:inline">{heading}</span>
           </Link>
           <span className="hidden md:contents">{badge}</span>
         </div>
-        <span className="shrink-0 text-[11px] text-zinc-300 md:hidden" aria-hidden>·</span>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] md:mb-1 md:mt-0.5 md:text-sm">{model}</div>
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] leading-tight text-zinc-500 md:mb-1 md:mt-0.5 md:text-sm md:text-inherit">{model}</div>
       </div>
-      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 md:mt-0 md:block md:max-w-[18rem]">{children}</div>
+      <div className="mt-0.5 grid grid-cols-2 gap-x-2 gap-y-0.5 md:mt-0 md:block md:max-w-[18rem]">{children}</div>
     </div>
   );
 }
@@ -138,10 +146,9 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
         {!loading && decode > 0
           ? <span className={past}>{decode.toFixed(1)} <Unit>tok/s</Unit></span> : <Muted />}
       </Row>
-      <Row label="ctx" wide>
-        <span className={past}>{used != null ? tokens(used) : <Muted />} / {total > 0 ? tokens(total) : "—"}</span>
-      </Row>
-      <div className="col-span-2"><CtxBar used={used} total={total} /></div>
+      <CtxRow used={used} total={total} className={past}>
+        {used != null ? tokens(used) : <Muted />} / {total > 0 ? tokens(total) : "—"}
+      </CtxRow>
       <Divider />
       <Row label="平均">
         {on && watts != null
@@ -176,10 +183,9 @@ function CloudColumn({ summary, balance, balanceError }: {
         {call?.phase === "waiting" ? <Muted>応答待ち</Muted> : ttft != null ? <>{ttft.toFixed(1)} <Unit>s</Unit></> : <Muted />}
       </Row>
       <Row label="生成">{speed != null ? <>{speed.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}</Row>
-      <Row label="ctx" wide>
+      <CtxRow used={ctxUsed} total={ctxFrom?.context_length}>
         {ctxUsed != null ? tokens(ctxUsed) : <Muted />}{ctxFrom?.context_length ? ` / ${tokens(ctxFrom.context_length)}` : ""}
-      </Row>
-      <div className="col-span-2"><CtxBar used={ctxUsed} total={ctxFrom?.context_length} /></div>
+      </CtxRow>
       <Divider />
       <Row label="残り">
         <span className={balance != null && balance < 1 ? "text-amber-600 dark:text-amber-400" : ""}>

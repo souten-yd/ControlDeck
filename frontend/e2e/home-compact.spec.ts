@@ -48,7 +48,7 @@ for (const [width, height] of [[390, 844], [320, 700], [1280, 900]] as const) {
       await expect(notice).toBeVisible();
       await expect(notice).toHaveAttribute("data-level", "error");
       await expect(notice).toContainText("エラー");           // 色だけに頼らず札の文字がある
-      await expect(notice).toContainText("ほか 2 件");
+      await expect(notice).toContainText("1/3");
       await expect(page.locator("#metrics-range")).toHaveCount(0);   // 履歴の選択は設定へ移した
       await expect(page.getByText(/生データ|\d+点/)).toHaveCount(0);
 
@@ -78,7 +78,49 @@ for (const [width, height] of [[390, 844], [320, 700], [1280, 900]] as const) {
       }
       await noOverflow(page);
       await page.waitForTimeout(600);
-      await page.screenshot({ path: `test-results/home-compact-${width}${scheme === "dark" ? "-dark" : ""}.png` });
+      await page.screenshot({ path: `test-results/home2-compact-${width}${scheme === "dark" ? "-dark" : ""}.png` });
     });
   }
 }
+
+// 目的: 通知は未解決の全件を 1 件ずつ回す。収まらない本文は右から左へ流れ（札・位置・× は固定）、流し切ったら縦にめくって
+//   次の件へ（札の重要度も切り替わる）。収まる件は流れず数秒見せてからめくる。1 件だけなら めくらない。
+// 根拠: 2026-11-23 利用者「流したら、次フリップして別の情報を流す。情報のあるだけ流す。一つしかなければ同じものをずっと」。
+test("home notice scrolls and flips (390px)", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await establishSession(page, context);
+  await mock(page);
+  const long = "ログを確認してください。".repeat(8);
+  const items = [{ ...notices.items[0], message: long }, ...notices.items.slice(1)];
+  await page.route("**/api/v1/home-notices", (route) => route.fulfill({ json: { total: 3, items } }));
+  await page.goto("/");
+  const notice = page.getByTestId("home-notice");
+  const badge = notice.getByText("エラー");
+  await expect(notice.locator("[data-marquee]")).toHaveAttribute("data-marquee", "run");
+  const x0 = (await badge.boundingBox())!.x;
+  await page.waitForTimeout(2600);                      // 端の 1 秒停止のあと流れ始める
+  const tx = await notice.locator("[data-inner]").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).m41);
+  expect(tx).toBeLessThan(-10);
+  expect((await badge.boundingBox())!.x).toBe(x0);      // 札は固定
+  await page.screenshot({ path: "test-results/home2-notice-scroll-390.png" });
+  // 流し切るとめくって次の件（警告）へ。めくる途中も撮る。
+  await page.waitForFunction(() => document.querySelector("[data-testid=marquee]")!
+    .getAnimations({ subtree: true }).some((a) => (a.effect as KeyframeEffect).getTiming().duration === 350), null, { timeout: 30000 });
+  await page.screenshot({ path: "test-results/home2-notice-flip-390.png" });
+  await expect(notice).toHaveAttribute("data-level", "warning");
+  await expect(page.getByTestId("home-notice-pos")).toHaveText("2/3");
+});
+
+test("home notice with a single item does not flip (390px)", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await establishSession(page, context);
+  await mock(page);
+  await page.route("**/api/v1/home-notices", (route) => route.fulfill({ json: { total: 1, items: [{ ...notices.items[0], message: "" }] } }));
+  await page.goto("/");
+  await expect(page.getByTestId("home-notice").locator("[data-marquee]")).toHaveAttribute("data-marquee", "fit");
+  await expect(page.getByTestId("home-notice-pos")).toHaveCount(0);
+  await page.waitForTimeout(4800);
+  await expect(page.getByTestId("home-notice")).toHaveAttribute("data-level", "error");
+});
