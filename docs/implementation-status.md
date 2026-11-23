@@ -24,6 +24,13 @@
 - Web 調査の件数（利用者「3 件くらいしか文献を調査していない。エビデンスを増やせるか」）: `READ_PER_ASPECT = 3` で深さに関係なく観点ごとに 3 件しか読んでいなかった。今は設定の「観点ごとに読むページ数」（2〜10・既定 5）を「ふつう」とし、速いは 2 少なく・深いは 3 多く（既定で 3・5・8）。時事（`freshness == "latest"`・`date_sensitive`）は最低 5 件。同時に読む数は 3 から 4。「出典の上限」（5〜30・既定 20）を超えたら期間に合うものから残す。設定は 設定 → API キー →「調べる量」（`research_keys.limits`・`data/research/keys.json`）。
 - 調べる時間: 調査の進み具合（`meta.progress`）の各段に `elapsed`（調べ始めてからの秒）を足した。
 - テスト: `test_research_tools.py`（深さ・設定・時事の下限・出典の上限・設定の範囲）。
+## 2026-11-23 AI アシスタントの会話をまたぐ記憶（守りを中心に）
+
+- 利用者「会話の永続記録は？有用なら採用。設定で選べるように。保護された会話・特許の記憶は検索できる会話に露呈しないように」。設計と比較は `docs/design-chat-memory.md`。
+- 置き場: `data_dir/memory/memory.sqlite3`（本体 DB と別。本文は暗号化）。`app/memory/`（store・policy・service・router）。API `/api/v1/memory/*`。
+- 守り: protected（秘密の会話・特許の流れ・「守る」）は秘密の会話の中でだけ入る／外部の LLM・OpenCode には既定で入れず、設定でも normal だけ／答えを作る段にだけ入れ、検索語の段と道具の引数には渡さない（写されたら道具の前で止める）／取り出しは必ずローカルの LLM（無ければ作らない）。
+- 画面: 設定「AI の記憶」（設定・一覧・編集・守る・削除・全消し・候補の承認）、答えの下の「記憶を n 件使いました」、AI 設定の会話ごとの切り替え、会話の削除時の「記憶も消す」。
+- テスト: `test_chat_memory.py`、E2E `chat-memory.spec.ts`（API は page.route）。未検証: 本物のローカル LLM での取り出しの質・Patent 画面から `patent_case_id` を付ける導線（API だけ）。
 
 ## 2026-11-23 event loop が数秒止まる原因（同期処理）を loop の外へ
 

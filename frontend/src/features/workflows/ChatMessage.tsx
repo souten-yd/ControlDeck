@@ -11,6 +11,7 @@ import { PlanQuestionForm } from "./PlanQuestionForm";
 import { CodeDoneCard, OpenCodeChanges } from "./OpenCodeChanges";
 import { MessageMedia } from "./WorkspaceMedia";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
+import { MemoryUsed } from "./MemoryUsed";
 import { OpenCodeActivity, CODE_STEPS_CARD, ToolRow } from "./OpenCodeActivity";
 import { MODES, type GenData, type GenStats, type Msg, type Quality } from "./chatState";
 
@@ -587,6 +588,8 @@ export function MessageBubble({
         <span aria-hidden>🛠️</span>このプランで作る（ビルドに切り替えて送る）
       </button>
     )}
+    {!msg.streaming && (msg.memoryUsed || msg.memoryCreated) && <MemoryUsed conversationId={conversationId} count={msg.memoryUsed?.count ?? 0}
+      ids={msg.memoryUsed?.ids ?? []} created={msg.memoryCreated} />}
     {!msg.streaming && assistantActions.length > 0 && (msg.content || msg.messageId) && <MessageActions align="start" disabled={actionsDisabled} actions={assistantActions} onSelect={onAction} />}
     </div>
   );

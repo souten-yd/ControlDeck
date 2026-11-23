@@ -192,6 +192,10 @@ async def make_conversation_confidential(
                          resource_id=conv_id, request=request, metadata={"at": "midway", "stopped_jobs": len(running)})
 
     await asyncio.to_thread(announce)
+    # この会話から（秘密になる前に）作っていた記憶も、守られた記憶へ寄せる（会話の文脈に秘密が入っているため）
+    from app.memory import store as memory_store
+
+    await asyncio.to_thread(memory_store.protect_by_source, user.id, conv_id)
     return out
 
 
@@ -399,7 +403,7 @@ def delete_message(
 
 @router.delete("/conversations/{conv_id}", status_code=204)
 def delete_conversation(
-    conv_id: str, request: Request,
+    conv_id: str, request: Request, delete_memories: bool = False,
     user: User = Depends(require_permission("workflows.run")), db: Session = Depends(get_db),
 ):
     conv = db.get(Conversation, conv_id)
@@ -413,6 +417,13 @@ def delete_conversation(
     _remove_attachments(conv_id)
     audit.record(db, "chat.conversation.delete", user=user, resource_type="conversation",
                  resource_id=conv_id, request=request)
+    from app.memory import service as memory, store as memory_store
+
+    memory_store.delete_flags(conv_id)
+    if delete_memories:
+        # 「この会話から作った記憶も消す」（既定は残す。会話を消しても覚えたことは残したい人のため）
+        count = memory_store.delete_by_source(user.id, conv_id)
+        memory.audit_delete(user.id, conv_id, count=count, scope="conversation")
 
 
 def _msg_out(m: ChatMessage) -> dict:
@@ -526,6 +537,8 @@ class SendBody(BaseModel):
     code_research_depth: str = Field(default="auto", max_length=16)   # 調査の深さ（web・academic なら絞る）
     # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
     code_agent: Literal["build", "plan"] = "build"
+    # 特許の案件に結び付いた会話（Patent の画面から開いたとき）。立てると、この会話から作る記憶は必ず protected
+    patent_case_id: int | None = Field(default=None, ge=1)
 
 
 # ---- 添付: chat_attachments.py へ移した（元の名前はここからも使える） ----
@@ -1129,6 +1142,17 @@ async def _materials_without_tools(messages: list[dict], material_tool: dict | N
     return [*kept[:head], {"role": "system", "content": note}, *kept[head:]]
 
 
+def _used_patent_collection(record: dict) -> bool:
+    """ナレッジの検索が、特許の分野（patents シャード）の文書を返したか。"""
+    from app.knowledge import store as kstore
+
+    for src in record.get("sources") or []:
+        ref = kstore.find_collection(str(src.get("collection") or ""))
+        if ref is not None and getattr(ref, "shard", "") == "patents":
+            return True
+    return False
+
+
 async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
                         history: list[dict], params: dict) -> dict:
     """会話の 1 回の実行。秘密の会話なら、中の外部への通信は通信の直前で止まる（security/offline.py）。"""
@@ -1435,6 +1459,15 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
             if documents:
                 buf["meta"]["documents"] = [{"name": d["name"], "path": d["relative"], "pages": d["pages"]} for d in documents]
             lead: list[str] = [TODO_GUIDE]
+            # 記憶は OpenCode（ネットワークのある箱）には既定で入れない。設定を入れたときだけ normal を入れる（memory/policy.py）
+            from app.memory import policy as _memory_policy, service as _memory
+
+            code_memories = await _memory.prepare(conv_id, params.get("owner_user_id"), query=query,
+                                                  secret=_offline.in_confidential_scope(), external=False, code=True)
+            if code_memories:
+                lead.append(_memory_policy.note_for(code_memories))
+                buf["meta"]["memory"] = _memory.used_meta(code_memories)
+                job.log("memory", **_memory.used_meta(code_memories))
             if server.workspace:
                 # 利用者がコードを保存の時点へ戻していたら、それを AI へ一度だけ伝える（画面の発言は変えない）
                 from app.maintenance import sandbox as _sb, workspaces as _ws
@@ -1811,6 +1844,21 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
 
     history = voice_guard(history, str(params.get("voice_style") or ""))
 
+    # 会話をまたぐ記憶（app/memory）。**答えを作る段にだけ**入れる: Web 検索の語を作る段（research_intent）は上で終わっていて、
+    # 記憶は渡していない。どの記憶を入れてよいかは memory/policy.py が決める（protected は秘密の会話だけ・外部の LLM には既定で無し）
+    from app.memory import policy as _memory_policy, service as _memory
+
+    memory_used = await _memory.prepare(
+        conv_id, params.get("owner_user_id"), query=user_query, secret=_offline.in_confidential_scope(),
+        external=not _offline.is_local_endpoint(base_url, model))
+    # 検索語・道具の引数へ記憶の言葉が写されていないかを見るときの「会話に元からある言葉」
+    known_text = "\n".join(str(m.get("content")) for m in history if isinstance(m.get("content"), str))
+    if memory_used:
+        head = 1 if history and history[0].get("role") == "system" else 0
+        history = [*history[:head], {"role": "system", "content": _memory_policy.note_for(memory_used)}, *history[head:]]
+        buf["meta"] = {**(buf.get("meta") or {}), "memory": _memory.used_meta(memory_used)}
+        job.log("memory", **_memory.used_meta(memory_used))
+
     handing_off = False
     try:
         def runtime_request_for(messages: list[dict], with_tools: bool) -> RuntimeChatRequest:
@@ -1918,6 +1966,14 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                                             for c in calls]})
             for call in calls:
                 query = str(chat_tools.arguments_of(call).get("query") or "")[:80]
+                if memory_used and _memory_policy.leaks_into_arguments(
+                        json.dumps(chat_tools.arguments_of(call), ensure_ascii=False), memory_used, known_text):
+                    # 記憶の言葉が道具の引数（検索語・URL・OpenCode への依頼）へ写された。外へ出る前に止める
+                    tool_log.append({"name": call["name"], "error": "memory_leak_blocked"})
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content":
+                                     "この呼び出しには、利用者について覚えている内容が含まれているため実行しません。"
+                                     "会話で利用者が書いた言葉だけで、引数を作り直してください。"})
+                    continue
                 if call["name"] in (chat_tools.WEB_SEARCH, chat_tools.READ_PAGE) and web_tool and not _offline.external_research_blocked():
                     reading = call["name"] == chat_tools.READ_PAGE
                     target = str(chat_tools.arguments_of(call).get("url") or "")[:80]
@@ -1949,6 +2005,13 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                     result, record = await chat_tools.run_knowledge(
                         call, consumer=knowledge_tool["consumer"], bound=knowledge_tool["bound"],
                         max_chars=knowledge_tool["max_chars"])
+                    if await asyncio.to_thread(_used_patent_collection, record):
+                        # 特許のナレッジを使った回 = 特許の流れ。この会話から作る記憶は protected
+                        owner = params.get("owner_user_id")
+                        if owner is not None:
+                            from app.memory import store as _memory_store
+
+                            await asyncio.to_thread(_memory_store.set_flags, conv_id, owner, patent=True)
                 elif call["name"] == chat_tools.HAND_OFF_OPENCODE:
                     # 作業フォルダが決まっていない（この会話で OpenCode を使っておらず、画面でも選んでいない）
                     result, record = (chat_tools.NO_PROJECT_NOTE,
@@ -2379,6 +2442,11 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
             body.base_url, body.model = offline.local_target(body.base_url, body.model)
         except offline.LocalModelUnavailable as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if body.patent_case_id is not None and conv.owner_user_id is not None:
+        # 特許の流れの会話の印（一方通行）。以後この会話から作る記憶は protected（memory/store.py）
+        from app.memory import store as memory_store
+
+        await asyncio.to_thread(memory_store.set_flags, conv_id, conv.owner_user_id, patent=True)
     if body.mode == "code" and conv_id in _reverting:
         raise HTTPException(status_code=409, detail="変更を取り消しています。終わってから送ってください")
     if body.mode == "code" and db.query(ChatMessage).filter(
@@ -2507,6 +2575,7 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
               "voice_style": body.voice_style if body.mode != "code" else "",
               "max_output_tokens": model_output_tokens(body.base_url, body.model),
               "attachments": body.attachments,
+              "owner_user_id": owner_user_id,   # 記憶（app/memory）の持ち主
               "code_project": body.code_project,
               "code_project_path": body.code_project_path,
               # OpenCode への引き継ぎで、今回の発言そのものを重ねて入れないため
@@ -2536,6 +2605,11 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
                                 failed=False, seconds=time.monotonic() - started)
         # 正常に終わったら、送信待ちの要望を送る（止めた・失敗したときは送らずに保留する）
         _after_turn(conv_id, assistant_id, j)
+        # 記憶を作る（設定に従う。取り出しは必ずローカルの LLM。ジョブの外で、次の送信を遅らせない）
+        memory_task = asyncio.get_running_loop().create_task(
+            _remember_turn(conv_id, assistant_id, owner_user_id, body.content, params))
+        _queue_tasks.add(memory_task)
+        memory_task.add_done_callback(_queue_tasks.discard)
         # 題名はジョブの外で（送信待ちの自動送信を遅らせない）
         task = asyncio.get_running_loop().create_task(
             _refine_title(conv_id, params["base_url"], params["model"], params.get("mode", "chat")))
@@ -2551,6 +2625,38 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
     db.query(ChatMessage).filter(ChatMessage.id == assistant_id).update({"job_id": job.id})
     db.commit()
     return {"user_message_id": user_message_id, "assistant_message_id": assistant_id, "job_id": job.id, "status": "generating"}
+
+
+async def _remember_turn(conv_id: str, assistant_id: str, user_id: int | None, user_text: str, params: dict) -> None:
+    """回の終わりの記憶づくり。失敗しても会話には影響させない。作った件数は答えのメタへ（画面の「記憶に残しました」）。"""
+    from app.memory import service as memory
+
+    def read() -> tuple[str, bool]:
+        with SessionLocal() as db:
+            row = db.get(ChatMessage, assistant_id)
+            conv = db.get(Conversation, conv_id)
+            return (row.content if row is not None and row.status == "completed" else ""), \
+                bool(conv is not None and conv.confidential_at is not None)
+
+    try:
+        answer, secret = await asyncio.to_thread(read)
+        if not answer:
+            return
+        made = await memory.remember_after_turn(
+            conv_id, user_id, user_text=user_text, assistant_text=answer, mode=str(params.get("mode") or "chat"),
+            base_url=params["base_url"], model=params["model"], secret=secret)
+        if made["created"] or made["pending"]:
+            def note() -> None:
+                with SessionLocal() as db:
+                    row = db.get(ChatMessage, assistant_id)
+                    if row is not None:
+                        meta = json.loads(row.meta_json or "{}")
+                        meta["memory_created"] = made
+                        row.meta_json = json.dumps(meta, ensure_ascii=False)
+                        db.commit()
+            await asyncio.to_thread(note)
+    except Exception:  # noqa: BLE001
+        logger.warning("記憶づくりに失敗しました", exc_info=True)
 
 
 # ---- 送信待ちの要望: chat_queue.py へ移した（元の名前はここからも使える） ----
@@ -2639,6 +2745,8 @@ async def stream_message(websocket: WebSocket, message_id: str):
                     await websocket.send_text(json.dumps({"type": "thinking", "content": ev.get("delta", "")}))
                 elif ev.get("message") == "sources":
                     await websocket.send_text(json.dumps({"type": "sources", "sources": ev.get("sources", [])}, ensure_ascii=False))
+                elif ev.get("message") == "memory":   # 答えに使った記憶（件数と ID だけ。本文は流さない）
+                    await websocket.send_text(json.dumps({"type": "memory", "count": ev.get("count", 0), "ids": ev.get("ids", [])}))
                 elif ev.get("message") == "tool":
                     await websocket.send_text(json.dumps({"type": "tool", "tool": ev.get("tool", {})}, ensure_ascii=False))
                 elif ev.get("message") == "permission":
