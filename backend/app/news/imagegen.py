@@ -6,6 +6,8 @@
 
 - 実行は子プロセス（機能「ニュースの画像生成（CPU）」の専用 venv の python で app/news/imagegen_worker.py）。1 回の取得のあと、画像の無い記事を
   まとめて渡し、モデルを 1 回だけ読み込んで順に生成し、終わったら子プロセスごと終える。スレッド数の上限・nice・件数の上限・時間の上限を持つ。
+- 精度は 3 段（設定 → ニュース。小=SDXS・中=LCM-Dreamshaper・大=SDXL-Lightning。2026-11-23 利用者「もうちょい精度の高いモデル…このモデルを
+  残しておいて、小中大みたいな感じで、選べるように、設定で」）。段の部品・ステップ数・解像度は imagegen_worker.TIER_SPECS。段ごとに導入・削除できる。
 - プロンプトは LLM を使わない規則（英語の見出しはそのまま、日本語は語の対応表と種類の決まり文句）。費用も GPU も使わない。
 - 画像は data/news/images/<記事の id>.webp。配る API はこの id（整数）だけでパスを組み、リンクは辿らない。
 - 記事の image_url には配る API の URL を入れる。画面は「AI 生成のイメージ」の印を、この URL の形で判定する（列は足さない）。
@@ -34,7 +36,9 @@ logger = logging.getLogger("control_deck.news.imagegen")
 FEATURE_ID = "news-imagegen"
 URL_PREFIX = "/api/v1/news/images/"
 _URL_RE = re.compile(r"^/api/v1/news/images/\d{1,12}\.webp$")
-TIMEOUT_SECONDS = 900          # 子プロセス全体の上限（超えたら殺す。できた分は残る）
+TIMEOUT_SECONDS = 900          # 子プロセス全体の上限（小・中。段ごとの上限は imagegen_worker.TIER_SPECS の job_timeout。超えたら殺す。できた分は残る）
+TIERS = imagegen_worker.TIERS
+TIER_DEFAULT = "small"
 NICE = "10"
 THREADS_MIN, THREADS_MAX, THREADS_DEFAULT = 1, 16, 8
 COUNT_MIN, COUNT_MAX, COUNT_DEFAULT = 1, 100, 30
@@ -42,8 +46,12 @@ COUNT_MIN, COUNT_MAX, COUNT_DEFAULT = 1, 100, 30
 _lock = threading.Lock()
 _failed: set[int] = set()      # 作れなかった記事（再起動までは何度も試さない）
 
-# 否定の指示（SDXS はガイダンス無しなので効きは弱い。文字・ロゴ・顔を描かせない言い回しを肯定文の末尾に入れる）
-STYLE = "digital illustration, simple flat colors, no text, no letters, no logo, no watermark, no human face"
+# 絵の言い回し（全段で同じ）。CLIP は「no ○○」を理解せず、書くとかえって描くので、否定は書かない。
+# 人物・文字を避けるには、物・風景・抽象の図として描かせる言い回しを足す（2026-11-23 利用者の試し 16 枚: 人物の崩れ・題に無い人物・文字のような模様）。
+STYLE = "concept illustration of objects and scenery, still life, clean minimal composition, soft studio lighting, smooth flat colors, wordless"
+# ガイダンスのある段だけが使う否定のプロンプト。今の 3 段（SDXS・LCM・SDXL-Lightning）は蒸留でガイダンス無し、または w の埋め込みなので、台本は使わない。
+NEGATIVE = "text, letters, logo, watermark, people, face"
+TITLE_MAX = 120
 
 # 日本語の語 → 英語の絵の語。先に当たったものを最大 3 つ使う。
 KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -87,7 +95,7 @@ def build_prompt(title: str, summary: str = "", kind: str = "news", topics: list
     title = re.sub(r"\s+", " ", str(title or "")).strip()
     summary = re.sub(r"\s+", " ", str(summary or "")).strip()
     if _mostly_english(title):
-        head = title[:140]
+        head = title[:TITLE_MAX]
         return f"{head}, {STYLE}"
     haystack = " ".join([title, summary[:400], *[str(t) for t in topics]])
     scenes: list[str] = []
@@ -156,26 +164,52 @@ def models_dir() -> Path:
     return data_dir() / "models" / FEATURE_ID
 
 
-def models_ready(root: Path | None = None) -> bool:
+def normalize_tier(value: object) -> str:
+    """設定の「モデルの精度」。知らない値は既定（小）。"""
+    return value if isinstance(value, str) and value in TIERS else TIER_DEFAULT
+
+
+def models_ready(root: Path | None = None, tier: str = TIER_DEFAULT) -> bool:
     base = root or models_dir()
-    return all((base / rel).is_file() for rel in imagegen_worker.REQUIRED_FILES)
+    return all((base / rel).is_file() for rel in imagegen_worker.TIER_FILES[normalize_tier(tier)])
 
 
-def available() -> bool:
-    """機能（専用 venv）とモデルが揃っているか（軽い確認だけ。子プロセスは起こさない）。"""
-    return feature_python().is_file() and models_ready()
+def available(tier: str = TIER_DEFAULT) -> bool:
+    """機能（専用 venv）とその段のモデルが揃っているか（軽い確認だけ。子プロセスは起こさない）。"""
+    return feature_python().is_file() and models_ready(tier=tier)
 
 
-def remove_models() -> None:
-    root = models_dir().resolve()
-    if root.exists() and root.parent == (data_dir() / "models").resolve():
-        shutil.rmtree(root)
+def tiers_info() -> list[dict]:
+    """段ごとの案内（画面用）。導入済みか・1 枚の目安の時間・取得の大きさ・RAM の目安。"""
+    out = []
+    for tier in TIERS:
+        spec = imagegen_worker.TIER_SPECS[tier]
+        out.append({"id": tier, "label": spec["label"], "installed": models_ready(tier=tier), "megabytes": spec["megabytes"],
+                    "time_seconds": spec["time_seconds"], "ram_gb": spec["ram_gb"], "note": spec["note"],
+                    "max_per_run": spec["max_per_run"]})
+    return out
+
+
+def remove_models(tier: str | None = None) -> None:
+    """段の部品を消す（段を指定しなければ全部）。各段の部品は他の段と共有しない。"""
+    base = models_dir().resolve()
+    if base.parent != (data_dir() / "models").resolve():
+        return
+    if tier is None:
+        if base.exists():
+            shutil.rmtree(base)
+        return
+    for name in imagegen_worker.TIER_SPECS[normalize_tier(tier)]["models"]:
+        target = (base / name)
+        if target.is_dir() and not target.is_symlink() and target.resolve().parent == base:
+            shutil.rmtree(target)
 
 
 # ---- 子プロセス ----
 
-def _run_worker(job: dict, timeout: float = TIMEOUT_SECONDS) -> list[dict]:
+def _run_worker(job: dict, timeout: float | None = None) -> list[dict]:
     """専用 venv の python で台本を動かし、1 行 1 件の結果を返す。時間を超えたら殺す（できた分の行だけ返る）。"""
+    timeout = timeout if timeout is not None else _job_timeout(job.get("tier"))
     cmd = ["nice", "-n", NICE, str(feature_python()), "-I", str(Path(imagegen_worker.__file__).resolve()), "generate"]
     threads = str(job["threads"])
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "OMP_NUM_THREADS": threads, "HF_HUB_OFFLINE": "1", "HOME": str(data_dir())}
@@ -202,6 +236,10 @@ def _run_worker(job: dict, timeout: float = TIMEOUT_SECONDS) -> list[dict]:
     return rows
 
 
+def _job_timeout(tier: object) -> int:
+    return int(imagegen_worker.TIER_SPECS[normalize_tier(tier)]["job_timeout"])
+
+
 def pending(limit: int) -> list[dict]:
     """画像の無い記事（新しい順）。event・作れなかった記事は除く。"""
     with news_db.session() as db:
@@ -224,19 +262,21 @@ def generate_pending(cfg: dict, *, runner=None) -> dict:
     conf = cfg.get("imagegen", {})
     if not conf.get("enabled"):
         return {"done": 0, "failed": 0, "skipped": "disabled"}
-    if not available():
-        return {"done": 0, "failed": 0, "skipped": "not_installed"}
+    tier = normalize_tier(conf.get("tier"))
+    if not available(tier):
+        return {"done": 0, "failed": 0, "skipped": "not_installed", "tier": tier}
     if not _lock.acquire(blocking=False):
         return {"done": 0, "failed": 0, "skipped": "running"}
     try:
-        limit = max(COUNT_MIN, min(int(conf.get("max_per_run", COUNT_DEFAULT)), COUNT_MAX))
+        # 1 回の件数は、設定の上限と、段ごとの上限（大は少なめ）の小さい方
+        limit = max(COUNT_MIN, min(int(conf.get("max_per_run", COUNT_DEFAULT)), COUNT_MAX, imagegen_worker.TIER_SPECS[tier]["max_per_run"]))
         threads = max(THREADS_MIN, min(int(conf.get("threads", THREADS_DEFAULT)), THREADS_MAX))
         items = pending(limit)
         if not items:
             return {"done": 0, "failed": 0, "skipped": "nothing"}
-        job = {"models_dir": str(models_dir()), "out_dir": str(images_dir()), "threads": threads,
-               "deadline_seconds": TIMEOUT_SECONDS - 60,
-               "items": [{"id": i["id"], "prompt": build_prompt(i["title"], i["summary"], i["kind"], i["topics"])} for i in items]}
+        job = {"tier": tier, "models_dir": str(models_dir()), "out_dir": str(images_dir()), "threads": threads,
+               "deadline_seconds": _job_timeout(tier) - 60,
+               "items": [{"id": i["id"], "prompt": build_prompt(i["title"], i["summary"], i["kind"], i["topics"]), "seed": i["id"]} for i in items]}
         started = time.monotonic()
         rows = (runner or _run_worker)(job)
         ok_ids = [r["id"] for r in rows if r.get("ok") is True and image_path(r["id"]) is not None]
@@ -249,6 +289,6 @@ def generate_pending(cfg: dict, *, runner=None) -> dict:
                     row.image_url = url_for(row.id)
                 db.commit()
         logger.info("ニュースの画像を生成しました: %s / %s 件・%.1f 秒", len(ok_ids), len(items), time.monotonic() - started)
-        return {"done": len(ok_ids), "failed": len(items) - len(ok_ids), "skipped": ""}
+        return {"done": len(ok_ids), "failed": len(items) - len(ok_ids), "skipped": "", "tier": tier}
     finally:
         _lock.release()

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 242 ファイル、2362 テスト（目的の未記入 93 ファイル）
-- E2E: 128 spec、279 テスト
+- backend: 242 ファイル、2370 テスト（目的の未記入 93 ファイル）
+- E2E: 129 spec、281 テスト
 
 ## backend（backend/tests）
 
@@ -2069,7 +2069,7 @@
 
 ### backend/tests/test_news_imagegen.py
 
-目的: 目的: ニュースの「画像の無い記事に AI でイメージ画像を作る」（CPU の専用実行）の組み立て・上限・置き場・配る API・削除・未導入の振る舞いの試験。 子プロセス（モデル）は全部モック。外へは通信せず、GPU も使わない。 根拠: 2026-11-23 利用者「ニュースから画像が取れない場合は本文の意図を汲み取って、AI で生成画像をする…CPU と RAM の利用のみ…画像を生成したらすぐに アンロード…連続で生成…メディアフォージとかを使わずに、ニュースフィード独自の生成 AI を保有してほしい」。 守ること: - プロンプトは LLM を使わない規則（英語の見出しはそのまま・日本語は対応表か種類の決まり文句）で、文字・ロゴ・顔を避ける言い回しを含む。 - 設定が切・機能が未導入なら何もしない。件数・スレッド数の上限を子へ渡す。失敗した記事は再起動まで試さない。 - 画像は id（整数）だけでパスを組み、置き場の外・リンクは返さない。API はログインした人だけ、その人に見える記事だけ。 - 古い記事を消すと画像も消える。
+目的: 目的: ニュースの「画像の無い記事に AI でイメージ画像を作る」（CPU の専用実行）の組み立て・上限・置き場・配る API・削除・未導入の振る舞いの試験。 子プロセス（モデル）は全部モック。外へは通信せず、GPU も使わない。 根拠: 2026-11-23 利用者「ニュースから画像が取れない場合は本文の意図を汲み取って、AI で生成画像をする…CPU と RAM の利用のみ…画像を生成したらすぐに アンロード…連続で生成…メディアフォージとかを使わずに、ニュースフィード独自の生成 AI を保有してほしい」。 精度の段（2026-11-23 利用者「このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」）: 設定の既定は小・未導入の段は何も作らない・ 段ごとに台本の引数（段・スレッド・seed=記事の id・時間の上限）と件数の上限（大は少なめ）が変わる・段ごとに導入・削除できる（小は消せない）。 守ること: - プロンプトは LLM を使わない規則（英語の見出しはそのまま・日本語は対応表か種類の決まり文句）で、文字・ロゴ・顔を避ける言い回しを含む。 - 設定が切・機能が未導入なら何もしない。件数・スレッド数の上限を子へ渡す。失敗した記事は再起動まで試さない。 - 画像は id（整数）だけでパスを組み、置き場の外・リンクは返さない。API はログインした人だけ、その人に見える記事だけ。 - 古い記事を消すと画像も消える。
 
 - `test_prompt_english_title_kept_japanese_mapped_and_style_guards`
 - `test_disabled_or_not_installed_does_nothing`
@@ -2080,6 +2080,14 @@
 - `test_prune_deletes_generated_images`
 - `test_settings_defaults_and_validation`
 - `test_feature_is_python_lib_with_pinned_cpu_only_packages_and_models`
+- `test_tier_normalize_and_models_ready_per_tier`
+- `test_selected_tier_not_installed_skips_with_tier`
+- `test_job_carries_tier_seed_and_per_tier_cap_and_timeout`
+- `test_worker_args_per_tier` — 段ごとの台本の引数（子プロセスはモック）。
+- `test_tier_specs_are_consistent`
+- `test_lcm_schedule_and_guidance_embedding`
+- `test_remove_models_by_tier_keeps_other_tiers`
+- `test_feature_model_tier_install_and_remove`
 
 ### backend/tests/test_news_images_presets.py
 
@@ -4263,6 +4271,13 @@
 目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
 
 - Settings: API キー（${width}px）
+
+### frontend/e2e/settings-news-imagegen-tiers.spec.ts
+
+目的: 設定 → ニュースの「モデルの精度」（小・中・大）と、機能と拡張の段ごとの導入ボタン。API は page.route で模擬する（モデルは取得しない）。 根拠: 2026-11-23 利用者「もうちょい精度の高いモデル使えないか？…このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」。 */
+
+- ニュースの画像生成: 精度の選択（${width}px）
+- ニュースの画像生成: 機能と拡張で段ごとに導入（${width}px）
 
 ### frontend/e2e/settings-playwright-browsers.spec.ts
 

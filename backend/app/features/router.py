@@ -195,6 +195,47 @@ async def install_job(
     return {"job_id": job.id}
 
 
+@router.post("/{feature_id}/models/{tier}/install-jobs", status_code=201)
+async def install_model_tier_job(
+    feature_id: str, tier: str, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """機能に付くモデルの精度の段（ニュースの画像生成: small・medium・large）を、サーバー側ジョブで取得する。"""
+    if feature_id not in registry.KNOWN_FEATURES or not registry.FEATURES[feature_id].get("models"):
+        raise HTTPException(status_code=404, detail="この機能には段ごとのモデルがありません")
+    if tier not in ("small", "medium", "large"):
+        raise HTTPException(status_code=404, detail="知らない段です")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("モデルを取得中", 0, 1)
+        try:
+            state = await asyncio.to_thread(registry.install_model_tier, feature_id, tier)
+        except registry.FeatureError as exc:
+            raise RuntimeError(str(exc)) from exc
+        job.set_progress("完了", 1, 1)
+        return state
+
+    job = jobs.create("feature.install", f"モデル取得: {feature_id}/{tier}", run, owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "feature.model.install", user=user, resource_type="feature", resource_id=f"{feature_id}/{tier}",
+                 request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.delete("/{feature_id}/models/{tier}")
+def remove_model_tier(
+    feature_id: str, tier: str, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """精度の段のモデルを消す（小は消せない）。"""
+    try:
+        state = registry.remove_model_tier(feature_id, tier)
+    except registry.FeatureError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.model.remove", user=user, resource_type="feature", resource_id=f"{feature_id}/{tier}", request=request)
+    return state
+
+
 @router.post("/{feature_id}/update-jobs", status_code=201)
 async def update_job(
     feature_id: str, request: Request, body: FeatureJobRequest,

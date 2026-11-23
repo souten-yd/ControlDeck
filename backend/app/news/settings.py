@@ -31,8 +31,9 @@ DEFAULTS: dict = {
     "llm": {"digest_model": "auto", "gist_enabled": False, "gist_model": "auto"},
     "rag": {"enabled": True, "fulltext": False, "on_prune": "keep"},
     # 画像の無い記事に AI でイメージ画像を作る（CPU だけ。機能「ニュースの画像生成（CPU）」が要る。既定は切）
-    "imagegen": {"enabled": False, "threads": 8, "max_per_run": 30},
+    "imagegen": {"enabled": False, "tier": "small", "threads": 8, "max_per_run": 30},
 }
+IMAGEGEN_TIERS = ("small", "medium", "large")   # news/imagegen_worker.TIERS と同じ（設定は重い部品を読み込まないよう、ここに持つ）
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
 _lock = threading.Lock()
@@ -111,7 +112,10 @@ def normalize(raw: object) -> dict:
         raise ConfigError("古い記事を消すときの RAG は keep（残す）か delete（一緒に消す）です")
     out["rag"] = {"enabled": _bool(rag, "enabled", True), "fulltext": _bool(rag, "fulltext", False), "on_prune": on_prune}
     gen = _table(raw, "imagegen")
-    out["imagegen"] = {"enabled": _bool(gen, "enabled", False),
+    tier = str(gen.get("tier", "small"))
+    if tier not in IMAGEGEN_TIERS:
+        raise ConfigError("画像生成のモデルの精度は small（小）・medium（中）・large（大）のどれかです")
+    out["imagegen"] = {"enabled": _bool(gen, "enabled", False), "tier": tier,
                        "threads": _int(gen.get("threads", 8), "画像生成のスレッド数", 1, 16),
                        "max_per_run": _int(gen.get("max_per_run", 30), "画像生成の 1 回の件数", 1, 100)}
     return out

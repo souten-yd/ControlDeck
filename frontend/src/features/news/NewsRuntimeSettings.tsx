@@ -4,6 +4,7 @@ import { Toggle } from "../models/formControls";
 import { useLlmOptions, useNewsChannels, useNewsSettings, useRunDigest, useSaveChannels, useSaveNewsSettings, type LlmOptions, type NewsRuntimeSettings } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
 import { Card, field, ghost, primary } from "./settingsUi";
+import { sizeText, timeText } from "./ImagegenTiers";
 
 const label = "block text-xs text-zinc-500";
 
@@ -134,19 +135,40 @@ export function NewsRuntimeCards() {
         {saveButton}
       </Card>
 
-      <Card id="news-imagegen" title="画像の無い記事のイメージ画像（AI）" hint="取った記事に画像が無いとき、見出しからイメージ画像を作ります。ニュース専用の軽いモデルを、この PC の CPU と RAM だけで動かし（GPU は使いません）、作り終えたらすぐ解放します。品質より「イメージが付くこと」を優先します。画面には「AI 生成のイメージ」と出ます。">
+      <Card id="news-imagegen" title="画像の無い記事のイメージ画像（AI）" hint="取った記事に画像が無いとき、見出しからイメージ画像を作ります。ニュース専用のモデルを、この PC の CPU と RAM だけで動かし（GPU は使いません）、作り終えたらすぐ解放します。小・中・大で、速さと絵の良さを選べます。人物と文字は描かせない言い回しにしています。画面には「AI 生成のイメージ」と出ます。">
         <Toggle label="画像の無い記事に AI でイメージ画像を作る" hint="既定は切。取得のあと、新しい記事から順にまとめて作ります" value={draft.imagegen.enabled} disabled={dis} onChange={(on) => set({ imagegen: { ...draft.imagegen, enabled: on } })} />
-        {draft.imagegen.enabled && data.imagegen_available === false && (
+        <fieldset className="space-y-2" disabled={dis || !draft.imagegen.enabled}>
+          <legend className={label}>モデルの精度（高いほど絵は良くなりますが、遅く、容量・RAM も増えます）</legend>
+          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="画像生成のモデルの精度">
+            {(data.imagegen_tiers ?? []).map((t) => {
+              const on = draft.imagegen.tier === t.id;
+              return (
+                <label key={t.id} data-testid={`imagegen-tier-option-${t.id}`}
+                  className={`block cursor-pointer rounded-xl border p-2.5 text-xs ${on ? "border-accent-600 bg-accent-50 dark:bg-accent-600/10" : "border-zinc-200 dark:border-zinc-700"}`}>
+                  <span className="flex items-center gap-2 text-sm font-semibold">
+                    <input type="radio" name="imagegen-tier" value={t.id} checked={on} onChange={() => set({ imagegen: { ...draft.imagegen, tier: t.id } })} className="h-4 w-4 accent-accent-600" />
+                    {t.label}{t.id === "small" && <span className="text-[10px] font-normal text-zinc-500">（速い・既定）</span>}
+                  </span>
+                  <span className="mt-1 block text-zinc-500">{t.note}</span>
+                  <span className="mt-1 block text-zinc-500">1 枚 {timeText(t.time_seconds)} · モデル {sizeText(t.megabytes)}</span>
+                  <span className="block text-zinc-500">RAM 約 {t.ram_gb}GB · 1 回 最大 {t.max_per_run} 枚</span>
+                  {!t.installed && <span className="mt-1 block font-medium text-amber-700 dark:text-amber-400">未導入</span>}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+        {draft.imagegen.enabled && (data.imagegen_tiers ?? []).some((t) => t.id === draft.imagegen.tier && !t.installed) && (
           <p role="alert" data-testid="imagegen-missing" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
-            機能「ニュースの画像生成（CPU）」が未導入です（モデル約 1.7GB を取得します）。このままでは何も作りません。{" "}
-            <Link to="/settings/features" className="font-semibold underline">機能と拡張を開く</Link>
+            選んだ精度のモデルが未導入です。このままでは何も作りません。機能と拡張の「ニュースの画像生成（CPU）」で、この精度のモデルを導入してください。{" "}
+            <Link to="/settings/features#feature-news-imagegen" className="font-semibold underline">機能と拡張を開く</Link>
           </p>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className={label}>使う CPU スレッド数（1〜16。低い優先度で動かします）
             <input type="number" aria-label="画像生成のスレッド数" min={1} max={16} value={draft.imagegen.threads} disabled={dis || !draft.imagegen.enabled}
               onChange={(e) => set({ imagegen: { ...draft.imagegen, threads: Number(e.target.value) } })} className={`${field} mt-1 w-full`} /></label>
-          <label className={label}>1 回の取得で作る枚数の上限（1〜100）
+          <label className={label}>1 回の取得で作る枚数の上限（1〜100。精度ごとの上限も効きます）
             <input type="number" aria-label="画像生成の件数" min={1} max={100} value={draft.imagegen.max_per_run} disabled={dis || !draft.imagegen.enabled}
               onChange={(e) => set({ imagegen: { ...draft.imagegen, max_per_run: Number(e.target.value) } })} className={`${field} mt-1 w-full`} /></label>
         </div>

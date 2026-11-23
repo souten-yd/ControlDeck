@@ -16,6 +16,8 @@ import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
 import { NavigationVisibilitySettings } from "../features/settings/NavigationVisibilitySettings";
 import { NewsSettings } from "../features/news/NewsSettings";
+import { ImagegenTierList } from "../features/news/ImagegenTiers";
+import type { ImagegenTier } from "../api/news";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
@@ -768,6 +770,8 @@ interface AddonState {
   install_command?: string; missing_packages?: string[];
   /** Playwright のブラウザ。版ごとの置き場と、入っているもの・足りないもの。 */
   components?: PlaywrightComponent[];
+  /** ニュースの画像生成: 精度の段（小・中・大）ごとのモデルの導入状況。 */
+  model_tiers?: ImagegenTier[];
 }
 
 interface PlaywrightComponent {
@@ -1219,6 +1223,26 @@ function AddonsSection() {
       show(e instanceof Error ? e.message : "まとめて導入を始められませんでした", "error");
     }
   };
+  const installTier = async (addon: AddonState, tier: ImagegenTier["id"]) => {
+    try {
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/models/${tier}/install-jobs`, { method: "POST", json: {} });
+      setJobKind("install");
+      setJobAddon(addon.id);
+      setJobId(r.job_id);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "モデルの取得を始められませんでした", "error");
+    }
+  };
+  const removeTier = async (addon: AddonState, tier: ImagegenTier["id"]) => {
+    try {
+      await api(`/features/${addon.id}/models/${tier}`, { method: "DELETE" });
+      show("モデルを削除しました", "info");
+      qc.invalidateQueries({ queryKey: ["features"] });
+      qc.invalidateQueries({ queryKey: ["news", "settings"] });
+    } catch (e) {
+      show(e instanceof Error ? e.message : "モデルを削除できませんでした", "error");
+    }
+  };
   const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
     try {
       const r = await api<{ requires_reload?: boolean }>(`/features/${addon.id}/${action}`, { method: "POST", json: {} });
@@ -1381,6 +1405,9 @@ function AddonsSection() {
                           {addon.preview && <p className="text-[11px] text-amber-700 dark:text-amber-300">PREVIEW — release署名またはcatalog digest固定前</p>}
                           {addon.kind === "gpu-runtime" && <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />}
                           {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
+                          {addon.id === "news-imagegen" && addon.model_tiers && (
+                            <ImagegenTierList tiers={addon.model_tiers} busy={busy} onInstall={(t) => void installTier(addon, t)} onRemove={(t) => void removeTier(addon, t)} />
+                          )}
                           {OPENCODE_SETUP_KEYS[addon.id] && <OpenCodeFeatureSetup featureId={addon.id} />}
                           {addon.kind === "playwright-browsers" && (
                             <ul className="space-y-1 text-[11px] text-zinc-500">

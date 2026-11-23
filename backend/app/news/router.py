@@ -207,8 +207,9 @@ def export(format: str = Query("json", pattern="^(json|csv)$"), channel: str = "
 @router.get("/settings")
 def get_settings(user: User = Depends(get_current_user)):
     """更新のタイミング・LLM・RAG の設定。ホームのフィードの読み直しの間隔は誰の画面でも使うので、ログインした人なら読める。"""
-    return {"settings": news_settings.load(), "weekdays": list(news_settings.WEEKDAYS), "interval_minutes": channels_mod.load()["interval_minutes"],
-            "imagegen_available": imagegen.available()}
+    settings = news_settings.load()
+    return {"settings": settings, "weekdays": list(news_settings.WEEKDAYS), "interval_minutes": channels_mod.load()["interval_minutes"],
+            "imagegen_available": imagegen.available(settings["imagegen"]["tier"]), "imagegen_tiers": imagegen.tiers_info()}
 
 
 @router.get("/images/{item_id}.webp")

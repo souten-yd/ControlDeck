@@ -43,6 +43,22 @@
 - 利用者「5 並列なら 1 本で会話を続け、残り 4 本で調査の要約など。並列 1 は従来どおり。OpenCode でも計画は大きいモデル・実装は Radiance の並列に」。
 - 第 1 段（レビューで修正）: ページの読み取りは HTTP と reranker だけで LLM を使わないので、スロットと切り離して 4 本のまま（観点が並んでも総数 4）。スロットで決めるのは LLM を呼ぶ処理の同時数（`models_mgmt/parallel_slots.py`）。`investigate` が観点をまたいで並べ、`digest`（観点ごとの LLM 処理。接続は第 2 段）を n-1 本（上限 8）までに絞る。1 なら順に、Strata・Maya-S は 1、読めないローカルは 1、外部 API は 4。設定 → API キー → 調べる量の「LLM を同時に使う本数」（0 は自動、1〜8 は上書き）。
 - 設計書に案 A（会話の LLM がルーター）・B（決まった割り当て、採用）・C（OpenCode の計画 → 並列実装 → 確認）の比較、第 2 段以降のファイルと測ること、載せ替えの費用の扱いを記した。試験 `tests/test_parallel_slots.py`。
+## 2026-11-23 ニュースの画像生成に精度の段（小・中・大）: 設定で選べる
+
+- 利用者の要望: SDXS の試し 16 枚（人物の崩れ・題に無い人物・文字のような模様・構図が単純）を見て「もうちょい精度の高いモデル使えないか？もう少し遅くても良い。このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」。
+- 調べ・実測（CPU 16 スレッド・OpenVINO・torch 無し・512x288 / 1024x576・8 本の見出し）:
+  | 段 | モデル | 解像度・ステップ | 1 枚目（読み込み込み）/ 2 枚目以降 | RAM の山 | 取得 | ライセンス |
+  |---|---|---|---|---|---|---|
+  | 小 | SDXS-512 DreamShaper + TAESD | 512・1 | 0.4 秒 / 0.23 秒 | 2.9GB | 約 1.7GB | OpenRAIL 系（既存） |
+  | 中 | LCM-Dreamshaper v7 int8（OpenVINO/ 公式変換）+ 本物の VAE | 512x288・4（w=8 の埋め込み） | 2.0 秒 / 1.5 秒 | 5.1GB | 約 1.0GB | MIT 表記（元は CreativeML OpenRAIL-M） |
+  | 大 | SDXL-Lightning 2 ステップ int8（rupeshs 変換）+ TAESD-XL | 1024x576・2 | 4.3 秒 / 3.8 秒 | 8.9GB | 約 4.2GB | OpenRAIL++（個人利用可） |
+  選ばなかった候補: SDXL-Turbo int8（同じ SDXL 系で大と重複・ライセンスが非商用）、SD-Turbo（5GB・fp16 版のみで重い）、FLUX.1-schnell int4（9GB・T5 と 12B で CPU では 1 枚が分単位・別の台本が要る）、SANA-Sprint・FLUX.2 klein（専用の部品が要り、今の部品のままでは動かない）。
+- 実装: `imagegen_worker.py` に `TIER_SPECS`（段ごとの部品・ステップ・解像度・ガイダンス・目安の時間/大きさ/RAM・時間の上限・1 回の件数の上限）と `_Pipeline`（SDXS 1 ステップ・LCM の手順〔LCMScheduler と同じ時刻・境界条件〕・SDXL の Euler trailing を自前で実装。diffusers・torch は使わない）。1 回の中でモデルは 1 度だけ読み込み、終わったら子プロセスを終える。seed は記事の id。
+- プロンプト（全段）: CLIP は「no ○○」を理解せず書くと描くので、否定語をやめ、物・風景・静物の言い回し（concept illustration of objects and scenery, still life, wordless）にした。否定のプロンプト（`NEGATIVE`）はガイダンスのある段用に持つが、今の 3 段は蒸留でガイダンス無し（LCM は w の埋め込みで否定を受けない）なので使わない。
+- 設定: `imagegen.tier`（small・medium・large。既定 small）。1 回の件数は設定の上限と段の上限（大 20・小中 30）の小さい方。未導入の段を選ぶと何も作らず、設定の画面と API（`imagegen_available`）で導入へ案内する。
+- 機能と拡張: 「ニュースの画像生成（CPU）」の詳細に段ごとの導入・削除（`POST /features/news-imagegen/models/{tier}/install-jobs`・`DELETE .../models/{tier}`。小は機能のアンインストールでだけ消える）。モデルは版固定（Hugging Face の公式のみ）で `data/models/news-imagegen/<名前>/`。
+- テスト: `test_news_imagegen.py`（段の選択・未導入・台本の引数・段ごとの削除・設定の既定・LCM の時刻。子はモック）、E2E `settings-news-imagegen-tiers.spec.ts`（書いただけ・未実行）。比較の見本: scratchpad の `imgtiers/compare.png`。
+
 ## 2026-11-23 ニュースの画像生成（CPU）: 画像の無い記事に、ニュース専用の軽いモデルでイメージ画像を作る
 
 - 利用者の要望: 「画像が取れない記事は本文の意図を汲んで AI で生成…CPU と RAM だけ・時間がかかってもよい・作ったらすぐアンロード・連続は一気に順次・品質は 2 の次・メディアフォージを使わずニュース独自の生成 AI・容量は軽く・速度が重要」。
