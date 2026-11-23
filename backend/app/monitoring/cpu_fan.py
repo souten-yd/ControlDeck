@@ -12,7 +12,10 @@ CPU ファンは本当に読めない。読めないときは黙って N/A に�
 * hwmon の ``fanN_label``（ドライバまたは sensors 設定が付ける）
 * ``/etc/sensors.d`` 等の設定を反映した ``sensors -j`` の名前
 
-どちらも CPU と言わないなら、番号から推測せず読めないものとして扱う。
+どちらも CPU と言わないなら、利用者が 設定 → 表示 で選んだ番号（既定 fan1）を使う
+（2026-11-24 利用者「CPU ファンの回転数と PWM を見たい」。名前が付かない板が多いので、
+番号は利用者が決める。回転数 0 のファンは候補から外して選びやすくする）。
+読み取りだけで、書き込み・制御はしない。
 """
 
 from __future__ import annotations
@@ -45,26 +48,86 @@ def _is_cpu_fan(label: str) -> bool:
     return any(token.replace("-", "_").replace(" ", "_") in folded for token in CPU_FAN_TOKENS)
 
 
-def _from_hwmon() -> tuple[int | None, int | None]:
-    """ドライバが自分で名前を付けている場合。"""
+DEFAULT_INDEX = 1
+MAX_INDEX = 7
+
+
+def _settings_path() -> Path:
+    from app.config import data_dir
+
+    return data_dir() / "cpu-fan.json"
+
+
+def configured_index() -> int:
+    """利用者が選んだ CPU ファンの番号（fanN の N）。未設定・壊れていれば既定。"""
+    try:
+        value = json.loads(_settings_path().read_text(encoding="utf-8")).get("index")
+    except (OSError, ValueError, AttributeError):
+        return DEFAULT_INDEX
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_INDEX else DEFAULT_INDEX
+
+
+def save_index(index: int) -> int:
+    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= MAX_INDEX:
+        raise ValueError(f"CPU ファンの番号は 1〜{MAX_INDEX} です")
+    path = _settings_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"index": index}), encoding="utf-8")
+    tmp.replace(path)
+    return index
+
+
+def _reading(directory: Path, index: int) -> tuple[int | None, int | None]:
+    rpm = _read(directory / f"fan{index}_input")
+    duty = _read(directory / f"pwm{index}")
+    return (
+        int(rpm) if rpm and rpm.isdigit() else None,
+        round(int(duty) / 255 * 100) if duty and duty.isdigit() else None,
+    )
+
+
+def _super_io_directories() -> list[tuple[Path, str]]:
     try:
         directories = sorted(HWMON_ROOT.iterdir())
     except OSError:
-        return None, None
+        return []
+    found = []
     for directory in directories:
         name = _read(directory / "name") or ""
-        if not _is_super_io(name):
-            continue
-        for index in range(1, 9):
-            label = _read(directory / f"fan{index}_label")
-            if not label or not _is_cpu_fan(label):
+        if _is_super_io(name):
+            found.append((directory, name))
+    return found
+
+
+def list_fans() -> list[dict]:
+    """マザーボードのファン一覧（設定画面の候補）。回転数 0・読めないものは入れない。"""
+    fans = []
+    for directory, chip in _super_io_directories():
+        for index in range(1, MAX_INDEX + 1):
+            rpm, duty = _reading(directory, index)
+            if not rpm:
                 continue
-            rpm = _read(directory / f"fan{index}_input")
-            duty = _read(directory / f"pwm{index}")
-            return (
-                int(rpm) if rpm and rpm.isdigit() else None,
-                round(int(duty) / 255 * 100) if duty and duty.isdigit() else None,
-            )
+            fans.append({"chip": chip, "index": index, "label": _read(directory / f"fan{index}_label") or "",
+                         "rpm": rpm, "pwm_percent": duty})
+    return fans
+
+
+def _from_hwmon() -> tuple[int | None, int | None]:
+    """ドライバが自分で名前を付けている場合。"""
+    for directory, _chip in _super_io_directories():
+        for index in range(1, MAX_INDEX + 2):
+            label = _read(directory / f"fan{index}_label")
+            if label and _is_cpu_fan(label):
+                return _reading(directory, index)
+    return None, None
+
+
+def _from_configured() -> tuple[int | None, int | None]:
+    """名前が無い板では、利用者が選んだ番号（既定 fan1）。そのファンが無ければ読めない扱い。"""
+    index = configured_index()
+    for directory, _chip in _super_io_directories():
+        if (directory / f"fan{index}_input").exists():
+            return _reading(directory, index)
     return None, None
 
 
@@ -98,7 +161,7 @@ def _from_sensors() -> tuple[int | None, int | None]:
 
 
 def read_cpu_fan() -> tuple[int | None, int | None]:
-    """(rpm, 指令値 %) を返す。名前で CPU だと分かるものが無ければ (None, None)。
+    """(rpm, 指令値 %) を返す。名前 → sensors の名前 → 選んだ番号の順。どれも無ければ (None, None)。
 
     0 rpm と「読めない」は違う。前者はファンが止まっているという事実で、
     後者は何も言えないという意味なので、推測で埋めない。
@@ -106,4 +169,7 @@ def read_cpu_fan() -> tuple[int | None, int | None]:
     rpm, duty = _from_hwmon()
     if rpm is not None or duty is not None:
         return rpm, duty
-    return _from_sensors()
+    rpm, duty = _from_sensors()
+    if rpm is not None:
+        return rpm, duty
+    return _from_configured()

@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-24 ホーム: CPU ファンの回転数・PWM、RAM・VRAM の色と容量の位置
+- 利用者「CPU ファンの回転数や PWM の変調率を CPU のところに。RAM・VRAM の容量はグラフの右下に。GPU・CPU の利用率と VRAM 使用率の色が同じなので変えて」。
+- 色: モバイルの 2 枚のカードで、CPU・GPU は青のまま、RAM・VRAM は橙（線・点・見出しの数字。ライト・ダーク）。PC のカードも RAM・VRAM を橙に（高負荷の赤・橙黄は優先）。凡例の文字は残す。
+- 容量: 「16/96GB」「1/32GB」をグラフの枠の右下に重ねる（背景を少し付ける）。補足の行（左下）は温度・回転数だけ。
+- CPU ファン: `monitoring/cpu_fan.py` を拡張（読み取りだけ）。優先は hwmon の `fanN_label`（CPU_FAN など）→ `sensors -j` の名前 → 設定の番号（既定 fan1、`data/cpu-fan.json`）。回転数と PWM（pwmN/255 を %）。ドライバが無い・読めないときは何も出さない。`GET/PUT /system/cpu-fan`（候補は回転数 0 を除く）。設定 → 表示 に「CPU ファン」の選択。補足の行は「✻1200 rpm・PWM 45%」（320px では rpm・PWM の文字を省く）。
+- 機能と拡張: 「マザーボードのファン（nct6775 ドライバ）」（`system_packages.py`）。`sudo modprobe nct6775 && echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf` をコピーして自分で実行（ボタンで sudo は実行しない）。hwmon に Super I/O が出ていれば導入済み。
+- 試験: `backend/tests/test_cpu_fan.py`、E2E `frontend/e2e/home-cpu-fan-colors.spec.ts`（色の computed style・容量の位置・ファンの表示〔WebSocket を模擬〕）。
+
 ## 2026-11-24 ニュースの下ごしらえを既定で CPU の Gemma 4 E2B に（GPU を使わない）
 - 利用者「CPU で動く Gemma とかで記事の翻訳できないか？画像生成と同じような管理で LLM を動かしたい。基本的に CPU と RAM で必ず動かすようにしたい」→「基本的に CPU で動かした Gemma の小を使う…それを既定に設定する。なお中と大は不要」。
 - 実行: `app/news/cpu_llm.py`。本番の llama-server（`data/runtimes/llama.cpp/current`）を子プロセスで、`HIP/ROCR/CUDA_VISIBLE_DEVICES=` 空・`--device none -ngl 0 -t 8 -c 16384 --host 127.0.0.1 --port <空き> --no-webui`・nice 10 で起動。下ごしらえの 1 回の実行の初めに起動し、全バッチを流して必ず止める（例外・時間切れ・キャンセルでもプロセスグループごと。同時に 2 つは起動せず、後の回は待つ）。起動のログに GPU を使った印が出れば失敗にする。

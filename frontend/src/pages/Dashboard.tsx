@@ -97,25 +97,25 @@ export default function DashboardPage() {
         {/* モバイル（768px 未満）: CPU+RAM、GPU+VRAM を 1 枚に 2 本の線で出し、横 1 段にする（利用者 2026-11-23） */}
         <div className="grid grid-cols-2 gap-2 md:hidden" data-testid="metrics-dual">
           <DualTile
-            a={{ label: "CPU", percent: m?.cpu.percent ?? null, values: cpuValues, tone: "text-accent-500", dot: "bg-accent-500" }}
-            b={{ label: "RAM", percent: m?.memory.percent ?? null, values: ramValues, tone: "text-violet-500", dot: "bg-violet-500" }}
+            a={{ label: "CPU", percent: m?.cpu.percent ?? null, values: cpuValues, tone: "text-accent-500", dot: "bg-accent-500", ink: "text-accent-600 dark:text-accent-400" }}
+            b={{ label: "RAM", percent: m?.memory.percent ?? null, values: ramValues, tone: "text-orange-500 dark:text-orange-400", dot: "bg-orange-500 dark:bg-orange-400", ink: "text-orange-600 dark:text-orange-400" }}
             loading={!m}
             notes={m ? [
               m.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : "",
-              m.cpu.fan_rpm != null ? `✻${m.cpu.fan_rpm}` : "",
-              `${(m.memory.used / 1024 ** 3).toFixed(0)}/${(m.memory.total / 1024 ** 3).toFixed(0)}GB`,
             ] : []}
+            fan={m?.cpu.fan_rpm != null ? { rpm: m.cpu.fan_rpm, pwm: m.cpu.fan_percent } : undefined}
+            capacity={m ? `${(m.memory.used / 1024 ** 3).toFixed(0)}/${(m.memory.total / 1024 ** 3).toFixed(0)}GB` : ""}
           />
           <DualTile
-            a={{ label: "GPU", percent: m?.gpu?.utilization_percent ?? null, values: gpuValues, tone: "text-accent-500", dot: "bg-accent-500" }}
-            b={{ label: "VRAM", percent: vramNow, values: vramValues, tone: "text-violet-500", dot: "bg-violet-500" }}
+            a={{ label: "GPU", percent: m?.gpu?.utilization_percent ?? null, values: gpuValues, tone: "text-accent-500", dot: "bg-accent-500", ink: "text-accent-600 dark:text-accent-400" }}
+            b={{ label: "VRAM", percent: vramNow, values: vramValues, tone: "text-orange-500 dark:text-orange-400", dot: "bg-orange-500 dark:bg-orange-400", ink: "text-orange-600 dark:text-orange-400" }}
             loading={!m}
             notes={m?.gpu ? [
               m.gpu.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : "",
-              m.gpu.fan_rpm != null ? `✻${m.gpu.fan_rpm}` : "",
-              m.gpu.vram_used_bytes != null && m.gpu.vram_total_bytes
-                ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(0)}/${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)}GB` : "",
             ] : ["GPU なし"]}
+            fan={m?.gpu?.fan_rpm != null ? { rpm: m.gpu.fan_rpm, pwm: null } : undefined}
+            capacity={m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
+              ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(0)}/${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)}GB` : ""}
           />
         </div>
         <div className="hidden grid-cols-4 gap-3 md:grid">
@@ -133,6 +133,7 @@ export default function DashboardPage() {
             value={m ? formatPercent(m.memory.percent) : null}
             percent={m?.memory.percent ?? null}
             values={ramValues}
+            color="text-orange-500 dark:text-orange-400"
             sub={m ? `${(m.memory.used / 1024 ** 3).toFixed(1)} / ${(m.memory.total / 1024 ** 3).toFixed(0)} GB${
               m.memory.mapped_files && m.memory.mapped_files > 4 * 1024 ** 3 ? `（うちモデル ${(m.memory.mapped_files / 1024 ** 3).toFixed(0)}）` : ""}` : undefined}
           />
@@ -157,6 +158,7 @@ export default function DashboardPage() {
                 : null
             }
             values={vramValues}
+            color="text-orange-500 dark:text-orange-400"
             sub={
               m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
                 ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(1)} / ${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)} GB`
@@ -399,15 +401,15 @@ function ActiveAlerts() {
   );
 }
 
-interface DualLine { label: string; percent: number | null; values: (number | null)[]; tone: string; dot: string }
+interface DualLine { label: string; percent: number | null; values: (number | null)[]; tone: string; dot: string; ink: string }
 
 /** モバイル用: 2 つの使用率を 1 枚・2 本の線で出す。凡例は色つきの点＋「CPU 9%」の小さな数字（色だけに頼らず名前も書く）。 */
-function DualTile({ a, b, notes, loading }: { a: DualLine; b: DualLine; notes: string[]; loading: boolean }) {
+function DualTile({ a, b, notes, loading, capacity, fan }: { a: DualLine; b: DualLine; notes: string[]; loading: boolean; capacity?: string; fan?: { rpm: number; pwm: number | null } }) {
   const legend = (l: DualLine) => (
     <span className="flex min-w-0 items-center gap-1">
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${l.dot}`} aria-hidden />
       <span className="text-[10px] font-medium text-zinc-500">{l.label}</span>
-      <span className="num text-[13px] font-semibold tracking-tight">{loading ? "—" : l.percent != null ? formatPercent(l.percent) : "N/A"}</span>
+      <span className={`num text-[13px] font-semibold tracking-tight ${l.ink}`}>{loading ? "—" : l.percent != null ? formatPercent(l.percent) : "N/A"}</span>
     </span>
   );
   const enough = (l: DualLine) => l.values.filter((v) => v != null).length >= 2;
@@ -417,9 +419,20 @@ function DualTile({ a, b, notes, loading }: { a: DualLine; b: DualLine; notes: s
       <div className="relative mt-1 h-9 rounded-md bg-zinc-50 dark:bg-zinc-800/40">
         {enough(a) && <div className="absolute inset-0"><Sparkline values={a.values} fill className={a.tone} heightClass="h-9" /></div>}
         {enough(b) && <div className="absolute inset-0"><Sparkline values={b.values} fill className={b.tone} heightClass="h-9" /></div>}
+        {/* RAM・VRAM の容量。グラフの右下に重ねる（背景を少し付けて線の上でも読める） */}
+        {capacity && (
+          <span data-testid="capacity" className="num absolute bottom-0.5 right-0.5 rounded bg-white/75 px-1 text-[9px] leading-3 text-zinc-600 dark:bg-zinc-900/75 dark:text-zinc-300">{capacity}</span>
+        )}
       </div>
       <p className="num mt-0.5 flex h-3.5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-zinc-400">
-        {notes.filter(Boolean).map((n, i) => <span key={i} className={n.startsWith("✻") ? "shrink-0 font-medium text-sky-500 dark:text-sky-400" : "truncate"}>{n}</span>)}
+        {notes.filter(Boolean).map((n, i) => <span key={i} className="shrink-0">{n}</span>)}
+        {/* 回転数と PWM。320px では「rpm」「PWM」の文字を省いて 1 行に収める（数字と ✻ は残る） */}
+        {fan && (
+          <span className="shrink-0 font-medium text-sky-500 dark:text-sky-400">
+            ✻{fan.rpm}<span className="max-[359px]:hidden"> rpm</span>
+            {fan.pwm != null && <>・<span className="max-[359px]:hidden">PWM </span>{fan.pwm}%</>}
+          </span>
+        )}
       </p>
     </div>
   );
@@ -435,6 +448,7 @@ function MetricTile({
   temp,
   fan,
   fanPercent,
+  color,
 }: {
   label: string;
   value: string | null;
@@ -444,6 +458,8 @@ function MetricTile({
   temp?: string;
   fan?: string;
   fanPercent?: number;
+  /** RAM・VRAM の線の色（CPU・GPU の青と見分ける。高負荷の赤は優先する） */
+  color?: string;
 }) {
   const tone =
     percent == null
@@ -452,7 +468,7 @@ function MetricTile({
         ? "text-red-500"
         : percent >= 70
           ? "text-amber-500"
-          : "text-accent-500";
+          : color ?? "text-accent-500";
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
       <div className="flex items-baseline justify-between gap-2">

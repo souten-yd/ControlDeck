@@ -19,6 +19,7 @@ import { NewsSettings } from "../features/news/NewsSettings";
 import { ImagegenTierList } from "../features/news/ImagegenTiers";
 import type { ImagegenTier } from "../api/news";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
+import { CpuFanSettings } from "../features/settings/CpuFanSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
 import { FeatureAutoUpdate } from "../features/settings/FeatureAutoUpdate";
@@ -231,7 +232,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   const can = useAuth((s) => s.can);
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
-    case "appearance": return <><AppearanceSection /><HomeHistorySettings /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
+    case "appearance": return <><AppearanceSection /><HomeHistorySettings /><CpuFanSettings /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
     case "news": return <NewsSettings />;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;

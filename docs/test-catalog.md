@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 244 ファイル、2404 テスト（目的の未記入 93 ファイル）
-- E2E: 131 spec、286 テスト
+- backend: 245 ファイル、2413 テスト（目的の未記入 93 ファイル）
+- E2E: 132 spec、288 テスト
 
 ## backend（backend/tests）
 
@@ -740,6 +740,20 @@
 - `test_finished_updates_are_kept_in_history` — 終わった更新を、自動か手動か・Release 名つきで新しい順に残す（設定画面と、自動更新の後の知らせが読む）。
 - `test_release_names_map_commits_to_the_newest_tag` — 更新の画面はコミットではなく Release の名前で出す（2026-11-20 利用者「数値の羅列で何から何へか分からない」）。
 - `test_status_names_the_current_and_latest_release`
+
+### backend/tests/test_cpu_fan.py
+
+目的: CPU ファン（マザーボードの Super I/O の hwmon）の読み取りの試験。 目的: nct67xx などのドライバがあれば回転数と PWM(%) を読み、CPU ファンの選び方（ラベル優先・無ければ選んだ番号）、 回転数 0 の扱い、読めないときの無言、機能と拡張の案内コマンドを確かめる。読み取りだけ（書き込みはしない）。 根拠: 2026-11-24 利用者「CPU ファンの回転数とか PWM の変調率とか見えたりしますか？見えるなら CPU のところに表示を追加して」。 hwmon は tmp の偽物で、実機の /sys には触れない。
+
+- `test_no_super_io_reads_nothing`
+- `test_default_fan1_without_label`
+- `test_label_wins_over_configured_index`
+- `test_configured_index_is_used`
+- `test_zero_rpm_is_fact_but_not_a_candidate`
+- `test_selected_fan_missing_or_unreadable`
+- `test_missing_hwmon_root_is_silent`
+- `test_save_index_validates_and_broken_file_falls_back`
+- `test_driver_guide_command`
 
 ### backend/tests/test_credential_security.py
 
@@ -4058,6 +4072,13 @@
 - home compact (${width}px, ${scheme})
 - home notice scrolls and flips (390px)
 - home notice with a single item does not flip (390px)
+
+### frontend/e2e/home-cpu-fan-colors.spec.ts
+
+目的: 目的: ホームのモバイルのカードで、(1) 利用率と RAM・VRAM の色が違う（computed style・ライト/ダーク）、 (2) RAM・VRAM の容量がグラフの右下に重なる、(3) CPU のカードの補足の行に CPU ファンの回転数と PWM が出る （API はモック）、(4) どの幅でも横にはみ出さない。撮影: test-results/home-fan-colors-{390,320,1280}[-dark].png。 根拠: 2026-11-24 利用者「CPU のところに回転数の表示を追加して・RAM の容量はグラフの右下に・利用率と VRAM 使用率の色が同じなので変えて」。
+
+- home cpu fan, colors, capacity (${width}px, ${scheme})
+- home without a readable CPU fan shows nothing for it (390px)
 
 ### frontend/e2e/ios-keyboard-field.spec.ts
 
