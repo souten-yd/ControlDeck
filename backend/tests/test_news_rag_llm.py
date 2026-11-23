@@ -504,19 +504,3 @@ def test_news_loop_skips_fetch_in_quiet_hours(monkeypatch):
         run(service.news_loop())
     assert calls == ["due"]                                                                # 取得はせず、まとめの確認だけ
 
-
-def test_news_settings_reject_paid_cloud_models():
-    """目的: ニュースのまとめ・一言要約に有料のクラウドのモデルを選べないこと。
-
-    根拠: 2026-11-23 利用者「ニュースで有料なのは使わない方針で」。無料（:free・価格 0）とローカルは通す。
-    """
-    import pytest
-
-    from app.news import llm
-
-    llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/meta/llama-3.3-70b:free", "gist_model": "auto"}})
-    llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/vendor/zero-priced"}}, frozenset({"vendor/zero-priced"}))
-    with pytest.raises(ValueError, match="有料"):
-        llm.reject_paid({"llm": {"digest_model": "cloud:openrouter/anthropic/claude-x"}})
-    with pytest.raises(ValueError, match="一言要約"):
-        llm.reject_paid({"llm": {"digest_model": "auto", "gist_model": "cloud:openrouter/anthropic/claude-x"}})

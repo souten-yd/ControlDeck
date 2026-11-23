@@ -8,6 +8,7 @@
 - `./deck.sh e2e` は E2E のブラウザが足りないとき、勝手に入れず「設定 → 機能と拡張 → Playwright のブラウザ を導入してください」で止まる。`ensure_playwright_browser` は `ms-playwright-py` へ入れる。
 - 追加で入れるもの（利用者「追加で入れないといけないものは機能と拡張に導入ボタンを」）: OS のパッケージ（poppler・tesseract=`system-ocr`、`system-zstd`、`system-gh`）は sudo が要るのでボタンでは入れず、足りないものだけの `sudo apt install -y …` をコピーさせる（`features/system_packages.py`）。gh も案内だけにした（Release の tar の版固定・検証・ログインまで要り、deck.sh の apt と二重になるため小さい方）。Maya の tokenizers は Maya-S の更新・準備の中でエンジンの venv へ入れる。各エラーの文は「設定 → 機能と拡張 → <項目名> から導入してください」に直した。
 - テスト: `test_playwright_browsers_feature.py`、E2E `settings-playwright-browsers.spec.ts`（API は page.route）。実際の `playwright install`・apt・pip は走らせていない。
+## 2026-11-23 ニュースのまとめに有料のモデルも選べる形へ戻す（利用者「有料モデルをニュースに使っても良い。わざわざ消さないで」）。有料は「有料」の警告つきで選べる。
 
 ## 2026-11-23 画面の撮影・操作テストの動画をチャットに出し、個別・一斉に消せる（ROADMAP U34・U28）
 

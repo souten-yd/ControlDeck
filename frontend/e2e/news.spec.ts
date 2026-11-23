@@ -563,7 +563,7 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     // LLM: 無料が先で「無料」「有料」の印
     const select = page.getByLabel("まとめのモデル");
     const options = await select.locator("option").allTextContents();
-    expect(options.findIndex((t) => t.startsWith("無料 ·"))).toBeLessThan(options.findIndex((t) => t.startsWith("有料（選べません） ·")));
+    expect(options.findIndex((t) => t.startsWith("無料 ·"))).toBeLessThan(options.findIndex((t) => t.startsWith("有料 ·")));
     await expect(page.getByRole("heading", { name: "検索（RAG）への蓄積" })).toBeVisible();
     if (!egress) {
       await expect(page.getByTestId("egress-missing")).toContainText("外部への送信が許可されていません");
@@ -571,8 +571,9 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     } else {
       await expect(page.getByTestId("egress-missing")).toHaveCount(0);
     }
-    // 有料は選べない（ニュースは有料を使わない方針）
-    await expect(select.locator('option[value="cloud:openrouter/anthropic/claude-x"]')).toHaveJSProperty("disabled", true);
+    // 有料も選べる（警告つき。2026-11-23 利用者「有料モデルをニュースに使っても良い」）
+    await select.selectOption("cloud:openrouter/anthropic/claude-x");
+    await expect(page.getByText("有料のモデルです")).toBeVisible();
     await select.selectOption("cloud:openrouter/meta/llama-3.3-70b:free");
     // 更新の設定を変えて保存
     await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
