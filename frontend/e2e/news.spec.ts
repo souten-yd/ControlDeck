@@ -572,7 +572,7 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
       await expect(page.getByTestId("egress-missing")).toHaveCount(0);
     }
     // 有料は選べない（ニュースは有料を使わない方針）
-    await expect(select.locator('option[value="cloud:openrouter/anthropic/claude-x"]')).toBeDisabled();
+    await expect(select.locator('option[value="cloud:openrouter/anthropic/claude-x"]')).toHaveJSProperty("disabled", true);
     await select.selectOption("cloud:openrouter/meta/llama-3.3-70b:free");
     // 更新の設定を変えて保存
     await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
