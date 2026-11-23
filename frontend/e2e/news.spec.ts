@@ -144,6 +144,7 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
     feed_refresh_minutes: 15, digest_daily: { enabled: true, time: "06:30" }, digest_weekly: { enabled: true, weekday: 0, time: "07:00" },
     quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto" },
     rag: { enabled: true, fulltext: false, on_prune: "keep" },
+    imagegen: { enabled: false, tier: "small", threads: 8, max_per_run: 30 },
   };
   const savedSettings: unknown[] = [];
   const egress = { allowed: opts.egress ?? false };
