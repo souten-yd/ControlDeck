@@ -152,7 +152,8 @@ async function shot(page: Page, path: string) {
     return best;
   });
   await page.setViewportSize({ width: size.width, height: Math.min(Math.max(height, size.height), 9000) });
-  await page.evaluate(() => window.scrollTo(0, 0));
+  // 途中の操作で殻の内側が下へ動いたままだと、先頭が写らない（2026-11-23: 携帯の撮影で ON AIR より上が欠けた）
+  await page.evaluate(() => { window.scrollTo(0, 0); for (const el of Array.from(document.querySelectorAll("*"))) if (el.scrollTop) el.scrollTop = 0; });
   await page.screenshot({ path, fullPage: true });
   await page.setViewportSize(size);
 }
