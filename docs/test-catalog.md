@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 229 ファイル、2157 テスト（目的の未記入 93 ファイル）
-- E2E: 119 spec、246 テスト
+- E2E: 120 spec、247 テスト
 
 ## backend（backend/tests）
 
@@ -3808,6 +3808,12 @@
 - migrates the saved Play destination to Workflows
 - pins up to six favorites at the top of the drawer
 - sidebar has no 
+
+### frontend/e2e/navigation-visibility.spec.ts
+
+目的: 設定 → 表示の「メニューの表示」: メニュー（PC のサイドバー・携帯のドロワー）の項目を 1 つずつ隠せる。 隠した項目は「よく使う」からも消える。Settings は隠せない（隠すと戻れない）。選択は端末に残る。 Add-on の項目も同じ一覧から選べる（effective addons を差し替えて確かめる）。 根拠: 2026-11-23 利用者「設定で表示っていう項目があれば、そこの中にメインメニューの項目を任意に 表示、非表示の選択ができるようにしてほしい。新しく導入されたプラグインや今後導入される機能、今開発中の パテントなども含めて…汎用的に開発すること」。 */
+
+- メニューの項目を隠せる（${width}px）
 
 ### frontend/e2e/notification-settings.spec.ts
 

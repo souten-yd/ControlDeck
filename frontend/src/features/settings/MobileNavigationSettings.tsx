@@ -3,6 +3,7 @@ import { useMeta } from "../../api/hooks";
 import { canAccessNavigationItem, NAVIGATION } from "../../navigation";
 import { useAuth } from "../../stores";
 import { MOBILE_NAV_MAX_ITEMS, useMobileNavigation } from "../../stores/mobileNavigation";
+import { useNavigationVisibility } from "../../stores/navigationVisibility";
 
 /** メニュー（左上の ☰ で開くドロワー／PC のサイドバー）の先頭に固定する機能を選ぶ。
  *  以前の「下部ナビ」の選択をそのまま引き継ぐ（保存先は同じ）。 */
@@ -12,6 +13,7 @@ export function MobileNavigationSettings() {
   const paths = useMobileNavigation((state) => state.paths);
   const setPaths = useMobileNavigation((state) => state.setPaths);
   const reset = useMobileNavigation((state) => state.reset);
+  const hiddenKeys = useNavigationVisibility((state) => state.hidden);
   const enabledFeatures = useMemo(() => new Set(meta?.enabled_features ?? []), [meta]);
   const available = NAVIGATION.filter((item) =>
     (!item.feature || enabledFeatures.has(item.feature)) && canAccessNavigationItem(item, can),
@@ -75,7 +77,7 @@ export function MobileNavigationSettings() {
           const Icon = item.icon;
           return <button key={item.to} type="button" onClick={() => toggle(item.to)} disabled={disabled} aria-pressed={active} className={`flex min-h-12 min-w-0 items-center gap-2 rounded-xl border px-3 text-left transition disabled:cursor-not-allowed disabled:opacity-35 ${active ? "border-accent-500 bg-accent-50 text-accent-700 dark:bg-accent-600/10 dark:text-accent-300" : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-700"}`}>
             <Icon className="shrink-0 text-lg" />
-            <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.label}</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.label}{hiddenKeys.includes(item.to) && <span className="font-normal text-zinc-400">（非表示）</span>}</span>
             <span aria-hidden className="shrink-0 text-sm">{active ? "✓" : "+"}</span>
           </button>;
         })}

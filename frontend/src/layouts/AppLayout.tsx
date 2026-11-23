@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
@@ -10,12 +10,10 @@ import { useKeyboardViewportFit } from "../hooks/useKeyboardViewportFit";
 import { useUxPrefs } from "../stores/uxPrefs";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
-  addonIcon,
   IconDots,
   IconLogout,
   IconMenu,
   IconPlay,
-  IconPlugin,
   IconPower,
   IconRestart,
   IconSearch,
@@ -25,10 +23,10 @@ import { CommandPalette } from "../components/CommandPalette";
 import { ApprovalsCenter } from "../features/approvals/PendingApprovals";
 import { AutoUpdateNotice } from "../features/settings/UpdateHistory";
 import { Logo } from "../components/Logo";
-import { canAccessNavigationItem, NAV_GROUPS, NAVIGATION } from "../navigation";
+import { useNavigationCandidates, type NavSection } from "../navigationEntries";
+import { useNavigationVisibility } from "../stores/navigationVisibility";
 import { useMobileNavigation } from "../stores/mobileNavigation";
 import { addonLabel, invokeAddonCommand, useEffectiveAddons } from "../api/addons";
-import { AddonStatusChip, addonStateMessage } from "../features/addons/AddonStatus";
 import { SHELL_TOPBAR_CLASS, ShellContext, ShellMenuButton, shellIconButtonClass } from "./shell";
 
 const SIDEBAR_KEY = "cd-sidebar";
@@ -40,25 +38,6 @@ function readSidebarCollapsed(): boolean {
   } catch {
     return false;
   }
-}
-
-type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
-
-/** ドロワー／サイドバーの 1 行。内部の画面も、別タブで開くプラグインも同じ形にする。 */
-interface NavEntry {
-  key: string;
-  to: string;
-  label: string;
-  icon: NavIcon;
-  external?: boolean;
-  title?: string;
-  trailing?: ReactNode;
-}
-
-interface NavSection {
-  id: string;
-  label: string;
-  entries: NavEntry[];
 }
 
 export default function AppLayout() {
@@ -73,14 +52,12 @@ export default function AppLayout() {
   const addonNavigation = effectiveAddons?.contributions.navigation ?? [];
   const addonQuickActions = effectiveAddons?.contributions.quick_actions ?? [];
 
-  const enabledFeatures = new Set(meta?.enabled_features ?? []);
+  const { sections: candidates, visibleNav } = useNavigationCandidates();
   const enrollmentPending = Boolean(user?.totp_required && !user.totp_enabled);
-  const visibleNav = NAVIGATION.filter((item) =>
-    (!enrollmentPending || item.to === "/settings")
-    && (!item.feature || enabledFeatures.has(item.feature))
-    && canAccessNavigationItem(item, can));
   /* 「よく使う」は以前の下部ナビの選択をそのまま引き継ぐ（保存先も同じ）。 */
   const pinnedPaths = useMobileNavigation((state) => state.paths);
+  /* 設定 → 表示で隠した項目は、まとまりからも「よく使う」からも外す。 */
+  const hiddenKeys = useNavigationVisibility((state) => state.hidden);
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
@@ -102,39 +79,18 @@ export default function AppLayout() {
   /* メニューの中身。よく使うものを先頭に固定し、残りをまとまりごとに並べる。
      同じ行き先を 2 回は出さない（いまどこにいるかの印が 1 つに決まる）。 */
   const sections = ((): NavSection[] => {
-    const toEntry = (item: (typeof visibleNav)[number]): NavEntry => ({
-      key: item.to, to: item.to, label: item.label, icon: item.icon,
-    });
+    const shown = candidates
+      .map((section) => ({ ...section, entries: section.entries.filter((entry) => !hiddenKeys.includes(entry.key)) }))
+      .filter((section) => section.entries.length);
+    const all = shown.flatMap((section) => section.entries);
     const pinned = pinnedPaths
-      .map((path) => visibleNav.find((item) => item.to === path))
-      .filter((item) => item !== undefined);
-    const pinnedSet = new Set(pinned.map((item) => item.to));
-    const result: NavSection[] = [];
-    if (pinned.length) result.push({ id: "pinned", label: "よく使う", entries: pinned.map(toEntry) });
-    const extensions: NavEntry[] = [
-      ...addonNavigation.map((contribution): NavEntry => {
-        const addon = addonById.get(contribution.addon_id);
-        const label = addonLabel(contribution.label);
-        return {
-          key: `addon-${contribution.addon_id}-${contribution.id}`,
-          to: contribution.route || `/x/${contribution.addon_id}/${contribution.id}`,
-          label,
-          icon: addonIcon(contribution.icon, contribution.addon_id),
-          title: `${label}${addon && addon.state !== "healthy" ? ` — ${addonStateMessage(addon.state)}` : ""}`,
-          trailing: addon ? <AddonStatusChip state={addon.state} compact /> : undefined,
-        };
-      }),
-      ...(meta?.plugin_navigation ?? []).filter((plugin) => can(plugin.permission)).map((plugin): NavEntry => ({
-        key: `plugin-${plugin.id}`, to: plugin.url, label: plugin.label, icon: IconPlugin, external: true,
-      })),
-    ];
-    for (const group of NAV_GROUPS) {
-      const entries = visibleNav.filter((item) => item.group === group.id && !pinnedSet.has(item.to)).map(toEntry);
-      if (entries.length) result.push({ id: group.id, label: group.label, entries });
-      /* 拡張機能は AI の次、システムの前。 */
-      if (group.id === "ai" && extensions.length && !enrollmentPending) {
-        result.push({ id: "extensions", label: "拡張機能", entries: extensions });
-      }
+      .map((path) => all.find((entry) => entry.key === path))
+      .filter((entry) => entry !== undefined);
+    const pinnedSet = new Set(pinned);
+    const result: NavSection[] = pinned.length ? [{ id: "pinned", label: "よく使う", entries: pinned }] : [];
+    for (const section of shown) {
+      const entries = section.entries.filter((entry) => !pinnedSet.has(entry));
+      if (entries.length) result.push({ ...section, entries });
     }
     return result;
   })();

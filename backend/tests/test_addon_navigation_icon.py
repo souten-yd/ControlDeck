@@ -43,10 +43,11 @@ def test_an_addon_may_leave_the_icon_out():
 
 def test_the_ui_reads_the_declared_icon_wherever_addon_navigation_is_built():
     """以前はサイドバーと Quick Actions の 2 か所で項目を作っていて、片方だけ直すと
-    Apps と同じ形のままになった。いまは殻（AppLayout）の 1 か所で作り、ドロワーと
-    PC のサイドバーの両方がそれを使う（Quick Actions は撤去）。項目を作る所が増えても、
-    どれもが宣言されたアイコンを読むこと。"""
-    layout = (FRONTEND / "layouts" / "AppLayout.tsx").read_text(encoding="utf-8")
+    Apps と同じ形のままになった。いまはメニューの候補（navigationEntries.tsx の
+    useNavigationCandidates）の 1 か所で作り、ドロワー・PC のサイドバー・設定の「メニューの表示」が
+    それを使う（2026-11-23 に AppLayout から移した）。項目を作る所が増えても、どれもが宣言されたアイコンを読むこと。"""
+    layout = "".join((FRONTEND / name).read_text(encoding="utf-8")
+                     for name in ("layouts/AppLayout.tsx", "navigationEntries.tsx"))
 
     builds = layout.count("addonNavigation.map(")
     assert builds >= 1
