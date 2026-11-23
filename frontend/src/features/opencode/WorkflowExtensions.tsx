@@ -21,6 +21,8 @@ export interface Workflow {
   adversarial_review: boolean;
   /** 自動レビュー: コードを変えたら完了の前に reviewer で確かめ、行き詰まったら advisor() で相談する。 */
   auto_review?: boolean;
+  /** 取り込み（PR）・マージの後に、作業場の画面の記録（撮影・動画）を自動で消す。既定は切 */
+  workspace_media_auto_delete?: boolean;
   auto_advisor: "off" | "observe" | "active";
   /** 旧設定（最終検証として読む）。画面は roles.final_check を使う。 */
   review_model?: string;

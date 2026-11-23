@@ -16,6 +16,8 @@ import { ROLE_LABELS } from "../opencode/RolesPanel";
 import { workflowQueryKey } from "../opencode/FeatureSetup";
 import type { Workflow } from "../opencode/WorkflowExtensions";
 import { TARGETS } from "../workflows/workspaceTargets";
+import { formatBytes } from "../../lib/format";
+import { ConfirmDialog } from "../../components/ui";
 
 interface OpenCodeStatus { settings: { base_url: string; model: string; project_path: string; runtime: string; workspace_min_free_gib?: number } }
 type PermissionMode = "auto" | "ask";
@@ -60,6 +62,19 @@ export function DevWorkspaceSettings() {
     onError: (error) => show(error instanceof Error ? error.message : "保存できませんでした", "error"),
   });
 
+  // 画面の記録（撮影・操作テストの動画）の容量。容量を取るので、開発の後に消せる
+  const media = useQuery({ queryKey: ["workspaces-media"], queryFn: () => api<{ count: number; total_size: number; workspaces: { name: string; count: number; total_size: number }[] }>("/opencode/workspaces-media"), staleTime: 15_000 });
+  const [confirmMedia, setConfirmMedia] = useState(false);
+  const clearMedia = useMutation({
+    mutationFn: () => api<{ count: number; size: number }>("/opencode/workspaces-media", { method: "DELETE" }),
+    onSuccess: (done) => {
+      setConfirmMedia(false);
+      void qc.invalidateQueries({ queryKey: ["workspaces-media"] });
+      void qc.invalidateQueries({ queryKey: ["workspace-media"] });
+      show(`${done.count} 件（${formatBytes(done.size)}）を消しました`);
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "消せませんでした", "error"),
+  });
   const w = workflow.data;
   const roles = w?.roles ?? {};
   const setRoles = ROLE_LABELS.filter(([key]) => roles[key]);
@@ -110,6 +125,37 @@ export function DevWorkspaceSettings() {
           </div>
         </label>
         {!minFreeValid && <p className="mt-1 text-xs text-red-600 dark:text-red-400">0〜4096 の数を入れてください。</p>}
+      </div>
+
+      <div className={sub} data-media-settings>
+        <h3 className="text-sm font-semibold">画面の記録の容量</h3>
+        <p className="mt-1 text-xs text-zinc-500">UI 検証の撮影・操作テストの動画は、作業場の中（<code>.controldeck/media</code>・<code>test-results</code>）に残り、容量を取ります。開発が終わったら消せます。</p>
+        {media.data && (
+          <>
+            <p className="num mt-2 text-sm">合計 {media.data.count} 件・{formatBytes(media.data.total_size)}</p>
+            {media.data.workspaces.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {media.data.workspaces.map((ws) => <li key={ws.name} className="flex gap-2"><span className="min-w-0 flex-1 truncate">{ws.name}</span><span className="num shrink-0 text-zinc-500">{ws.count} 件・{formatBytes(ws.total_size)}</span></li>)}
+              </ul>
+            )}
+            <button type="button" disabled={media.data.count === 0 || clearMedia.isPending} onClick={() => setConfirmMedia(true)}
+              className="mt-2 min-h-11 rounded-xl border border-red-300 px-4 text-sm font-medium text-red-700 disabled:opacity-40 dark:border-red-900 dark:text-red-300">
+              すべての作業場の記録を消す
+            </button>
+          </>
+        )}
+        {media.isError && <p className="mt-2 text-xs text-zinc-500">画面の記録の容量を読めませんでした。</p>}
+        {w && (
+          <div className="mt-2">
+            <Toggle label="取り込み（PR）・マージの後に記録を自動で消す" value={w.workspace_media_auto_delete ?? false} disabled={!editable || saveWorkflow.isPending}
+              hint="既定は切です。オンにすると、取り込みかマージが終わった作業場の撮影・動画を消します"
+              onChange={(v) => saveWorkflow.mutate({ workspace_media_auto_delete: v })} />
+          </div>
+        )}
+        {confirmMedia && media.data && (
+          <ConfirmDialog title="画面の記録を消す" message={`すべての作業場の画面の記録 ${media.data.count} 件（${formatBytes(media.data.total_size)}）を消します。元には戻せません。`}
+            confirmLabel="すべて消す" busy={clearMedia.isPending} onConfirm={() => clearMedia.mutate()} onClose={() => setConfirmMedia(false)} />
+        )}
       </div>
 
       <div className={sub}>

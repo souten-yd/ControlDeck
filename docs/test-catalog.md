@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 231 ファイル、2180 テスト（目的の未記入 93 ファイル）
-- E2E: 122 spec、250 テスト
+- backend: 232 ファイル、2191 テスト（目的の未記入 93 ファイル）
+- E2E: 123 spec、252 テスト
 
 ## backend（backend/tests）
 
@@ -2070,6 +2070,7 @@
 - `test_opencode_runs_in_a_project_box`
 - `test_host_mode_and_missing_podman_fall_back`
 - `test_isolation_setting_is_validated`
+- `test_browser_has_video_caps_for_the_operation_test` — 操作テストの動画（browser_start_video）はこの版では --caps=devtools が要る。
 
 ### backend/tests/test_opencode_feature.py
 
@@ -3343,6 +3344,21 @@
 - `test_lab_api_refuses_while_mirror_runs`
 - `test_workspace_preview_key_state_cookie_and_base`
 
+### backend/tests/test_workspace_media.py
+
+目的: 作業場の画面の記録（撮影・操作テストの動画）の一覧・配信・削除（ROADMAP U28・U34）。 目的: 箱の AI が書ける repo の中の記録を、ホストが安全に一覧・配信・削除できること。 - 一覧は `.controldeck/media` と `test-results` の画像・動画だけ、新しい順。symlink（ファイルも階層も）は辿らない。 - 配信は一覧に出た相対パスだけ（`..`・絶対パス・置き場の外・許さない拡張子は断る）。content-type は拡張子で決め、 nosniff・CSP sandbox を付ける。Range に応じる。大きすぎるファイルは返さない。 - 削除は 1 件・作業場ぶん・全作業場ぶん。持ち主だけ。監査に件数と大きさを残す。取り込み・マージの後に自動で消す設定。 - ターンの終わりに、この回に撮ったものを meta.media へ。provider の Playwright MCP の引数に caps と output-dir が入る。 根拠: 2026-11-23 利用者「スクリーンショットを撮って表示する・操作テストの動画をチャットに出す・容量をとるので後で個別・一斉に消せる」。 podman は呼ばない（モック）。
+
+- `test_list_is_newest_first_and_only_media_in_the_two_roots`
+- `test_symlinks_are_neither_listed_nor_followed`
+- `test_paths_outside_the_list_are_refused`
+- `test_big_file_is_not_served`
+- `test_api_serves_with_safe_headers_and_range`
+- `test_api_delete_one_all_and_audit`
+- `test_all_workspaces_summary_and_bulk_delete_only_mine`
+- `test_auto_delete_after_adopt_only_when_enabled`
+- `test_opencode_config_writes_media_dir_with_gitignore` — 出力先は repo/.controldeck/media。git に混ざらない（.gitignore の * ）。ui-verifier に動画の道具を渡す caps が入る。
+- `test_turn_meta_media_lists_only_this_turns_files_up_to_12` — この回に撮った記録（ターンの始めより新しいもの）だけを最大 12 件、回答の meta.media に載せる。
+
 ## E2E（frontend/e2e）
 
 ### frontend/e2e/a11y.spec.ts
@@ -3622,6 +3638,13 @@
 目的: 目的: (1) 作業場を選んだ OpenCode のヘッダの札は、会話のモデル（auto）ではなく作業場のモデルの並びの先頭 （opencode-go/glm-5.3 → 「GLM-5.3（作業場）」）を出すこと。(2) ファイルを変えていない回（プラン）の完了カードには 「レビューして」を出さず、ファイルを変えた回には出すこと。 根拠: 2026-11-23 の評価（ヘッダが auto のままで、どのモデルが動くか分からない・プランの回にレビューが出る）、ROADMAP U22。 API は page.route で模擬する（箱・OpenCode・LLM を動かさない）。
 
 - header shows the workspace model; plan turn has no review button (${width}px)
+
+### frontend/e2e/assistant-workspace-media.spec.ts
+
+目的: 目的: 作業場の画面の記録（撮影・操作テストの動画）が、(1) チャットの完了カードの下に縮小画像と動画で出る（押すと大きく・消された記録は「消しました」）、 (2) 作業場の結果のカードの「画面の記録」で一覧され、1 件ずつ消せる・まとめて消せる（確認つき）、 (3) 設定 → 開発（作業場）で全作業場の合計が見え、一斉に消せる（確認つき）・自動で消す設定が保存される。320px でも横にはみ出さない。 根拠: 2026-11-23 利用者「スクリーンショットや操作テストの動画をチャットに出し、容量をとるので後で個別・一斉に消せるように」（ROADMAP U28・U34）。 API は page.route で模擬する。画像は data URI の 1px の PNG、動画は 200 を返すだけ（再生内容は問わない）。
+
+- workspace media in chat and result card (${width}px)
+- workspace media settings bulk delete (${width}px)
 
 ### frontend/e2e/assistant-workspace-resume.spec.ts
 

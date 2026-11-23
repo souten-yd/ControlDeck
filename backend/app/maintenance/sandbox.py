@@ -1006,8 +1006,11 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
             },
         }
     payload["mcp"] = servers
-    shots = box.path / "ui-verify"
-    shots.mkdir(exist_ok=True)
+    # 画面の撮影・操作テストの動画は repo/.controldeck/media へ（チャットに出し、後で消せる。workspace_media.py）。
+    # 中に .gitignore（*）を置き、自動保存・差分・関門に混ざらないようにする
+    shots = box.repo / ".controldeck" / "media"
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots.parent / ".gitignore").write_text("*\n", encoding="utf-8")
     browser = (payload.get("mcp") or {}).get(provider.UI_VERIFY_SERVER)
     if browser:
         command = list(browser["command"])

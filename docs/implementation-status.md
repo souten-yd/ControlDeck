@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-23 画面の撮影・操作テストの動画をチャットに出し、個別・一斉に消せる（ROADMAP U34・U28）
+
+- 撮る: 作業場の ui-verifier の Playwright MCP に `--caps=devtools`（`browser_start_video` / `browser_stop_video` / `browser_video_chapter`）を足し、出力先を `repo/.controldeck/media` にした（`sandbox.opencode_config`。中に `.gitignore`（`*`）を置き、自動保存・差分・関門に混ざらない）。ui-verifier の指示に操作テストの録画の手順を、主の指示（`agent-notes.md`）に「画面を変えたら ui-verifier に頼める」を足した。
+- 一覧と配信（`maintenance/workspace_media.py`）: `.controldeck/media` と `test-results` の画像（png・jpg・webp）・動画（webm・mp4）。箱の AI が書ける場所なので、各段を dir_fd・O_NOFOLLOW で開き、symlink は一覧にも配信にも削除にも使わない。パスは一覧に出た相対パスだけ（`..`・絶対パス・置き場の外・他の拡張子は 404）。300MB 超は返さない。content-type は拡張子で決め、`nosniff`・`Content-Security-Policy: sandbox`・Range 対応。
+- API（持ち主だけ・terminal.use）: `GET /opencode/workspaces/{name}/media`・`.../media/file?path=`、`DELETE` の 1 件・作業場ぶん、`GET/DELETE /opencode/workspaces-media`（自分の全作業場）。削除はホストで dir_fd の unlink。監査 `workspace.media.delete`（件数と大きさ）。設定 `workspace_media_auto_delete`（既定は切）がオンなら、取り込み（PR）・マージの後に自動で消す。
+- チャット: ターンの終わり（`autosave_turn`）で、ターンの始めより新しい記録を最大 12 件 `meta.media` に。完了カードの下に縮小画像（押すと大きく）と `<video controls preload="metadata">`。消された記録は「消しました」。
+- 消す画面: 作業場の結果のカードの「画面の記録」（一覧・1 件ずつ・この作業場の全部を確認つき）と、設定 → 開発（作業場）の「画面の記録の容量」（合計・作業場ごと・一斉削除を確認つき・自動で消す設定）。
+- テスト: `test_workspace_media.py`（一覧・symlink・`..`・上限・Range・削除・持ち主・自動削除・meta.media・config）、`test_opencode_dev_tools.py`（caps）、E2E `assistant-workspace-media.spec.ts`（320・1280）。箱の中での実際の録画は未確認（本番で確かめる）。
+
 ## 2026-11-23 event loop が数秒止まる原因（同期処理）を loop の外へ
 
 - 診断（直近 24 時間）で、loop のスレッド上の重い同期処理が数秒ずつ画面を止めていた。①Add-on の health poll（`registry.list_addons` → `_load_path` が manifest を毎回 JSON 読み・pydantic 検証、最長 6.1 秒）②`recover_paused_workflows_once`（1 秒ごとの SQLAlchemy クエリ）③`runtime_environment`（`ldconfig`・`systemctl` の subprocess、`httpx.AsyncClient` 作成時の SSL コンテキスト生成、`data_dir` の mkdir）④llama の `runtime_status`（systemctl）と providers の `_candidates`・probe。

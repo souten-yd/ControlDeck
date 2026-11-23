@@ -1497,6 +1497,7 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                     logger.warning("OpenCode の変更を確かめられませんでした: %s", type(exc).__name__)
 
+            turn_started = {"at": time.time() - 1}     # この回の撮影だけをチャットに出す（時計の粒度の余裕 1 秒）
             turn_head = {"sha": ""}      # ターンの始めの HEAD（AI が自分でコミットしたかを見分ける）
 
             async def autosave_turn(status: str) -> None:
@@ -1504,7 +1505,22 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 保存に失敗しても回答の保存は止めない。ディスクの空きが下回れば会話へ 1 行出す。"""
                 if not server.workspace:
                     return
-                from app.maintenance import sandbox as _sandbox, workspaces
+                from app.maintenance import sandbox as _sandbox, workspace_media, workspaces
+
+                def media() -> dict | None:
+                    """この回に撮った画面・動画（ターンの始めより新しいもの）を最大 12 件。消されても回答は残る。"""
+                    try:
+                        found = workspace_media.media_list(_sandbox.load(server.workspace), since=turn_started["at"])
+                    except _sandbox.SandboxError:
+                        return None
+                    items = [{k: i[k] for k in ("path", "kind", "size")} for i in found["items"][:12]]
+                    return {"workspace": server.workspace, "items": items} if items else None
+
+                try:
+                    if found_media := await asyncio.to_thread(media):
+                        buf["meta"]["media"] = found_media
+                except Exception as exc:  # noqa: BLE001 - 記録の一覧で回答の保存を止めない
+                    logger.warning("作業場 %s の画面の記録を調べられませんでした: %s", server.workspace, type(exc).__name__)
 
                 def run() -> dict:
                     try:
