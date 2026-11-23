@@ -25,6 +25,14 @@ export function useSwipe<T extends HTMLElement>({ index, count, onIndex, mode, d
   const latest = useRef({ index, count, onIndex, mode, disabled });
   latest.current = { index, count, onIndex, mode, disabled };
 
+  /** 動かす要素。swap は ref の中の [data-swipe-move]（無ければ ref 自身）。当たりの範囲（ref）は動かさない（見出し・タブ・ボタンの列は動かない）。 */
+  const movers = (): HTMLElement[] => {
+    const el = ref.current;
+    if (!el) return [];
+    if (latest.current.mode === "track") return [el];
+    const m = Array.from(el.querySelectorAll<HTMLElement>("[data-swipe-move]"));
+    return m.length ? m : [el];
+  };
   const reduced = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const dur = (ms: number) => (reduced() ? 80 : ms);
   const width = () => {
@@ -50,22 +58,21 @@ export function useSwipe<T extends HTMLElement>({ index, count, onIndex, mode, d
 
   // swap: 切り替わったあと、新しい中身が反対側から入ってくる。
   useLayoutEffect(() => {
-    const el = ref.current;
     const from = enterFrom.current;
-    if (!el || from == null || mode !== "swap") return;
+    if (from == null || mode !== "swap") return;
     enterFrom.current = null;
     const w = width();
-    el.style.transform = ""; el.style.opacity = "";
-    const a = el.animate?.([{ transform: `translate3d(${from * w * 0.35}px,0,0)`, opacity: 0 }, { transform: "translate3d(0,0,0)", opacity: 1 }], { duration: dur(220), easing: "ease-out" });
-    if (a) a.onfinish = () => { el.style.willChange = ""; };
-    else el.style.willChange = "";
+    for (const el of movers()) {
+      el.style.transform = ""; el.style.opacity = "";
+      const a = el.animate?.([{ transform: `translate3d(${from * w * 0.35}px,0,0)`, opacity: 0 }, { transform: "translate3d(0,0,0)", opacity: 1 }], { duration: dur(220), easing: "ease-out" });
+      if (a) a.onfinish = () => { el.style.willChange = ""; }; else el.style.willChange = "";
+    }
   }, [index, mode]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const paint = (dx: number) => {
-    const el = ref.current;
-    if (!el) return;
-    if (latest.current.mode === "track") el.style.transform = `translate3d(${base() + dx}px,0,0)`;
-    else { el.style.transform = `translate3d(${dx}px,0,0)`; el.style.opacity = String(Math.max(0.4, 1 - Math.abs(dx) / width() * 0.6)); }
+    if (latest.current.mode === "track") { const el = ref.current; if (el) el.style.transform = `translate3d(${base() + dx}px,0,0)`; return; }
+    const o = String(Math.max(0.4, 1 - Math.abs(dx) / width() * 0.6));
+    for (const el of movers()) { el.style.transform = `translate3d(${dx}px,0,0)`; el.style.opacity = o; }
   };
 
   const finish = useCallback((commit: boolean, dx: number) => {
@@ -80,22 +87,26 @@ export function useSwipe<T extends HTMLElement>({ index, count, onIndex, mode, d
       if (commit) go(next); else el.style.transform = `translate3d(${-cur * w}px,0,0)`;
       return;
     }
+    const ms = movers();
     if (!commit) {
-      const a = el.animate?.([{ transform: `translate3d(${dx}px,0,0)`, opacity: el.style.opacity || "1" }, { transform: "translate3d(0,0,0)", opacity: 1 }], { duration: dur(200), easing: "ease-out" });
-      el.style.transform = ""; el.style.opacity = "";
-      if (a) a.onfinish = () => { el.style.willChange = ""; }; else el.style.willChange = "";
+      for (const m of ms) {
+        const a = m.animate?.([{ transform: `translate3d(${dx}px,0,0)`, opacity: m.style.opacity || "1" }, { transform: "translate3d(0,0,0)", opacity: 1 }], { duration: dur(200), easing: "ease-out" });
+        m.style.transform = ""; m.style.opacity = "";
+        if (a) a.onfinish = () => { m.style.willChange = ""; }; else m.style.willChange = "";
+      }
       return;
     }
     // 出て行く → 中身を替える → 反対側から入る（入る側は上の layout effect）
-    const out = el.animate?.([{ transform: `translate3d(${dx}px,0,0)`, opacity: el.style.opacity || "1" }, { transform: `translate3d(${-dir * w * 0.5}px,0,0)`, opacity: 0 }], { duration: dur(140), easing: "ease-out", fill: "forwards" });
+    const outs = ms.map((m) => m.animate?.([{ transform: `translate3d(${dx}px,0,0)`, opacity: m.style.opacity || "1" }, { transform: `translate3d(${-dir * w * 0.5}px,0,0)`, opacity: 0 }], { duration: dur(140), easing: "ease-out", fill: "forwards" }));
     const swap = () => {
       enterFrom.current = dir;
-      el.style.transform = "translate3d(0,0,0)"; el.style.opacity = "0";
-      out?.cancel();
+      for (const m of ms) { m.style.transform = "translate3d(0,0,0)"; m.style.opacity = "0"; }
+      outs.forEach((o) => o?.cancel());
       go(next);
-      window.setTimeout(() => { if (enterFrom.current != null) { enterFrom.current = null; el.style.transform = ""; el.style.opacity = ""; el.style.willChange = ""; } }, 400);
+      window.setTimeout(() => { if (enterFrom.current != null) { enterFrom.current = null; for (const m of ms) { m.style.transform = ""; m.style.opacity = ""; m.style.willChange = ""; } } }, 400);
     };
-    if (out) out.onfinish = swap; else swap();
+    const first = outs[0];
+    if (first) first.onfinish = swap; else swap();
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const onPointerDown = useCallback((e: PointerEvent<T>) => {
@@ -116,7 +127,7 @@ export function useSwipe<T extends HTMLElement>({ index, count, onIndex, mode, d
       d.lock = "x";
       const el = ref.current;
       if (el) {
-        el.style.willChange = "transform";
+        for (const m of movers()) m.style.willChange = "transform";
         if (latest.current.mode === "track") el.style.transition = "none";
         try { el.setPointerCapture(e.pointerId); } catch { /* 取れなくても動く */ }
       }

@@ -62,14 +62,20 @@ test("ニュース: ON AIR を左右に指でずらすとチャンネルが変�
   await expect(pressed(page, "ALL")).toHaveAttribute("aria-pressed", "true");
   const c = await center(page, "onair-swipe");
 
-  // 指に付いて動く: 途中（離さない）で要素がずれている
+  // 指に付いて動く: 途中（離さない）で ON AIR の中身（モニター・本文）だけがずれ、見出しの行・まとめ・CH のボタンの列は動かない
+  const still = ["news-bar", "digests"].map((id) => page.getByTestId(id));
+  const boxes = async () => Promise.all([...still.map((l) => l.boundingBox()), page.getByRole("group", { name: "チャンネルの切り替え" }).boundingBox()]);
+  const before = await boxes();
   await swipeAt(page, finger, "onair-swipe", +40, -30, { release: false });
-  const mid = await page.getByTestId("onair-swipe").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).m41);
-  expect(mid).toBeLessThan(-50);
+  const tx = (sel: string) => page.locator(sel).first().evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).m41);
+  expect(await tx(".nw-monitor")).toBeLessThan(-50);
+  expect(await tx(".nw-onair-copy")).toBeLessThan(-50);
+  expect(await boxes()).toEqual(before);
+  expect(await page.getByTestId("onair-swipe").evaluate((el) => el.style.transform)).toBe("");
   await page.screenshot({ path: `${SHOTS}/swipe-mid-390.png` });
   await finger.up();                                   // 70px は幅 342 の 25%（85px）未満・遅い → 元へ戻る
   await expect(pressed(page, "ALL")).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => page.getByTestId("onair-swipe").evaluate((el) => el.style.transform)).toBe("");
+  await expect.poll(() => page.locator(".nw-monitor").evaluate((el) => (el as HTMLElement).style.transform)).toBe("");
 
   // 大きくずらして離す → 次の CH 01、もう一度 → CH 02、右へずらす → CH 01 へ戻る
   await swipeAt(page, finger, "onair-swipe", +120, -120, { dt: 25 });
@@ -92,7 +98,7 @@ test("ニュース: ON AIR を左右に指でずらすとチャンネルが変�
   const c3 = await center(page, "onair-swipe");
   await finger.drag({ x: c3.x, y: c3.y + 100 }, { x: c3.x + 10, y: c3.y - 80 }, { dt: 25 });
   await expect(pressed(page, "ALL")).toHaveAttribute("aria-pressed", "true");
-  expect(await page.getByTestId("onair-swipe").evaluate((el) => el.style.transform)).toBe("");
+  expect(await page.locator(".nw-monitor").evaluate((el) => (el as HTMLElement).style.transform)).toBe("");
   // 画面の端（20px 以内）からはチャンネルではなくアプリのメニューを引く操作（チャンネルは変わらない）
   const c2 = await center(page, "onair-swipe");
   await finger.drag({ x: 6, y: c2.y }, { x: 306, y: c2.y }, { dt: 25 });

@@ -23,7 +23,7 @@ function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string)
   const link = item?.url ? { href: item.url, ...(external(item.url) ? { target: "_blank", rel: "noopener noreferrer" } : {}), onClick: () => onOpen(item.id) } : null;
   return (
     <section ref={swipe.ref} {...swipe.handlers} className="nw-onair nw-swipe" data-testid="onair-swipe" aria-label="ON AIR" style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
-      <div className="nw-onair-copy">
+      <div className="nw-onair-copy" data-swipe-move>
         <p className="nw-live"><i aria-hidden /> ON AIR{channel && <span className="nw-kicker" data-testid="onair-channel"> · {chNo(channel.number)} · {channel.name}</span>}</p>
         {item ? (
           <>
@@ -37,7 +37,7 @@ function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string)
         ) : <p className="nw-muted">このチャンネルにはまだ記事がありません。</p>}
       </div>
       <div className="nw-onair-monitor">
-        <div className="nw-monitor">
+        <div className="nw-monitor" data-swipe-move>
           <div className="nw-screen" role="img" aria-label={item ? `モニター: ${item.title}` : "モニター"}>
             {item ? <Media item={item} color={color} className="nw-screen-inner">{null}</Media> : <div className="nw-fallback">📺</div>}
             <div className="nw-screen-badge"><span className="nw-badge">ON AIR</span>{channel && <span className="nw-badge line" style={{ background: "rgba(0,0,0,.55)", color: "#fff" }}>{chNo(channel.number)}</span>}</div>

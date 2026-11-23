@@ -36,6 +36,7 @@
 @media (min-width: 900px) { .nw-onair { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); } }
 .nw-onair-copy { order: 2; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .nw-onair-monitor { order: 1; min-width: 0; }
+.nw-onair { overflow-x: clip; }
 @media (min-width: 900px) { .nw-onair-copy { order: 1; } .nw-onair-monitor { order: 2; } }
 .nw-onair-title { font-size: clamp(1.7rem, 4.4vw, var(--nw-head-size)); font-size: clamp(1.7rem, 4.4vw, calc(var(--nw-head-size) * 1.5)); }
 .nw-live { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: .18em; font-size: .78rem; }
