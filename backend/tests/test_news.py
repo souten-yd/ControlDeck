@@ -247,7 +247,7 @@ def test_one_failing_source_does_not_stop_others(monkeypatch):
         raise sources.SkippedSource("キーが未設定")
 
     monkeypatch.setattr(service, "SOURCE_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(sources, "build_sources", lambda cfg: [sources.Source("good", "Good", "news", good), sources.Source("boom", "Boom", "release", boom),
+    monkeypatch.setattr(sources, "build_sources", lambda cfg, channels=None: [sources.Source("good", "Good", "news", good), sources.Source("boom", "Boom", "release", boom),
                                                               sources.Source("slow", "Slow", "forum", slow), sources.Source("skip", "Skip", "reddit", skipped)])
     result = asyncio.run(service.refresh(force=True))
     assert result["started"] and result["new"] == 1 and result["failed"] == 2
@@ -268,7 +268,7 @@ def test_refresh_does_not_run_twice_at_once(monkeypatch):
         await asyncio.sleep(0.1)
         return []
 
-    monkeypatch.setattr(sources, "build_sources", lambda cfg: [sources.Source("s", "S", "news", slow)])
+    monkeypatch.setattr(sources, "build_sources", lambda cfg, channels=None: [sources.Source("s", "S", "news", slow)])
 
     async def both():
         return await asyncio.gather(service.refresh(force=True), service.refresh(force=True))
@@ -283,7 +283,7 @@ def test_refresh_api_runs_and_reports(admin_client, monkeypatch):
     async def good():
         return [_item("https://a.test/api", key="g")]
 
-    monkeypatch.setattr(sources, "build_sources", lambda cfg: [sources.Source("g", "G", "news", good)])
+    monkeypatch.setattr(sources, "build_sources", lambda cfg, channels=None: [sources.Source("g", "G", "news", good)])
     r = admin_client.post("/api/v1/news/refresh", headers=CSRF_HEADERS)
     assert r.status_code == 200 and r.json()["new"] == 1
 

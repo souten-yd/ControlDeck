@@ -23,6 +23,17 @@
 - ヘッダの札: 作業場を選んだ OpenCode は作業場のモデルの並び（`/opencode/workspaces` の各作業場に `model_chain` を追加）の先頭を「GLM-5.3（作業場）」と出す。
 - プランの回（変更ファイル 0）の完了カードに「レビューして」を出さない。
 - テスト: `test_dev_workspace_persist.py`・`test_opencode_workspace_persist.py`・`test_visual_review.py`、E2E `assistant-workspace-header-and-plan-card.spec.ts`（書いただけ。未実行）。
+## 2026-11-23 ニュースチャンネル（1.5 段目: 放送局のデザイン・チャンネル＝検索テーマ・詳細な設定）
+
+- 利用者「https://www.ozy.com/ こういうページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。設計は `docs/design-news-channel.md`。OZY のロゴ・文言・画像は使わず、色・書体の雰囲気・構成の型（モニターの枠の ON AIR・CH 切り替え・テロップ・「CH 0N · 名前」の札・3 列カード・大きな数字）だけを取り入れた。
+- チャンネル＝検索テーマ（`app/news/channels.py`、設定は `data_dir/news/channels.json`）: 名前・色・含める語・外す語・ソースの絞り込み（記事の種類）・言語・件数・検索するか。並び順＝CH 番号。既定は ローカル LLM／AMD・GPU／特許／開発ツール／使っているソフトの更新（kind=release）。所属は問い合わせ時の判定（外す語 → 種類 → 検索で取った記事（source_key `search:<id>:…`）→ 含める語）。
+- 検索の取得（`sources.search_sources`）: Google ニュースの検索 RSS（日本語 `hl=ja&gl=JP`・英語 `hl=en-US&gl=US`。配信元を題の末尾から分ける。既存の `http_get`＝安全な出口）・HN の Algolia の `search_by_date`・設定済み Discourse の `/search.json`・Reddit の `/search`（キーがあるときだけ）。日本語だけのチャンネルは HN・Reddit を引かない。取得の間隔とアーカイブの残す件数も全体の設定（`channels.json`）。
+- API: `GET/PUT /news/channels`（PUT は settings.manage）、`GET /news/items?channel=`、`GET /news/home`（ON AIR・テロップ・NOW/TODAY/THIS WEEK・チャンネルごとの上位・興味・話題の動き・数字を 1 回で）、`GET/PUT /news/prefs`（利用者ごと: 表示のデザインと好み）、`GET /news/export?format=json|csv&channel=`（CSV は式の無害化と BOM）。
+- 好み（`prefs.py`）: おすすめの強さ（0＝新しさだけ、0.5＝従来、1＝興味を 2 倍）・半減の日数・チャットの話題を使うか・ミュートの語とソース（一覧・ホームに効く。検索では探せる）・既読を薄く。
+- 画面（`pages/News.tsx`・`features/news/`・`styles/news.css`）: 放送（ON AIR のモニター＋CH 切り替え・テロップ（止められる）・NOW/TODAY/THIS WEEK・チャンネルの区画・興味と話題の動き・数字・アーカイブへ）／新着（チャンネル・種類で絞る）／アーカイブ。デザインは 放送局・紙面・コンパクト（CSS の変数で切り替え。外部フォントなし）。携帯は 1 列でモニターが先頭。動きを減らす設定と OS の設定でテロップ・点滅が止まる。
+- 設定: 設定に「ニュース」の節（チャンネル・ソース（設定 → 表示から移動）・表示のデザイン・好み・アーカイブと書き出し）。ニュースのページの「⚙ 設定」から開ける。
+- テスト: `test_news_channels.py`（所属判定・外す語・RSS 整形・検索のソース・/home の形・設定の検査・好みの強さ・ミュート・書き出し）、E2E `news.spec.ts`（放送局の各区画・CH 切り替え・デザイン変更・チャンネル追加・携帯 390/320・撮影）。
+
 ## 2026-11-23 ニュースの専門ページ（1 段目）
 
 - 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして。グラフィカルな感じで。検索機能が不足であれば拡張して」「有料は使わない」「ホームのニュースフィードとは別に専門ページ。過去のニュースはアーカイブにして、いつでも閲覧できるように」。画面は `/news`（メニューの新しいまとまり「情報」）、ホームに「ニュース」の小さなカード（おすすめ上位 5 件）、設定 → 表示に「ニュースのソース」。

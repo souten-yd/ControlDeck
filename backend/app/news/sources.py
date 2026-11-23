@@ -392,6 +392,97 @@ async def fetch_reddit(sub: str) -> list[dict]:
     return reddit_items(data, sub)
 
 
+# ---- チャンネルの語での検索（Google ニュースの RSS・HN・Discourse・Reddit） ----
+
+def _search_key(channel: dict, engine: str) -> str:
+    return f"search:{channel['id']}:{engine}"
+
+
+def gnews_items(raw: bytes, *, url: str, channel: dict, lang: str) -> list[dict]:
+    """Google ニュースの検索の RSS を記事にする。題は「見出し - 配信元」なので配信元を出どころへ分ける。
+    link は Google の転送の URL のことがある（そのまま http/https として扱う）。抜粋は見出しの重複になるので持たない。"""
+    out = []
+    for item in parse_feed(raw, url=url, name="Google ニュース"):
+        title, _, publisher = item["title"].rpartition(" - ")
+        if title and publisher and len(publisher) <= 60:
+            item["title"], item["source"] = title.strip(), publisher.strip()
+        item["source_key"] = _search_key(channel, f"gnews-{lang}")
+        item["summary"] = ""
+        item["image_url"] = None       # 画像は Google の縮小版で小さく、配信元の画像ではない
+        out.append(item)
+    return out
+
+
+async def fetch_gnews(channel: dict, lang: str) -> list[dict]:
+    from app.knowledge.sources import http_get
+    from app.news import channels as ch
+
+    url = ch.gnews_url(channel, lang)
+    raw = await asyncio.to_thread(http_get, url, pace=1.5, timeout=25)
+    try:
+        return gnews_items(raw, url=url, channel=channel, lang=lang)
+    except ET.ParseError as exc:
+        raise RuntimeError(f"フィードを読めません: {exc}") from exc
+
+
+def tag_search(items: list[dict], channel: dict, engine: str) -> list[dict]:
+    for item in items:
+        item["source_key"] = _search_key(channel, engine)
+    return items
+
+
+async def fetch_hn_search(channel: dict) -> list[dict]:
+    from app.news import channels as ch
+    from app.workflows import research_tools as rt
+
+    data = await rt._get_json("https://hn.algolia.com/api/v1/search_by_date",
+                              params={"query": " ".join(channel["include"][:ch.SEARCH_TERMS]), "tags": "story", "hitsPerPage": MAX_PER_SOURCE})
+    return tag_search(hn_items(data), channel, "hn")
+
+
+async def fetch_discourse_search(channel: dict, domain: str) -> list[dict]:
+    from app.news import channels as ch
+    from app.workflows import research_tools as rt
+
+    data = await rt._get_json(f"https://{domain}/search.json", params={"q": f"{' '.join(channel['include'][:ch.SEARCH_TERMS])} order:latest_topic"})
+    topics = (data.get("topics") if isinstance(data, dict) else None) or []
+    return tag_search(discourse_items({"topic_list": {"topics": topics}}, domain), channel, f"discourse-{domain}")
+
+
+async def fetch_reddit_search(channel: dict) -> list[dict]:
+    from app.news import channels as ch
+    from app.workflows import research_tools as rt
+
+    data = await rt._reddit_oauth("/search", {"q": " OR ".join(channel["include"][:ch.SEARCH_TERMS]), "sort": "new", "limit": MAX_PER_SOURCE, "type": "link"})
+    if data is None:
+        raise SkippedSource("Reddit のキーが未設定のため検索しません（設定 → API キー）")
+    return tag_search(reddit_items(data, "all"), channel, "reddit")
+
+
+def search_sources(cfg: dict, channels: list[dict], *, reddit_key: bool = False) -> list["Source"]:
+    """チャンネルの語で検索するソース。検索は channel.search が真で、含める語があるチャンネルだけ。"""
+    from app.news import channels as ch
+
+    on = cfg["enabled"]
+    out: list[Source] = []
+    for channel in channels:
+        if not channel.get("search") or not channel["include"]:
+            continue
+        name = channel["name"]
+        if on.get("news"):
+            for lang in ch.langs(channel):
+                out.append(Source(_search_key(channel, f"gnews-{lang}"), f"Google ニュース検索 {name}（{'日本語' if lang == 'ja' else '英語'}）",
+                                  "news", lambda c=channel, l=lang: fetch_gnews(c, l)))
+            if cfg.get("hackernews") and channel["lang"] != "ja":
+                out.append(Source(_search_key(channel, "hn"), f"HN 検索 {name}", "news", lambda c=channel: fetch_hn_search(c)))
+        if on.get("forum"):
+            out += [Source(_search_key(channel, f"discourse-{d}"), f"{d} 検索 {name}", "forum", lambda c=channel, d=d: fetch_discourse_search(c, d))
+                    for d in cfg["discourse"]]
+        if on.get("reddit") and reddit_key and channel["lang"] != "ja":
+            out.append(Source(_search_key(channel, "reddit"), f"Reddit 検索 {name}", "reddit", lambda c=channel: fetch_reddit_search(c)))
+    return out
+
+
 # ---- ソースの一覧 ----
 
 @dataclass(frozen=True)
@@ -402,7 +493,7 @@ class Source:
     fetch: Callable[[], Awaitable[list[dict]]]
 
 
-def build_sources(cfg: dict) -> list[Source]:
+def build_sources(cfg: dict, channels: list[dict] | None = None) -> list[Source]:
     on = cfg["enabled"]
     sources: list[Source] = []
     if on.get("release"):
@@ -418,4 +509,8 @@ def build_sources(cfg: dict) -> list[Source]:
         sources += [Source(f"discourse:{d}", d, "forum", lambda d=d: fetch_discourse(d)) for d in cfg["discourse"]]
     if on.get("reddit"):
         sources += [Source(f"reddit:{s}", f"r/{s}", "reddit", lambda s=s: fetch_reddit(s)) for s in cfg["reddit"]]
+    if channels:
+        from app.workflows import research_keys
+
+        sources += search_sources(cfg, channels, reddit_key=research_keys.reddit() is not None)
     return sources

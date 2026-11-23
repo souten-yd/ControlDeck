@@ -18,7 +18,8 @@ from sqlalchemy import and_, delete, exists, func, not_, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models import NewsAction, NewsItem
-from app.news import profile
+from app.news import channels as channels_mod
+from app.news import prefs, profile
 from app.news.sources import plain, safe_url
 from app.news.topics import extract_topics
 
@@ -116,7 +117,7 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
 
 
 def prune(db: Session, limit: int | None = None) -> int:
-    """MAX_ITEMS を超えた分を古い順に消す（star は残す）。消した件数。"""
+    """残す件数（設定のアーカイブ。既定 MAX_ITEMS）を超えた分を古い順に消す（star は残す）。消した件数。"""
     cap = MAX_ITEMS if limit is None else limit
     total = db.scalar(select(func.count(NewsItem.id))) or 0
     if total <= cap:
@@ -191,9 +192,21 @@ def action_exists(user_id: int, action: str):
     return exists().where(NewsAction.item_id == NewsItem.id, NewsAction.user_id == user_id, NewsAction.action == action)
 
 
+def mute_conds(user_id: int) -> list:
+    """設定のミュートの語（題・抜粋）とソース（出どころの名前）に合う記事を除く条件。"""
+    taste = prefs.taste(user_id)
+    conds = []
+    for term in taste["mute_terms"]:
+        like = f"%{_like_escape(term)}%"
+        conds.append(not_(or_(NewsItem.title.like(like, escape="\\"), NewsItem.summary.like(like, escape="\\"))))
+    if taste["mute_sources"]:
+        conds.append(NewsItem.source.not_in(taste["mute_sources"]))
+    return conds
+
+
 def filters(db: Session, user_id: int, *, kinds: list[str] | None = None, source: str = "", topic: str = "", q: str = "",
-            day: str = "") -> list:
-    conds = [visible(user_id)]
+            day: str = "", mute: bool = False) -> list:
+    conds = [visible(user_id)] + (mute_conds(user_id) if mute else [])
     if kinds:
         conds.append(NewsItem.kind.in_(kinds))
     if source:
@@ -230,17 +243,20 @@ def present(item: NewsItem, state: dict, score: float | None = None) -> dict:
 
 
 def list_items(db: Session, user_id: int, *, view: str = "latest", kinds: list[str] | None = None, source: str = "", topic: str = "",
-               q: str = "", day: str = "", before: str = "", limit: int = PAGE_DEFAULT, now: datetime | None = None) -> dict:
+               q: str = "", day: str = "", before: str = "", limit: int = PAGE_DEFAULT, now: datetime | None = None,
+               channel: dict | None = None) -> dict:
     """{"items": [...], "next": 次のページの印 | None}。view は recommended・latest・starred。
     おすすめ・新着は、隠した記事を除く（検索・日付で探すときは隠したものも出す）。"""
     limit = max(1, min(int(limit or PAGE_DEFAULT), PAGE_MAX))
     now = now or datetime.now(_UTC)
-    conds = filters(db, user_id, kinds=kinds, source=source, topic=topic, q=q, day=day)
     searching = bool(q.strip() or day)
+    conds = filters(db, user_id, kinds=kinds, source=source, topic=topic, q=q, day=day, mute=not searching)
     if view == "starred":
         conds.append(action_exists(user_id, "star"))
     elif not searching:
         conds.append(not_(action_exists(user_id, "hide")))
+    if channel is not None:
+        return _channel_page(db, user_id, channel, conds, view=view, before=before, limit=limit, now=now)
     if view == "recommended" and not searching:
         since = utc_naive(now - timedelta(days=RECOMMEND_WINDOW_DAYS))
         rows = db.scalars(select(NewsItem).where(*conds, NewsItem.published_at >= since)
@@ -264,6 +280,23 @@ def list_items(db: Session, user_id: int, *, view: str = "latest", kinds: list[s
     st = states(db, user_id, [r.id for r in rows])
     return {"items": [present(r, st[r.id]) for r in rows],
             "next": f"{iso(rows[-1].published_at)}|{rows[-1].id}" if more and rows else None}
+
+
+CHANNEL_CANDIDATES = 1500
+
+
+def _channel_page(db: Session, user_id: int, channel: dict, conds: list, *, view: str, before: str, limit: int, now: datetime) -> dict:
+    """チャンネルの記事。語の判定は Python で行うので、新しい順の候補（最大 1500 件）から選ぶ。ページは o:<位置>。"""
+    since = utc_naive(now - timedelta(days=RECOMMEND_WINDOW_DAYS * 2))
+    rows = [r for r in db.scalars(select(NewsItem).where(*conds, NewsItem.published_at >= since)
+                                  .order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(CHANNEL_CANDIDATES))
+            if channels_mod.matches(channel, kind=r.kind, source_key=r.source_key, title=r.title, summary=r.summary or "")]
+    st = states(db, user_id, [r.id for r in rows])
+    scored = profile.rank(db, user_id, rows, st, now) if view == "recommended" else [(r, None) for r in rows]
+    offset = int(before[2:]) if before.startswith("o:") and before[2:].isdigit() else 0
+    page = scored[offset:offset + limit]
+    return {"items": [dict(present(r, st[r.id], score), channel=channel["id"]) for r, score in page],
+            "next": f"o:{offset + limit}" if offset + limit < len(scored) else None}
 
 
 def set_action(db: Session, user_id: int, item_id: int, action: str, on: bool = True) -> dict | None:

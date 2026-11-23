@@ -12,7 +12,7 @@ const LISTS: { key: ListKey; label: string; placeholder: string }[] = [
 ];
 const input = "h-10 min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
-/** 設定 → 表示 → ニュースのソース。種類ごとのスイッチと、RSS・リポジトリ・Discourse・subreddit の追加と削除。
+/** 設定 → ニュース → ソース。種類ごとのスイッチと、RSS・リポジトリ・Discourse・subreddit の追加と削除。
  *  変更は settings.manage の人だけ（他の人は見るだけ）。形の検査はサーバー（app/news/sources.py）がする。 */
 export function NewsSourcesSettings() {
   const { data } = useNewsSources();

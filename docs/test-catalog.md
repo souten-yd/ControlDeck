@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 233 ファイル、2213 テスト（目的の未記入 93 ファイル）
-- E2E: 124 spec、255 テスト
+- backend: 234 ファイル、2232 テスト（目的の未記入 93 ファイル）
+- E2E: 124 spec、259 テスト
 
 ## backend（backend/tests）
 
@@ -1977,6 +1977,30 @@
 - `test_prune_keeps_starred_and_removes_oldest`
 - `test_migration_up_down_and_fts_triggers`
 
+### backend/tests/test_news_channels.py
+
+目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・ 設定の検査（チャンネル・表示・好み）・好みの強さがおすすめの順位に効く・ミュートの語とソース・書き出し（JSON・CSV の式の無害化）。
+
+- `test_matching_terms_exclude_kinds_and_search_origin`
+- `test_default_channels_are_valid_and_cover_the_examples`
+- `test_channels_validation_and_save_roundtrip`
+- `test_gnews_url_and_items`
+- `test_gnews_fetch_goes_through_safe_http_get`
+- `test_search_sources_follow_channels_languages_and_switches`
+- `test_hn_discourse_reddit_search_use_the_channel_terms`
+- `test_search_results_are_saved_and_belong_to_the_channel`
+- `test_home_shape_and_channel_assignment`
+- `test_numbers_count_reads_and_top_channel`
+- `test_home_and_channel_items_api`
+- `test_channels_api_permissions`
+- `test_prefs_defaults_validation_and_per_user_storage`
+- `test_taste_strength_changes_ranking` — 強さ 0 は新しさだけ、強さ 1 は興味が効いて古くても好みの記事が上へ来る。
+- `test_chat_toggle_and_half_life_reach_interests`
+- `test_mute_terms_and_sources_hide_from_lists`
+- `test_archive_keep_prunes_but_keeps_starred`
+- `test_export_json_csv_and_formula_guard`
+- `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
+
 ### backend/tests/test_notify_events.py
 
 目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」を有効にしたときだけ送る（既定は無効）。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
@@ -3906,10 +3930,14 @@
 
 ### frontend/e2e/news.spec.ts
 
-目的: ニュースの専門ページ（/news）。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 守ること: おすすめのカードが出る・種類のチップで絞れる・👍 で状態が変わる・アーカイブの日付から記事へ行ける・ 検索できる・ホームのカードから開ける・メニューに News が出る・320px でも崩れない（ライト・ダークの撮影を test-results/ に）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。グラフィカルな感じで」。 */
+目的: ニュースの専門ページ（/news）: 放送局のデザイン・チャンネル・設定。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 画像はテストの中で作る SVG の data URI（外部の画像の URL は使わない）。 守ること: ON AIR・チャンネルの切り替え・テロップ・NOW/TODAY/THIS WEEK・チャンネルの区画・数字が出る／チャンネルを押すと ON AIR が変わる／ 設定でデザインを変えると見た目が変わる／チャンネルを足せる／携帯（390・320px）で 1 列・横にあふれない／ 新着・アーカイブ・検索・👍・隠すは 1 段目のまま使える。撮影は test-results/ に残す。 根拠: 2026-11-23 利用者「OZY のようなページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。 */
 
-- ニュース: おすすめ・絞り込み・👍・アーカイブ・検索（${width}px）
-- ニュース: 記事が無いときの案内とホームのカード・メニュー
+- ニュース（放送局）: ON AIR・テロップ・区画・数字・チャンネルの切り替え（${width}px）
+- ニュース: 設定でデザイン・表示を変えると見た目が変わり、チャンネルを足せる
+- ニュース: コンパクト（見出しの一覧）は携帯でも 1 列で横にあふれない
+- ニュース: 動きを減らす設定でテロップが止まる
+- ニュース: 新着・チャンネル・絞り込み・👍・隠す・アーカイブ・検索（${width}px）
+- ニュース: ホームのカード・メニュー・設定の入口
 - ニュース: 記事が無いとき「今すぐ取得する」が出る
 
 ### frontend/e2e/notification-settings.spec.ts

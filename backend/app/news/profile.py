@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.config import data_dir
 from app.models import Conversation, NewsAction, NewsItem
+from app.news import prefs
 from app.news.topics import extract_topics
 
 HALF_LIFE_DAYS = 30.0
@@ -86,6 +87,8 @@ def set_muted(user_id: int, topic: str, muted: bool) -> list[str]:
 def interests(db: Session, user_id: int, now: datetime | None = None) -> dict:
     """{"topics": {語: 重み}, "sources": {source_key: 重み}, "source_names": {source_key: 表示名}, "chat_terms": 数}。"""
     now = now or datetime.now(_UTC)
+    taste = prefs.taste(user_id)
+    half_life = float(taste["half_life_days"])
     since = (now - timedelta(days=ACTION_LOOKBACK_DAYS)).replace(tzinfo=None)
     topics: dict[str, float] = defaultdict(float)
     sources: dict[str, float] = defaultdict(float)
@@ -97,7 +100,7 @@ def interests(db: Session, user_id: int, now: datetime | None = None) -> dict:
         weights = ACTION_WEIGHTS.get(action)
         if not weights or kind == "event":
             continue
-        scale = _decay(at, now, HALF_LIFE_DAYS)
+        scale = _decay(at, now, half_life)
         try:
             for name in json.loads(raw or "[]"):
                 if isinstance(name, str):
@@ -109,12 +112,13 @@ def interests(db: Session, user_id: int, now: datetime | None = None) -> dict:
     chats = 0
     # 秘密の会話は題も語も使わない（confidential_at が付いた会話は読まない）
     chat_since = (now - timedelta(days=CHAT_LOOKBACK_DAYS)).replace(tzinfo=None)
-    for title, updated in db.execute(select(Conversation.title, Conversation.updated_at).where(
-            Conversation.owner_user_id == user_id, Conversation.confidential_at.is_(None), Conversation.updated_at >= chat_since)):
+    chat_rows = db.execute(select(Conversation.title, Conversation.updated_at).where(
+        Conversation.owner_user_id == user_id, Conversation.confidential_at.is_(None), Conversation.updated_at >= chat_since)) if taste["use_chat"] else []
+    for title, updated in chat_rows:
         if not title or title == "新しい会話":
             continue
         for word in extract_topics(title):
-            topics[word] += CHAT_WEIGHT * _decay(updated, now, HALF_LIFE_DAYS)
+            topics[word] += CHAT_WEIGHT * _decay(updated, now, half_life)
             chats += 1
     for word in muted_topics(user_id):
         topics.pop(word, None)
@@ -132,19 +136,21 @@ def summary(db: Session, user_id: int, now: datetime | None = None, top: int = 2
             "muted": muted_topics(user_id), "chat_terms": found["chat_terms"]}
 
 
-def score(item: NewsItem, found: dict, state: dict, now: datetime) -> float:
-    """おすすめの点。found は interests() の結果、state はその人のこの記事への操作。"""
+def score(item: NewsItem, found: dict, state: dict, now: datetime, strength: float = 0.5) -> float:
+    """おすすめの点。found は interests() の結果、state はその人のこの記事への操作。
+    strength（0〜1。設定の「おすすめの強さ」）は興味の効き方: 0.5 で従来どおり、0 で新しさだけ、1 で興味を 2 倍に効かせる。"""
     try:
         names = [t for t in json.loads(item.topics or "[]") if isinstance(t, str)]
     except ValueError:
         names = []
     raw = sum(found["topics"].get(t, 0.0) for t in names) + found["sources"].get(item.source_key, 0.0)
-    interest = max(-0.8, min(raw / INTEREST_SCALE, 4.0))
+    interest = max(-0.8, min(raw / INTEREST_SCALE, 4.0)) * (strength * 2)
     value = _decay(item.published_at, now, RECENCY_HALF_LIFE_DAYS) * (1 + interest)
     return value * DISLIKED_FACTOR if state.get("dislike") else value
 
 
 def rank(db: Session, user_id: int, rows: list[NewsItem], states: dict[int, dict], now: datetime) -> list[tuple[NewsItem, float]]:
     found = interests(db, user_id, now)
-    scored = [(row, score(row, found, states.get(row.id, {}), now)) for row in rows]
+    strength = prefs.taste(user_id)["strength"]
+    scored = [(row, score(row, found, states.get(row.id, {}), now, strength)) for row in rows]
     return sorted(scored, key=lambda pair: (-pair[1], -pair[0].id))

@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.news import sources, store
+from app.news import channels, sources, store
 
 logger = logging.getLogger("control_deck.news.service")
 
@@ -52,7 +52,7 @@ def _save(items: list[dict]) -> dict:
 
     with SessionLocal() as db:
         result = store.upsert_items(db, items) if items else {"new": 0, "updated": 0}
-        result["pruned"] = store.prune(db)
+        result["pruned"] = store.prune(db, channels.load()["archive_keep"])
         return result
 
 
@@ -67,7 +67,7 @@ async def refresh(*, force: bool = False) -> dict:
         _last["started"] = time.monotonic()
         await asyncio.to_thread(store.ensure_fts)
         cfg = sources.load_config()
-        listing = sources.build_sources(cfg)
+        listing = sources.build_sources(cfg, channels.load()["channels"])
         gate = asyncio.Semaphore(CONCURRENCY)
         results = await asyncio.gather(*[_fetch_one(s, gate) for s in listing])
         items = [item for _, got, _ in results for item in got]
@@ -97,4 +97,4 @@ async def news_loop() -> None:
                     logger.info("ニュースを取得しました: 新着 %s 件・失敗 %s 件", result["new"], result["failed"])
             except Exception:  # noqa: BLE001 - 1 回の失敗で見張りを止めない
                 logger.exception("ニュースの取得に失敗しました")
-        await asyncio.sleep(INTERVAL_SECONDS)
+        await asyncio.sleep(channels.load()["interval_minutes"] * 60)

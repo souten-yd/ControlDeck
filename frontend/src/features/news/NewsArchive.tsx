@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { useNewsArchive } from "../../api/news";
-import { Skeleton } from "../../components/ui";
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -15,29 +14,24 @@ export function ArchiveDays({ onPick }: { onPick: (date: string) => void }) {
     }
     return [...groups.entries()];
   }, [data]);
-  if (isLoading) return <Skeleton className="h-40" />;
-  if (months.length === 0) return <p className="rounded-2xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-500 dark:border-zinc-700">まだアーカイブがありません。</p>;
+  if (isLoading) return <div className="nw-skel" />;
+  if (months.length === 0) return <p className="nw-empty">まだアーカイブがありません。</p>;
   return (
-    <div className="space-y-2">
+    <div>
       {months.map(([month, days], index) => (
-        <details key={month} open={index === 0} className="group rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 text-sm font-semibold">
-            <span>{month.replace("-", "年")}月</span>
-            <span className="text-xs font-normal text-zinc-500">{days.length} 日 · {days.reduce((sum, d) => sum + d.count, 0)} 件</span>
-          </summary>
-          <ul className="grid gap-1 border-t border-zinc-100 p-2 dark:border-zinc-800 sm:grid-cols-2">
+        <details key={month} open={index === 0} className="nw-archive-month">
+          <summary><span>{month.replace("-", "年")}月</span><span className="nw-muted" style={{ fontSize: ".75rem", fontWeight: 400 }}>{days.length} 日 · {days.reduce((sum, d) => sum + d.count, 0)} 件</span></summary>
+          <div className="nw-archive-days">
             {days.map((day) => {
               const d = new Date(`${day.date}T00:00:00`);
               return (
-                <li key={day.date}>
-                  <button type="button" onClick={() => onPick(day.date)} className="flex min-h-11 w-full items-center justify-between gap-2 rounded-xl px-3 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800">
-                    <span>{d.getMonth() + 1}月{d.getDate()}日（{WEEK[d.getDay()]}）</span>
-                    <span className="num text-xs text-zinc-500">{day.count} 件</span>
-                  </button>
-                </li>
+                <button key={day.date} type="button" onClick={() => onPick(day.date)}>
+                  <span>{d.getMonth() + 1}月{d.getDate()}日（{WEEK[d.getDay()]}）</span>
+                  <span className="nw-muted" style={{ fontSize: ".75rem" }}>{day.count} 件</span>
+                </button>
               );
             })}
-          </ul>
+          </div>
         </details>
       ))}
     </div>

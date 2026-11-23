@@ -10,9 +10,49 @@ export type NewsView = "recommended" | "latest" | "starred";
 export interface NewsItem {
   id: number; kind: NewsKind; source: string; source_key: string; title: string; url: string | null;
   summary: string; image_url: string | null; published_at: string; topics: string[]; state: NewsState; score?: number;
+  /** チャンネルの id（どのチャンネルに属するか。無ければ null） */
+  channel?: string | null;
 }
 export interface NewsPage { items: NewsItem[]; next: string | null }
-export interface NewsQuery { view: NewsView; kinds: string; q: string; date: string; topic: string; source: string }
+export interface NewsQuery { view: NewsView; kinds: string; q: string; date: string; topic: string; source: string; channel?: string }
+
+/** チャンネル＝検索テーマ（backend/app/news/channels.py）。 */
+export interface NewsChannel {
+  id: string; name: string; color: string; include: string[]; exclude: string[]; kinds: string[];
+  lang: "ja" | "en" | "both"; limit: number; search: boolean;
+}
+export interface ChannelsConfig { channels: NewsChannel[]; archive_keep: number; interval_minutes: number }
+export interface ChannelsResponse extends ChannelsConfig {
+  kinds: Record<string, string>; reddit_key: boolean; limits: { channels: number; terms: number; palette: string[] };
+}
+
+/** 表示のデザインと好み（利用者ごと）。 */
+export type NewsDesign = "broadcast" | "paper" | "compact";
+export interface NewsDisplay {
+  design: NewsDesign; accent: string; font_size: "s" | "m" | "l"; density: "relaxed" | "normal" | "tight"; images: boolean;
+  columns: "auto" | "1" | "2" | "3"; ticker: boolean; onair: boolean; numbers: boolean; reduce_motion: boolean;
+}
+export interface NewsTaste {
+  strength: number; use_chat: boolean; half_life_days: number; mute_terms: string[]; mute_sources: string[]; dim_read: boolean;
+}
+export interface NewsPrefs { display: NewsDisplay; taste: NewsTaste }
+export const DEFAULT_PREFS: NewsPrefs = {
+  display: { design: "broadcast", accent: "", font_size: "m", density: "normal", images: true, columns: "auto", ticker: true, onair: true, numbers: true, reduce_motion: false },
+  taste: { strength: 0.5, use_chat: true, half_life_days: 30, mute_terms: [], mute_sources: [], dim_read: true },
+};
+
+/** GET /news/home: 放送局の画面が 1 回で読み込む内容。 */
+export interface HomeSection { id: string; name: string; color: string; number: number; total: number; week: number; items: NewsItem[] }
+export interface NewsHome {
+  channels: { id: string; name: string; color: string; number: number }[];
+  onair: NewsItem | null;
+  ticker: { id: number; title: string; source: string; url: string | null; published_at: string }[];
+  now: NewsItem[]; today: NewsItem[]; week: NewsItem[];
+  sections: HomeSection[];
+  interest: NewsProfile; trends: NewsTrends;
+  numbers: { today: number; read_today: number; read_30d: number; top_channel: { id: string; name: string; color: string; reads: number } | null; top_topic: string | null; top_topic_count: number };
+  generated_at: string;
+}
 export interface ArchiveDays { days: { date: string; count: number }[]; total: number; starred: number }
 export interface NewsTrends {
   days: string[]; topics: { topic: string; counts: number[]; total: number }[]; sources: { source: string; count: number }[];
@@ -50,6 +90,7 @@ export function useNewsItems(query: NewsQuery, enabled = true) {
       if (query.date) p.set("date", query.date);
       if (query.topic) p.set("topic", query.topic);
       if (query.source) p.set("source", query.source);
+      if (query.channel) p.set("channel", query.channel);
       if (pageParam) p.set("before", pageParam);
       return api<NewsPage>(`/news/items?${p}`);
     },
@@ -64,6 +105,12 @@ export const useNewsTrends = () =>
   useQuery({ queryKey: [...key, "trends"], queryFn: () => api<NewsTrends>("/news/trends?days=14"), staleTime: 60_000 });
 export const useNewsProfile = () =>
   useQuery({ queryKey: [...key, "profile"], queryFn: () => api<NewsProfile>("/news/profile"), staleTime: 30_000 });
+export const useNewsHome = () =>
+  useQuery({ queryKey: [...key, "home"], queryFn: () => api<NewsHome>("/news/home"), staleTime: 30_000 });
+export const useNewsChannels = () =>
+  useQuery({ queryKey: [...key, "channels"], queryFn: () => api<ChannelsResponse>("/news/channels"), staleTime: 15_000 });
+export const useNewsPrefs = () =>
+  useQuery({ queryKey: [...key, "prefs"], queryFn: () => api<NewsPrefs>("/news/prefs"), staleTime: 60_000 });
 export const useNewsSources = () =>
   useQuery({ queryKey: [...key, "sources"], queryFn: () => api<NewsSources>("/news/sources"), staleTime: 15_000 });
 
@@ -78,10 +125,18 @@ export function useNewsAction() {
         ...old,
         pages: old.pages.map((page) => ({ ...page, items: page.items.map((item) => (item.id === id ? { ...item, state } : item)) })),
       });
+      qc.setQueryData<NewsHome>([...key, "home"], (old) => old && patchHome(old, id, state));
       qc.invalidateQueries({ queryKey: [...key, "profile"] });
       qc.invalidateQueries({ queryKey: [...key, "archive"] });
     },
   });
+}
+
+/** 画面の 1 件の状態だけ差し替える（区画を取り直さない）。 */
+function patchHome(home: NewsHome, id: number, state: NewsState): NewsHome {
+  const fix = (items: NewsItem[]) => items.map((item) => (item.id === id ? { ...item, state } : item));
+  return { ...home, onair: home.onair && home.onair.id === id ? { ...home.onair, state } : home.onair, now: fix(home.now), today: fix(home.today), week: fix(home.week),
+    sections: home.sections.map((section) => ({ ...section, items: fix(section.items) })) };
 }
 
 export function useRefreshNews() {
@@ -101,6 +156,28 @@ export function useMuteTopic() {
       qc.setQueryData([...key, "profile"], profile);
       qc.invalidateQueries({ queryKey: [...key, "items"] });
     },
+  });
+}
+
+export function useSaveChannels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (config: ChannelsConfig) => api<ChannelsConfig>("/news/channels", { method: "PUT", json: config }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: [...key, "channels"] }); qc.invalidateQueries({ queryKey: [...key, "home"] }); qc.invalidateQueries({ queryKey: [...key, "items"] }); },
+  });
+}
+
+/** 表示・好みの保存。保存前に画面へ反映する（見た目はすぐ変わる）。 */
+export function useSavePrefs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (prefs: NewsPrefs) => api<NewsPrefs>("/news/prefs", { method: "PUT", json: prefs }),
+    onMutate: (prefs) => { qc.setQueryData([...key, "prefs"], prefs); },
+    onSuccess: (saved, prefs) => {
+      qc.setQueryData([...key, "prefs"], saved);
+      if (prefs.taste !== undefined) { qc.invalidateQueries({ queryKey: [...key, "home"] }); qc.invalidateQueries({ queryKey: [...key, "items"] }); }
+    },
+    onError: () => qc.invalidateQueries({ queryKey: [...key, "prefs"] }),
   });
 }
 
