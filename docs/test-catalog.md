@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 232 ファイル、2191 テスト（目的の未記入 93 ファイル）
-- E2E: 123 spec、252 テスト
+- backend: 233 ファイル、2213 テスト（目的の未記入 93 ファイル）
+- E2E: 124 spec、255 テスト
 
 ## backend（backend/tests）
 
@@ -1950,6 +1950,33 @@
 - `test_think_normalize_and_config` — think の正規化と個別設定の保存/クリア。
 - `test_native_base_helper`
 
+### backend/tests/test_news.py
+
+目的: ニュースの専門ページ（app/news）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして」 「過去のニュースはアーカイブにして、いつでも閲覧できるようにすること」。 守ること: ソースの整形（外から来た文は平文・url は http/https だけ）・同じ url は更新だけ・1 つのソースの失敗が他を止めない・ event はその人宛てだけ（秘密の会話の題は伏せたまま）・好みの重み（秘密の会話は使わない）・50,000 件の切り捨てで star が残る・移行の up/down。
+
+- `test_topics_use_dictionary_proper_nouns_and_skip_versions`
+- `test_release_items_for_github_and_codeberg_skip_drafts_and_flatten_markdown`
+- `test_rss_and_atom_pick_images_and_drop_unsafe_links`
+- `test_hn_hf_discourse_reddit_shapes`
+- `test_reddit_is_fetched_only_with_keys`
+- `test_non_http_urls_and_image_urls_are_dropped`
+- `test_config_defaults_and_validation`
+- `test_sources_api_needs_settings_manage`
+- `test_same_url_updates_without_moving_published_at`
+- `test_one_failing_source_does_not_stop_others`
+- `test_refresh_does_not_run_twice_at_once`
+- `test_refresh_api_runs_and_reports`
+- `test_events_are_recorded_for_recipients_only_even_when_disabled_or_quiet`
+- `test_event_per_permission_and_secret_chat_title_stays_hidden`
+- `test_interest_weights_from_actions_and_chats_exclude_secret_chats`
+- `test_recommended_orders_by_recency_times_interest_and_hides_hidden`
+- `test_profile_api_and_mute`
+- `test_actions_toggle_and_exclusive_like_dislike`
+- `test_filters_pagination_search_archive_trends_starred`
+- `test_response_urls_are_http_or_internal_only`
+- `test_prune_keeps_starred_and_removes_oldest`
+- `test_migration_up_down_and_fts_triggers`
+
 ### backend/tests/test_notify_events.py
 
 目的: 通知の入口（種類の有効・無効・お休みモード）と、各検出の所からの呼び出し。 目的: - 種類を切った人には送らない。既定（chat_done は無効）どおりに動く。 - お休みモード（既定 22:00〜07:00）の間は送らない。日またぎ・境界（22:00 は休み、07:00 は送る）・無効・開始=終了。 - 緊急の監視の警報（urgent）は、お休み中でも「緊急は送る」を有効にしたときだけ送る（既定は無効）。 - 設定の API は本人の分だけ読み書きできる（他人の行に触れない）。不正な種類・時刻は 422。 - 会話の回の終わり（コード開発・質問待ち・失敗・調査・長い会話）と、起動時の中断・待ちの通知が入口へ届く。 - 秘密の会話は、題も要約も載せない。要約にパス・鍵・URL を載せない。 - 実際の Web Push は外へ送らない（webpush.send_in_background / send_to を差し替える）。 根拠: 2026-11-23 利用者の依頼（お休みモード・通知の種類の拡充）。Push は Apple・Google の push service を通るため、秘密を載せない。
@@ -3876,6 +3903,14 @@
 目的: 設定 → 表示の「メニューの表示」: メニュー（PC のサイドバー・携帯のドロワー）の項目を 1 つずつ隠せる。 隠した項目は「よく使う」からも消える。Settings は隠せない（隠すと戻れない）。選択は端末に残る。 Add-on の項目も同じ一覧から選べる（effective addons を差し替えて確かめる）。 根拠: 2026-11-23 利用者「設定で表示っていう項目があれば、そこの中にメインメニューの項目を任意に 表示、非表示の選択ができるようにしてほしい。新しく導入されたプラグインや今後導入される機能、今開発中の パテントなども含めて…汎用的に開発すること」。 */
 
 - メニューの項目を隠せる（${width}px）
+
+### frontend/e2e/news.spec.ts
+
+目的: ニュースの専門ページ（/news）。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 守ること: おすすめのカードが出る・種類のチップで絞れる・👍 で状態が変わる・アーカイブの日付から記事へ行ける・ 検索できる・ホームのカードから開ける・メニューに News が出る・320px でも崩れない（ライト・ダークの撮影を test-results/ に）。 根拠: 2026-11-23 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。グラフィカルな感じで」。 */
+
+- ニュース: おすすめ・絞り込み・👍・アーカイブ・検索（${width}px）
+- ニュース: 記事が無いときの案内とホームのカード・メニュー
+- ニュース: 記事が無いとき「今すぐ取得する」が出る
 
 ### frontend/e2e/notification-settings.spec.ts
 

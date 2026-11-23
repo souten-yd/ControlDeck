@@ -23,6 +23,15 @@
 - ヘッダの札: 作業場を選んだ OpenCode は作業場のモデルの並び（`/opencode/workspaces` の各作業場に `model_chain` を追加）の先頭を「GLM-5.3（作業場）」と出す。
 - プランの回（変更ファイル 0）の完了カードに「レビューして」を出さない。
 - テスト: `test_dev_workspace_persist.py`・`test_opencode_workspace_persist.py`・`test_visual_review.py`、E2E `assistant-workspace-header-and-plan-card.spec.ts`（書いただけ。未実行）。
+## 2026-11-23 ニュースの専門ページ（1 段目）
+
+- 利用者「ニュース機能もつけて…私専門のニュースチャンネルを開設して。よく開くニュースとか傾向を把握してカスタマイズして。グラフィカルな感じで。検索機能が不足であれば拡張して」「有料は使わない」「ホームのニュースフィードとは別に専門ページ。過去のニュースはアーカイブにして、いつでも閲覧できるように」。画面は `/news`（メニューの新しいまとまり「情報」）、ホームに「ニュース」の小さなカード（おすすめ上位 5 件）、設定 → 表示に「ニュースのソース」。
+- DB（Alembic `a3c5e7f9b1d2`）: `news_items`（kind・source・source_key・title・url 一意・summary・image_url・published_at・fetched_at・topics・user_id＝event の宛先だけ）、`news_actions`（open・like・dislike・hide・star。1 人・1 記事・1 種類で 1 行）、SQLite の FTS5（trigram）の仮想表とトリガー（`app/news/fts.py`。日本語は 3 文字以上。短い語・FTS5 が無い DB は LIKE）。
+- 取得（`app/news/`）: ソースは `data_dir/news/sources.json`（既定: GitHub Release 4・Codeberg radiance・GIGAZINE と Phoronix の RSS・Hacker News 上位・Hugging Face の話題の GGUF（90 日以内）・Discourse 2 つ・r/LocalLLaMA（Reddit のキーがあるときだけ））。通信は既存の `research_tools`（guarded_client）・`knowledge/sources.http_get`・`hf_search` を使い回し、新しい生の httpx は無い。30 分ごとに見張りが取り、ソースごとに 45 秒で打ち切り・失敗は記録して他を止めない。同じ url は更新だけ（published_at は動かさない）、同時に 1 回だけ（`POST /news/refresh` は 30 秒の間隔）、外から来た文は平文・url と画像は http/https だけ。
+- 出来事: `notify_event` が、種類の有効・お休みに関係なく宛先の人ごとに kind=event の行を残す（伏せた文のまま。秘密の会話は「秘密の会話」）。その人にしか見えない。
+- 保存期間: 消さない。50,000 件を超えたら古い順（star は残す）。
+- 好み: 開いた・👍・☆ は正、👎・隠すは負（30 日で半減）、チャットの題（直近 30 日・秘密の会話を除く・本人のもの）を少し足す。おすすめの点 = 3 日で半減する新しさ ×（1 + 興味）。語ごとに外せる（`muted.json`）。`GET /news/profile` は画面の「あなたの興味」。
+- テスト: `test_news.py`（ソースの整形・設定の検査・失敗の分離・event の宛先・好みの重み・アーカイブ／検索／trends・50,000 件の切り捨て・移行の up/down）、E2E `news.spec.ts`（書いただけ。未実行）。2 段目（日刊・週刊の AI のまとめ、Bluesky・Mastodon）は未着手。
 
 ## 2026-11-23 調査の道具に Reddit の API・Discourse・Stack Exchange の入口
 

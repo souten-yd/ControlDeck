@@ -9,6 +9,7 @@ import {
   IconGrid,
   IconHome,
   IconLogs,
+  IconNews,
   IconPackage,
   IconPatent,
   IconSettings,
@@ -17,11 +18,12 @@ import {
 import { PRODUCT_NAMES } from "./constants/productNames";
 
 /** ドロワー／サイドバーでのまとまり。並びは NAV_GROUPS の順。 */
-export type NavigationGroup = "dev" | "ai" | "system";
+export type NavigationGroup = "dev" | "ai" | "info" | "system";
 
 export const NAV_GROUPS: { id: NavigationGroup; label: string }[] = [
   { id: "dev", label: "開発" },
   { id: "ai", label: "AI" },
+  { id: "info", label: "情報" },
   { id: "system", label: "管理" },
 ];
 
@@ -57,6 +59,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
   { to: "/patents", group: "ai", label: "Patent", icon: IconPatent, permission: "workflows.run" },
   { to: "/models", group: "ai", label: "Models", icon: IconChip, permission: "workflows.run" },
+  { to: "/news", group: "info", label: "News", icon: IconNews },
   { to: "/opencode-v2", group: "dev", label: "OpenCode", icon: IconCode, feature: "opencode-v2" },
   { to: "/diagnostics", group: "system", label: "Diagnostics", icon: IconPulse, permission: "settings.manage" },
   { to: "/logs", group: "system", label: "Logs", icon: IconLogs },

@@ -11,6 +11,7 @@ import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
 import { LlmHomeCard } from "../features/models/LlmHomeCard";
+import { NewsHomeCard } from "../features/news/NewsHomeCard";
 
 interface HistorySample {
   timestamp: string;
@@ -250,6 +251,9 @@ export default function DashboardPage() {
       {/* LLM の利用状況（ローカル + OpenRouter）。Models 画面へ行かなくても、
           いま動いているもの・速さ・使った額が分かるようにする。どちらも無ければ出さない。 */}
       <LlmHomeCard />
+
+      {/* ニュース（おすすめの上位 5 件）。専門のページは /news */}
+      <NewsHomeCard />
 
       {/* 実行中アプリ */}
       <section>

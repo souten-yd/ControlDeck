@@ -168,6 +168,17 @@ def _users_with_permission(permission: str) -> list[int]:
         return [user.id for user in users if permission in user_permissions(user)]
 
 
+def _record_news(kind: str, *, title: str, body: str, url: str, user_ids: list[int] | None, permission: str | None) -> None:
+    """ニュースの専門ページ（app/news）の「出来事」へ残す。種類の有効・お休みに関係なく、宛先の人ごとに記録する。
+    title・body は呼び出し側が伏せた後の文なので、そのまま入れてよい。失敗しても通知を止めない。"""
+    try:
+        from app.news.store import record_event
+
+        record_event(kind, title=title, body=body, url=url, user_ids=user_ids, permission=permission)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ニュースの出来事を記録できません (%s): %s", kind, exc)
+
+
 _last_sent: dict[tuple[str, str], float] = {}
 
 
@@ -188,6 +199,7 @@ def notify_event(kind: str, *, title: str, body: str = "", url: str = "/", tag: 
             if now - _last_sent.get((kind, tag), -1e12) < cooldown:
                 return none
             _last_sent[(kind, tag)] = now
+        _record_news(kind, title=title, body=body, url=url, user_ids=user_ids, permission=permission)
         candidates = user_ids if user_ids is not None else _users_with_permission(permission or "")
         now_local = local_now()
         allowed = []

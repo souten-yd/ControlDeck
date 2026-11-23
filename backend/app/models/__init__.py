@@ -860,6 +860,41 @@ class PasskeyChallenge(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class NewsItem(Base):
+    """ニュースの専門ページの記事（アーカイブ。ふだんは消さない）。同じ url は 1 行（更新だけ）。
+    kind は release・news・model・event・forum・reddit（後から social などを足せる）。
+    user_id は event のときだけ宛先（他は NULL＝全員）。全文検索の仮想表 news_items_fts は app/news/fts.py。"""
+
+    __tablename__ = "news_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    source: Mapped[str] = mapped_column(String(120))
+    source_key: Mapped[str] = mapped_column(String(200), index=True)
+    title: Mapped[str] = mapped_column(String(400))
+    url: Mapped[str] = mapped_column(String(1000), unique=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    image_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # 話題の語の JSON 配列（日本語をそのまま持つので LIKE で絞れる。ensure_ascii=False で書く）
+    topics: Mapped[str] = mapped_column(Text, default="[]")
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+
+
+class NewsAction(Base):
+    """利用者が記事にした操作（open・like・dislike・hide・star）。好みの計算の元。1 人・1 記事・1 種類で 1 行（時刻だけ更新）。"""
+
+    __tablename__ = "news_actions"
+    __table_args__ = (UniqueConstraint("user_id", "item_id", "action", name="uq_news_action"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("news_items.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(16))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 @event.listens_for(Conversation, "before_update")
 def _confidential_is_one_way(mapper, connection, target) -> None:  # noqa: ARG001
     """秘密の印は外せない。どの経路（API・将来の変更）からでも、付いた印を消す更新は通さない。"""
