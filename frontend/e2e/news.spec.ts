@@ -497,9 +497,9 @@ for (const design of HOME_DESIGNS) {
     const home = page.getByRole("region", { name: "ニュース" });
     await expect(home).toHaveAttribute("data-design", design);
     await expect(home.getByRole("link", { name: /Qwen の新しいモデル/ })).toBeVisible();
-    // 先頭に今朝のまとめ（本文の最初の文。出典の [1] は消す）。押すと /news
+    // 先頭に今朝のまとめ（「## 今日の 3 行」を優先して、3 行を「・」でつなぐ。出典の [1] は消す）。押すと /news
     const digest = home.getByTestId("home-digest");
-    await expect(digest).toContainText("Qwen の新モデルが公開され、GGUF 版も同時に配布された。");
+    await expect(digest).toContainText("Qwen の新モデルが出た。 ・ llama.cpp が速くなった。 ・ ローカル LLM の更新が続く。");
     await expect(digest).not.toContainText("[1]");
     // 表示のデザインの色（根の背景）がニュースのページと同じ変数から来ている
     const bgColor = await home.evaluate((el) => getComputedStyle(el).backgroundColor);
