@@ -9,14 +9,15 @@ import { sizeText, timeText } from "./ImagegenTiers";
 const label = "block text-xs text-zinc-500";
 
 /** モデルの選択肢。ローカル → クラウドの無料（印つき）→ クラウドの有料（警告つき。2026-11-23 利用者「有料モデルをニュースに使っても良い」）。 */
-function ModelSelect({ name, value, options, disabled, onChange }: { name: string; value: string; options: LlmOptions | undefined; disabled: boolean; onChange: (v: string) => void }) {
-  const known = [...(options?.local ?? []).map((m) => m.id), ...(options?.cloud ?? []).map((m) => m.id)];
+function ModelSelect({ name, value, options, disabled, onChange, cpu }: { name: string; value: string; options: LlmOptions | undefined; disabled: boolean; onChange: (v: string) => void; cpu?: { id: string; label: string } }) {
+  const known = [...(cpu ? [cpu.id] : []), ...(options?.local ?? []).map((m) => m.id), ...(options?.cloud ?? []).map((m) => m.id)];
   const free = (options?.cloud ?? []).filter((m) => m.free);
   const paid = (options?.cloud ?? []).filter((m) => !m.free);
   return (
     <select aria-label={name} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} className={`${field} mt-1 w-full`}>
       {!known.includes(value) && <option value={value}>{value}（一覧にありません）</option>}
-      <optgroup label="ローカル">{(options?.local ?? [{ id: "auto", name: "auto" }]).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>
+      {cpu && <optgroup label="CPU（GPU を使わない）"><option value={cpu.id}>{cpu.label}</option></optgroup>}
+      <optgroup label={cpu ? "ローカル（GPU）" : "ローカル"}>{(options?.local ?? [{ id: "auto", name: "auto" }]).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>
       {free.length > 0 && <optgroup label="クラウド（無料）">{free.map((m) => <option key={m.id} value={m.id}>無料 · {m.name}</option>)}</optgroup>}
       {paid.length > 0 && <optgroup label="クラウド（有料）">{paid.map((m) => <option key={m.id} value={m.id}>有料 · {m.name}</option>)}</optgroup>}
     </select>
@@ -73,6 +74,8 @@ export function NewsRuntimeCards() {
   });
   const saveButton = canEdit && <button type="button" onClick={commit} disabled={!dirty || save.isPending || saveChannels.isPending} className={primary}>保存</button>;
   const dis = !canEdit;
+  const cpu = data.cpu_llm;
+  const prepCpu = (draft.llm.prep_model ?? "").startsWith("cpu:");
   return (
     <>
       <Card id="news-update" title="更新のタイミング" hint={`ニュースのページの取得・ホームのフィード・日刊と週刊のまとめを、別々に決めます。時刻はサーバーの地域の時刻です。${canEdit ? "" : "変更には設定の管理権限が要ります。"}`}>
@@ -132,15 +135,32 @@ export function NewsRuntimeCards() {
           {(draft.llm.digest_focus ?? "").length > 0 && <span className="tabular-nums"> {draft.llm.digest_focus.length} / 1000 文字</span>}
         </p>
         <div className="space-y-2">
-          <Toggle label="記事の下ごしらえ（日本語の概要・画像の描写・話題の語）" hint="新しく取った記事を 20 件ずつ 1 回の呼び出しで、日本語の 1〜2 文の概要（英語なら訳）・画像生成のための英語の描写・話題の語にします（題は訳しません）。変換が終わるまでは元の題と抜粋を出します。モデルは下の一言要約のモデルです。" value={draft.llm.prep_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, prep_enabled: on } })} />
+          <Toggle label="記事の下ごしらえ（日本語の概要・画像の描写・話題の語）" hint="新しく取った記事を、日本語の 1〜2 文の概要（英語なら訳）・画像生成のための英語の描写・話題の語にします（題は訳しません）。変換が終わるまでは元の題と抜粋を出します。既定は CPU の小さな LLM（Gemma 4 E2B）で、GPU を使わず 10 件ずつ処理します。" value={draft.llm.prep_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, prep_enabled: on } })} />
           {draft.llm.prep_enabled && <>
-            <label className={label}>一言要約・下ごしらえのモデル
-              <ModelSelect name="下ごしらえのモデル" value={draft.llm.gist_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, gist_model: v } })} /></label>
-            <ModelNote model={draft.llm.gist_model} options={options.data} />
-            <label className={label}>1 回の取得で下ごしらえする上限（件。20 件で 1 回の呼び出し）
+            <label className={label}>使うモデル
+              <ModelSelect name="下ごしらえのモデル" value={draft.llm.prep_model ?? "auto"} options={options.data} disabled={dis} cpu={cpu ? { id: cpu.id, label: cpu.label } : undefined}
+                onChange={(v) => set({ llm: { ...draft.llm, prep_model: v } })} /></label>
+            {prepCpu ? (
+              <div className="mt-1 space-y-1 text-[11px]" data-testid="prep-cpu-note">
+                <p className="text-zinc-500">この PC の CPU と RAM だけで動かします（GPU は使いません。下ごしらえの間だけ起動し、終わったら止めます）。記事の題・抜粋は外へ送りません。</p>
+                {cpu && !cpu.installed && (
+                  <p role="alert" data-testid="prep-cpu-missing" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-amber-800 dark:text-amber-300">
+                    CPU の LLM のモデルが未導入です。このままでは下ごしらえをしません。機能と拡張の「ニュースの下ごしらえ（CPU の LLM）」を導入してください（{sizeText(cpu.megabytes)}）。{" "}
+                    <Link to="/settings/features#feature-news-cpu-llm" className="font-semibold underline">機能と拡張を開く</Link>
+                  </p>
+                )}
+                {cpu && cpu.installed && !cpu.runtime_ready && (
+                  <p role="alert" data-testid="prep-cpu-runtime" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-amber-800 dark:text-amber-300">
+                    llama.cpp のランタイムが未導入です。機能と拡張の「llama.cpp ランタイム」を導入してください。{" "}
+                    <Link to="/settings/features#feature-llama-cpp" className="font-semibold underline">機能と拡張を開く</Link>
+                  </p>
+                )}
+              </div>
+            ) : <ModelNote model={draft.llm.prep_model ?? "auto"} options={options.data} />}
+            <label className={label}>1 回の取得で下ごしらえする上限（件。{prepCpu ? "10" : "20"} 件で 1 回の呼び出し）
               <input type="number" min={1} max={200} aria-label="下ごしらえの上限" data-testid="prep-max" value={draft.llm.prep_max_per_run ?? 100} disabled={dis}
                 onChange={(e) => set({ llm: { ...draft.llm, prep_max_per_run: Math.max(1, Math.min(200, Number(e.target.value) || 1)) } })} className={`${field} mt-1 w-28`} /></label>
-            <p className="text-[11px] text-zinc-500 tabular-nums" data-testid="prep-calls">今日の下ごしらえの呼び出し {data?.prep_calls_today ?? 0} 回（OpenRouter の無料のモデルは 1 日 50 回までが目安です）</p>
+            <p className="text-[11px] text-zinc-500 tabular-nums" data-testid="prep-calls">今日の下ごしらえの呼び出し {data?.prep_calls_today ?? 0} 回{prepCpu ? "" : "（OpenRouter の無料のモデルは 1 日 50 回までが目安です）"}</p>
           </>}
         </div>
         <div className="space-y-2">

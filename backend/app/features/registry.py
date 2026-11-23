@@ -140,6 +140,16 @@ FEATURES: dict[str, dict] = {
         "route_gated": False,
         "summary": "画像の無いニュース記事に、見出しからイメージ画像を作る。CPU と RAM だけで動き、作り終えたらすぐ解放する（GPU は使わない）。精度は小・中・大から選べる（設定 → ニュース）。導入で小のモデル約 1.7GB も取得し、中（約 1.0GB）・大（約 4.2GB）は詳細から足す",
     },
+    # ニュースの下ごしらえ（日本語の概要・画像の描写・話題の語）を CPU と RAM だけで行う小さな LLM（Gemma 4 E2B の Q4_0。約 2.84GB）。
+    # 実行は本番の llama.cpp（GPU を使わない起動）。モデルの取得・状態・削除だけをここで持つ（app/news/cpu_llm.py）。
+    "news-cpu-llm": {
+        "name": "ニュースの下ごしらえ（CPU の LLM）",
+        "kind": "cpu-llm",
+        "route_gated": False,
+        "requires": "llama-cpp",
+        "repo": "ggml-org/gemma-4-E2B-it-GGUF",
+        "summary": "ニュース記事の日本語の概要・画像の描写・話題の語を、CPU と RAM だけで作る小さな LLM（Gemma 4 E2B）。GPU は使わず、下ごしらえの間だけ起動して終わったら止める（約 4GB の RAM・1 件約 7 秒）。導入でモデル約 2.84GB を取得する。実行には llama.cpp ランタイムが要る",
+    },
     "web-browser": {
         "name": "Web 収集のブラウザ（この PC の Chrome）",
         "kind": "system-browser",
@@ -320,6 +330,10 @@ def _feature_root(feature_id: str) -> Path:
 def _managed_executable(feature_id: str) -> Path:
     spec = FEATURES[_known(feature_id)]
     root = _feature_root(feature_id)
+    if spec["kind"] == "cpu-llm":
+        from app.news import cpu_llm
+
+        return cpu_llm.model_path()
     if spec["kind"] == "gpu-runtime":
         # 実体は data/runtimes/ 配下。features root は使わない。
         from app.models_mgmt import llama, strata, maya_s
@@ -399,6 +413,10 @@ def _python_lib_version(spec: dict, python: Path) -> str:
 
 def executable(feature_id: str) -> Path | None:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "cpu-llm":
+        from app.news import cpu_llm
+
+        return cpu_llm.model_path() if cpu_llm.model_ready() else None   # モデルのファイル（置いてあれば導入済み）
     if spec["kind"] in ("playwright-browsers", "system-packages"):
         return None   # 実行ファイルを持たない（置き場・OS のパッケージを状態で見る）
     if spec["kind"] == "speech-engine":
@@ -539,8 +557,23 @@ def _system_packages_status(feature_id: str, spec: dict) -> dict:
     )
 
 
+def _cpu_llm_status(feature_id: str, spec: dict) -> dict:
+    from app.news import cpu_llm
+
+    installed = cpu_llm.model_ready()
+    runtime = cpu_llm.runtime_ready()
+    return _plain_status(
+        feature_id, spec, installed=installed, available=True, managed=False, requires=spec.get("requires", ""),
+        requires_installed=runtime, version=cpu_llm.FILENAME if installed else "",
+        error="" if runtime or not installed else "llama.cpp ランタイムが未導入のため、下ごしらえに使えません",
+        executable=str(cpu_llm.model_path()) if installed else "", cpu_llm=cpu_llm.info(),
+    )
+
+
 def status(feature_id: str) -> dict:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "cpu-llm":
+        return _cpu_llm_status(feature_id, spec)
     if spec["kind"] == "gpu-runtime":
         return _gpu_runtime_status(feature_id, spec)
     if spec["kind"] == "speech-engine":
@@ -781,6 +814,15 @@ def install(feature_id: str) -> dict:
         raise FeatureError(f"{name}は sudo が要るのでボタンでは入れられません。ターミナルで {system_packages.guide(feature_id)}")
     if FEATURES[feature_id]["kind"] == "playwright-browsers":
         return _install_playwright_browsers()
+    if FEATURES[feature_id]["kind"] == "cpu-llm":
+        from app.news import cpu_llm
+
+        try:
+            cpu_llm.download_model()
+        except cpu_llm.CpuLlmUnavailable as exc:
+            raise FeatureError(f"{name}の導入に失敗しました: {exc}") from exc
+        invalidate_feature_cache()
+        return status(feature_id)
     required = FEATURES[feature_id].get("requires")
     if required and not status(required)["installed"]:
         raise FeatureError(f"先に{FEATURES[required]['name']}を導入してください")
@@ -888,6 +930,8 @@ def update(feature_id: str) -> dict:
         raise FeatureError(f"{name}の更新は非同期ジョブから実行してください")
     if FEATURES[feature_id]["kind"] == "speech-engine":
         raise FeatureError(f"{name}は開発が終了しているため更新はありません（保管庫の版を使います）")
+    if FEATURES[feature_id]["kind"] == "cpu-llm":
+        raise FeatureError(f"{name}は版を固定しています（更新はありません）")
     if FEATURES[feature_id]["kind"] == "playwright-browsers":
         previous = status(feature_id)["version"]
         return {**_install_playwright_browsers(), "previous_version": previous}
@@ -912,7 +956,7 @@ def update(feature_id: str) -> dict:
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm"):
         # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
         return current
     if FEATURES[feature_id]["kind"] == "release-bundle" and current["installed"]:
@@ -1042,7 +1086,7 @@ def restore_enabled_services() -> None:
 
 def disable(feature_id: str) -> dict:
     _known(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm"):
         return status(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
@@ -1062,6 +1106,12 @@ def uninstall(feature_id: str) -> dict:
         # ブラウザの置き場は E2E・箱・Workflow が共有で使う。OS のパッケージは ControlDeck の管理ではない
         raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません")
     disable(feature_id)
+    if FEATURES[_known(feature_id)]["kind"] == "cpu-llm":
+        from app.news import cpu_llm
+
+        cpu_llm.remove_model()     # モデルのファイルだけ（llama.cpp は消さない）
+        invalidate_feature_cache()
+        return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "speech-engine":
         from app.speech import supertonic
 

@@ -18,6 +18,7 @@ import threading
 from datetime import datetime, timedelta
 
 from app.config import data_dir
+from app.news.cpu_llm import MODEL_ID as CPU_MODEL_ID
 from app.news.sources import ConfigError
 
 WEEKDAYS = ("月", "火", "水", "木", "金", "土", "日")     # 0 = 月曜（datetime.weekday と同じ）
@@ -29,7 +30,7 @@ DEFAULTS: dict = {
     "digest_daily": {"enabled": True, "time": "06:30"},
     "digest_weekly": {"enabled": True, "weekday": 0, "time": "07:00"},
     "quiet": {"enabled": False, "start": "01:00", "end": "05:00"},
-    "llm": {"digest_model": "auto", "gist_enabled": False, "gist_model": "auto", "digest_focus": "", "prep_enabled": True, "prep_max_per_run": 100},
+    "llm": {"digest_model": "auto", "gist_enabled": False, "gist_model": "auto", "digest_focus": "", "prep_enabled": True, "prep_model": CPU_MODEL_ID, "prep_max_per_run": 100},
     "rag": {"enabled": True, "fulltext": False, "on_prune": "keep"},
     # 画像の無い記事に AI でイメージ画像を作る（CPU だけ。機能「ニュースの画像生成（CPU）」が要る。既定は切）
     "imagegen": {"enabled": False, "tier": "small", "threads": 8, "max_per_run": 30},
@@ -79,6 +80,21 @@ def _model(value: object, label: str) -> str:
     return text
 
 
+def _cloud_or_local_model(value: object, label: str) -> str:
+    """CPU の LLM（cpu:...）は下ごしらえだけで使える。まとめ・一言要約では選べない。"""
+    text = _model(value, label)
+    if text.startswith("cpu:"):
+        raise ConfigError(f"{label}には CPU の LLM は選べません（下ごしらえだけで使えます）")
+    return text
+
+
+def _prep_model(value: object) -> str:
+    text = _model(value, "下ごしらえ")
+    if text.startswith("cpu:") and text != CPU_MODEL_ID:
+        raise ConfigError(f"下ごしらえの CPU のモデルは {CPU_MODEL_ID} だけです")
+    return text
+
+
 def _focus(value: object) -> str:
     """まとめの重点（利用者が日本語で書く自由記述）。改行は残し、制御文字は除く。上限を超えたら黙って切らずに断る。"""
     if value is None:
@@ -117,9 +133,9 @@ def normalize(raw: object) -> dict:
     start, end = _clock(quiet.get("start", "01:00"), "取得しない時間帯の開始"), _clock(quiet.get("end", "05:00"), "取得しない時間帯の終わり")
     out["quiet"] = {"enabled": _bool(quiet, "enabled", False), "start": start, "end": end}
     llm = _table(raw, "llm")
-    out["llm"] = {"digest_model": _model(llm.get("digest_model", "auto"), "まとめ"), "gist_enabled": _bool(llm, "gist_enabled", False),
-                  "gist_model": _model(llm.get("gist_model", "auto"), "一言要約"), "digest_focus": _focus(llm.get("digest_focus", "")),
-                  "prep_enabled": _bool(llm, "prep_enabled", True), "prep_max_per_run": _int(llm.get("prep_max_per_run", 100), "下ごしらえの 1 回の件数", 1, 200)}
+    out["llm"] = {"digest_model": _cloud_or_local_model(llm.get("digest_model", "auto"), "まとめ"), "gist_enabled": _bool(llm, "gist_enabled", False),
+                  "gist_model": _cloud_or_local_model(llm.get("gist_model", "auto"), "一言要約"), "digest_focus": _focus(llm.get("digest_focus", "")),
+                  "prep_enabled": _bool(llm, "prep_enabled", True), "prep_model": _prep_model(llm.get("prep_model", CPU_MODEL_ID)), "prep_max_per_run": _int(llm.get("prep_max_per_run", 100), "下ごしらえの 1 回の件数", 1, 200)}
     rag = _table(raw, "rag")
     on_prune = rag.get("on_prune", "keep")
     if on_prune not in ON_PRUNE:
