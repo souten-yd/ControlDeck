@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-23 調査の道具に Reddit の API・Discourse・Stack Exchange の入口
+
+- 利用者「Reddit の API を登録するところを作って、入っていたらそれを使って検索できるように。XDA など技術的に有望なフォーラムも検索したい」。設定 → API キーに群「調査（フォーラム・検索）」（Reddit の Client ID・Secret・ユーザー名、Stack Exchange のキー（任意）、足す Discourse のドメイン）。キーは `workflows/research_keys.py` が暗号化して `data/research/keys.json` に置く（値は応答・ログ・監査に出さない）。
+- `research_tools`: Reddit はキーがあれば OAuth（application-only、トークンは期限の 60 秒前まで使い回す）を先に使い、失敗・キーなしは今の経路（未認証 → RSS → SearXNG）。Discourse 系（既定 10 件＋足したドメイン）は `search.json`・`/t/{id}.json`、Stack Exchange は search/advanced・質問と回答（票順）。XDA など API の無いサイトは今までどおり SearXNG の `site:`。
+- 「つながりを確かめる」（`POST /settings/keys/{id}/test`）: Reddit はトークンと検索 1 件（401・403「承認が要る可能性」・429 を平易に）、Stack Exchange は残りの回数。
+- テスト: `test_research_forums.py`（HTTP はモック）、E2E `settings-keys-research.spec.ts`（書いただけ。未実行）。詳細は `HANDOFF-web-collector.md`。
+
 ## 2026-11-23 Strata で Inkling 2 Mini を登録できるように
 
 - 利用者「Strata や Radiance で inkling がサポートされているか最新の情報を確認して、サポートされていれば候補として追加できるように」。

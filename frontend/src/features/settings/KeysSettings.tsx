@@ -8,10 +8,10 @@ import { api } from "../../api/client";
 import { useToasts } from "../../stores";
 import { ConfirmDialog, Skeleton } from "../../components/ui";
 
-interface KeyField { name: string; label: string; configured: boolean }
+interface KeyField { name: string; label: string; configured: boolean; plain?: boolean }
 interface KeyItem {
   id: string; group: string; name: string; note: string; signup: string; configured: boolean; hint: string;
-  fields: KeyField[]; used_by: string; manage: string; enabled?: boolean;
+  fields: KeyField[]; used_by: string; manage: string; enabled?: boolean; testable?: boolean;
 }
 interface KeysState { groups: { id: string; label: string; description: string }[]; keys: KeyItem[] }
 
@@ -62,6 +62,12 @@ function KeyCard({ item }: { item: KeyItem }) {
     onSuccess: (next) => { done(next); setRemoving(false); show(`${item.name} のキーを削除しました`); },
     onError: (e) => show(e instanceof Error ? e.message : "削除できませんでした", "error"),
   });
+  const [probe, setProbe] = useState<{ ok: boolean; message: string } | null>(null);
+  const test = useMutation({
+    mutationFn: () => api<{ ok: boolean; message: string }>(`/settings/keys/${encodeURIComponent(item.id)}/test`, { method: "POST" }),
+    onSuccess: setProbe,
+    onError: (e) => setProbe({ ok: false, message: e instanceof Error ? e.message : "確かめられませんでした" }),
+  });
   const partial = item.fields.length > 1 && item.fields.some((f) => f.configured) && !item.configured;
   return (
     <li className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
@@ -87,7 +93,7 @@ function KeyCard({ item }: { item: KeyItem }) {
           {item.fields.map((f) => (
             <label key={f.name} className="block text-xs font-medium text-zinc-500">
               {f.label}{f.configured && <span className="ml-1 font-normal">（設定済み・変えるときだけ入れる）</span>}
-              <input className={`${input} mt-1`} type={f.name.endsWith("_url") ? "url" : "password"} autoComplete="new-password"
+              <input className={`${input} mt-1`} type={f.name.endsWith("_url") ? "url" : f.plain ? "text" : "password"} autoComplete="new-password"
                 value={values[f.name] ?? ""} onChange={(e) => setValues({ ...values, [f.name]: e.target.value })} />
             </label>
           ))}
@@ -101,7 +107,16 @@ function KeyCard({ item }: { item: KeyItem }) {
               <button type="button" onClick={() => setRemoving(true)}
                 className={`${btn} text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40`}>削除</button>
             )}
+            {item.testable && item.configured && (
+              <button type="button" onClick={() => { setProbe(null); test.mutate(); }} disabled={test.isPending}
+                className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
+                {test.isPending ? "確かめています…" : "つながりを確かめる"}
+              </button>
+            )}
           </div>
+          {probe && (
+            <p role="status" className={`text-xs ${probe.ok ? "text-accent-700 dark:text-accent-300" : "text-red-600"}`}>{probe.message}</p>
+          )}
         </form>
       )}
       {removing && (

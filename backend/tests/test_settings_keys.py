@@ -30,7 +30,7 @@ def test_existing_keys_show_up_without_moving_or_exposing_them(admin_client):
 
     body = admin_client.get(API).json()
     keys = _by_id(body)
-    assert {"ai", "patent", "dev"} == {g["id"] for g in body["groups"]}
+    assert {"ai", "patent", "research", "dev"} == {g["id"] for g in body["groups"]}
     assert not any(k["id"] == "hf" or k["id"].startswith("secret:") for k in body["keys"])
     assert keys["cloud:openrouter"]["configured"] and keys["cloud:openrouter"]["hint"] == "••••1234"
     assert keys["source:epo"]["configured"] and not keys["source:uspto"]["configured"]

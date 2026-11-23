@@ -11,6 +11,8 @@
   長ければ段落に分けて focus に近い段落を上位から返す（reranker が使えれば reranker、無ければ語の一致）。ページ内のリンク
   （同じサイトを先に最大 30）も返すので、モデルは必要なリンクを続けて read_page で辿れる。Reddit・GitHub・Hacker News の
   URL は専用の入口（コメント・README・issue）で読む。
+- キーつきの入口（2026-11-23）: Reddit は OAuth（application-only）でキーがあれば先に使い、だめなら未認証 → SearXNG へ。Discourse 系のフォーラム
+  （既定の一覧＋利用者が足したドメイン）は公開の search.json・`/t/{id}.json`、Stack Exchange は API（キーは任意）。XDA など API の無いサイトは SearXNG の `site:`。
 - 安全: 通信は全部 `egress.guarded_client`（社内・loopback のアドレスを断る）。通信の直前に `ensure_external_allowed`（秘密の会話は外へ出ない）。
   robots.txt: 既存の Web 収集の決まりに合わせる（巡回しない 1 ページずつの取得では見ない。巡回は準備中で、導入されれば
   Protego で守る）。取得した文は「資料」としてモデルへ渡し、指示としては扱わない（注意書きを先頭に付ける）。
@@ -21,14 +23,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime as dt
+import html
 import json
 import logging
 import math
 import re
+import time
 from urllib.parse import quote, urljoin, urlsplit
 
 from app.security.offline import ExternalResearchBlocked, ensure_external_allowed
 from app.web_collector import egress
+from app.workflows import research_keys
 
 logger = logging.getLogger("control_deck.workflows.research_tools")
 
@@ -70,6 +75,8 @@ TOOL_WEB_SEARCH = {
             "query には依頼の文をそのまま入れず、固有名詞と観点の短い検索語（2〜6 語）を書く。"
             "特定のサイトの中を調べるときは sites を指定する（例: [\"reddit.com\"]、subreddit は \"r/LocalLLaMA\"、"
             "GitHub は \"github.com/ggml-org/llama.cpp\"、記事は \"gigazine.net\"）。Reddit・GitHub・Hacker News はそれぞれの検索を直接使う。"
+            "技術の話題なら r/LocalLLaMA・XDA（xdaforums.com）・Level1Techs・Hugging Face のフォーラム（discuss.huggingface.co）・"
+            "Stack Overflow（stackoverflow.com）・GitHub の issue などを sites に指定すると的を絞れる。"
             "件数が足りなければ自動で語を広げて探す。結果に答えが見つからなければ、語を変えて（言い換え・英語・日付）もう一度探す。"
             "ページの中身が要るときは、結果の URL を read_page で読む。答えでは使った結果に [R番号] で出典を付ける。"),
         "parameters": {
@@ -128,7 +135,8 @@ async def _get(url: str, *, params: dict | None = None, accept: str = "applicati
     current = url
     async with _client(accept) as client:
         for _ in range(4):
-            response = await client.get(current, params=params if current == url else None, headers=headers)
+            same = urlsplit(current).hostname == urlsplit(url).hostname   # 認証のヘッダーは別のホストへ付けない
+            response = await client.get(current, params=params if current == url else None, headers=headers if same else None)
             if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
                 current = urljoin(current, response.headers["location"])
                 continue
@@ -136,10 +144,28 @@ async def _get(url: str, *, params: dict | None = None, accept: str = "applicati
     return response
 
 
+class HttpError(RuntimeError):
+    """HTTP の 4xx・5xx。status で「承認が要る（403）」などを言い分ける。文にキーを入れない。"""
+
+    def __init__(self, status: int):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
 async def _get_json(url: str, **kwargs):
     response = await _get(url, **kwargs)
     if response.status_code >= 400:
-        raise RuntimeError(f"HTTP {response.status_code}")
+        raise HttpError(response.status_code)
+    return response.json()
+
+
+async def _post_form(url: str, data: dict, headers: dict) -> dict:
+    """フォームの POST 1 回（トークンの取得用。リダイレクトは追わない）。JSON を返す。"""
+    ensure_external_allowed(f"取得 {urlsplit(url).hostname}")
+    async with _client() as client:
+        response = await client.post(url, data=data, headers=headers)
+    if response.status_code >= 400:
+        raise HttpError(response.status_code)
     return response.json()
 
 
@@ -192,6 +218,10 @@ def _kind(domain: str) -> str:
         return "github"
     if domain in ("news.ycombinator.com", "ycombinator.com", "hn.algolia.com"):
         return "hn"
+    if domain in research_keys.forums():
+        return "discourse"
+    if _se_site(domain):
+        return "se"
     if domain == "huggingface.co" or domain.endswith(".huggingface.co"):
         return "hf"
     return "generic"
@@ -239,8 +269,86 @@ async def _get_text_checked(url: str, **kwargs) -> str:
     return response.text
 
 
+# ---- Reddit の OAuth（application-only。キーがあるときだけ。2026-11-22 未認証の JSON・RSS は拒否された） ----
+
+REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+REDDIT_API = "https://oauth.reddit.com"
+_reddit_token: dict = {}   # プロセス内の使い回し: {"who": (id, secret), "token": ..., "until": monotonic 秒}
+
+
+def reddit_error_message(status: int) -> str:
+    """Reddit の応答を、利用者に見せる平易な日本語にする（キーの値は入れない）。"""
+    return {401: "Client ID か Client Secret が違うようです。Reddit のアプリの画面で確かめてください",
+            403: "Reddit に断られました。このアプリは Reddit の承認（API の利用の申請）が要る可能性があります",
+            429: "リクエストが多すぎます。しばらく待ってからもう一度試してください"}.get(
+        status, f"Reddit が HTTP {status} を返しました。しばらくしてからもう一度試してください")
+
+
+def _reddit_ua(cred: dict) -> str:
+    return f"linux:controldeck-research:1.0 (by /u/{cred['username'].removeprefix('/u/').removeprefix('u/')})"
+
+
+async def _reddit_access(cred: dict) -> str:
+    """application-only のトークン（1 時間・refresh なし）。期限の 60 秒前まで使い回す。"""
+    who = (cred["client_id"], cred["client_secret"])
+    if _reddit_token.get("who") == who and _reddit_token.get("until", 0) > time.monotonic():
+        return _reddit_token["token"]
+    basic = base64.b64encode(f"{cred['client_id']}:{cred['client_secret']}".encode()).decode()
+    data = await _post_form(REDDIT_TOKEN_URL, {"grant_type": "client_credentials"},
+                            {"Authorization": f"Basic {basic}", "User-Agent": _reddit_ua(cred)})
+    token = data.get("access_token")
+    if not token:   # 200 のまま {"error": ...} が返ることがある
+        raise HttpError(401)
+    _reddit_token.clear()
+    _reddit_token.update(who=who, token=token, until=time.monotonic() + max(int(data.get("expires_in") or 3600) - 60, 0))
+    return token
+
+
+async def _reddit_oauth(path: str, params: dict):
+    """認証つきの GET（oauth.reddit.com）。401 ならトークンを捨てる。キーがなければ None。"""
+    cred = research_keys.reddit()
+    if not cred:
+        return None
+    try:
+        token = await _reddit_access(cred)
+        return await _get_json(REDDIT_API + path, params={**params, "raw_json": 1},
+                               headers={"Authorization": f"bearer {token}", "User-Agent": _reddit_ua(cred)})
+    except HttpError as exc:
+        if exc.status == 401:
+            _reddit_token.clear()
+        raise
+
+
+async def check_reddit() -> tuple[bool, str]:
+    """「つながりを確かめる」: トークンを取り、検索を 1 件。(成功か, 平易な 1 行)。"""
+    if not research_keys.reddit():
+        return False, "Client ID・Client Secret・ユーザー名の 3 つを保存してください"
+    _reddit_token.clear()
+    try:
+        data = await _reddit_oauth("/search", {"q": "llama.cpp", "limit": 1, "type": "link"})
+    except ExternalResearchBlocked as exc:
+        return False, str(exc)
+    except HttpError as exc:
+        return False, reddit_error_message(exc.status)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Reddit に接続できませんでした（{type(exc).__name__}）"
+    hits = len(((data or {}).get("data") or {}).get("children", []))
+    return True, f"つながりました（検索 {hits} 件を取得）"
+
+
 async def reddit_search(query: str, sub: str, time_range: str, limit: int) -> list[dict]:
-    """Reddit の検索。search.json（点数・コメント数つき）→ 拒否されたら search.rss（Atom）。どちらも拒否なら呼び出し側が SearXNG へ。"""
+    """Reddit の検索。キーがあれば OAuth → search.json（点数・コメント数つき）→ 拒否されたら search.rss（Atom）。
+    どれも拒否なら呼び出し側が SearXNG へ。"""
+    try:
+        params = {"q": query, "limit": min(max(limit, 1), 100), "sort": "relevance", "t": time_range or "all",
+                  **({"restrict_sr": 1} if sub else {})}
+        data = await _reddit_oauth(f"/r/{quote(sub)}/search" if sub else "/search", params)
+        if data is not None:
+            return _reddit_posts(data)
+    except ExternalResearchBlocked:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 認証つきが使えなければ今までの経路へ
+        logger.info("Reddit の認証つき検索が使えません（未認証を試します）: %s", exc)
     try:
         return await _reddit_search_json(query, sub, time_range, limit)
     except ExternalResearchBlocked:
@@ -259,7 +367,10 @@ async def _reddit_search_json(query: str, sub: str, time_range: str, limit: int)
     params = {"q": query, "limit": min(max(limit, 1), 100), "sort": "relevance", "t": time_range or "all", "raw_json": 1}
     if sub:
         params["restrict_sr"] = 1
-    data = await _get_json(base, params=params)
+    return _reddit_posts(await _get_json(base, params=params))
+
+
+def _reddit_posts(data: dict) -> list[dict]:
     out = []
     for child in (data.get("data") or {}).get("children", []):
         post = child.get("data") or {}
@@ -320,6 +431,123 @@ async def hn_search(query: str, time_range: str, limit: int) -> list[dict]:
                     "snippet": f"Hacker News · {hit.get('points') or 0}点 · {hit.get('num_comments') or 0}コメント · "
                                f"{str(hit.get('created_at') or '')[:10]}.{origin}", "source": "hackernews"})
     return out
+
+
+# ---- Discourse 系のフォーラム（公開の search.json は匿名で使える） ----
+
+async def discourse_search(domain: str, query: str, time_range: str, limit: int) -> list[dict]:
+    since = _since(time_range)
+    data = await _get_json(f"https://{domain}/search.json", params={"q": query + (f" after:{since}" if since else "")})
+    blurbs = {}
+    for post in data.get("posts") or []:
+        blurbs.setdefault(post.get("topic_id"), post.get("blurb") or "")
+    out = []
+    for topic in (data.get("topics") or [])[:limit]:
+        if not topic.get("id"):
+            continue
+        head = (f"{domain} · {max(int(topic.get('posts_count') or 1) - 1, 0)}返信 · {topic.get('like_count') or 0}いいね · "
+                f"{str(topic.get('last_posted_at') or topic.get('created_at') or '')[:10]}")
+        out.append({"title": _clean(topic.get("title"), 300), "url": f"https://{domain}/t/{topic.get('slug') or 'topic'}/{topic['id']}",
+                    "snippet": f"{head} — {_clean(blurbs.get(topic['id']), 300)}".rstrip(" —"), "source": "discourse"})
+    return out
+
+
+_DISCOURSE_TOPIC = re.compile(r"^/t/(?:[^/]+/)?(\d+)(?:/\d+)?/?$")
+
+
+async def read_discourse(url: str) -> dict | None:
+    """話題（/t/...）を /t/{id}.json で読む。cooked（HTML）は文にする。話題でなければ None。"""
+    parts = urlsplit(url)
+    match = _DISCOURSE_TOPIC.match(parts.path)
+    if not match:
+        return None
+    data = await _get_json(f"https://{parts.hostname}/t/{match.group(1)}.json")
+    posts = (data.get("post_stream") or {}).get("posts") or []
+    if not posts:
+        return None
+    lines = [f"- (@{p.get('username', '')}) {_clean(_html_text(p.get('cooked', '')), 1200)}" for p in posts[1:] if p.get("cooked")]
+    text = (f"{parts.hostname} · {max(int(data.get('posts_count') or len(posts)) - 1, 0)}返信 · {data.get('like_count') or 0}いいね\n\n"
+            f"{_html_text(posts[0].get('cooked', ''))}\n\n## 返信（出た順）\n" + "\n".join(lines))
+    return {"title": data.get("title", ""), "text": text, "date": str(data.get("created_at") or "")[:10], "links": []}
+
+
+# ---- Stack Exchange（キーなしで 1 日 300 件、キーで 10,000 件） ----
+
+SE_API = "https://api.stackexchange.com/2.3"
+_SE_SITES = {"stackoverflow.com": "stackoverflow", "superuser.com": "superuser", "serverfault.com": "serverfault",
+             "askubuntu.com": "askubuntu", "mathoverflow.net": "mathoverflow.net"}
+
+
+def _se_site(domain: str) -> str:
+    """ドメインを API の site 名にする（*.stackexchange.com は先頭の名前。本体のドメイン自体は対象外）。"""
+    if domain in _SE_SITES:
+        return _SE_SITES[domain]
+    head, _, tail = domain.partition(".")
+    return head if tail == "stackexchange.com" and head not in ("www", "meta", "api") else ""
+
+
+async def _se_json(path: str, params: dict) -> dict:
+    """API の GET。キーがあれば付ける。通信の失敗の文にキー（URL の query）が入らないよう、型の名前だけにして投げ直す。"""
+    key = research_keys.secret("stackexchange_key")
+    try:
+        return await _get_json(SE_API + path, params={**params, **({"key": key} if key else {})})
+    except (HttpError, ExternalResearchBlocked):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"通信に失敗しました（{type(exc).__name__}）") from None
+
+
+async def check_stackexchange() -> tuple[bool, str]:
+    """「つながりを確かめる」: 1 回呼んで 1 日の残りの回数を返す。"""
+    try:
+        data = await _se_json("/info", {"site": "stackoverflow"})
+    except ExternalResearchBlocked as exc:
+        return False, str(exc)
+    except HttpError as exc:
+        return False, {400: "キーが違うようです。stackapps.com で登録したキーを確かめてください",
+                       429: "リクエストが多すぎます。しばらく待ってください"}.get(exc.status, f"Stack Exchange が HTTP {exc.status} を返しました")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Stack Exchange に接続できませんでした（{exc}）"
+    return True, f"つながりました（今日の残り {data.get('quota_remaining', '?')} / {data.get('quota_max', '?')} 回）"
+
+
+async def stackexchange_search(domain: str, query: str, time_range: str, limit: int) -> list[dict]:
+    site = _se_site(domain)
+    params = {"q": query, "site": site, "order": "desc", "sort": "relevance", "pagesize": min(max(limit, 1), 100)}
+    since = _since(time_range)
+    if since:
+        params["fromdate"] = int(dt.datetime.fromisoformat(since).replace(tzinfo=dt.timezone.utc).timestamp())
+    data = await _se_json("/search/advanced", params)
+    out = []
+    for item in data.get("items", []):
+        if not item.get("link"):
+            continue
+        head = (f"{domain} · {item.get('score', 0)}点 · {item.get('answer_count', 0)}回答"
+                f"{'（解決済み）' if item.get('is_answered') else ''} · {_date(item.get('creation_date'))} · "
+                f"{', '.join(item.get('tags') or [])}")
+        out.append({"title": html.unescape(_clean(item.get("title"), 300)), "url": item["link"], "snippet": head, "source": "stackexchange"})
+    return out
+
+
+async def read_stackexchange(url: str) -> dict | None:
+    """質問と回答（票の多い順）。/questions/{id} でなければ None。"""
+    parts = urlsplit(url)
+    match = re.match(r"^/(?:questions|q)/(\d+)", parts.path)
+    site = _se_site((parts.hostname or "").lower().removeprefix("www."))
+    if not match or not site:
+        return None
+    qid, base = match.group(1), {"site": site, "filter": "withbody"}
+    question, answers = await asyncio.gather(_se_json(f"/questions/{qid}", base),
+                                             _se_json(f"/questions/{qid}/answers", {**base, "sort": "votes", "order": "desc", "pagesize": 10}))
+    items = question.get("items") or []
+    if not items:
+        return None
+    q = items[0]
+    lines = [f"- ({a.get('score', 0)}点{'・採用' if a.get('is_accepted') else ''}) {_clean(_html_text(a.get('body', '')), 2000)}"
+             for a in answers.get("items", [])]
+    text = (f"{q.get('score', 0)}点 · {q.get('answer_count', 0)}回答 · {', '.join(q.get('tags') or [])}\n\n"
+            f"{_html_text(q.get('body', ''))}\n\n## 回答（票の多い順）\n" + "\n".join(lines))
+    return {"title": html.unescape(q.get("title", "")), "text": text, "date": _date(q.get("creation_date")), "links": []}
 
 
 # ---- 検索の組み立て ----
@@ -410,6 +638,10 @@ async def _site_search(site: dict, query: str, time_range: str, limit: int, sear
             native = await github_search(query, site, time_range, limit)
         elif kind == "hn":
             native = await hn_search(query, time_range, limit)
+        elif kind == "discourse":
+            native = await discourse_search(domain, query, time_range, limit)
+        elif kind == "se":
+            native = await stackexchange_search(domain, query, time_range, limit)
     except ExternalResearchBlocked:
         raise
     except Exception as exc:  # noqa: BLE001 - 専用の入口が使えなくても SearXNG で探す
@@ -594,8 +826,19 @@ def _reddit_children(listing) -> list[dict]:
 async def read_reddit(url: str) -> dict:
     """スレッド。thread.json（本文・コメントを点数順・返信 1 段）→ 拒否されたら thread.rss（本文とコメントを出た順に）。"""
     path = urlsplit(url).path.rstrip("/")
+    params = {"limit": 300, "sort": "top"}
+    data = None
+    thread = re.search(r"/comments/([A-Za-z0-9]+)", path)
+    if thread:
+        try:
+            data = await _reddit_oauth(f"/comments/{thread.group(1)}", params)
+        except ExternalResearchBlocked:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 認証つきが使えなければ今までの経路へ
+            logger.info("Reddit の認証つきのスレッドが読めません（未認証を試します）: %s", exc)
     try:
-        data = await _get_json(f"https://www.reddit.com{path}.json", params={"raw_json": 1, "limit": 300, "sort": "top"})
+        if data is None:
+            data = await _get_json(f"https://www.reddit.com{path}.json", params={**params, "raw_json": 1})
     except ExternalResearchBlocked:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -713,6 +956,10 @@ async def read_page(url: str, focus: str = "", max_chars: int = 6000, *, ranker=
             special = await read_github(url)
         elif kind == "hn" and parts.hostname.lower() == "news.ycombinator.com":
             special = await read_hn(url)
+        elif kind == "discourse":
+            special = await read_discourse(url)
+        elif kind == "se":
+            special = await read_stackexchange(url)
     except ExternalResearchBlocked:
         raise
     except Exception as exc:  # noqa: BLE001 - 専用の入口が使えなければ通常の取得へ
