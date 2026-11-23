@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 239 ファイル、2334 テスト（目的の未記入 93 ファイル）
+- backend: 239 ファイル、2337 テスト（目的の未記入 93 ファイル）
 - E2E: 127 spec、274 テスト
 
 ## backend（backend/tests）
@@ -2106,6 +2106,9 @@
 - `test_english_detection`
 - `test_translation_batches_20_per_call_saves_and_presents` — 目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
 - `test_translation_without_egress_permission_does_nothing`
+- `test_digest_rejects_english_and_retries_once` — 目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
+- `test_news_llm_retries_when_busy_and_not_when_over_budget` — 目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
+- `test_digest_shows_headlines_while_the_llm_is_working` — 目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
 
 ### backend/tests/test_notify_events.py
 
