@@ -117,6 +117,8 @@ def classify_gguf(repo: str, files: list[dict]) -> dict:
         kinds = {b["kind"] for b in basis}
         family = "qwen" if "gsq-rco" in kinds and "deepseek" not in repo.casefold() else (
             "deepseek41" if "gsq-rco" in kinds else "unsloth")
+        if "inkling" in repo.casefold():
+            family = "inkling-2-mini"      # Strata 0.2.19 の strata-inkling（Unsloth の UD-* を直接読む）
     else:
         family = ""
     registerable: list[str] = []

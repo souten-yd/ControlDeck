@@ -193,3 +193,13 @@ def test_tool_registered_and_answer_shape(hub):
     assert record["count"] >= 2 and "| モデル | 更新日 | 大きさ | Strata で動かせる置き場と根拠のファイル | 特徴 |" in text
     assert "UD-IQ4_XS" in text and "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF" in text
     assert "query が空" in asyncio.run(chat_tools.run_hf_models({"name": "x", "arguments": "{}"}, max_chars=100))[0]
+
+
+def test_inkling_repos_map_to_the_inkling_family():
+    """Inkling 2 Mini の Unsloth の置き場は Strata の inkling-2-mini 系列（strata-inkling、0.2.19〜）として出す。
+    根拠: 2026-11-23 利用者「Strata で inkling がサポートされていれば候補として追加できるように」。Qwen の unsloth 系列のまま
+    だと、登録で系列が合わず断られる。"""
+    ink = hs.classify_gguf("unsloth/Inkling-2-Mini-GGUF",
+                           [f("Inkling-2-Mini-UD-Q4_K_XL.gguf"), f("Inkling-2-Mini-UD-IQ4_XS.gguf"), f("mmproj-BF16.gguf")])
+    assert ink["strata"] and ink["strata_family"] == "inkling-2-mini"
+    assert sorted(ink["strata_registerable"]) == ["UD-IQ4_XS", "UD-Q4_K_XL"]

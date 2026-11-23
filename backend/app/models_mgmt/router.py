@@ -1497,7 +1497,7 @@ class StrataModelBody(BaseModel):
     model_path: str = Field(default="", max_length=4096)
     model_config = ConfigDict(extra="forbid")
     alias: str = Field(min_length=1, max_length=48)
-    family: Literal["qwen", "unsloth", "deepseek41"] = "qwen"
+    family: Literal["qwen", "unsloth", "deepseek41", "inkling-2-mini"] = "qwen"
     model: str = Field(min_length=1, max_length=50)
     # Any "<N>k" from 4k to 1024k; strata_gateway.valid_context checks the range.
     context: str = Field(default="32k", pattern=r"^[1-9][0-9]{0,3}k$")

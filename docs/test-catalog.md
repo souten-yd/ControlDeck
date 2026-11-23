@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 229 ファイル、2157 テスト（目的の未記入 93 ファイル）
-- E2E: 120 spec、247 テスト
+- backend: 229 ファイル、2159 テスト（目的の未記入 93 ファイル）
+- E2E: 120 spec、248 テスト
 
 ## backend（backend/tests）
 
@@ -1320,6 +1320,7 @@
 - `test_cache_and_registered_mark`
 - `test_confidential_scope_never_connects`
 - `test_tool_registered_and_answer_shape`
+- `test_inkling_repos_map_to_the_inkling_family` — Inkling 2 Mini の Unsloth の置き場は Strata の inkling-2-mini 系列（strata-inkling、0.2.19〜）として出す。
 
 ### backend/tests/test_inline_code.py
 
@@ -2873,6 +2874,7 @@
 - `test_invalid_memory_settings_are_rejected`
 - `test_legacy_memory_values_are_not_launch_changes_when_equal`
 - `test_strata_refuses_quantizations_it_cannot_run_at_registration` — Strata は Unsloth の UD-*・GSQ-RCO・Q8_0 だけを動かす。ほかの K 量子化（Q4_K_S など）は登録の時点で断り、llama.cpp を案内する。
+- `test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments` — Inkling 2 Mini（Strata 0.2.19 の strata-inkling）を登録・起動できる。Qwen 用の引数と思考の設定は渡さない。
 
 ### backend/tests/test_strata_memory.py
 
@@ -3948,6 +3950,7 @@
 目的: **未記入**
 
 - Strata memory planning and settings at ${width}px
+- Strata registration offers Inkling 2 Mini without thinking or Qwen-only memory settings
 
 ### frontend/e2e/terminal-attachment.spec.ts
 

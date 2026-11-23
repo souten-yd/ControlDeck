@@ -58,4 +58,5 @@ def file_size(path: str | Path) -> int:
     return total
 
 
-STRATA_FAMILIES = {"qwen": "Qwen3.8-Flash-Next", "unsloth": "Qwen3.8-Flash-Next", "deepseek41": "DeepSeek-V4.1-Flash"}
+STRATA_FAMILIES = {"qwen": "Qwen3.8-Flash-Next", "unsloth": "Qwen3.8-Flash-Next", "deepseek41": "DeepSeek-V4.1-Flash",
+                   "inkling-2-mini": "Inkling-2-Mini"}
