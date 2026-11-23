@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 240 ファイル、2346 テスト（目的の未記入 93 ファイル）
+- backend: 241 ファイル、2352 テスト（目的の未記入 93 ファイル）
 - E2E: 128 spec、279 テスト
 
 ## backend（backend/tests）
@@ -2369,6 +2369,17 @@
 - `test_turn_records_checkpoint_when_the_agent_committed_by_itself`
 - `test_turn_without_new_commit_has_no_checkpoint`
 
+### backend/tests/test_parallel_slots.py
+
+目的: ローカル LLM の並列のスロット数から調査の同時実行数を決める部分のテスト（LLM・GPU・通信はすべてモック）。 目的: ランタイムの種類・設定の上書き・読めないときの安全側の値を固定し、調査のページ読み取りが決めた本数を超えて同時に走らないことを守る。 根拠: 2026-11-23 利用者「並列数が 5 並列なら、1 並列でメインの会話を継続して、あとの 4 並列で調査の要約など。並列数は事前に設定した ものを読み取って。並列 1 の場合は従来通り」。2026-11-15 の実測: Radiance・llama.cpp は並列で伸び、Strata は伸びず、Maya-S は並列で起動しない。
+
+- `test_helper_count_by_runtime`
+- `test_override_is_capped_by_slots_and_zero_means_auto`
+- `test_unreadable_config_is_one_for_local_and_default_for_external`
+- `test_model_alias_is_used_when_port_is_not_a_model`
+- `test_limit_setting_accepts_zero_to_eight`
+- `test_reads_never_exceed_the_parallel_limit`
+
 ### backend/tests/test_passkeys.py
 
 目的: **未記入**
@@ -4096,7 +4107,7 @@
 
 - ニュース: 画像の無い記事は大きな箱でなく細いアクセントラインで、取得の失敗の件数は出ない
 - ニュース: ホームのカード（まとめ: ${name}）はテロップ・まとめの概要・記事 5 件
-- ニュース: テロップは押すと止まり、動きを減らす設定では流さない
+- ニュース: テロップ（共通の Marquee）は複数の項目をめくり、触れると止まり、動きを減らす設定では省略表示になる
 - ニュース: 設定でホームに出す記事の数を変えると表示が変わる
 - ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる
 

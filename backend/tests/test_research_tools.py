@@ -473,11 +473,11 @@ def test_research_limits_are_clamped_and_saved(monkeypatch, tmp_path):
     from app.workflows import research_keys as rk
 
     monkeypatch.setattr(rk, "data_dir", lambda: tmp_path)
-    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20}
+    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20, "read_parallel": 0}
     rk.set_limits({"read_per_aspect": "8", "max_sources": "30"})
-    assert rk.limits() == {"read_per_aspect": 8, "max_sources": 30}
+    assert rk.limits() == {"read_per_aspect": 8, "max_sources": 30, "read_parallel": 0}
     for bad in ({"read_per_aspect": "1"}, {"max_sources": "99"}, {"read_per_aspect": "abc"}, {"x": "3"}):
         with pytest.raises(rk.ResearchKeyError):
             rk.set_limits(bad)
     rk.reset_limits()
-    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20}
+    assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20, "read_parallel": 0}

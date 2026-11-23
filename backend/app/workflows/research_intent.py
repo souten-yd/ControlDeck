@@ -30,7 +30,7 @@ logger = logging.getLogger("control_deck.workflows.research_intent")
 ROUNDS = {"simple": 1, "normal": 3, "deep": 5}
 READ_BY_DEPTH = {"simple": -2, "normal": 0, "deep": 3}   # 設定の「観点ごとに読むページ数」（ふつう）からの差。既定 5 なら 速い 3・ふつう 5・深い 8
 READ_LATEST_MIN = 5        # 「ニュース」「最新」「今日」など時事の依頼は、速い調査でも最低これだけ読む
-READ_PARALLEL = 4          # ページを同時に読む数
+READ_PARALLEL = 4          # ページを同時に読む数の既定（モデルを特定できない道具の経路。調査本体はモデルの並列のスロット数から決める: models_mgmt/parallel_slots）
 MIN_RERANK = 0.05          # reranker の点数（0〜1）がこれ未満の結果は、観点に関係が薄いとして落とす（最上位は残す）
 MAX_QUERIES_PER_ASPECT = 3
 
@@ -260,10 +260,10 @@ async def select_results(aspect: str, subjects: list[str], results: list[dict], 
 
 
 async def read_and_judge(results: list[dict], *, window, today: dt.date, focus: str, limit: int, read=rt.read_page,
-                         ranker=rt.rerank_scores, max_chars: int = 3500) -> list[dict]:
+                         ranker=rt.rerank_scores, max_chars: int = 3500, parallel: int | None = None) -> list[dict]:
     """上位の結果を read_page で読み、ページの日付が依頼の期間に合うかを判定する。window が None なら照合しない。
     各要素: {result, page|None, status(match/mismatch/unknown/any/unread), date}。読めなかったものは unread（要約だけ）。"""
-    sem = asyncio.Semaphore(READ_PARALLEL)
+    sem = asyncio.Semaphore(max(1, parallel or READ_PARALLEL))
 
     async def one(r: dict) -> dict:
         async with sem:
@@ -369,6 +369,13 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
     rounds = max(1, rounds or (ROUNDS["simple"] if intent.simple else ROUNDS["normal"]))
     depth = "simple" if rounds <= ROUNDS["simple"] else "deep" if rounds >= ROUNDS["deep"] else "normal"
     per_aspect = read_per_aspect(depth, intent, read_base)
+    from app.models_mgmt import parallel_slots
+
+    # 同時に読む本数: モデルの並列のスロット数から（会話に 1 つ残す）。設定の read_parallel があればそれを上限に使う
+    from app.workflows import research_keys
+
+    override = await asyncio.to_thread(lambda: research_keys.limits()["read_parallel"])
+    parallel = await asyncio.to_thread(parallel_slots.background_parallel, base_url, model, override)
     pending = {i: list(a.queries) for i, a in enumerate(intent.aspects)}
     seen_urls: set[str] = set()
     say("plan", "調べること: " + "・".join(a.text[:40] for a in intent.aspects))
@@ -395,7 +402,7 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
             seen_urls.update(rt._norm_url(r["url"]) for r in fresh)  # noqa: SLF001
             say("read", f"観点{i + 1}: {len(results)} 件から {len(chosen)} 件を読みます")
             judged = await read_and_judge(chosen, window=window, today=today, focus=intent.aspects[i].text,
-                                          limit=len(chosen), read=read, ranker=ranker)
+                                          limit=len(chosen), read=read, ranker=ranker, parallel=parallel)
             for j in judged:
                 if j["status"] == "mismatch":
                     inv.dropped_dates += 1
