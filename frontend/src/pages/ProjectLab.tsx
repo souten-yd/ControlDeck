@@ -17,6 +17,7 @@ import { BottomSheet, ConfirmDialog, Popover, SegmentedTabs, Skeleton } from "..
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
 import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
+import { WorkspaceLab } from "../features/workflows/WorkspaceLab";
 import { WS_STATES, WorkspaceBadge, WorkspaceResultCard, ago, type WorkspaceProgressItem } from "../features/workflows/DevWorkspace";
 import { LS_CONV } from "../features/workflows/workspaceTargets";
 
@@ -538,9 +539,7 @@ function WorkspaceCard({ item, onOpenConversation }: { item: WorkspaceProgressIt
             会話を開く{progress.title ? `（${progress.title}）` : ""}
           </button>
         )}
-        <p className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500">
-          実行して確かめる（準備中: 箱の中で動かす仕組みが要ります）
-        </p>
+        <WorkspaceLab name={item.name} />
       </div>
       {/* 変更・関門・差分・取り込みは既存の結果のカード（AI アシスタントと同じ部品） */}
       <WorkspaceResultCard workspace={item} busy={progress?.state === "working"} />

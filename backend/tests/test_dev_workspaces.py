@@ -365,7 +365,7 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 14  # 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる + 保存の時点の一覧・戻す
+    assert len(routes) == 17  # 動かす欄（lab: 状態・動かす・止める）+ 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる + 保存の時点の一覧・戻す
     for route in routes.values():
         # マージだけは管理者、直させる（会話へ送る）は送信と同じ workflows.run、ほかは terminal.use
         wanted = ("settings.manage" if route.path.endswith("/merge")

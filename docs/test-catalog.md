@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 228 ファイル、2149 テスト（目的の未記入 93 ファイル）
-- E2E: 119 spec、244 テスト
+- backend: 229 ファイル、2156 テスト（目的の未記入 93 ファイル）
+- E2E: 119 spec、245 テスト
 
 ## backend（backend/tests）
 
@@ -3297,6 +3297,18 @@
 - `test_viewer_cannot_run_workflows`
 - `test_schedule_judgement`
 
+### backend/tests/test_workspace_lab.py
+
+目的: 作業場（箱）の中でアプリを動かして preview する（U12）。 目的: - lab_start は利用者の command を文字列へ埋め込まず、箱の中の bash へ位置引数（$1）で渡す。{port}・{host}・{base} だけを 置き換え、環境変数 PORT・HOST も渡す。ControlDeck の複製が動いているときは同じ公開ポートを使うので断る。 - API は持ち主だけ（他人は 404 相当の 422）・command は 1〜500 文字・監査に command を 200 文字に切って残す。 - preview の入口は URL の鍵（起こすたびに変わる）で通す。鍵違いは 404・止まっていれば 409・待ち受け前は 425。 ControlDeck の Cookie は上流へ渡さない。{base} を渡した command は接頭辞を付けたまま上流へ送る。 根拠: ROADMAP U12。箱の隔離（pod の公開ポートだけが外へ出る）を保ったまま、作った画面を見られるようにする。 podman は呼ばない（モック）。上流は小さな HTTP サーバー。
+
+- `test_lab_start_passes_command_as_positional_argument`
+- `test_lab_start_stops_the_previous_one_and_resets_log`
+- `test_lab_start_refuses_while_mirror_runs_and_checks_length`
+- `test_lab_state_reports_listening_and_log_tail`
+- `test_lab_api_owner_only_validation_and_audit`
+- `test_lab_api_refuses_while_mirror_runs`
+- `test_workspace_preview_key_state_cookie_and_base`
+
 ## E2E（frontend/e2e）
 
 ### frontend/e2e/a11y.spec.ts
@@ -3865,6 +3877,7 @@
 
 - project lab switches to workspaces and shows progress (${width}px ${scheme})
 - assistant folder select separates codedev and workspaces (${width}px ${scheme})
+- workspace lab runs, listens and stops (${width}px)
 
 ### frontend/e2e/project-lab.spec.ts
 

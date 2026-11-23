@@ -161,3 +161,65 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     });
   }
 }
+
+// 目的: 作業場の「動かす」欄で、動かす → 起動を待つ → 待ち受け中（preview の iframe）→ 止める が一通りでき、
+//       320px でも崩れない。iframe は allow-same-origin なし（箱の中のアプリが ControlDeck の API に触れない）。
+// 根拠: ROADMAP U12。箱（podman）は動かさず API を模擬する。撮影は test-results/ に残す。
+for (const [width, height] of [[1280, 900], [320, 700]] as const) {
+  test(`workspace lab runs, listens and stops (${width}px)`, async ({ page, context }) => {
+    test.skip(!hasSession(), "E2E credentials required");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    await mockLab(page);
+    // 状態の模擬: 動かす → running（まだ待ち受けない）→ 次の読み直しで listening → 止める
+    const lab = { running: false, listening: false, command: "", started_at: "", log_tail: "", preview_url: null as string | null };
+    let runBody: { command?: string } = {};
+    let reads = 0;
+    await page.route(/\/api\/v1\/opencode\/workspaces\/ws-a\/lab$/, (route) => {
+      if (lab.running && ++reads >= 2) lab.listening = true;
+      return route.fulfill({ json: { ...lab, preview_url: lab.running ? "/project-view/w/ws-a/abc/" : null } });
+    });
+    await page.route(/\/api\/v1\/opencode\/workspaces\/ws-a\/lab\/run$/, (route) => {
+      runBody = route.request().postDataJSON();
+      Object.assign(lab, { running: true, listening: false, command: runBody.command, started_at: "t1", log_tail: "VITE ready\n" });
+      reads = 0;
+      return route.fulfill({ json: { ...lab, preview_url: "/project-view/w/ws-a/abc/" } });
+    });
+    await page.route(/\/api\/v1\/opencode\/workspaces\/ws-a\/lab\/stop$/, (route) => {
+      Object.assign(lab, { running: false, listening: false });
+      return route.fulfill({ json: { ...lab, preview_url: null } });
+    });
+    await page.route(/\/project-view\/w\/ws-a\/abc\//, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<html><body><h1>lab app</h1></body></html>" }));
+
+    await page.goto("/project-lab");
+    if (width < 768) await page.getByRole("button", { name: "Project Lab" }).click();
+    await page.getByRole("button", { name: /^作業場・1$/ }).click();
+    const rows = width < 768
+      ? page.getByRole("dialog", { name: "作業場" }).getByTestId("workspace-row")
+      : page.getByTestId("workspace-row");
+    await rows.first().click();
+
+    const panel = page.getByTestId("workspace-lab");
+    await expect(panel).toContainText("止まっています");
+    const input = panel.getByRole("textbox", { name: "動かすコマンド" });
+    await expect(input).toHaveAttribute("placeholder", /--host \{host\} --port \{port\} --base \{base\}/);
+    await input.fill("npm run dev -- --host {host} --port {port} --base {base}");
+    await panel.getByRole("button", { name: "動かす" }).click();
+    expect(runBody.command).toContain("{port}");
+    await expect(page.getByTestId("workspace-lab-state")).toContainText("起動を待っています");
+    // 待ち受け: preview の iframe（sandbox に allow-same-origin が無い）と「別タブで開く」
+    await expect(page.getByTestId("workspace-lab-state")).toContainText("待ち受け中", { timeout: 15_000 });
+    const frame = panel.locator("iframe");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-forms");
+    await expect(panel.getByRole("link", { name: "別タブで開く" })).toHaveAttribute("href", "/project-view/w/ws-a/abc/");
+    await panel.locator("summary").click();
+    await expect(page.getByTestId("workspace-lab-log")).toContainText("VITE ready");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+    await page.screenshot({ path: `test-results/project-lab-workspace-lab-${width}.png` });
+
+    await panel.getByRole("button", { name: "止める" }).click();
+    await expect(page.getByTestId("workspace-lab-state")).toContainText("止まっています");
+    await expect(panel.locator("iframe")).toHaveCount(0);
+  });
+}
