@@ -6,8 +6,31 @@
 
 export const MAX_SPOKEN_CHARS = 1200;
 
+/** 回答の先頭に一時的に入る「進み具合」の文（送信直後に画面が置く「🔎 検索中...（サーバー側で継続）」と、
+ *  「Web で調査中」「依頼を整理しています」のような状態の 1 行）。答えの本文ではないので読まない。
+ *  2026-11-23 利用者「ウェブで調査中と読んでから本文を読み、その表示が消えて本文が入れ替わると、もう一回読む」。
+ *  出どころ: AssistantChat の send が、Web・Deep・Research の送信直後に回答の content へこの文を置く（確定の本文は
+ *  サーバーの content で置き換わる）。生成中の delta は、この文の直後へ続けて足される。 */
+const PROGRESS_HEAD = /^\s*(?:[\p{Extended_Pictographic}\uFE0F]+\s*)?[^\n。！？!?]{0,30}?(?:調査中|検索中|サーチ中|確認中|整理中|処理中|収集中)(?:\.{2,}|…+)(?:（サーバー側で継続）)?/u;
+/** 進み具合だけの 1 行（短く、「〜中」「〜しています」で終わる） */
+const PROGRESS_LINE = /^\s*(?:[\p{Extended_Pictographic}\uFE0F]+\s*)?[^\n。！？!?]{0,40}?(?:調査中|検索中|サーチ中|確認中|整理中|処理中|収集中|考え中|準備しています|整理しています|調べています)[.…。 ]*(?:（[^）\n]*）)?\s*$/u;
+
+/** 先頭の進み具合の文を落とす。本文が同じ行に続いていれば、その文の部分だけを落とす */
+export function dropProgressLines(markdown: string): string {
+  let text = markdown;
+  for (let guard = 0; guard < 8; guard++) {
+    const head = PROGRESS_HEAD.exec(text);
+    if (head) { text = text.slice(head[0].length); continue; }
+    const lineEnd = text.indexOf("\n");
+    const line = lineEnd < 0 ? text : text.slice(0, lineEnd);
+    if (line.trim() && PROGRESS_LINE.test(line)) { text = lineEnd < 0 ? "" : text.slice(lineEnd + 1); continue; }
+    break;
+  }
+  return text;
+}
+
 export function speakableText(markdown: string, maxChars = MAX_SPOKEN_CHARS): string {
-  let text = markdown.replace(/\r\n?/g, "\n");
+  let text = dropProgressLines(markdown.replace(/\r\n?/g, "\n"));
   // 出典・参考文献の節から後ろは読まない
   text = text.replace(/\n#{1,6}\s*(出典|参考|参考文献|Sources?|References?)[^\n]*\n[\s\S]*$/i, "\n");
   let code = false;
@@ -120,47 +143,87 @@ function squash(text: string): { text: string; at: number[] } {
   return { text: out, at };
 }
 
-/** 回した文（queued）の続きが、今の文（spoken）の何文字目から始まるか。
- *  生成中と確定で文が変わる（出典の番号・空白や記号・道具の呼び出しの印の除去・差し替え）ことがある。
- *  2026-11-23 利用者「会話モードにしたら、TTS が 2 回くらい同じ文字を読んだ」: 食い違った所から読み直していたので、
- *  先頭近くの違いで、読んだ文をもう一度読んでいた。文字と数字だけにして比べ、続きの位置を探す。
- *  見つからなければ、食い違った所から読む（丸ごと差し替わったときは聞いていない文なので読む）。 */
-function resumeAt(spoken: string, queued: string): number {
-  if (spoken.startsWith(queued)) return queued.length;
-  let at = squashedResumeAt(spoken, queued);
-  while (at > 0 && at < spoken.length && /[。！？!?.、，,」』）)\s]/.test(spoken[at])) at++;   // 読んだ文の後ろに付く句読点は読まない
-  return at;
-}
-
-function squashedResumeAt(spoken: string, queued: string): number {
-  const a = squash(queued), b = squash(spoken);
-  if (b.text.startsWith(a.text)) return a.text ? b.at[a.text.length - 1] + 1 : 0;   // 見た目だけの違い
-  if (a.text.startsWith(b.text)) return spoken.length;                                // 回した文のほうが長い（読む分は無い）
-  let common = 0;
-  while (common < a.text.length && common < b.text.length && a.text[common] === b.text[common]) common++;
-  // 途中が違うだけなら、回した文の終わり（24・12・6 文字）が今の文のどこかにある。そこから先を読む
-  for (const size of [24, 12, 6]) {
-    if (a.text.length < size) continue;
-    const found = b.text.indexOf(a.text.slice(-size), Math.max(0, common - size));
-    if (found >= 0) return b.at[found + size - 1] + 1;
+/** 読み上げる文を、文の終わり（。！？!? と、後ろが空白か終わりの「.」）で分ける（終わりの閉じ括弧・鉤括弧は前の文に付ける） */
+export function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  const chars = Array.from(text);
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    current += ch;
+    const stop = "。！？!?".includes(ch) || (ch === "." && (i + 1 >= chars.length || /\s/.test(chars[i + 1])));
+    if (!stop) continue;
+    while (i + 1 < chars.length && /[。！？!?」』）)]/.test(chars[i + 1])) current += chars[++i];
+    out.push(current);
+    current = "";
   }
-  return common ? b.at[common - 1] + 1 : 0;
+  if (current) out.push(current);
+  return out;
 }
 
-/** 読み上げる文のうち、まだ回していない続き。queued はこれまでに回した文そのもの。
+/** 文の指紋: 文字と数字だけ（空白・記号・句読点・出典の印の残り・Markdown の記号を除く）。同じ文かどうかを内容で見る */
+export function sentenceFingerprint(sentence: string): string {
+  return squash(sentence).text;
+}
+
+/** 今の文（spoken）のうち、まだ回していない文。queued はこれまでに回した文そのもの。
+ *  2026-11-23 利用者「会話モードにしたら、TTS が 2 回くらい同じ文字を読んだ」「進み具合の表示が消えて先頭が入れ替わると、
+ *  もう一回読む」: 位置（何文字目）で続きを探すと、先頭が入れ替わったとき位置が外れて最初から読み直していた。
+ *  読んだ文は文ごとの指紋（数え方つき: 同じ文が 2 度あれば 2 回まで）で覚え、今の文を先頭から見て、読んだ文は飛ばし、
+ *  読んでいない文（先頭に差し込まれたものも含む）だけを読む。位置は見ない。
+ *  回した分の最後が文の途中（上限で切った等）なら、その文の続きだけを読む。 */
+function unreadSentences(spoken: string, queued: string): string {
+  const seen = new Map<string, number>();
+  let last = "";   // 回した最後の文（終わりまで届いていないかもしれない）
+  let lastText = "";
+  for (const sentence of splitSentences(queued)) {
+    const fp = sentenceFingerprint(sentence);
+    if (!fp) continue;
+    seen.set(fp, (seen.get(fp) ?? 0) + 1);
+    last = fp;
+    lastText = sentence;
+  }
+  if (last) seen.set(last, seen.get(last)! - 1);   // 最後の文は、続きがあるかもしれないので別に見る
+  let out = "";
+  for (const sentence of splitSentences(spoken)) {
+    const squashed = squash(sentence);
+    const fp = squashed.text;
+    if (!fp) continue;                                  // 記号だけ
+    const count = seen.get(fp) ?? 0;
+    if (count > 0) { seen.set(fp, count - 1); continue; }   // 読んだ文
+    if (last) {
+      // 最後に回した文: 同じなら読んだ文。途中で切れていたなら、続きから読む。関係のない文なら、ふつうに読む
+      // （先頭に差し込まれた新しい文の後ろに、続きの文が来ることがある。関係のある文が来るまで残す）
+      let common = 0;
+      while (common < last.length && common < fp.length && last[common] === fp[common]) common++;
+      if (sentence.startsWith(lastText)) { last = ""; out += sentence.slice(lastText.length).trimStart(); continue; }
+      if (fp === last) { last = ""; continue; }
+      if (common >= Math.max(2, Math.ceil(last.length / 2)) || common === last.length) {
+        last = "";
+        if (common >= fp.length) continue;
+        out += sentence.slice(squashed.at[common - 1] + 1).replace(/^[。！？!?.、，,\s]+/, "");
+        continue;
+      }
+    }
+    out += out ? sentence : sentence.trimStart();
+  }
+  return out;
+}
+
+/** 読み上げる文のうち、まだ回していない続き。queued はこれまでに回した文そのもの（返す queued に、今回の分を足した形）。
  *  生成中は文の終わりまで。上限を超えたら「続きは画面」で終える。
- *  回した文が今の文と食い違ったら（書式の解釈・出典の番号・差し替え）、回した分の続きの位置を探して読む（二度読まない・飛ばさない）。 */
+ *  読んだ文は内容（指紋）で飛ばすので、書式の解釈・出典の番号・進み具合の文の消去・段落の組み替えで先頭が変わっても、
+ *  二度読まない。読んでいない文は先頭に差し込まれても読む（飛ばさない）。 */
 export function nextSpoken(markdown: string, queued: string, done: boolean): { text: string; queued: string; capped: boolean } {
   const spoken = speakableText(done ? markdown : stablePrefix(markdown), Number.POSITIVE_INFINITY);
-  const start = resumeAt(spoken, queued);
-  let rest = spoken.slice(start);
+  let rest = unreadSentences(spoken, queued);
   if (!done) {
     const end = Math.max(...["。", "！", "？", "!", "?", ".", "」", "』"].map((mark) => rest.lastIndexOf(mark)));
     rest = end < 0 ? "" : rest.slice(0, end + 1);
   }
-  const next = spoken.slice(0, start) + rest;
+  const next = queued + rest;
   if (next.length > MAX_SPOKEN_CHARS) {
-    const room = rest.slice(0, Math.max(0, MAX_SPOKEN_CHARS - start));
+    const room = rest.slice(0, Math.max(0, MAX_SPOKEN_CHARS - queued.length));
     const end = Math.max(room.lastIndexOf("。"), room.lastIndexOf("！"), room.lastIndexOf("？"), room.lastIndexOf(". "));
     // 文の途中では切らない（2026-11-20 実測: 「ため息を続きは画面…」）。文の終わりが無ければ、ここまでで終える
     const head = end >= 0 ? room.slice(0, end + 1) : "";

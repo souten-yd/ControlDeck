@@ -6,7 +6,7 @@
 //       API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
-import { nextSpoken, speakableText, speechChunks, stablePrefix, voicedRange } from "../src/features/workflows/speakable";
+import { dropProgressLines, nextSpoken, speakableText, speechChunks, stablePrefix, voicedRange } from "../src/features/workflows/speakable";
 
 test("speakable text keeps the main words and drops code, tables, links and sources", () => {
   const spoken = speakableText([
@@ -444,6 +444,55 @@ test("a finished answer that differs from the streamed one is not read twice nor
   }
   parts.push(nextSpoken(answer, queued, true).text);
   expect(parts.join("")).toBe(speakableText(answer));
+});
+
+test("progress lines are not read, and a rewritten head does not make the answer read again", () => {
+  // 目的: 「Web で調査中」のような進み具合の文を読まない。先頭が入れ替わっても（進み具合の消去・出典の印・段落の組み替え）、
+  //       読んだ文を読み直さない。読んでいない文が先頭に差し込まれたら、それは読む。
+  // 根拠: 2026-11-23 利用者「ウェブで調査中と読んでから題名や本文を読み、その表示が消えて 1 行目から入れ替わると、
+  //       一通り読んだ後にもう一回読む」。位置ではなく内容（文ごとの指紋）で判定する。
+  expect(dropProgressLines("🔎 検索中...（サーバー側で継続）今日は晴れだよ。")).toBe("今日は晴れだよ。");
+  expect(dropProgressLines("Web で調査中...\n\n今日は晴れだよ。").trim()).toBe("今日は晴れだよ。");
+  expect(dropProgressLines("依頼を整理しています\n本文だよ。")).toBe("本文だよ。");
+  expect(dropProgressLines("🔬 Deep サーチ中...（サーバー側で継続）")).toBe("");
+  expect(dropProgressLines("検索中の結果は三件だよ。")).toBe("検索中の結果は三件だよ。");   // 本文の「検索中」は落とさない
+  const body = "# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。\n\n傘は要らないよ。";
+  // 生成中の列（進み具合の文が先頭に付いている）→ 確定（進み具合が消え、出典の印が付き、題名が変わった）
+  const stream = ["🔎 検索中...（サーバー側で継続）", "🔎 検索中...（サーバー側で継続）# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。",
+    "🔎 検索中...（サーバー側で継続）# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。\n\n"];
+  let queued = "";
+  const parts: string[] = [];
+  for (const text of stream) {
+    const next = nextSpoken(text, queued, false);
+    queued = next.queued;
+    if (next.text) parts.push(next.text);
+  }
+  expect(parts.join("")).not.toMatch(/検索中|サーバー/);
+  const final = nextSpoken(body.replace("晴れで", "晴れ[R1]で").replace("# 横浜の天気", "## 横浜の天気予報"), queued, true);
+  parts.push(final.text);
+  // 読んだ文（今日は…・夕方は…）は読み直さない。新しい題名（予報）と最後の文は読む
+  const all = parts.join("");
+  expect(all.split("今日は横浜").length - 1).toBe(1);
+  expect(all.split("夕方からは風").length - 1).toBe(1);
+  expect(all).toContain("傘は要らないよ。");
+  // 先頭に読んでいない文が差し込まれたら、それだけ読む
+  const inserted = nextSpoken("注意報が出ているよ。今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。傘は要らないよ。", queued + "傘は要らないよ。", true);
+  expect(inserted.text).toBe("注意報が出ているよ。");
+  // 段落の組み替え（順番が入れ替わる）でも、同じ文は読まない
+  expect(nextSpoken("二つ目だよ。一つ目だよ。", "一つ目だよ。二つ目だよ。", true).text).toBe("");
+  // 同じ文が 2 回ある回答は、2 回とも読む（数えて覚える）
+  expect(nextSpoken("はい。はい。", "はい。", true).text).toBe("はい。");
+  // 進み具合の文を挟んだ細かい刻みでも、確定でも、同じ文字を 2 度読まない
+  queued = "";
+  const pieces: string[] = [];
+  const answer = `Web で調査中...\n横浜の天気を調べたよ。最高気温は十五度だよ。夕方は風が出るよ。`;
+  for (let i = 1; i < answer.length; i++) {
+    const next = nextSpoken(answer.slice(0, i), queued, false);
+    queued = next.queued;
+    if (next.text) pieces.push(next.text);
+  }
+  pieces.push(nextSpoken(answer.replace("Web で調査中...\n", ""), queued, true).text);
+  expect(pieces.join("")).toBe("横浜の天気を調べたよ。最高気温は十五度だよ。夕方は風が出るよ。");
 });
 
 test("turning reading off mid-answer silences it, and the rest of the stream does not restart it", async ({ page, context }) => {
