@@ -13,7 +13,9 @@ import threading
 from app.config import data_dir
 from app.news.sources import ConfigError
 
-DESIGNS = ("broadcast", "paper", "compact")
+DESIGNS = ("broadcast", "magazine", "newspaper", "finance", "text")
+# 旧い名前の移し替え（保存済みの「紙面」は経済紙、「コンパクト」はテキスト一覧として扱う）
+LEGACY_DESIGNS = {"paper": "finance", "compact": "text"}
 DEFAULT_DISPLAY = {"design": "broadcast", "accent": "", "font_size": "m", "density": "normal", "images": True, "columns": "auto",
                    "ticker": True, "onair": True, "numbers": True, "reduce_motion": False}
 DEFAULT_TASTE = {"strength": 0.5, "use_chat": True, "half_life_days": 30, "mute_terms": [], "mute_sources": [], "dim_read": True}
@@ -62,6 +64,8 @@ def normalize(raw: object) -> dict:
     display = dict(DEFAULT_DISPLAY)
     for key, allowed in CHOICES.items():
         if key in display_in:
+            if key == "design":
+                display_in = {**display_in, key: LEGACY_DESIGNS.get(str(display_in[key]), str(display_in[key]))}
             if str(display_in[key]) not in allowed:
                 raise ConfigError(f"{key} は {'・'.join(allowed)} のどれかです")
             display[key] = str(display_in[key])

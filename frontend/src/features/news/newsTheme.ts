@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { NewsDisplay } from "../../api/news";
+import { LEGACY_DESIGNS, type NewsDisplay } from "../../api/news";
 
 /** 表示の設定を、ニュースの根の要素の属性と CSS の変数にする（見た目は news.css が変数で切り替える）。 */
 export function newsRootProps(display: NewsDisplay, paused = false) {
@@ -10,7 +10,7 @@ export function newsRootProps(display: NewsDisplay, paused = false) {
   }
   return {
     className: "nw",
-    "data-design": display.design, "data-font": display.font_size, "data-density": display.density, "data-images": String(display.images),
+    "data-design": LEGACY_DESIGNS[display.design] ?? display.design, "data-font": display.font_size, "data-density": display.density, "data-images": String(display.images),
     "data-cols": display.columns, "data-reduce": String(display.reduce_motion), "data-paused": String(paused),
     style: style as CSSProperties,
   };

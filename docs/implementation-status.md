@@ -8,6 +8,11 @@
 - チャット: ターンの終わり（`autosave_turn`）で、ターンの始めより新しい記録を最大 12 件 `meta.media` に。完了カードの下に縮小画像（押すと大きく）と `<video controls preload="metadata">`。消された記録は「消しました」。
 - 消す画面: 作業場の結果のカードの「画面の記録」（一覧・1 件ずつ・この作業場の全部を確認つき）と、設定 → 開発（作業場）の「画面の記録の容量」（合計・作業場ごと・一斉削除を確認つき・自動で消す設定）。
 - テスト: `test_workspace_media.py`（一覧・symlink・`..`・上限・Range・削除・持ち主・自動削除・meta.media・config）、`test_opencode_dev_tools.py`（caps）、E2E `assistant-workspace-media.spec.ts`（320・1280）。箱の中での実際の録画は未確認（本番で確かめる）。
+## 2026-11-23 ニュースの表示のデザインを 5 つに（マガジン・新聞・経済紙・テキスト一覧を追加）
+
+- 放送局（既定）は据え置き。The Verge・日経・FT の色・HN の型を参考に、色だけでなく並びも変えた（`DesignHomes.tsx`。共通のデータ・部品、並べ方だけ別）。旧「紙面」「コンパクト」は経済紙・テキスト一覧へ移し替え（backend の正規化と frontend の両方）。設定に見本の縮小図つきの選択。
+- 確認: 型検査・build・news の E2E 17 件・backend の news テスト 72 件。撮影は frontend/test-results/news-theme-*.png。
+
 ## 2026-11-23 ニュースの 2 段目（日刊・週刊のまとめ・別 DB・RAG・LLM の個別設定）
 
 - ニュースの表を本体の DB（Alembic の移行は削除）から `data_dir/news/news.sqlite3` へ分けた（`news/db.py`）。取った記事は知識基盤の分野 `news`（public）へ取り込み、横断検索・「意味で探す」に使う。本文の取り込み・古い記事を消すときの RAG の扱いは設定。

@@ -83,10 +83,11 @@ function buildHome(items: Item[], channels: Channel[]) {
   };
 }
 
-async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean } = {}) {
+async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; design?: string } = {}) {
   const items = opts.empty ? [] : ITEMS.map((i) => ({ ...i, state: { ...i.state } }));
   const channels: Channel[] = CHANNELS.map((c) => ({ ...c }));
   const prefs = DEFAULT_PREFS();
+  if (opts.design) prefs.display.design = opts.design;      // 保存済みの値（旧い名前を含む）を再現する
   const opened: number[] = [];
   const saved: { channels: unknown[]; prefs: Prefs[] } = { channels: [], prefs: [] };
   await page.route(/\/api\/v1\/news\/home$/, (route) => route.fulfill({ json: opts.empty ? { ...buildHome(ITEMS, channels), onair: null, ticker: [], now: [], today: [], week: [], sections: channels.map((c, i) => ({ id: c.id, name: c.name, color: c.color, number: i + 1, total: 0, week: 0, items: [] })) } : buildHome(items, channels) }));
@@ -279,17 +280,17 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
   await page.getByRole("button", { name: "ローカル LLM を下へ" }).click();
   await expect(page.locator("[data-channel-editor]").first().getByLabel("CH 1 の名前")).toHaveValue("AMD・GPU");
 
-  // デザインを紙面に: 設定は保存され、ニュースの見た目（背景色）が変わる
-  await page.getByRole("radio", { name: /紙面/ }).click();
+  // デザインを経済紙に: 設定は保存され、ニュースの見た目（背景色）が変わる
+  await page.getByRole("radio", { name: /経済紙/ }).click();
   await expect.poll(() => saved.prefs.length).toBeGreaterThan(0);
-  expect((saved.prefs.at(-1)!.display as { design: string }).design).toBe("paper");
+  expect((saved.prefs.at(-1)!.display as { design: string }).design).toBe("finance");
   await page.goto("/news");
-  await expect(page.getByTestId("news-root")).toHaveAttribute("data-design", "paper");
-  expect(await bg(page)).toBe("rgb(246, 242, 234)");
+  await expect(page.getByTestId("news-root")).toHaveAttribute("data-design", "finance");
+  expect(await bg(page)).toBe("rgb(255, 241, 229)");
   await expect(page.getByTestId("news-root").locator(".nw-head").first()).toBeVisible();
   const serif = await page.getByTestId("news-root").locator(".nw-sec-title").first().evaluate((el) => getComputedStyle(el).fontFamily);
   expect(serif).toMatch(/serif|Mincho/i);
-  await shot(page, "test-results/news-paper-1280.png");
+  await shot(page, "test-results/news-finance-1280.png");
 
   // 表示の項目: テロップ・数字を消す、画像を消す
   await page.goto("/settings/news");
@@ -304,23 +305,111 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
   await expect(page.getByTestId("numbers")).toHaveCount(0);
 });
 
-test("ニュース: コンパクト（見出しの一覧）は携帯でも 1 列で横にあふれない", async ({ page, context }) => {
+const DESIGN_CASES = [
+  { id: "broadcast", label: "放送局", bg: "rgb(8, 10, 15)" },
+  { id: "magazine", label: "マガジン", bg: "rgb(255, 255, 255)" },
+  { id: "newspaper", label: "新聞", bg: "rgb(255, 255, 255)" },
+  { id: "finance", label: "経済紙", bg: "rgb(255, 241, 229)" },
+  { id: "text", label: "テキスト一覧", bg: "rgb(246, 246, 239)" },
+] as const;
+
+test("ニュース: 5 つのデザインを順に選ぶ（並び・特徴の要素・保存・撮影）", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await mockNews(page);
+  await establishSession(page, context);
+  await page.goto("/settings/news");
+  // 見本の縮小図つきで 5 つ選べる
+  await expect(page.getByRole("radio")).toHaveCount(5);
+  await expect(page.locator("[data-design-option]")).toHaveCount(5);
+  await page.getByRole("radiogroup", { name: "デザイン" }).scrollIntoViewIfNeeded();
+  await shot(page, "test-results/news-theme-picker-1280.png");
+  for (const d of DESIGN_CASES) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/settings/news");
+    await page.getByRole("radio", { name: new RegExp(d.label) }).click();
+    await expect(page.getByRole("radio", { name: new RegExp(d.label) })).toBeChecked();
+    await page.waitForTimeout(400);      // 保存が済んでから開き直す
+    await page.goto("/news");
+    const root = page.getByTestId("news-root");
+    await expect(root).toHaveAttribute("data-design", d.id);
+    expect(await bg(page)).toBe(d.bg);
+    // デザインごとの特徴の要素
+    if (d.id === "broadcast") await expect(page.getByRole("region", { name: "ON AIR" })).toBeVisible();
+    if (d.id === "magazine") {
+      await expect(page.getByTestId("mag-lead")).toBeVisible();
+      const latest = page.getByTestId("mag-latest");
+      await expect(latest.getByRole("heading", { name: "LATEST" })).toBeVisible();
+      expect(await latest.locator("li").count()).toBeGreaterThanOrEqual(5);
+      await expect(latest.locator(".nwd-thumb").first()).toBeVisible();      // 縦の一覧の小さな画像
+      const [lead, list] = await Promise.all([page.getByTestId("mag-lead").boundingBox(), latest.boundingBox()]);
+      expect(list!.x).toBeGreaterThan(lead!.x + lead!.width - 4);              // 左に大きな 1 本・右に一覧
+    }
+    if (d.id === "newspaper") {
+      await expect(page.getByTestId("np-band")).toBeVisible();
+      await expect(page.getByTestId("np-band")).toContainText("前日比");
+      const flash = page.getByTestId("np-flash");
+      await expect(flash.getByRole("heading", { name: "速報" })).toBeVisible();
+      await expect(flash.locator("time").first()).toBeVisible();
+      await expect(page.getByTestId("np-lead")).toBeVisible();
+    }
+    if (d.id === "finance") {
+      await expect(page.getByTestId("fin-lead")).toBeVisible();
+      const heading = await page.getByTestId("fin-lead").locator(".nw-head").first().evaluate((el) => getComputedStyle(el).fontFamily);
+      expect(heading).toMatch(/Georgia|serif|Mincho/i);
+    }
+    if (d.id === "text") {
+      const rows = page.getByTestId("text-list").locator("li");
+      expect(await rows.count()).toBeGreaterThanOrEqual(8);
+      await expect(rows.first().locator(".nwx-rank")).toHaveText("1.");
+      await expect(page.getByTestId("text-list")).toContainText("412 点");        // 点数・コメント数
+      await expect(page.getByTestId("text-list")).toContainText("(example.com)");   // 出どころのドメイン
+      await expect(page.locator(".nwd-lead-media, .nwd-thumb")).toHaveCount(0);   // 画像なし
+    }
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-theme-${d.id}-1280.png`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-theme-${d.id}-390.png`);
+    await page.setViewportSize({ width: 320, height: 700 });
+    expect(await noOverflow(page)).toBe(true);
+  }
+});
+
+test("ニュース: ダークでも 5 つのデザインが読める（背景と文字が違う色）", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   await page.setViewportSize({ width: 390, height: 844 });
   await mockNews(page);
   await establishSession(page, context);
-  await page.goto("/settings/news");
-  await page.getByRole("radio", { name: /コンパクト/ }).click();
-  await page.goto("/news");
-  const root = page.getByTestId("news-root");
-  await expect(root).toHaveAttribute("data-design", "compact");
-  expect(await bg(page)).toBe("rgb(16, 18, 22)");
-  // 画像は出さず、見出しの行になる
-  await expect(page.getByTestId("section-local-llm").locator(".card-media").first()).toBeHidden();
-  expect(await noOverflow(page)).toBe(true);
-  await shot(page, "test-results/news-compact-390.png");
-  await page.setViewportSize({ width: 320, height: 700 });
-  expect(await noOverflow(page)).toBe(true);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.addInitScript(() => document.documentElement.classList.add("dark"));
+  for (const d of DESIGN_CASES.slice(1)) {
+    await page.goto("/settings/news");
+    await page.getByRole("radio", { name: new RegExp(d.label) }).click();
+    await expect(page.getByRole("radio", { name: new RegExp(d.label) })).toBeChecked();
+    await page.goto("/news");
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    const root = page.getByTestId("news-root");
+    await expect(root).toHaveAttribute("data-design", d.id);
+    const [back, fore] = await root.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]);
+    expect(back).not.toBe(d.bg);
+    expect(back).not.toBe(fore);
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-theme-${d.id}-dark-390.png`);
+  }
+});
+
+test("ニュース: 保存済みの「紙面」「コンパクト」は経済紙・テキスト一覧として扱う", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [old, now, label] of [["paper", "finance", "経済紙"], ["compact", "text", "テキスト一覧"]] as const) {
+    await mockNews(page, { design: old });      // 後から足した route が先に効く
+    if (old === "paper") await establishSession(page, context);
+    await page.goto("/news");
+    await expect(page.getByTestId("news-root")).toHaveAttribute("data-design", now);
+    await page.goto("/settings/news");
+    await expect(page.getByRole("radio", { name: new RegExp(label) })).toBeChecked();
+  }
 });
 
 test("ニュース: 動きを減らす設定でテロップが止まる", async ({ page, context }) => {

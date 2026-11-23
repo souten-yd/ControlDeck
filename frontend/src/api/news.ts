@@ -29,7 +29,9 @@ export interface ChannelsResponse extends ChannelsConfig {
 }
 
 /** 表示のデザインと好み（利用者ごと）。 */
-export type NewsDesign = "broadcast" | "paper" | "compact";
+export type NewsDesign = "broadcast" | "magazine" | "newspaper" | "finance" | "text";
+/** 旧い名前の移し替え: 保存済みの「紙面」は経済紙、「コンパクト」はテキスト一覧として扱う。 */
+export const LEGACY_DESIGNS: Record<string, NewsDesign> = { paper: "finance", compact: "text" };
 export interface NewsDisplay {
   design: NewsDesign; accent: string; font_size: "s" | "m" | "l"; density: "relaxed" | "normal" | "tight"; images: boolean;
   columns: "auto" | "1" | "2" | "3"; ticker: boolean; onair: boolean; numbers: boolean; reduce_motion: boolean;

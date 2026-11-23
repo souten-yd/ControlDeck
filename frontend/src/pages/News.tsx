@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { relativeTime, DEFAULT_PREFS, useNewsAction, useNewsChannels, useNewsHome, useNewsItems, useNewsPrefs, useNewsSources, useRefreshNews, useSemanticSearch, type NewsItem, type NewsView } from "../api/news";
+import { relativeTime, DEFAULT_PREFS, LEGACY_DESIGNS, useNewsAction, useNewsChannels, useNewsHome, useNewsItems, useNewsPrefs, useNewsSources, useRefreshNews, useSemanticSearch, type NewsDesign, type NewsItem, type NewsView } from "../api/news";
 import { useToasts } from "../stores";
+import { DesignHome } from "../features/news/DesignHomes";
 import { BroadcastHome } from "../features/news/BroadcastHome";
 import { NewsCard } from "../features/news/NewsCard";
 import { ArchiveDays } from "../features/news/NewsArchive";
@@ -66,6 +67,7 @@ export default function NewsPage() {
   });
   const title = searching ? `「${q.trim()}」の${useRag ? "意味での検索結果" : "検索結果"}` : topic ? `話題「${topic}」` : date ? `${date} の記事` : starred ? "保存した記事" : "";
   const root = newsRootProps(prefs.display, paused);
+  const design = (LEGACY_DESIGNS[prefs.display.design] ?? prefs.display.design) as NewsDesign;
   const filtered = Boolean(searching || topic || date || starred || kinds || channel);
 
   return (
@@ -114,6 +116,8 @@ export default function NewsPage() {
               <p>まだ記事がありません。</p>
               <button type="button" className="nw-btn on" onClick={runRefresh} disabled={refresh.isPending}>今すぐ取得する</button>
             </div>
+          ) : design !== "broadcast" ? (
+            <DesignHome design={design} home={home.data} prefs={prefs} onTopic={pickTopic} onOpen={(id) => act.mutate({ id, action: "open" })} onChannel={pickChannel} onArchive={() => setTab("archive")} />
           ) : (
             <BroadcastHome home={home.data} prefs={prefs} paused={paused || prefs.display.reduce_motion} onPause={() => setPaused((p) => !p)} onTopic={pickTopic}
               onOpen={(id) => act.mutate({ id, action: "open" })} onChannel={pickChannel} onArchive={() => setTab("archive")} />

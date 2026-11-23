@@ -4,8 +4,8 @@ import { InterestPanel, TrendsPanel } from "./NewsAside";
 import { Media, NewsCard, type CardChannel } from "./NewsCard";
 import { chNo } from "./newsTheme";
 
-const external = (url: string) => /^https?:\/\//.test(url);
-const visible = (items: NewsItem[]) => items.filter((i) => !i.state.hide);
+export const external = (url: string) => /^https?:\/\//.test(url);
+export const visible = (items: NewsItem[]) => items.filter((i) => !i.state.hide);
 
 /** 1. ON AIR: モニターの枠に 1 本と、下にチャンネルの切り替え（CH 01〜）。押すとそのチャンネルの 1 位に変わる。
  *  携帯ではモニターが先頭（CSS の order）。 */
@@ -70,7 +70,7 @@ function Ticker({ home, paused, onPause }: { home: NewsHome; paused: boolean; on
   );
 }
 
-function Trio({ home, prefs, onTopic, channelOf }: { home: NewsHome; prefs: NewsPrefs; onTopic: (t: string) => void; channelOf: (item: NewsItem) => CardChannel | null }) {
+export function Trio({ home, prefs, onTopic, channelOf }: { home: NewsHome; prefs: NewsPrefs; onTopic: (t: string) => void; channelOf: (item: NewsItem) => CardChannel | null }) {
   const cols = [["now", "NOW", "いま", home.now], ["today", "TODAY", "今日", home.today], ["week", "THIS WEEK", "今週", home.week]] as const;
   return (
     <section aria-label="NOW・TODAY・THIS WEEK" className="nw-trio">
@@ -86,20 +86,48 @@ function Trio({ home, prefs, onTopic, channelOf }: { home: NewsHome; prefs: News
   );
 }
 
-/** 3〜6. チャンネルごとの区画・興味と話題の動き・数字で見る。 */
-export function BroadcastHome({ home, prefs, paused, onPause, onTopic, onOpen, onChannel, onArchive }: {
-  home: NewsHome; prefs: NewsPrefs; paused: boolean; onPause: () => void; onTopic: (t: string) => void; onOpen: (id: number) => void;
-  onChannel: (id: string) => void; onArchive: () => void;
-}) {
-  const d = prefs.display;
-  const byId = new Map(home.channels.map((c) => [c.id, c]));
-  const channelOf = (item: NewsItem) => (item.channel ? byId.get(item.channel) ?? null : null);
+/** 興味と話題の動き（全デザイン共通）。 */
+export function HomeAside({ home, onTopic }: { home: NewsHome; onTopic: (t: string) => void }) {
+  return (
+    <section aria-label="あなたの興味と話題の動き" className="nw-two">
+      <InterestPanel data={home.interest} onTopic={onTopic} />
+      <TrendsPanel data={home.trends} onTopic={onTopic} />
+    </section>
+  );
+}
+
+/** 数字で見る（全デザイン共通）。 */
+export function NumbersSection({ home }: { home: NewsHome }) {
   const n = home.numbers;
   return (
+    <section aria-labelledby="nw-numbers">
+      <div className="nw-sec-head"><div><span className="nw-ch-tag">BY THE NUMBERS</span><h2 id="nw-numbers" className="nw-head nw-sec-title">数字で見る</h2></div></div>
+      <div className="nw-numbers-grid" data-testid="numbers">
+        <div className="nw-num"><div className="nw-big">{n.today}</div><div className="nw-muted">今日の記事数</div></div>
+        <div className="nw-num"><div className="nw-big">{n.read_today}</div><div className="nw-muted">今日読んだ数</div></div>
+        <div className="nw-num" style={n.top_channel ? ({ "--ch": n.top_channel.color } as CSSProperties) : undefined}>
+          <div className="nw-big text">{n.top_channel ? n.top_channel.name : "—"}</div><div className="nw-muted">よく読むチャンネル{n.top_channel ? `（${n.top_channel.reads} 件）` : ""}</div></div>
+        <div className="nw-num"><div className="nw-big text">{n.top_topic ?? "—"}</div><div className="nw-muted">話題の上位{n.top_topic ? `（${n.top_topic_count} 件）` : ""}</div></div>
+      </div>
+    </section>
+  );
+}
+
+/** アーカイブへの入口（全デザイン共通）。 */
+export function ArchiveSection({ onArchive }: { onArchive: () => void }) {
+  return (
+    <section aria-labelledby="nw-archive">
+      <div className="nw-sec-head"><div><span className="nw-ch-tag">ARCHIVE</span><h2 id="nw-archive" className="nw-head nw-sec-title">アーカイブ</h2></div>
+        <button type="button" className="nw-more" onClick={onArchive}>日付・保存した記事・検索へ →</button></div>
+    </section>
+  );
+}
+
+/** チャンネルごとの区画（全デザイン共通。並べ方は CSS がデザインごとに変える）。 */
+export function ChannelSections({ home, prefs, onTopic, onChannel }: { home: NewsHome; prefs: NewsPrefs; onTopic: (t: string) => void; onChannel: (id: string) => void }) {
+  const byId = new Map(home.channels.map((c) => [c.id, c]));
+  return (
     <>
-      {d.onair && <OnAir home={home} onTopic={onTopic} onOpen={onOpen} />}
-      {d.ticker && <Ticker home={home} paused={paused} onPause={onPause} />}
-      <Trio home={home} prefs={prefs} onTopic={onTopic} channelOf={channelOf} />
       {home.sections.map((section) => {
         const items = visible(section.items);
         return (
@@ -115,26 +143,27 @@ export function BroadcastHome({ home, prefs, paused, onPause, onTopic, onOpen, o
           </section>
         );
       })}
-      <section aria-label="あなたの興味と話題の動き" className="nw-two">
-        <InterestPanel data={home.interest} onTopic={onTopic} />
-        <TrendsPanel data={home.trends} onTopic={onTopic} />
-      </section>
-      {d.numbers && (
-        <section aria-labelledby="nw-numbers">
-          <div className="nw-sec-head"><div><span className="nw-ch-tag">BY THE NUMBERS</span><h2 id="nw-numbers" className="nw-head nw-sec-title">数字で見る</h2></div></div>
-          <div className="nw-numbers-grid" data-testid="numbers">
-            <div className="nw-num"><div className="nw-big">{n.today}</div><div className="nw-muted">今日の記事数</div></div>
-            <div className="nw-num"><div className="nw-big">{n.read_today}</div><div className="nw-muted">今日読んだ数</div></div>
-            <div className="nw-num" style={n.top_channel ? ({ "--ch": n.top_channel.color } as CSSProperties) : undefined}>
-              <div className="nw-big text">{n.top_channel ? n.top_channel.name : "—"}</div><div className="nw-muted">よく読むチャンネル{n.top_channel ? `（${n.top_channel.reads} 件）` : ""}</div></div>
-            <div className="nw-num"><div className="nw-big text">{n.top_topic ?? "—"}</div><div className="nw-muted">話題の上位{n.top_topic ? `（${n.top_topic_count} 件）` : ""}</div></div>
-          </div>
-        </section>
-      )}
-      <section aria-labelledby="nw-archive">
-        <div className="nw-sec-head"><div><span className="nw-ch-tag">ARCHIVE</span><h2 id="nw-archive" className="nw-head nw-sec-title">アーカイブ</h2></div>
-          <button type="button" className="nw-more" onClick={onArchive}>日付・保存した記事・検索へ →</button></div>
-      </section>
+    </>
+  );
+}
+
+/** 3〜6. チャンネルごとの区画・興味と話題の動き・数字で見る。 */
+export function BroadcastHome({ home, prefs, paused, onPause, onTopic, onOpen, onChannel, onArchive }: {
+  home: NewsHome; prefs: NewsPrefs; paused: boolean; onPause: () => void; onTopic: (t: string) => void; onOpen: (id: number) => void;
+  onChannel: (id: string) => void; onArchive: () => void;
+}) {
+  const d = prefs.display;
+  const byId = new Map(home.channels.map((c) => [c.id, c]));
+  const channelOf = (item: NewsItem) => (item.channel ? byId.get(item.channel) ?? null : null);
+  return (
+    <>
+      {d.onair && <OnAir home={home} onTopic={onTopic} onOpen={onOpen} />}
+      {d.ticker && <Ticker home={home} paused={paused} onPause={onPause} />}
+      <Trio home={home} prefs={prefs} onTopic={onTopic} channelOf={channelOf} />
+      <ChannelSections home={home} prefs={prefs} onTopic={onTopic} onChannel={onChannel} />
+      <HomeAside home={home} onTopic={onTopic} />
+      {d.numbers && <NumbersSection home={home} />}
+      <ArchiveSection onArchive={onArchive} />
     </>
   );
 }

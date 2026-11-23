@@ -260,8 +260,11 @@ def test_prefs_defaults_validation_and_per_user_storage(client):
     assert got["display"]["design"] == "broadcast" and got["taste"]["strength"] == 0.5 and got["taste"]["dim_read"] is True
     body = {"display": {"design": "paper", "accent": "#12AB34", "columns": "2", "ticker": False, "reduce_motion": True}, "taste": {"strength": 0.9, "mute_terms": ["広告", "広告"], "half_life_days": 14}}
     saved = a.put("/api/v1/news/prefs", json=body, headers=CSRF_HEADERS).json()
-    assert saved["display"]["design"] == "paper" and saved["display"]["accent"] == "#12ab34" and saved["display"]["ticker"] is False
+    assert saved["display"]["design"] == "finance" and saved["display"]["accent"] == "#12ab34" and saved["display"]["ticker"] is False
     assert saved["display"]["images"] is True and saved["taste"]["mute_terms"] == ["広告"] and saved["taste"]["half_life_days"] == 14
+    for old, new in (("compact", "text"), ("magazine", "magazine"), ("newspaper", "newspaper")):          # 旧い名前の移し替えと新しい名前
+        assert a.put("/api/v1/news/prefs", json={"display": {"design": old}}, headers=CSRF_HEADERS).json()["display"]["design"] == new
+    a.put("/api/v1/news/prefs", json=body, headers=CSRF_HEADERS)
     b = login(client, "newsprefs-b")
     assert b.get("/api/v1/news/prefs").json()["display"]["design"] == "broadcast"          # 利用者ごと
     a = login(client, "newsprefs-a")
