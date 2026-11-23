@@ -169,7 +169,7 @@ def test_idempotency_priority_and_queued_cancel(client, monkeypatch):
         canceled = jobs.create("test.queue", "cancel", await named("cancel"), owner_user_id=owner_id)
         assert canceled.status == "queued" and jobs.cancel(canceled.id)
         gate.set()
-        for _ in range(100):
+        for _ in range(1000):   # 最大 10 秒（関門の全体実行の負荷でも待てるように。速ければすぐ抜ける）
             if high.status == low.status == "succeeded":
                 break
             await asyncio.sleep(0.01)
@@ -235,8 +235,8 @@ def test_waiting_resource_job_does_not_consume_runner_slot_and_cancel_reclaims_r
             resource=lambda job_id: requirement("internal:media", job_id),
         )
         cpu = jobs.create("test.cpu", "CPU", cpu_runner)
-        await asyncio.wait_for(ran.wait(), timeout=2)
-        for _ in range(100):
+        await asyncio.wait_for(ran.wait(), timeout=10)
+        for _ in range(1000):   # 最大 10 秒（関門の全体実行の負荷でも待てるように。速ければすぐ抜ける）
             if waiting.wait_reason:
                 break
             await asyncio.sleep(0.01)
@@ -406,7 +406,7 @@ def test_two_exclusive_resource_jobs_execute_serially(monkeypatch):
             "test.gpu", "second", second_runner,
             resource=lambda job_id: requirement(job_id),
         )
-        for _ in range(100):
+        for _ in range(1000):   # 最大 10 秒（関門の全体実行の負荷でも待てるように。速ければすぐ抜ける）
             if first.status == "running" and second.wait_reason:
                 break
             await asyncio.sleep(0.01)
@@ -414,7 +414,7 @@ def test_two_exclusive_resource_jobs_execute_serially(monkeypatch):
         assert second.status == "queued" and second.phase == "waiting_resource"
         assert order == ["first-start"]
         first_gate.set()
-        for _ in range(100):
+        for _ in range(1000):   # 最大 10 秒（関門の全体実行の負荷でも待てるように。速ければすぐ抜ける）
             if first.status == second.status == "succeeded":
                 break
             await asyncio.sleep(0.01)

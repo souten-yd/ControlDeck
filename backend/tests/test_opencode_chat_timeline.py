@@ -237,7 +237,7 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
     chat = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
                              json={"content": "別の質問", "mode": "chat", "model": "test"}).json()["item"]
     try:
-        for _ in range(100):
+        for _ in range(400):   # 最大 20 秒（関門の全体実行の負荷で回の開始が遅れても待てるように。2026-11-23 に 5 秒で揺れた）
             result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
             if result.status_code == 200:
                 break
@@ -564,7 +564,7 @@ def test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question(a
     item = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
                              json={"content": "ISOの件です", "mode": "code", "model": "test", "code_project": tmp_path.name}).json()["item"]
     try:
-        for _ in range(100):
+        for _ in range(400):   # 最大 20 秒（関門の全体実行の負荷で回の開始が遅れても待てるように。2026-11-23 に 5 秒で揺れた）
             result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
             if result.status_code == 409 and "質問" in result.json()["detail"]:
                 break
