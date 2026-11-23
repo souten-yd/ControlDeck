@@ -754,7 +754,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages"; route_gated: boolean;
+  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -1266,6 +1266,7 @@ function AddonsSection() {
       : addon.kind === "release-bundle" && addon.installed && addon.requested_enabled ? "導入済み — サービスの復旧が必要です"
       : addon.installed ? "導入済み（無効）— 有効化すると使えます"
       : addon.available ? addon.summary
+      : addon.kind === "cpu-llm" ? "導入できません"
       : addon.kind === "pip" || addon.kind === "python-lib" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
   /** その時に必要な操作だけを1つ前に出す。残りは「詳細」に入れる。 */
   const primary = (addon: AddonState) => {
@@ -1407,6 +1408,13 @@ function AddonsSection() {
                           {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
                           {addon.id === "news-imagegen" && addon.model_tiers && (
                             <ImagegenTierList tiers={addon.model_tiers} busy={busy} onInstall={(t) => void installTier(addon, t)} onRemove={(t) => void removeTier(addon, t)} />
+                          )}
+                          {addon.kind === "cpu-llm" && (
+                            <p className="text-[11px] text-zinc-500" data-testid="cpu-llm-detail">
+                              モデル: Gemma 4 E2B（Q4_0・版固定）· <span className="break-all font-mono">{addon.executable}</span><br />
+                              下ごしらえの間だけ llama.cpp で起動し（GPU は使いません）、終わったら止めます。設定 → ニュースで「使うモデル」に選べます。
+                              {addon.error && <span className="block text-amber-700 dark:text-amber-400">{addon.error}</span>}
+                            </p>
                           )}
                           {OPENCODE_SETUP_KEYS[addon.id] && <OpenCodeFeatureSetup featureId={addon.id} />}
                           {addon.kind === "playwright-browsers" && (

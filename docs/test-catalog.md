@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 243 ファイル、2394 テスト（目的の未記入 93 ファイル）
-- E2E: 130 spec、284 テスト
+- backend: 244 ファイル、2404 テスト（目的の未記入 93 ファイル）
+- E2E: 131 spec、286 テスト
 
 ## backend（backend/tests）
 
@@ -2066,6 +2066,21 @@
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
 - `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
+
+### backend/tests/test_news_cpu_llm.py
+
+目的: 目的: ニュースの下ごしらえを CPU と RAM だけの LLM（Gemma 4 E2B）で行う仕組みの試験。llama-server は全部ニセの実行ファイル・モックで、本物のモデル・GPU・外部通信は使わない。 根拠: 2026-11-24 利用者「CPU で動く Gemma とかで記事の翻訳できないか？画像生成と同じような管理で LLM を動かしたい。基本的に CPU と RAM で必ず動かすようにしたい」 「基本的に CPU で動かした Gemma の小を使う…それを既定に設定する。なお中と大は不要」。 守ること: - 起動の引数は --device none と -ngl 0、環境は GPU を見せない（HIP/ROCR/CUDA を空に）。ログに GPU を使った印が出たら失敗にする。 - 下ごしらえの回が終われば、正常・例外・時間切れのどれでも llama-server のプロセスが残らない。同時に 2 つは起動しない。 - CPU のときは 1 回 10 件・出力の上限 2500・system と日本語の見本つきの指示・出力の形を json_schema で強制する。 - 設定の既定は CPU の LLM。まとめ・一言要約には選べない。機能の状態（未導入 → 導入済み → 削除）。
+
+- `test_command_and_env_hide_the_gpu` — 目的: 起動の引数に --device none と -ngl 0 があり、環境は GPU を見せない変数が空で、親の環境（秘密など）は引き継がれないこと。
+- `test_gpu_marks_in_the_log_are_detected_but_cpu_lines_are_not` — 目的: 起動のログに GPU を使った印があれば検知し、「GPU が見つからない」「CPU のバッファ」は誤検知しないこと。
+- `test_session_starts_with_cpu_only_args_and_stops_the_process` — 目的: 実際にプロセスを起動して、引数・環境が GPU を見せない形で、抜けたら（正常でも）プロセスが残らないこと。
+- `test_session_stops_the_process_on_exception_and_on_timeout` — 目的: 本体の処理が例外で終わっても、起動が時間切れになっても、GPU の印が出ても、プロセスが残らないこと。
+- `test_never_two_servers_at_once` — 目的: 下ごしらえが重なっても llama-server は同時に 2 つ起動しない（後の回は待つ）こと。
+- `test_not_ready_gives_guidance_and_does_not_start` — 目的: モデルまたは llama.cpp が無いときは、起動せず機能と拡張への案内を返すこと（記事は済みにしない）。
+- `test_cpu_prep_splits_into_10_and_sends_system_sample_and_schema` — 目的: 既定（CPU）では 1 回 10 件ずつ（23 件 → 10・10・3）、出力の上限 2500、system（英日翻訳者）と日本語の見本つきの指示、json_schema で形を強制し、
+- `test_cpu_prep_reports_a_start_failure_without_marking_items` — 目的: llama-server を起動できなかった・未導入のときは、理由を返し、記事の試行回数を進めないこと。
+- `test_settings_default_is_cpu_and_cpu_is_prep_only` — 目的: 下ごしらえの既定は CPU の Gemma。知らない cpu: は断り、まとめ・一言要約には CPU を選べず、今までのモデルは選べること。
+- `test_feature_status_install_and_uninstall` — 目的: 機能「ニュースの下ごしらえ（CPU の LLM）」: 未導入 → ファイルがあれば導入済み（置いてあるものは導入済みとみなす）→ アンインストールでファイルだけ消える。
 
 ### backend/tests/test_news_imagegen.py
 
@@ -4308,6 +4323,13 @@
 目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
 
 - Settings: API キー（${width}px）
+
+### frontend/e2e/settings-news-cpu-llm.spec.ts
+
+目的: 設定 → ニュースの「下ごしらえの使うモデル」（既定は CPU の Gemma 4 E2B）と、機能と拡張の「ニュースの下ごしらえ（CPU の LLM）」。API は page.route で模擬する（モデルは取得しない）。 根拠: 2026-11-24 利用者「基本的に CPU で動かした Gemma の小を使う。生成クオリティの問題なかったということなので、それを既定に設定する」。 撮影は test-results/settings-news-cpu-llm-{320,1280}.png・settings-news-cpu-llm-feature-{320,1280}.png。 */
+
+- ニュースの下ごしらえ: 既定は CPU の Gemma（${width}px）
+- 機能と拡張: ニュースの下ごしらえ（CPU の LLM）の導入（${width}px）
 
 ### frontend/e2e/settings-news-imagegen-tiers.spec.ts
 

@@ -644,6 +644,7 @@ def prep_counter(tmp_path, monkeypatch):
     from app.news import prep
 
     monkeypatch.setattr(prep, "_counter_path", lambda: tmp_path / "news" / "prep-calls.json")
+    cfg = settings.load(); cfg["llm"]["prep_model"] = "auto"; settings.save(cfg)      # 既定は CPU の LLM。ここは今までのモデルの経路の試験
     return prep
 
 
@@ -755,7 +756,7 @@ def test_prep_respects_per_run_limit_and_unreadable_reply(monkeypatch, prep_coun
 
 def test_prep_without_egress_permission_does_nothing(prep_counter):
     _, rows = _rows(2)
-    cfg = settings.load(); cfg["llm"]["gist_model"] = "cloud:openrouter/meta/llama:free"; settings.save(cfg)
+    cfg = settings.load(); cfg["llm"]["prep_model"] = "cloud:openrouter/meta/llama:free"; settings.save(cfg)
     configure_openrouter(["meta/llama:free"], egress=False)
     out = run(prep_counter.run(rows))
     assert out["done"] == 0 and "許可されていません" in out["error"]

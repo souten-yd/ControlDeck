@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-24 ニュースの下ごしらえを既定で CPU の Gemma 4 E2B に（GPU を使わない）
+- 利用者「CPU で動く Gemma とかで記事の翻訳できないか？画像生成と同じような管理で LLM を動かしたい。基本的に CPU と RAM で必ず動かすようにしたい」→「基本的に CPU で動かした Gemma の小を使う…それを既定に設定する。なお中と大は不要」。
+- 実行: `app/news/cpu_llm.py`。本番の llama-server（`data/runtimes/llama.cpp/current`）を子プロセスで、`HIP/ROCR/CUDA_VISIBLE_DEVICES=` 空・`--device none -ngl 0 -t 8 -c 16384 --host 127.0.0.1 --port <空き> --no-webui`・nice 10 で起動。下ごしらえの 1 回の実行の初めに起動し、全バッチを流して必ず止める（例外・時間切れ・キャンセルでもプロセスグループごと。同時に 2 つは起動せず、後の回は待つ）。起動のログに GPU を使った印が出れば失敗にする。
+- `prep.py`: 設定 `llm.prep_model`（既定 `cpu:gemma-4-e2b`。今までのモデルも選べる）。CPU は 1 回 10 件・出力の上限 2500・system「英日翻訳者」と日本語の見本つき。出力の形は llama-server の `response_format: json_schema` で強制（番号 1〜N が必ず並び、各項目に長さの上限があって暴走しない）。検査・送り直し・3 回で諦める・元の題と抜粋は従来どおり。未導入・起動失敗は理由を返し、記事の試行回数は進めない。`gist_model`・`digest_model` に `cpu:` は選べない。
+- 機能と拡張: 「ニュースの下ごしらえ（CPU の LLM）」（`registry.py` の kind `cpu-llm`。Hugging Face の ggml-org/gemma-4-E2B-it-GGUF の Q4_0 を版・大きさ・sha256 固定で取得。置いてあるファイルは導入済み。アンインストールはモデルだけ消す。llama.cpp 未導入なら案内）。設定 → ニュースの「使うモデル」に CPU の項目と未導入の案内。
+- 本番の保存済みの設定（`llm.gist_model`）は触らない。`prep_model` が無い保存済みの設定は既定（CPU）になる。
+- 実測（手元・本番の llama.cpp とモデル・GPU 不使用）: 起動 1 秒、英語 10 件で 82 秒（1 件約 8 秒）・10 件とも日本語で解釈できた・RAM 約 4.3GB。
+- 試験: `backend/tests/test_news_cpu_llm.py`（ニセの llama-server で実際に起動・停止。引数・環境・必ず止まる・同時 2 つ不可・10 件分け・指示文・設定・機能の状態）、E2E `frontend/e2e/settings-news-cpu-llm.spec.ts`。
+
 ## 2026-11-24 ニュース: 記事の下ごしらえを 1 回に・関心の順位・Google ニュースの画像・古い記事の画像・ロゴの除外
 - 利用者「記事一個一個ずつやっていたらすごく費用がかかりそう…ある程度のまとまりを送って構造的に個別に返してもらう…1 回としてできる」。本番の撮影: ON AIR・ホームの 1 位が HN の Bored.com（チャンネルに合わない）、Google ニュースの記事は画像 0 件、既存 860 件は image_tried=0、日本語の題は決まり文句で同じ地球儀の絵、フォーラムは全投稿に同じロゴ。
 - 下ごしらえ: `app/news/prep.py`（`gist.translate` を置き換え）。20 件ずつ 1 回の呼び出しで JSON `{"1": {ja, img, topics}}`。返事の検査（JSON・番号・欠け）→ 合わない記事だけ同じ回に 1 回送り直し、だめなら `prep_tries`+1 で次の取得へ（3 回で諦め）。`news_items` に `img_prompt`・`prep_tries` を後から足す列として追加。呼び出し回数は `data/news/prep-calls.json`（日ごと）→ 設定の画面「今日の下ごしらえの呼び出し n 回」。設定 `llm.prep_enabled`（既定入）・`llm.prep_max_per_run`（既定 100 = 5 回）。`translate_enabled` は廃止。`imagegen.build_prompt` は `img` があれば使う。

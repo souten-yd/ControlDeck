@@ -18,7 +18,7 @@ const CHANNELS = [{ id: "c1", name: "ローカル LLM", color: "#f5c518", number
 const settings = {
   settings: {
     feed_refresh_minutes: 15, digest_daily: { enabled: true, time: "06:30" }, digest_weekly: { enabled: true, weekday: 0, time: "07:00" }, quiet: { enabled: false, start: "01:00", end: "05:00" },
-    llm: { digest_model: "auto", gist_enabled: false, gist_model: "auto", digest_focus: "", prep_enabled: true, prep_max_per_run: 100 }, rag: { enabled: true, fulltext: false, on_prune: "keep" },
+    llm: { digest_model: "auto", gist_enabled: false, gist_model: "auto", digest_focus: "", prep_enabled: true, prep_model: "auto", prep_max_per_run: 100 }, rag: { enabled: true, fulltext: false, on_prune: "keep" },
     imagegen: { enabled: false, tier: "small", threads: 8, max_per_run: 30 },
   },
   weekdays: ["月", "火", "水", "木", "金", "土", "日"], interval_minutes: 30, prep_calls_today: 37, imagegen_available: false, imagegen_tiers: [],
