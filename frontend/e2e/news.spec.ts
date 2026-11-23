@@ -101,7 +101,8 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
     let rows = items.filter((i) => (!kinds.length || kinds.includes(i.kind)) && (!q || i.title.includes(q) || i.summary.includes(q)) && (!ch || inChannel(ch, i)));
     if (url.searchParams.get("view") === "starred") rows = rows.filter((i) => i.state.star);
     if (date) rows = rows.filter((i) => i.published_at.startsWith(date));
-    return route.fulfill({ json: { items: rows, next: null } });
+    // 本番の /news/items と同じく、各記事に所属チャンネルの id を付ける（ホームのカードの色の点・札）
+    return route.fulfill({ json: { items: rows.map((i) => ({ ...i, channel: channels.find((c) => inChannel(c, i))?.id ?? null })), next: null } });
   });
   await page.route(/\/api\/v1\/news\/items\/(\d+)\/action$/, (route) => {
     const id = Number(route.request().url().match(/items\/(\d+)\//)![1]);

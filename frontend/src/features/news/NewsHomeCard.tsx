@@ -56,7 +56,7 @@ export function NewsHomeCard() {
       <p className="card-meta" style={{ margin: 0 }}>
         {c ? <span className="nwd-tag">{chNo(c.number)} {c.name}</span> : <span>{kind.icon} {kind.label}</span>}
         <span className="src">{item.source}</span>
-        <span>· {relativeTime(item.published_at)}</span>
+        <span style={{ whiteSpace: "nowrap" }}>{relativeTime(item.published_at)}</span>
       </p>
     );
   };

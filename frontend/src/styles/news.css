@@ -205,6 +205,8 @@
 .nwd-lead-title a:hover { color: var(--nw-accent); }
 .nwd-lead-sum { margin: 0; color: var(--nw-muted); line-height: 1.65; overflow-wrap: anywhere; }
 .nwd-tag { font-weight: 800; color: var(--ch, var(--nw-accent)); letter-spacing: .06em; }
+/* 明るい地のデザインでは、チャンネルの色（黄など）のままだと文字が読めないので、文字の色へ寄せる */
+.nw[data-design="magazine"] .nwd-tag, .nw[data-design="newspaper"] .nwd-tag, .nw[data-design="finance"] .nwd-tag { color: color-mix(in srgb, var(--ch, var(--nw-accent)) 45%, var(--nw-fg)); }
 .nwd-rows { min-width: 0; }
 .nwd-rows ol { list-style: none; margin: 0; padding: 0; }
 .nwd-rows li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--nw-line); min-width: 0; }
