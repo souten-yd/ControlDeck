@@ -19,7 +19,15 @@ async def _none():
 
 def _client(monkeypatch, handler, seen=None):
     original = httpx.AsyncClient
-    transport = httpx.MockTransport(handler)
+
+    def only_ours(request):
+        # httpx.AsyncClient の差し替えはプロセス全体に効く。全体実行では、他の試験が残した裏の処理の通信まで
+        # ここへ来て、記録（sent[0]）を横取りして落ちた（2026-11-23）。試験の宛先だけを handler へ渡す
+        if request.url.host != "127.0.0.1" or request.url.port != 9999:
+            return httpx.Response(503, text="test transport")
+        return handler(request)
+
+    transport = httpx.MockTransport(only_ours)
 
     def factory(*args, **kwargs):
         kwargs["transport"] = transport
