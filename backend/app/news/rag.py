@@ -151,6 +151,9 @@ def _meta(doc_ids: list[int]) -> dict[int, dict]:
         conn.close()
 
 
+RERANK_POOL = 60   # 並べ替えにかける候補の記事の数
+
+
 async def search(question: str, limit: int = 24) -> list[dict]:
     """意味で探す（埋め込みが使えれば全文検索との混合、使えなければ全文検索だけ）。
     文書ごとに 1 件: {"url", "title", "source", "text"（当たった断片）, "score", "meta"}。"""
@@ -159,11 +162,25 @@ async def search(question: str, limit: int = 24) -> list[dict]:
         return []
     vector, model = await context.query_vector(question)
     hits = await asyncio.to_thread(store.search, [COLLECTION], question, query_vector=vector, model=model,
-                                   mode="hybrid" if vector is not None else "fulltext", limit=limit * 3)
+                                   mode="hybrid" if vector is not None else "fulltext", limit=max(limit, RERANK_POOL) * 3)
     seen: dict[str, dict] = {}
+    titles: set[str] = set()
     for hit in hits:
-        seen.setdefault(hit["doc_ref"], hit)
-    picked = list(seen.values())[:limit]
+        # 同じ記事が別の URL で 2 度入っている（RSS と Google ニュースなど）。見出しが同じなら 1 件に
+        title_key = "".join(ch for ch in str(hit.get("title") or "").lower() if ch.isalnum())
+        if hit["doc_ref"] in seen or (title_key and title_key in titles):
+            continue
+        titles.add(title_key)
+        seen[hit["doc_ref"]] = hit
+    pool = list(seen.values())[:RERANK_POOL]
+    # 並べ替え（GPU の reranker）で関係の強い順へ。混合の検索だけでは、ぴったりの記事が 4 位以下に沈んでいた（2026-11-23 本番）。
+    # reranker が使えなければ混合の検索の順のまま。
+    from app.workflows import research_tools as rt
+
+    scores = await rt.rerank_scores(question, [f"{h['title']}\n{h['text']}" for h in pool], min(limit, len(pool))) if len(pool) > 1 else None
+    if scores:
+        pool = [h for _, h in sorted(zip(scores, pool), key=lambda pair: -pair[0])]
+    picked = pool[:limit]
     metas = await asyncio.to_thread(_meta, [int(h["doc_ref"].split(":")[1]) for h in picked]) if picked else {}
     return [{"url": h["url"], "title": h["title"], "source": h["source"], "text": h["text"], "score": h["score"],
              "meta": metas.get(int(h["doc_ref"].split(":")[1]), {}), "semantic": vector is not None} for h in picked]

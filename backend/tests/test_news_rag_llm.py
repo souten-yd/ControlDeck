@@ -504,3 +504,43 @@ def test_news_loop_skips_fetch_in_quiet_hours(monkeypatch):
         run(service.news_loop())
     assert calls == ["due"]                                                                # 取得はせず、まとめの確認だけ
 
+
+
+def test_semantic_search_reranks_and_merges_same_titles(monkeypatch):
+    """目的: 意味で探すは、並べ替え（reranker）の順で返し、見出しが同じ記事（別の URL）は 1 件にまとめること。
+
+    根拠: 2026-11-23 本番で「Claude Code cost control」のぴったりの記事が混合の検索だけでは 4 位以下に沈み、
+    Phoronix の同じ記事が RSS と Google ニュースで 2 件出ていた。reranker が使えなければ混合の検索の順のまま。
+    """
+    import asyncio
+
+    from app.knowledge import context
+    from app.news import rag
+    from app.workflows import research_tools as rt
+
+    def hit(n, title):
+        return {"doc_ref": f"news:{n}", "url": f"https://e.test/{n}", "title": title, "source": "s", "text": title, "score": 1.0 / n}
+
+    async def qv(_q):
+        return None, None
+
+    import types
+
+    fake_store = types.SimpleNamespace(find_collection=lambda _c: object(),
+                                       search=lambda *a, **k: [hit(1, "A"), hit(2, "Same title"), hit(3, "same  TITLE!"), hit(4, "B")])
+    monkeypatch.setattr(rag, "store", fake_store)   # 本物の store は試験の後片付けが使うので差し替えない
+    monkeypatch.setattr(context, "query_vector", qv)
+    monkeypatch.setattr(rag, "_meta", lambda ids: {})
+
+    async def scores(q, texts, keep):
+        return [0.1 if t.startswith("A") else 0.9 if t.startswith("B") else 0.5 for t in texts]
+
+    monkeypatch.setattr(rt, "rerank_scores", scores)
+    got = asyncio.run(rag.search("q", 10))
+    assert [h["title"] for h in got] == ["B", "Same title", "A"]
+
+    async def none(q, texts, keep):
+        return None
+
+    monkeypatch.setattr(rt, "rerank_scores", none)
+    assert [h["title"] for h in asyncio.run(rag.search("q", 10))] == ["A", "Same title", "B"]
