@@ -273,7 +273,7 @@ ensure_apt_packages() {
 
 # Playwright のブラウザ本体（OCR/ブラウザ操作ノード用、~/.cache へ。sudo 不要）
 ensure_playwright_browser() {
-  local stamp="$VENV/.playwright-stamp"
+  local stamp="$VENV/.playwright-py-stamp"
   [ -f "$stamp" ] && return 0
   if "$VENV/bin/python" -c "import playwright" 2>/dev/null; then
     info "Playwright ブラウザ（Chromium）を導入しています ..."
