@@ -6,6 +6,12 @@
 - 出どころ: AssistantChat の send が、Web・学術・Deep・Research の送信直後に回答の content へ「🔎 検索中...（サーバー側で継続）」などを仮に置き、生成中の delta はその直後へ足され、確定でサーバーの本文に置き換わる（backend の progress は meta で、本文には入らない）。これを本文として読み、消えた後は位置合わせが外れて最初から読み直していた。
 - 直し（`frontend/src/features/workflows/speakable.ts`）: 仮の文は content に入れず `Msg.placeholder`（chatState.ts）へ置き、ChatMessage が本文が来るまでだけ出す（読み上げ・コピー・保存の対象外。文の形では見分けない）。`nextSpoken` は位置ではなく文ごとの指紋（文字と数字だけ。空白・記号・出典の [n]・Markdown を除く）の数え方つきの集合で、読んだ文を飛ばす。読んでいない文は先頭に差し込まれても読む。
 - 試験: `frontend/e2e/assistant-voice-modes.spec.ts` に「progress lines are not read…」を追加（関数だけの試験）。
+## 2026-11-23 Home をモバイルで 1 画面に詰め、一番上に通知の 1 行（利用者「モバイルのホームは 1 画面で今の情報とニュースを」「最終的な通知を一行で、重要度で題名と色を変えて」）
+
+- モバイル（768px 未満）: CPU+RAM・GPU+VRAM を各 1 枚（2 本の線・凡例「CPU 9%」）で横 1 段。電力の 4 項目を 1 行。LLM カードは見出しの行に「ローカル · モデル名/未ロード」「OpenRouter · モデル名」、前処理と生成・平均と今日を横並び。PC は従来のまま。
+- 「履歴 15分・生データ・n 点」の行は PC・モバイルとも Home から外し、設定 → 表示「Home のグラフの履歴」へ（localStorage `control-deck-home-history-minutes`。以前は保存なしで毎回 15 分）。
+- 通知の 1 行（`HomeNoticeLine`、backend `alerts/home_notice.py` の `GET /home-notices`・`POST /home-notices/dismiss`）: 監視の警報・失敗したアプリ・更新の失敗・承認待ちを集め、エラー > 警告 > 注意 > 情報 → 新しさの順の先頭 1 件。元が解決すれば消えて次が出る。「閉じる」は本人だけ（解決後は印を掃除）。お休みモードとは無関係。
+- 試験: `backend/tests/test_home_notice.py`、E2E `frontend/e2e/home-compact.spec.ts`（390・320・1280、ライト・ダーク）。
 
 ## 2026-11-23 ニュース: Release の機能を切った Codeberg のリポジトリ（Radiance）はタグから更新を読む（本番で HTTP 404 だった）。
 ## 2026-11-23 ニュースの「意味で探す」に並べ替え（reranker）を通し、見出しが同じ記事を 1 件に（本番で、ぴったりの記事が 4 位以下・同じ記事が 2 件出ていた）。日本語の問いから英語の記事を探す件は U35。

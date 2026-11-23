@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
 import { writeClipboard } from "../lib/clipboard";
+import { HISTORY_MAX, HISTORY_MIN, HISTORY_RANGES, readHistoryMinutes, writeHistoryMinutes } from "../lib/homeHistory";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
@@ -93,8 +94,8 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "account", label: "アカウント", summary: "パスワード・二要素認証・パスキー・ログイン中の端末",
     icon: IconUser, keywords: ["パスワード", "二要素", "TOTP", "パスキー", "顔認証", "指紋", "セッション", "ログアウト", "端末"],
     allowed: () => true },
-  { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・メニューの項目",
-    icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル", "メニュー", "表示", "非表示", "隠す"],
+  { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・Home のグラフの履歴・メニューの項目",
+    icon: IconPalette, keywords: ["履歴", "グラフ", "Home", "ホーム", "分", "テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル", "メニュー", "表示", "非表示", "隠す"],
     allowed: () => true },
   { id: "news", label: "ニュース", summary: "チャンネル（検索テーマ）・ソース・表示のデザイン・好み・アーカイブ",
     icon: IconNews, keywords: ["ニュース", "チャンネル", "検索テーマ", "RSS", "ソース", "放送局", "紙面", "コンパクト", "テロップ", "ON AIR", "ミュート", "おすすめ", "アーカイブ", "書き出し", "Google ニュース"],
@@ -228,7 +229,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   const can = useAuth((s) => s.can);
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
-    case "appearance": return <><AppearanceSection /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
+    case "appearance": return <><AppearanceSection /><HomeHistorySettings /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
     case "news": return <NewsSettings />;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
@@ -260,6 +261,41 @@ function AccountSection() {
       <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><TotpSettings /></div>
       <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><PasswordSettings /></div>
       <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800"><PasskeySettings /></div>
+    </section>
+  );
+}
+
+/** Home のグラフの履歴の長さ。Home 側には選択の行を置かない（利用者の依頼 2026-11-23）。 */
+function HomeHistorySettings() {
+  const [minutes, setMinutes] = useState(readHistoryMinutes);
+  const preset = HISTORY_RANGES.some(([m]) => m === minutes) ? String(minutes) : "custom";
+  const [custom, setCustom] = useState(String(minutes));
+  return (
+    <section className={card}>
+      <h3 className="mb-1 text-sm font-semibold">Home のグラフの履歴</h3>
+      <p className="mb-3 text-xs text-zinc-400">CPU・RAM・GPU・VRAM のグラフに出す期間です（このブラウザに保存します）。長くするほど読み込みに時間がかかります。</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="home-history" className="sr-only">履歴の期間</label>
+        <select id="home-history" value={preset}
+          onChange={(e) => {
+            if (e.target.value === "custom") { setCustom(String(minutes)); return; }
+            setMinutes(writeHistoryMinutes(Number(e.target.value)));
+          }}
+          className="min-h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+          {HISTORY_RANGES.map(([m, label]) => <option key={m} value={m}>{label}</option>)}
+          <option value="custom">任意（分）</option>
+        </select>
+        {preset === "custom" && (
+          <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); const v = writeHistoryMinutes(Number(custom)); setMinutes(v); setCustom(String(v)); }}>
+            <label htmlFor="home-history-custom" className="sr-only">任意の履歴期間（分）</label>
+            <input id="home-history-custom" type="number" min={HISTORY_MIN} max={HISTORY_MAX} value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              className="min-h-11 w-28 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+            <span className="text-xs text-zinc-500">分</span>
+            <button type="submit" className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700">適用</button>
+          </form>
+        )}
+      </div>
     </section>
   );
 }
