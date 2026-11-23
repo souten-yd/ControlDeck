@@ -52,6 +52,18 @@
 .nw-switch button { min-width: 48px; min-height: 40px; border-radius: 10px; border: 1px solid var(--nw-line); background: var(--nw-surface); font-weight: 800; font-size: .78rem; letter-spacing: .08em; padding: 0 10px; }
 .nw-switch button[aria-pressed="true"] { background: var(--ch, var(--nw-accent)); color: #111; border-color: transparent; }
 .nw-fallback { display: grid; place-items: center; font-size: 2.2rem; color: #fff; background: linear-gradient(135deg, var(--ch, var(--nw-accent)), #0b0e14 130%); }
+/* 画像が無い・読めない: 大きな箱をやめ、チャンネルの色の細い線だけにする（高さを詰める） */
+.nw .nw-noimg { aspect-ratio: auto !important; height: 5px; min-height: 0; max-height: none; width: 100%; flex: 0 0 5px !important; border-radius: 0;
+  background: var(--ch, var(--nw-accent)) !important; order: 0; }
+.nw .nwd-lead-media.nw-noimg { border-radius: 3px; height: 5px; }
+.nw .nwd-thumb.nw-noimg { flex: 0 0 4px !important; width: 4px; height: auto; align-self: stretch; border-radius: 2px; }
+.nw .nw-screen.nw-noimg, .nw .nw-screen-inner.nw-noimg { position: static; }
+.nw[data-design="finance"] .nw-card .card-media.nw-noimg { flex: 0 0 4px !important; width: 4px; height: auto; align-self: stretch; }
+.nw[data-design="finance"] .nwd-lead-media.nw-noimg { max-height: none; order: 0; }
+.nw[data-design="finance"] .nw-card:has(.card-media.nw-noimg) { flex-direction: row; }
+.nw-screen:has(.nw-noimg) { aspect-ratio: auto; background: transparent; }
+.nw-monitor:has(.nw-noimg) { padding: 0; border-width: 0; background: transparent; box-shadow: none; }
+.nw-screen:has(.nw-noimg) .nw-screen-badge { position: static; padding-top: 8px; }
 .nw[data-images="false"] .nw-screen img, .nw[data-images="false"] .card-media img { display: none; }
 
 /* テロップ */
@@ -342,3 +354,12 @@
 @media (min-width: 768px) { .nw.nwh[data-design="text"] .nwh-head { margin: -16px -16px 0; } }
 .nw.nwh[data-design="text"] .nwh-open { color: inherit; }
 .nw.nwh[data-design="text"] .nwh-digest { border-radius: 0; }
+
+/* ホームのカードのテロップ（共通の Marquee を載せる枠。既存の .nw-ticker の枠・札を使い回す） */
+.nw.nwh .nwh-telop { margin-top: 0 !important; height: 36px; gap: 8px; }
+.nwh-telop .nw-ticker-lane { display: none; }
+.nw[data-reduce="true"] .nwh-telop [data-marquee] { text-overflow: ellipsis; }
+.nw[data-reduce="true"] .nwh-telop [data-marquee] > [data-inner] { transform: none !important; }
+.nwh-digest-text { -webkit-line-clamp: 4; }
+.nw.nwh[data-design="text"] .nwh-telop { border-radius: 0; }
+@container (min-width: 760px) { .nwh-lead .nwd-lead-media.nw-noimg { flex: 0 0 5px !important; width: 5px; height: auto; align-self: stretch; } }

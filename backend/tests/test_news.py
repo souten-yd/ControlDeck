@@ -188,7 +188,7 @@ def test_non_http_urls_and_image_urls_are_dropped():
 
 def test_config_defaults_and_validation():
     cfg = sources.load_config()
-    assert cfg["github"] == ["Niko1221/Strata", "ggml-org/llama.cpp", "sst/opencode", "souten-yd/ControlDeck"]
+    assert cfg["github"] == ["Niko1221/Strata", "ggml-org/llama.cpp", "sst/opencode"]
     assert cfg["codeberg"] == ["StillDeadcode/radiance"] and cfg["hackernews"] and cfg["reddit"] == ["LocalLLaMA"]
     keys = [s.key for s in sources.build_sources(cfg)]
     assert "github:ggml-org/llama.cpp" in keys and "codeberg:StillDeadcode/radiance" in keys and "hn" in keys and "hf" in keys
@@ -196,7 +196,7 @@ def test_config_defaults_and_validation():
     off = sources.build_sources({**cfg, "enabled": {**cfg["enabled"], "release": False, "reddit": False}})
     assert not [s for s in off if s.kind in ("release", "reddit")]
     for bad in ({"github": ["not a repo"]}, {"rss": [{"name": "x", "url": "http://a.test/feed"}]}, {"rss": [{"url": "https://u:p@a.test/"}]},
-                {"discourse": ["127.0.0.1"]}, {"reddit": ["a b"]}, {"github": ["a/b"] * 31 + ["c/d"]}, {"rss": "x"}, []):
+                {"discourse": ["127.0.0.1"]}, {"reddit": ["a b"]}, {"github": [f"a/b{i}" for i in range(sources.MAX_PER_LIST + 1)]}, {"rss": "x"}, []):
         with pytest.raises(sources.ConfigError):
             sources.normalize(bad)
     saved = sources.save_config({"github": ["a/b", "a/b"], "reddit": ["r/Foo_1"], "rss": [{"name": "N", "url": "https://x.test/f.xml"}]})

@@ -20,7 +20,7 @@ from app.news import channels as channels_mod
 from app.news import db as news_db
 from app.news.db import NewsAction, NewsItem
 from app.news import prefs, profile
-from app.news.sources import plain, safe_url
+from app.news.sources import HIDDEN_SOURCE_PREFIXES, plain, safe_url
 from app.news.topics import extract_topics
 
 logger = logging.getLogger("control_deck.news.store")
@@ -106,7 +106,8 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
             row.image_url = data.get("image_url") or row.image_url
             updated += 1
     db.commit()
-    return {"new": new, "updated": updated, "changed": [item_dict(r) for r in touched if r.kind != "event"]}
+    return {"new": new, "updated": updated, "changed": [item_dict(r) for r in touched if r.kind != "event"],
+            "new_ids": [r.id for r in touched if r.id is not None and r.url not in existing]}
 
 
 def prune(db: Session, limit: int | None = None, removed_urls: list[str] | None = None) -> int:
@@ -165,7 +166,9 @@ def record_event(kind: str, *, title: str, body: str = "", url: str = "/", user_
 # ---- 一覧 ----
 
 def visible(user_id: int):
-    return or_(NewsItem.user_id.is_(None), NewsItem.user_id == user_id)
+    """その人に見える記事（全員宛て＋自分宛ての出来事）。自分のリポジトリ（HIDDEN_SOURCE_PREFIXES）の記事は、貯まっていても出さない。"""
+    return and_(or_(NewsItem.user_id.is_(None), NewsItem.user_id == user_id),
+                *[not_(NewsItem.source_key.like(f"{_like_escape(p)}%", escape="\\")) for p in HIDDEN_SOURCE_PREFIXES])
 
 
 def _like_escape(value: str) -> str:

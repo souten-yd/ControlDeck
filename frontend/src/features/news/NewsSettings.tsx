@@ -179,6 +179,9 @@ function PrefsCards() {
             <button type="button" onClick={() => display({ accent: "" })} disabled={!d.accent} className={ghost}>デザインの色に戻す</button>
           </div>
         </div>
+        <label className="block text-xs text-zinc-500">ホームに出す記事の数（1〜10）
+          <input type="number" aria-label="ホームに出す記事の数" min={1} max={10} value={d.home_items ?? 5}
+            onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1 && n <= 10) display({ home_items: n }); }} className={`${field} mt-1 w-32`} /></label>
         <div className="grid gap-2 sm:grid-cols-2">
           <Toggle label="画像を出す" value={d.images} onChange={(v) => display({ images: v })} />
           <Toggle label="ON AIR（モニター）を出す" value={d.onair} onChange={(v) => display({ onair: v })} />

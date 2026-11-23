@@ -5,8 +5,8 @@
 - 所属は **問い合わせ時に判定する**（記事に印は持たない）:
   1. 外す語（題・抜粋に含む）に合えば所属しない。
   2. 種類の絞り込みがあれば、その種類だけ。
-  3. 検索で取った記事（source_key が search:<id>: で始まる）は、そのチャンネルのもの。
-  4. それ以外は、題・抜粋に含める語のどれかが入っていれば（大文字小文字は区別しない）。
+  3. 含める語のどれかが題・抜粋に入っていれば（大文字小文字は区別しない）。検索で取った記事（source_key が search:<id>:）も同じ。
+     （以前は Google ニュースの検索の結果を無条件に通していたため、含める語を変えても前の語で取った記事が残った。2026-11-23 利用者）
      含める語が空なら、種類の絞り込みに合う記事すべて（例: 使っているソフトの更新 = release 全部）。
 - 同じ url は 1 行しか持てないので、複数のチャンネルが同じ記事を検索で取ったときは、最後に取ったチャンネルの印が残る
   （語の判定は常に働くので、題に語が入っていれば他のチャンネルにも属する）。
@@ -19,6 +19,7 @@ import re
 from urllib.parse import quote
 
 from app.config import data_dir
+from app.news import sources as sources_mod
 from app.news.sources import ConfigError
 
 MAX_CHANNELS = 12
@@ -173,8 +174,8 @@ def matches(channel: dict, *, kind: str, source_key: str, title: str, summary: s
         return False
     if channel["kinds"] and kind not in channel["kinds"]:
         return False
-    if source_key.startswith(f"search:{channel['id']}:gnews"):
-        return True   # Google ニュースはその語で探した結果。ほかの検索（フォーラムなど）は下で語を確かめる（tag_search と同じ）
+    if source_key.startswith(sources_mod.HIDDEN_SOURCE_PREFIXES):
+        return False      # 利用者自身のリポジトリは、どのチャンネルにも出さない
     if not channel["include"]:
         return bool(channel["kinds"])
     return _has(text, channel["include"])

@@ -17,11 +17,12 @@ DESIGNS = ("broadcast", "magazine", "newspaper", "finance", "text")
 # 旧い名前の移し替え（保存済みの「紙面」は経済紙、「コンパクト」はテキスト一覧として扱う）
 LEGACY_DESIGNS = {"paper": "finance", "compact": "text"}
 DEFAULT_DISPLAY = {"design": "broadcast", "accent": "", "font_size": "m", "density": "normal", "images": True, "columns": "auto",
-                   "ticker": True, "onair": True, "numbers": True, "reduce_motion": False}
+                   "ticker": True, "onair": True, "numbers": True, "reduce_motion": False, "home_items": 5}
 DEFAULT_TASTE = {"strength": 0.5, "use_chat": True, "half_life_days": 30, "mute_terms": [], "mute_sources": [], "dim_read": True}
 CHOICES = {"design": DESIGNS, "font_size": ("s", "m", "l"), "density": ("relaxed", "normal", "tight"), "columns": ("auto", "1", "2", "3")}
 BOOLS_DISPLAY = ("images", "ticker", "onair", "numbers", "reduce_motion")
 BOOLS_TASTE = ("use_chat", "dim_read")
+HOME_ITEMS_MIN, HOME_ITEMS_MAX = 1, 10      # ホームのニュースのカードに出す記事の数
 HALF_LIFE_MIN, HALF_LIFE_MAX = 3, 180
 MAX_MUTES = 50
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -72,6 +73,14 @@ def normalize(raw: object) -> dict:
     for key in BOOLS_DISPLAY:
         if key in display_in:
             display[key] = bool(display_in[key])
+    if "home_items" in display_in:
+        try:
+            count = int(display_in["home_items"])
+        except (TypeError, ValueError):
+            raise ConfigError("ホームに出す記事の数は整数です") from None
+        if not HOME_ITEMS_MIN <= count <= HOME_ITEMS_MAX:
+            raise ConfigError(f"ホームに出す記事の数は {HOME_ITEMS_MIN}〜{HOME_ITEMS_MAX} です")
+        display["home_items"] = count
     accent = str(display_in.get("accent", "") or "")
     if accent and not _COLOR.match(accent):
         raise ConfigError("アクセント色は #rrggbb の形です")

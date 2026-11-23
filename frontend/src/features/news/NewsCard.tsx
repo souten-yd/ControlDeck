@@ -5,16 +5,15 @@ import { chNo } from "./newsTheme";
 
 export interface CardChannel { id: string; name: string; color: string; number: number }
 
-/** 16:9 の画像。無い・読めないときは、チャンネルの色の帯と種類のアイコン。 */
+/** 16:9 の画像。無い・読めないときは、大きな箱にせず、チャンネルの色の細いアクセントライン（高さ 5px）だけにする
+ *  （2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…画像がないんだったらアクセントラインだけにして、表示を小さくする」）。 */
 export function Media({ item, color, className = "card-media", children }: { item: NewsItem; color?: string; className?: string; children?: React.ReactNode }) {
   const [broken, setBroken] = useState(false);
-  const style = KIND_STYLE[item.kind] ?? KIND_STYLE.news;
+  const has = Boolean(item.image_url) && !broken;
   return (
-    <div className={className} style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
-      {item.image_url && !broken
-        ? <img src={item.image_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />
-        : <div aria-hidden className="nw-fallback">{style.icon}</div>}
-      {children}
+    <div className={`${className}${has ? "" : " nw-noimg"}`} data-noimg={has ? undefined : "true"} style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
+      {has && <img src={item.image_url!} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />}
+      {has && children}
     </div>
   );
 }
