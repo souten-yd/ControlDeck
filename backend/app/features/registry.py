@@ -126,6 +126,20 @@ FEATURES: dict[str, dict] = {
         "route_gated": False,
         "summary": "サイトの巡回で robots.txt（Google の仕様のワイルドカードを含む）を守る。巡回（準備中）で使う",
     },
+    # ニュースの画像生成（docs/implementation-status.md 2026-11-23）。専用 venv（OpenVINO の CPU 実行だけ。torch・CUDA・ROCm は入れない）と、
+    # 精度の段ごとのモデル（小 SDXS 約 1.7GB・中 LCM-Dreamshaper 約 1.0GB・大 SDXL-Lightning 約 4.2GB。data/models/news-imagegen）。
+    # 導入ボタンは小まで取得し、中・大は「詳細と操作」の段ごとのボタンで足す・消す。
+    "news-imagegen": {
+        "name": "ニュースの画像生成（CPU）",
+        "kind": "python-lib",
+        "packages": ["openvino==2026.4.1", "tokenizers==0.23.3", "numpy==2.5.5", "pillow==13.0.0", "huggingface_hub==2.4.0"],
+        "latest_packages": ["openvino", "tokenizers", "numpy", "pillow", "huggingface_hub"],
+        "module": "openvino",
+        "distribution": "openvino",
+        "models": "news-imagegen",
+        "route_gated": False,
+        "summary": "画像の無いニュース記事に、見出しからイメージ画像を作る。CPU と RAM だけで動き、作り終えたらすぐ解放する（GPU は使わない）。精度は小・中・大から選べる（設定 → ニュース）。導入で小のモデル約 1.7GB も取得し、中（約 1.0GB）・大（約 4.2GB）は詳細から足す",
+    },
     "web-browser": {
         "name": "Web 収集のブラウザ（この PC の Chrome）",
         "kind": "system-browser",
@@ -582,6 +596,12 @@ def status(feature_id: str) -> dict:
         healthy = bool(version)
         if not healthy:
             error = f"{spec['module']} を読み込めません。再導入してください"
+        elif spec.get("models"):
+            from app.news import imagegen
+
+            if not imagegen.models_ready():
+                healthy = False
+                error = "モデルが揃っていません。「導入」を押すと取得し直します"
     elif binary is not None:
         try:
             result = subprocess.run(
@@ -632,7 +652,14 @@ def status(feature_id: str) -> dict:
         "health": "healthy" if healthy else ("error" if installed else "not-installed"),
         "error": error,
         "executable": str(binary) if binary else "",
+        **({"model_tiers": _imagegen_tiers()} if spec.get("models") else {}),
     }
+
+
+def _imagegen_tiers() -> list[dict]:
+    from app.news import imagegen
+
+    return imagegen.tiers_info()
 
 
 # 一覧の結果を少しだけ覚えておく。
@@ -768,7 +795,56 @@ def install(feature_id: str) -> dict:
     result = _install_package(feature_id, latest=False)
     if result.returncode != 0 or not _managed_executable(feature_id).is_file():
         raise FeatureError(f"{name}の管理導入に失敗しました{_tail(result)}")
+    if FEATURES[feature_id].get("models"):
+        _download_models(feature_id)
     _autoconfigure(feature_id)
+    return status(feature_id)
+
+
+def _download_models(feature_id: str, tier: str = "small") -> None:
+    """機能に付くモデル（精度の段ごと）を、専用 venv の python（台本の download）で取得する（Hugging Face の公式だけ。取得済みは飛ばす）。"""
+    from app.news import imagegen, imagegen_worker
+
+    name = FEATURES[feature_id]["name"]
+    python = _managed_executable(feature_id)
+    models = imagegen.models_dir()
+    try:
+        result = subprocess.run(
+            [str(python), "-I", str(Path(imagegen_worker.__file__).resolve()), "download", str(models), tier],
+            capture_output=True, text=True, timeout=3600, check=False,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(data_dir()), "HF_HUB_DISABLE_TELEMETRY": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FeatureError(f"{name}のモデルを取得できませんでした: {exc}") from exc
+    if result.returncode != 0 or not imagegen.models_ready(models, tier):
+        raise FeatureError(f"{name}のモデルの取得に失敗しました{_tail(result)}")
+
+
+def install_model_tier(feature_id: str, tier: str) -> dict:
+    """精度の段（小・中・大）のモデルを足す。機能（専用 venv）が先に要る。"""
+    from app.news import imagegen
+
+    if not FEATURES.get(feature_id, {}).get("models"):
+        raise FeatureError("この機能には段ごとのモデルがありません")
+    if tier not in imagegen.TIERS:
+        raise FeatureError(f"知らない段です: {tier}")
+    if not _managed_executable(feature_id).is_file():
+        raise FeatureError("先に機能「ニュースの画像生成（CPU）」を導入してください")
+    _download_models(feature_id, tier)
+    invalidate_feature_cache()
+    return status(feature_id)
+
+
+def remove_model_tier(feature_id: str, tier: str) -> dict:
+    """精度の段のモデルを消す。小は機能の最低限なので、アンインストールでだけ消える。"""
+    from app.news import imagegen
+
+    if not FEATURES.get(feature_id, {}).get("models"):
+        raise FeatureError("この機能には段ごとのモデルがありません")
+    if tier not in imagegen.TIERS or tier == imagegen.TIER_DEFAULT:
+        raise FeatureError("小のモデルは、機能のアンインストールでだけ消えます")
+    imagegen.remove_models(tier)
+    invalidate_feature_cache()
     return status(feature_id)
 
 
@@ -1012,6 +1088,10 @@ def uninstall(feature_id: str) -> dict:
     if FEATURES[feature_id]["kind"] == "managed-script":
         # 導入先（例 ~/.local/share/searxng）と Apps の登録を巻き込むので、ここからは消さない
         raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません（Apps から管理）")
+    if FEATURES[feature_id].get("models"):
+        from app.news import imagegen
+
+        imagegen.remove_models()
     root = _feature_root(feature_id)
     if root.exists():
         # 管理prefixだけを削除。PATH上の外部OpenCodeと~/.config/~/.local/shareには触れない。

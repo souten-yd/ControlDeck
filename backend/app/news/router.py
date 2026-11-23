@@ -6,7 +6,7 @@ import os
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import digest, home, llm, prefs, presets, profile, rag, service, sources, store
+from app.news import digest, home, imagegen, llm, prefs, presets, profile, rag, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -207,7 +207,21 @@ def export(format: str = Query("json", pattern="^(json|csv)$"), channel: str = "
 @router.get("/settings")
 def get_settings(user: User = Depends(get_current_user)):
     """更新のタイミング・LLM・RAG の設定。ホームのフィードの読み直しの間隔は誰の画面でも使うので、ログインした人なら読める。"""
-    return {"settings": news_settings.load(), "weekdays": list(news_settings.WEEKDAYS), "interval_minutes": channels_mod.load()["interval_minutes"]}
+    settings = news_settings.load()
+    return {"settings": settings, "weekdays": list(news_settings.WEEKDAYS), "interval_minutes": channels_mod.load()["interval_minutes"],
+            "imagegen_available": imagegen.available(settings["imagegen"]["tier"]), "imagegen_tiers": imagegen.tiers_info()}
+
+
+@router.get("/images/{item_id}.webp")
+def get_image(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """生成したイメージ画像（ログインした人だけ）。パスは記事の id（整数）だけで組み、その人に見える記事の画像だけ返す。"""
+    item = db.get(NewsItem, item_id)
+    if item is None or (item.user_id is not None and item.user_id != user.id) or not imagegen.is_generated_url(item.image_url):
+        raise HTTPException(status_code=404, detail="画像がありません")
+    path = imagegen.image_path(item_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="画像がありません")
+    return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.put("/settings")

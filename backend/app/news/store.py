@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.news import channels as channels_mod
 from app.news import db as news_db
 from app.news.db import NewsAction, NewsItem
-from app.news import prefs, profile
+from app.news import imagegen, prefs, profile
 from app.news.sources import HIDDEN_SOURCE_PREFIXES, plain, safe_url
 from app.news.topics import extract_topics
 
@@ -126,6 +126,7 @@ def prune(db: Session, limit: int | None = None, removed_urls: list[str] | None 
     for i in range(0, len(ids), 500):
         db.execute(delete(NewsItem).where(NewsItem.id.in_(ids[i:i + 500])))
     db.commit()
+    imagegen.delete_images(ids)     # 生成した画像も一緒に消す
     return len(ids)
 
 
@@ -235,7 +236,8 @@ def states(db: Session, user_id: int, ids: list[int]) -> dict[int, dict]:
 def present(item: NewsItem, state: dict, score: float | None = None) -> dict:
     url = safe_url(item.url) or (_internal_path(item.url) if item.kind == "event" else None)
     row = {"id": item.id, "kind": item.kind, "source": item.source, "source_key": item.source_key, "title": item.title,
-           "url": url, "summary": item.summary, "image_url": safe_url(item.image_url), "published_at": iso(item.published_at),
+           "url": url, "summary": item.summary, "image_url": safe_url(item.image_url) or (item.image_url if imagegen.is_generated_url(item.image_url) else None),
+           "image_ai": imagegen.is_generated_url(item.image_url), "published_at": iso(item.published_at),
            "topics": topics_of(item), "state": state}
     if score is not None:
         row["score"] = round(score, 4)

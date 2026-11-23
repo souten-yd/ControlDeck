@@ -13,6 +13,7 @@ export function Media({ item, color, className = "card-media", children }: { ite
   return (
     <div className={`${className}${has ? "" : " nw-noimg"}`} data-noimg={has ? undefined : "true"} style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
       {has && <img src={item.image_url!} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />}
+      {has && item.image_ai && <span className="nw-ai-mark" data-testid="ai-image-mark">AI 生成のイメージ</span>}
       {has && children}
     </div>
   );
