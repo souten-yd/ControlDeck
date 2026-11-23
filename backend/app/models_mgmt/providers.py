@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.http_tls import shared_ssl_context
+
 logger = logging.getLogger(__name__)
 
 _KNOWN_LOCAL = {
@@ -67,7 +69,8 @@ async def _candidates() -> list[dict]:
         }
 
     add(ollama.base_url(), "ollama", "Ollama", managed=True)
-    llama_status = llama.runtime_status()
+    # systemctl の subprocess を呼ぶので event loop の外で走らせる
+    llama_status = await asyncio.to_thread(llama.runtime_status)
     if llama_status.get("base_url"):
         add(str(llama_status["base_url"]), "llama.cpp", "llama.cpp", managed=True,
             installed=bool(llama_status.get("installed")), experimental=True)
@@ -94,7 +97,7 @@ async def _candidates() -> list[dict]:
         candidates[base]["aliases"] = aliases
 
     # Strata is opt-in: only installed, ControlDeck-registered models appear here.
-    if strata.installed():
+    if await asyncio.to_thread(strata.installed):
         strata_instances = await asyncio.to_thread(strata_gateway.list_instances)
         if strata_instances:
             first = strata_instances[0]
@@ -228,7 +231,7 @@ async def list_providers(*, include_unavailable: bool = True, exclude_port: int 
         if exclude_port and parsed.hostname in ("127.0.0.1", "localhost", "::1") and parsed.port == exclude_port:
             return None
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
+            async with httpx.AsyncClient(timeout=1.5, verify=shared_ssl_context()) as client:
                 response = await client.get(item["base_url"] + "/models")
             if response.status_code != 200:
                 raise httpx.HTTPStatusError("unexpected status", request=response.request, response=response)

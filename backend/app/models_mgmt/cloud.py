@@ -615,6 +615,7 @@ async def account(provider_id: str) -> dict:
     """残高と使用額（OpenRouter の /key）。他のプロバイダは API で残高を返さない。"""
     import httpx
 
+    from app.http_tls import shared_ssl_context
     from app.security.crypto import decrypt_text
 
     _provider(provider_id)
@@ -626,7 +627,7 @@ async def account(provider_id: str) -> dict:
     headers = {"Authorization": f"Bearer {decrypt_text(entry['key'])}"}
     credits: dict = {}
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False, verify=shared_ssl_context()) as client:
             response = await client.get("https://openrouter.ai/api/v1/key", headers=headers)
             # アカウント全体の入金額と使用額（残高）。/key はこのキーの上限と使用額だけ。
             try:

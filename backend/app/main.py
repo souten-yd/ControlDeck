@@ -82,6 +82,11 @@ async def lifespan(app: FastAPI):
     from app.models_mgmt.thinking import migrate_shared_reasoning
     from app.features.registry import restore_enabled_services
 
+    # httpx の SSL コンテキストは作るのが重い。loop の外で先に作って使い回す。
+    from app.http_tls import shared_ssl_context
+
+    await asyncio.to_thread(shared_ssl_context)
+
     # 思考設定を共通設定からモデル個別へ移した際の一度きりの移行。
     # 旧共通値を個別未設定のモデルへ書き、体感が変わらないようにする。
     try:

@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-23 event loop が数秒止まる原因（同期処理）を loop の外へ
+
+- 診断（直近 24 時間）で、loop のスレッド上の重い同期処理が数秒ずつ画面を止めていた。①Add-on の health poll（`registry.list_addons` → `_load_path` が manifest を毎回 JSON 読み・pydantic 検証、最長 6.1 秒）②`recover_paused_workflows_once`（1 秒ごとの SQLAlchemy クエリ）③`runtime_environment`（`ldconfig`・`systemctl` の subprocess、`httpx.AsyncClient` 作成時の SSL コンテキスト生成、`data_dir` の mkdir）④llama の `runtime_status`（systemctl）と providers の `_candidates`・probe。
+- 直し方: manifest は inode・mtime・size が同じ間は前回の検証結果を使い回す。health の poll・再確認、pause の回復、`runtime_environment`、`/llama/status`、providers の候補は `asyncio.to_thread` へ。httpx の SSL コンテキストは `app/http_tls.py` で 1 つを使い回し、起動時に thread で温める。振る舞いは変えていない。
+- 直さなかったもの: `chat_persist.on_status`（メモリ上の `job.log` だけで同期 I/O は無く、機械の負荷で出た見かけ）・`compression`・`swap_scheduler.acquire`（待っているだけ）。
+- テスト: `test_event_loop_offload.py`（重い関数を遅くしても loop の tick が進む・manifest キャッシュ・SSL コンテキストの再利用）。
+
 ## 2026-11-23 調査の道具に Reddit の API・Discourse・Stack Exchange の入口
 
 - 利用者「Reddit の API を登録するところを作って、入っていたらそれを使って検索できるように。XDA など技術的に有望なフォーラムも検索したい」。設定 → API キーに群「調査（フォーラム・検索）」（Reddit の Client ID・Secret・ユーザー名、Stack Exchange のキー（任意）、足す Discourse のドメイン）。キーは `workflows/research_keys.py` が暗号化して `data/research/keys.json` に置く（値は応答・ログ・監査に出さない）。

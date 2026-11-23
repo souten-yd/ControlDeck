@@ -1332,8 +1332,13 @@ async def _resume_pause(pause_id: int) -> None:
     await _launch_execution(execution_id, workflow_id, nodes, edges, context, resume_completed=True)
 
 
-async def recover_paused_workflows_once() -> int:
-    """Expire due pauses and restart already-resolved continuations after a service crash."""
+def _load_pause(pause_id: int) -> WorkflowPause | None:
+    with SessionLocal() as db:
+        return db.get(WorkflowPause, pause_id)
+
+
+def _expire_and_collect_resumable() -> list[int]:
+    """期限切れの pause を確定し、再開すべき pause の id を返す（同期の DB 処理。thread で呼ぶ）。"""
     now = utcnow()
     resume_ids: list[int] = []
     with SessionLocal() as db:
@@ -1384,11 +1389,16 @@ async def recover_paused_workflows_once() -> int:
             if pause.status in {"APPROVED", "REJECTED", "EXPIRED", "COMPLETED"}
         )
         db.commit()
+    return resume_ids
+
+
+async def recover_paused_workflows_once() -> int:
+    """Expire due pauses and restart already-resolved continuations after a service crash."""
+    # DB の読み書きは event loop を止めるので thread で行う（1 秒ごとに回るため）
+    resume_ids = await asyncio.to_thread(_expire_and_collect_resumable)
     launched = 0
     for pause_id in dict.fromkeys(resume_ids):
-        pause = None
-        with SessionLocal() as db:
-            pause = db.get(WorkflowPause, pause_id)
+        pause = await asyncio.to_thread(_load_pause, pause_id)
         if pause is not None and pause.execution_id not in _running:
             await _resume_pause(pause_id)
             launched += 1

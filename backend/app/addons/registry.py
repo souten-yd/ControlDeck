@@ -124,6 +124,11 @@ def _write_state(value: dict[str, dict[str, Any]]) -> None:
     _atomic_json(_state_path(), value)
 
 
+# manifest の読み込み結果。health の poll が数秒おきに全 Add-on を読み直すため、
+# file が変わらない（inode・mtime・size が同じ）間は前回の検証結果を使い回す。
+_manifest_cache: dict[Path, tuple[tuple[int, int, int], ParsedManifest]] = {}
+
+
 def _load_path(path: Path) -> ParsedManifest:
     try:
         info = path.lstat()
@@ -131,10 +136,15 @@ def _load_path(path: Path) -> ParsedManifest:
             raise AddonRegistryError("manifestは実行user所有かつ安全な通常fileにしてください")
         if info.st_size > MAX_MANIFEST_BYTES:
             raise AddonRegistryError("manifestは64KiB以下にしてください")
+        signature = (info.st_ino, info.st_mtime_ns, info.st_size)
+        cached = _manifest_cache.get(path)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         value = json.loads(path.read_text(encoding="utf-8"))
         parsed = parse_manifest(value)
         if not isinstance(parsed.manifest, AddonManifestV2):
             raise AddonRegistryError("v2 Add-on registryにはapi_version 2 manifestが必要です")
+        _manifest_cache[path] = (signature, parsed)
         return parsed
     except FileNotFoundError as exc:
         raise AddonRegistryError("addon manifestがありません") from exc
@@ -465,6 +475,7 @@ def reset_runtime_state_for_tests() -> None:
     global _revision
     with _LOCK:
         _observations.clear()
+        _manifest_cache.clear()
         _activity.clear()
         _disable_pending.clear()
         _revision = 0

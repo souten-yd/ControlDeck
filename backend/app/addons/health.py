@@ -14,6 +14,7 @@ from app.addons import registry
 from app.addons.contract import AddonHealthState, AddonReasonCode
 from app.addons.schema import AddonHealthReport
 from app.config import get_config
+from app.http_tls import shared_ssl_context
 
 logger = logging.getLogger("control_deck.addons.health")
 HEALTH_RESPONSE_LIMIT = 64 * 1024
@@ -59,11 +60,12 @@ def _failure_report(unavailable: bool) -> AddonHealthReport:
 
 
 async def fetch_health(addon_id: str, client: httpx.AsyncClient | None = None) -> AddonHealthReport:
-    current = registry.status(addon_id)
+    current = await asyncio.to_thread(registry.status, addon_id)
     url = approved_health_url(current["runtime"]["base_url"], current["runtime"]["health_path"])
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=HEALTH_TIMEOUT_SECONDS, follow_redirects=False)
+        client = httpx.AsyncClient(timeout=HEALTH_TIMEOUT_SECONDS, follow_redirects=False,
+                                   verify=shared_ssl_context())
     try:
         response = await client.get(url, headers={"Accept": "application/json"})
         response.raise_for_status()
@@ -77,7 +79,7 @@ async def fetch_health(addon_id: str, client: httpx.AsyncClient | None = None) -
 
 
 async def recheck(addon_id: str, client: httpx.AsyncClient | None = None) -> dict:
-    current = registry.status(addon_id)
+    current = await asyncio.to_thread(registry.status, addon_id)
     if not current["enabled"]:
         raise registry.AddonRegistryError("無効な拡張機能は再確認できません")
     failed = False
@@ -92,7 +94,7 @@ async def recheck(addon_id: str, client: httpx.AsyncClient | None = None) -> dic
         logger.info("addon health失敗 id=%s count=%d type=%s", addon_id, count, type(exc).__name__)
     else:
         _failure_counts[addon_id] = 0
-        previous = registry.health_observation(addon_id)
+        previous = await asyncio.to_thread(registry.health_observation, addon_id)
         if fetched.status == AddonHealthState.HEALTHY and previous and previous.report.status == AddonHealthState.DEGRADED:
             streak = _healthy_streaks.get(addon_id, 0) + 1
             _healthy_streaks[addon_id] = streak
@@ -100,7 +102,7 @@ async def recheck(addon_id: str, client: httpx.AsyncClient | None = None) -> dic
                 fetched = previous.report
         else:
             _healthy_streaks[addon_id] = 0
-    result = registry.update_health(addon_id, fetched, failed=failed)
+    result = await asyncio.to_thread(registry.update_health, addon_id, fetched, failed=failed)
     failures = _failure_counts.get(addon_id, 0)
     interval = min(MAX_BACKOFF_SECONDS, POLL_INTERVAL_SECONDS * (2 ** max(0, failures - 1))) if failed else POLL_INTERVAL_SECONDS
     _next_checks[addon_id] = time.monotonic() + interval
@@ -109,7 +111,9 @@ async def recheck(addon_id: str, client: httpx.AsyncClient | None = None) -> dic
 
 async def poll_once(client: httpx.AsyncClient | None = None) -> None:
     now = time.monotonic()
-    enabled_ids = {item["id"] for item in registry.list_addons() if item["enabled"]}
+    # 全 Add-on の manifest・state を読むので、event loop の外で走らせる
+    listed = await asyncio.to_thread(registry.list_addons)
+    enabled_ids = {item["id"] for item in listed if item["enabled"]}
     for addon_id in list(_next_checks):
         if addon_id not in enabled_ids:
             _next_checks.pop(addon_id, None)

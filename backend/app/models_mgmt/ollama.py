@@ -21,6 +21,7 @@ from typing import AsyncIterator
 import httpx
 
 from app.config import data_dir
+from app.http_tls import shared_ssl_context
 
 logger = logging.getLogger("control_deck.models")
 
@@ -226,18 +227,18 @@ def base_url() -> str:
 
 
 async def _get(path: str, timeout: float = 15) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=shared_ssl_context()) as client:
         return await client.get(base_url() + path)
 
 
 async def _post(path: str, payload: dict, timeout: float = 60) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=shared_ssl_context()) as client:
         return await client.post(base_url() + path, json=payload)
 
 
 async def status() -> dict:
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=5, verify=shared_ssl_context()) as client:
             r = await client.get(base_url() + "/api/version")
         if r.status_code == 200:
             return {"available": True, "version": r.json().get("version", ""), "base_url": base_url()}

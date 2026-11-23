@@ -303,10 +303,10 @@ async def environment() -> dict:
 
     policy = get_policy()
     windows = await asyncio.to_thread(_compaction_windows)
-    detected = llama.detect_backends()
-    installed = set(llama.installed_backends())
+    # ldconfig・systemctl・ファイル走査を含むので、まとめて event loop の外で走らせる
+    detected, installed_list, llama_status, strata_installed = await asyncio.to_thread(_probe_local_runtimes)
+    installed = set(installed_list)
     ollama_status = await ollama.status()
-    llama_status = llama.runtime_status()
     health_states = await asyncio.gather(*(
         llama.health(str(item["alias"])) for item in llama_status.get("instances", [])
     )) if llama_status["installed"] else []
@@ -334,7 +334,7 @@ async def environment() -> dict:
             "addon_id": "llama-cpp", "coexist": True,
         })
     # Strata appears only once the optional managed terminal has been installed.
-    if strata.installed():
+    if strata_installed:
         instances = await asyncio.to_thread(strata_gateway.list_instances)
         runtimes.append({
             "id": "strata", "runtime": "strata", "backend": "",
@@ -355,7 +355,7 @@ async def environment() -> dict:
                          "warning": "選択だけではモデルを起動しません", "experimental": True,
                          "coexist": False})
     from app.models_mgmt import radiance
-    if radiance.installed():
+    if await asyncio.to_thread(radiance.installed):
         radiance_items = await asyncio.to_thread(radiance.list_instances)
         runtimes.append({"id": "radiance", "runtime": "radiance", "backend": "",
                          "label": "Radiance（R9700）", "available": True, "installed": True,
@@ -363,7 +363,7 @@ async def environment() -> dict:
                          "running": any(item.get("loaded") for item in radiance_items),
                          "addon_id": "radiance", "experimental": True, "coexist": False,
                          "warning": "" if radiance_items else "モデル（.rad）を登録してください"})
-    gpu_caps = amd_gpu.capabilities()
+    gpu_caps = await asyncio.to_thread(amd_gpu.capabilities)
     if gpu_caps:
         pwr = gpu_caps["power"]
         gpu_caps["presets"] = {
@@ -384,8 +384,15 @@ async def environment() -> dict:
         "compaction_windows": windows,
         "context_budgets": _context_budgets(windows),
 
-        "addon_gpu_state": _addon_gpu_state(),
+        "addon_gpu_state": await asyncio.to_thread(_addon_gpu_state),
     }
+
+
+def _probe_local_runtimes() -> tuple[dict, list[str], dict, bool]:
+    """このマシンの llama.cpp・Strata の導入状況。同期の I/O と subprocess を含む。"""
+    from app.models_mgmt import llama, strata
+
+    return llama.detect_backends(), llama.installed_backends(), llama.runtime_status(), strata.installed()
 
 
 def _addon_gpu_state() -> dict:

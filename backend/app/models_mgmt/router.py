@@ -649,7 +649,7 @@ async def pull(websocket: WebSocket):
 async def llama_status(user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import llama
 
-    st = llama.runtime_status()
+    st = await asyncio.to_thread(llama.runtime_status)
     if st["installed"]:
         st["health"] = await llama.health()
     return st
