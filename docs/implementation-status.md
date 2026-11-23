@@ -4,6 +4,13 @@
 
 - 利用者「メインメニューのファイルズとリモートを管理に回して、メインという謎の項目を消して」。`navigation.tsx` のまとまり「メイン」を消し、Remote・Files を「管理」へ。Home・Apps は既定で「よく使う」に固定されていて、外したときは「管理」に出る。並びは変えない。
 - テスト: E2E `navigation-layout.spec.ts`（「メイン」が無く Files が「管理」の下）。
+## 2026-11-23 設定 → 表示でメニューの項目ごとに表示・非表示
+
+- 設定 → 表示に「メニューの表示」。サイドバー・ドロワーの項目を 1 つずつスイッチで隠せる（端末ごと、鍵 `cd-navigation-hidden-v1`、既定は全部表示）。上の「すべて表示に戻す」で戻る。
+- 項目の一覧は `useNavigationCandidates()`（`navigationEntries.tsx`）へ 1 か所に切り出し、AppLayout と設定の欄が同じものを使う。鍵は NavEntry.key（本体は行き先のパス、Add-on は `addon-<id>-<cid>`、プラグインは `plugin-<id>`）。新しい機能・Add-on・プラグインはこの一覧に出れば自動で選べ、初めから表示される。
+- 隠した項目は、まとまりからも「よく使う」からも外れる（空になったまとまりは見出しごと消える）。Settings は隠せない。検索（Ctrl K）など、メニュー以外の入口は変えていない。「よく使う」の候補には隠した項目に「（非表示）」と出る。
+- 何も隠していないときの AppLayout の組み立ては前と同じ（まとまりの並び・拡張機能の位置・「よく使う」の重複排除）。
+- テスト: E2E `navigation-visibility.spec.ts`（Patent・Files・Add-on を隠す／よく使うからも消える／Settings は無効／戻す／再読み込みで残る）。
 
 ## 2026-11-23 AssistantChat.tsx を分ける（ROADMAP Q1 の画面側）
 

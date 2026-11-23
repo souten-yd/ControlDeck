@@ -12,6 +12,7 @@ import { PasskeySettings } from "../features/auth/PasskeySettings";
 import { PasswordSettings } from "../features/auth/PasswordSettings";
 import { PageHeader } from "../components/PageHeader";
 import { MobileNavigationSettings } from "../features/settings/MobileNavigationSettings";
+import { NavigationVisibilitySettings } from "../features/settings/NavigationVisibilitySettings";
 import { FanControlSettings } from "../features/settings/FanControlSettings";
 import { GpuSettings } from "../features/settings/GpuSettings";
 import { RecommendedSkills } from "../features/settings/RecommendedSkills";
@@ -89,8 +90,8 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "account", label: "アカウント", summary: "パスワード・二要素認証・パスキー・ログイン中の端末",
     icon: IconUser, keywords: ["パスワード", "二要素", "TOTP", "パスキー", "顔認証", "指紋", "セッション", "ログアウト", "端末"],
     allowed: () => true },
-  { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・モバイルの下部メニュー",
-    icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル"],
+  { id: "appearance", label: "表示", summary: "テーマ・アクセントカラー・メニューの項目",
+    icon: IconPalette, keywords: ["テーマ", "ダーク", "ライト", "アクセント", "色", "OLED", "下部メニュー", "ナビゲーション", "モバイル", "メニュー", "表示", "非表示", "隠す"],
     allowed: () => true },
   { id: "experience", label: "操作性", summary: "フリックでメニュー・画面を消さない・題名で先頭へ",
     icon: IconMenu, keywords: ["フリック", "スワイプ", "メニュー", "ジェスチャー", "画面", "スリープ", "消灯", "読み上げ", "先頭", "スクロール", "便利"],
@@ -218,7 +219,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   const can = useAuth((s) => s.can);
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
-    case "appearance": return <><AppearanceSection /><MobileNavigationSettings /></>;
+    case "appearance": return <><AppearanceSection /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
     case "keys": return <KeysSettings />;
