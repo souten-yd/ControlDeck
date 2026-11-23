@@ -581,7 +581,7 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await daily.locator("summary").first().click();
     await expect(daily.getByTestId("digest-body")).toContainText("Qwen の新モデルが公開され");
     // 出典の [1] は記事へのリンク
-    const cite = daily.getByTestId("digest-body").getByRole("link", { name: "[1]" });
+    const cite = daily.getByTestId("digest-body").getByRole("link", { name: "[1]" }).first();
     await expect(cite).toHaveAttribute("href", ITEMS[0].url);
     await expect(cite).toHaveAttribute("rel", /noopener/);
     await weekly.locator("summary").first().click();
@@ -666,7 +666,7 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await establishSession(page, context);
     await page.goto("/news");
     const daily = page.getByTestId("digest-daily");
-    await daily.locator("summary").click();
+    await daily.locator("summary").first().click();
     await expect(daily.getByTestId("digest-three")).toContainText("今日の 3 行");
     await expect(daily.getByTestId("digest-topic").first()).toContainText("傾向");
     await expect(daily.getByTestId("digest-topic").first()).toContainText("主な技術・製品");
