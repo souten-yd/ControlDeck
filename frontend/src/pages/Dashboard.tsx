@@ -126,7 +126,6 @@ export default function DashboardPage() {
             values={cpuValues}
             temp={m?.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : undefined}
             fan={m?.cpu.fan_rpm != null ? `${m.cpu.fan_rpm}` : undefined}
-            fanPercent={m?.cpu.fan_percent ?? undefined}
           />
           <MetricTile
             label="RAM"
@@ -419,20 +418,17 @@ function DualTile({ a, b, notes, loading, capacity, fan }: { a: DualLine; b: Dua
       <div className="relative mt-1 h-9 rounded-md bg-zinc-50 dark:bg-zinc-800/40">
         {enough(a) && <div className="absolute inset-0"><Sparkline values={a.values} fill className={a.tone} heightClass="h-9" /></div>}
         {enough(b) && <div className="absolute inset-0"><Sparkline values={b.values} fill className={b.tone} heightClass="h-9" /></div>}
-        {/* RAM・VRAM の容量。グラフの右下に重ねる（背景を少し付けて線の上でも読める） */}
-        {capacity && (
-          <span data-testid="capacity" className="num absolute bottom-0.5 right-0.5 rounded bg-white/75 px-1 text-[9px] leading-3 text-zinc-600 dark:bg-zinc-900/75 dark:text-zinc-300">{capacity}</span>
-        )}
       </div>
       <p className="num mt-0.5 flex h-3.5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-zinc-400">
         {notes.filter(Boolean).map((n, i) => <span key={i} className="shrink-0">{n}</span>)}
-        {/* 回転数と PWM。320px では「rpm」「PWM」の文字を省いて 1 行に収める（数字と ✻ は残る） */}
+        {/* 回転数だけ（2026-11-24 利用者「回転数は RPM だけでいい」）。320px では「rpm」を省く */}
         {fan && (
           <span className="shrink-0 font-medium text-sky-500 dark:text-sky-400">
             ✻{fan.rpm}<span className="max-[359px]:hidden"> rpm</span>
-            {fan.pwm != null && <>・<span className="max-[359px]:hidden">PWM </span>{fan.pwm}%</>}
           </span>
         )}
+        {/* RAM・VRAM の容量は、この行の右端（グラフの外。利用者「容量はもう少し右下に」） */}
+        {capacity && <span data-testid="capacity" className="ml-auto shrink-0 text-zinc-500 dark:text-zinc-400">{capacity}</span>}
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
 // 目的: ホームのモバイルのカードで、(1) 利用率と RAM・VRAM の色が違う（computed style・ライト/ダーク）、
-//   (2) RAM・VRAM の容量がグラフの右下に重なる、(3) CPU のカードの補足の行に CPU ファンの回転数と PWM が出る
+//   (2) RAM・VRAM の容量が補足の行の右端、(3) CPU のカードの補足の行に CPU ファンの回転数が出る（PWM は出さない）
 //   （API はモック）、(4) どの幅でも横にはみ出さない。撮影: test-results/home-fan-colors-{390,320,1280}[-dark].png。
 // 根拠: 2026-11-24 利用者「CPU のところに回転数の表示を追加して・RAM の容量はグラフの右下に・利用率と VRAM 使用率の色が同じなので変えて」。
 import { expect, test, type Page } from "@playwright/test";
@@ -47,7 +47,7 @@ for (const [width, height] of [[390, 844], [320, 700], [1280, 900]] as const) {
         const gpuTile = dual.locator("> div").nth(1);
         // 見えている文字（innerText）で比べる。320px では「rpm」「PWM」を省く
         const shown = (tile: typeof cpuTile) => tile.locator("span.text-sky-500").evaluate((el) => (el as HTMLElement).innerText.replace(/\s+/g, " "));
-        expect(await shown(cpuTile)).toBe(width >= 360 ? "✻1200 rpm・PWM 45%" : "✻1200・45%");
+        expect(await shown(cpuTile)).toBe(width >= 360 ? "✻1200 rpm" : "✻1200");   // 回転数だけ（PWM は出さない）
         expect(await shown(gpuTile)).toBe(width >= 360 ? "✻1280 rpm" : "✻1280");
         // 温度も切れない（補足の行が横にはみ出さない）
         for (const tile of [cpuTile, gpuTile]) {
@@ -61,22 +61,21 @@ for (const [width, height] of [[390, 844], [320, 700], [1280, 900]] as const) {
           ]);
           expect(a).not.toBe(b);
         }
-        // 容量はグラフの枠の右下
+        // 容量は補足の行の右端（グラフの外・カードの右下）
         for (const [tile, text] of [[cpuTile, "16/96GB"], [gpuTile, "1/32GB"]] as const) {
           const cap = tile.getByTestId("capacity");
           await expect(cap).toHaveText(text);
           const box = (await cap.boundingBox())!;
-          const frame = (await tile.locator("div.relative").boundingBox())!;
-          expect(box.x + box.width).toBeGreaterThan(frame.x + frame.width - 8);
-          expect(box.y + box.height).toBeGreaterThan(frame.y + frame.height - 8);
-          expect(box.y).toBeGreaterThanOrEqual(frame.y);
+          const card = (await tile.boundingBox())!;
+          const graph = (await tile.locator("div.relative").boundingBox())!;
+          expect(box.x + box.width).toBeGreaterThan(card.x + card.width - 16);
+          expect(box.y).toBeGreaterThanOrEqual(graph.y + graph.height);   // グラフの下
         }
-        // 補足の行に容量は無い（グラフ側へ移した）
-        await expect(cpuTile.locator("p")).not.toContainText("GB");
+        await expect(cpuTile).not.toContainText("PWM");
       } else {
         await expect(page.getByTestId("metrics-dual")).toBeHidden();
         const summary = page.getByRole("region", { name: "システムサマリー" });
-        await expect(summary.locator("span.flex").filter({ hasText: /1200\s*RPM.*45%/ }).first()).toBeVisible();
+        await expect(summary.locator("span.flex").filter({ hasText: /1200\s*RPM/ }).first()).toBeVisible();
       }
       await noOverflow(page);
       await page.waitForTimeout(900);
