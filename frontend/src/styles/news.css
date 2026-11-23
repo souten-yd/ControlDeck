@@ -355,16 +355,11 @@
 .nw.nwh[data-design="text"] .nwh-open { color: inherit; }
 .nw.nwh[data-design="text"] .nwh-digest { border-radius: 0; }
 
-/* ホームのカードのテロップ（既存の .nw-ticker の作りを使い回す）。動きを減らす設定では流さず 1 行の省略表示 */
+/* ホームのカードのテロップ（共通の Marquee を載せる枠。既存の .nw-ticker の枠・札を使い回す） */
 .nw.nwh .nwh-telop { margin-top: 0 !important; height: 36px; gap: 8px; }
-.nwh-telop .nw-ticker-set, .nwh-telop .nw-dup { padding-right: 60px; }
-.nwh-telop .nw-ticker-track { animation-name: nw-marquee; }
-.nw[data-reduce="true"] .nwh-telop .nw-ticker-track, .nwh-telop .nw-ticker-track.still { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.nw[data-reduce="true"] .nwh-telop .nw-ticker-set { display: block; overflow: hidden; text-overflow: ellipsis; padding-right: 0; }
-@media (prefers-reduced-motion: reduce) {
-  .nwh-telop .nw-ticker-track { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .nwh-telop .nw-ticker-set { display: block; overflow: hidden; text-overflow: ellipsis; padding-right: 0; }
-}
+.nwh-telop .nw-ticker-lane { display: none; }
+.nw[data-reduce="true"] .nwh-telop [data-marquee] { text-overflow: ellipsis; }
+.nw[data-reduce="true"] .nwh-telop [data-marquee] > [data-inner] { transform: none !important; }
 .nwh-digest-text { -webkit-line-clamp: 4; }
 .nw.nwh[data-design="text"] .nwh-telop { border-radius: 0; }
 @container (min-width: 760px) { .nwh-lead .nwd-lead-media.nw-noimg { flex: 0 0 5px !important; width: 5px; height: auto; align-self: stretch; } }

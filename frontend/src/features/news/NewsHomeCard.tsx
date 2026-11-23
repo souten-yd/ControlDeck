@@ -1,9 +1,10 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   DEFAULT_PREFS, KIND_STYLE, LEGACY_DESIGNS, relativeTime, useDigests, useNewsAction, useNewsChannels, useNewsItems, useNewsPrefs, useNewsSettings,
   type Digest, type NewsItem,
 } from "../../api/news";
+import { Marquee } from "../../components/Marquee";
 import { Skeleton } from "../../components/ui";
 import { Media } from "./NewsCard";
 import { chNo, newsRootProps } from "./newsTheme";
@@ -65,7 +66,6 @@ export function NewsHomeCard() {
   const channels = useNewsChannels().data?.channels ?? [];
   const digests = useDigests().data;
   const act = useNewsAction();
-  const [paused, setPaused] = useState(false);
   const shown = Math.min(10, Math.max(1, prefs.display.home_items ?? 5));       // 設定 → ニュース → 表示「ホームに出す記事の数」
   const all = (data?.pages[0]?.items ?? []).filter((i) => !i.state.hide);
   const items = all.slice(0, shown);
@@ -97,7 +97,7 @@ export function NewsHomeCard() {
 
   const [first, ...rest] = items;
   return (
-    <section aria-labelledby="home-news" data-news-home-card {...newsRootProps(prefs.display, paused)} className="nw nwh">
+    <section aria-labelledby="home-news" data-news-home-card {...newsRootProps(prefs.display)} className="nw nwh">
       <div className="nwh-head">
         <h2 id="home-news" className="nw-head nwh-title">ニュース</h2>
         <Link to="/news" className="nwh-open">ニュースを開く</Link>
@@ -105,12 +105,8 @@ export function NewsHomeCard() {
       {telop.length > 0 && (
         <div className="nw-ticker nwh-telop" data-testid="home-telop" role="group" aria-label="テロップ">
           <span className="nw-ticker-label">NEWS</span>
-          <div className="nw-ticker-lane"><div className="nw-ticker-track" style={{ animationDuration: `${Math.max(18, telop[0].length * 0.5)}s` }}>
-            {/* 切れ目なく流すため同じ文を 2 回出す（2 回目は読み上げない）。複数あるときの 1 件ずつのめくりは共通の Marquee へ */}
-            <span className="nw-ticker-set" data-testid="home-telop-text">{telop[0]}</span>
-            <span className="nw-dup" aria-hidden>{telop[0]}</span>
-          </div></div>
-          <button type="button" className="nw-ticker-pause" aria-label={paused ? "テロップを流す" : "テロップを止める"} aria-pressed={paused} onClick={() => setPaused((p) => !p)}>{paused ? "▶" : "❚❚"}</button>
+          {/* 流す項目は配列。複数なら 1 件ずつ流して縦にめくり、1 件ならそれを流し続ける（共通の Marquee）。ニュースの「動きを減らす」は CSS（data-reduce）で流れを止めて省略表示にする */}
+          <Marquee className="min-w-0 flex-1 text-[.85rem]" items={telop.map((text, n) => ({ key: `${n}:${text}`, node: text }))} />
         </div>
       )}
       {summary && (

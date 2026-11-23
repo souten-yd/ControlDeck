@@ -24,6 +24,14 @@ async function mock(page: Page, opts: { digestDay?: number | null; homeItems?: n
     taste: { strength: 0.5, use_chat: true, half_life_days: 30, mute_terms: [], mute_sources: [], dim_read: true } };
   const saved: unknown[] = [];
   const latest = opts.digestDay == null ? null : digest(day(opts.digestDay), NEW_BODY);
+  const numbered = CHANNELS.map((c, i) => ({ id: c.id, name: c.name, color: c.color, number: i + 1 }));
+  await page.route(/\/api\/v1\/news\/(archive|trends|profile)/, (r) => r.fulfill({ json: { days: [], total: 0, starred: 0, topics: [], sources: [], avoided_sources: [], muted: [], chat_terms: 0 } }));
+  await page.route(/\/api\/v1\/news\/home$/, (r) => r.fulfill({ json: {
+    channels: numbered, onair: ITEMS[1], ticker: ITEMS.slice(0, 5).map((i) => ({ id: i.id, title: i.title, source: i.source, url: i.url, published_at: i.published_at })),
+    now: ITEMS.slice(2, 4), today: ITEMS.slice(4, 6), week: ITEMS.slice(6, 8),
+    sections: [{ id: "c1", name: "テスト", color: "#f5c518", number: 1, total: 10, week: 10, items: ITEMS.slice(0, 6).map((i) => ({ ...i, channel: "c1" })) }],
+    interest: { topics: [], sources: [], avoided_sources: [], muted: [], chat_terms: 0 }, trends: { days: [], topics: [], sources: [] },
+    numbers: { today: 10, read_today: 0, read_30d: 0, top_channel: null, top_topic: null, top_topic_count: 0 }, generated_at: new Date().toISOString() } }));
   await page.route(/\/api\/v1\/news\/items\?.*/, (r) => r.fulfill({ json: { items: ITEMS, next: null } }));
   await page.route(/\/api\/v1\/news\/prefs$/, (r) => { if (r.request().method() === "PUT") { Object.assign(prefs, r.request().postDataJSON()); saved.push(r.request().postDataJSON()); } return r.fulfill({ json: prefs }); });
   await page.route(/\/api\/v1\/news\/channels$/, (r) => r.fulfill({ json: { channels: CHANNELS, archive_keep: 50000, interval_minutes: 30, kinds: {}, reddit_key: false, limits: { channels: 12, terms: 20, palette: ["#f5c518"] } } }));
@@ -44,10 +52,10 @@ async function mock(page: Page, opts: { digestDay?: number | null; homeItems?: n
 
 test("ニュース: 画像の無い記事は大きな箱でなく細いアクセントラインで、取得の失敗の件数は出ない", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
-  for (const width of [1280, 320]) {
+  for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await mock(page);
-    await establishSession(page, context);
+    if (width === 1280) await establishSession(page, context);
     await page.goto("/news");
     await expect(page.getByText(/取れなかったソース/)).toHaveCount(0);
     const lines = page.locator("[data-noimg='true']");
@@ -57,24 +65,24 @@ test("ニュース: 画像の無い記事は大きな箱でなく細いアクセ
     await expect(page.locator(".nw-fallback")).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `test-results/news-noimg-${width}.png`, fullPage: true });
-    await page.unroute(/.*/);
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   }
 });
 
 for (const [name, offset] of [["today", 0], ["yesterday", -1], ["none", null]] as const) {
   test(`ニュース: ホームのカード（まとめ: ${name}）はテロップ・まとめの概要・記事 5 件`, async ({ page, context }) => {
     test.skip(!hasSession(), "ログイン情報がありません");
-    for (const width of [1280, 390]) {
+    for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
       await mock(page, { digestDay: offset });
-      await establishSession(page, context);
+      if (width === 1280) await establishSession(page, context);
       await page.goto("/");
       const card = page.getByRole("region", { name: "ニュース" });
       await expect(card.getByTestId("home-telop")).toBeVisible();
       const digestBox = card.getByTestId("home-digest");
       if (offset === null) {
         await expect(digestBox).toHaveCount(0);
-        await expect(card.getByTestId("home-telop-text")).toContainText("記事 1");        // まとめが無ければ新しい見出し
+        await expect(card.getByTestId("home-telop")).toContainText("記事 1");        // まとめが無ければ新しい見出し
       } else {
         await expect(digestBox).toContainText("Qwen の新モデルが公開された。");
         await expect(digestBox).not.toContainText("[1]");
@@ -84,27 +92,31 @@ for (const [name, offset] of [["today", 0], ["yesterday", -1], ["none", null]] a
       await expect(card.getByTestId("home-rows").locator("li")).toHaveCount(4);          // 全体で 5 件（1 位 + 4 行）
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: `test-results/news-home-digest-${name}-${width}.png`, fullPage: true });
-      await page.unroute(/.*/);
+      await page.unrouteAll({ behavior: "ignoreErrors" });
     }
   });
 }
 
-test("ニュース: テロップは押すと止まり、動きを減らす設定では流さない", async ({ page, context }) => {
+test("ニュース: テロップ（共通の Marquee）は複数の項目をめくり、触れると止まり、動きを減らす設定では省略表示になる", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   await page.setViewportSize({ width: 1280, height: 900 });
   await mock(page, { digestDay: 0 });
   await establishSession(page, context);
   await page.goto("/");
   const card = page.getByRole("region", { name: "ニュース" });
-  const stop = card.getByRole("button", { name: "テロップを止める" });
-  await stop.click();
-  await expect(card.getByRole("button", { name: "テロップを流す" })).toHaveAttribute("aria-pressed", "true");
-  await expect(card).toHaveAttribute("data-paused", "true");
-  await card.getByRole("button", { name: "テロップを流す" }).click();
-  await expect(card).toHaveAttribute("data-paused", "false");
+  const marquee = card.getByTestId("home-telop").getByTestId("marquee");
+  await expect(marquee).toHaveAttribute("data-count", "3");              // 「今日の 3 行」を 1 項目ずつ
+  await expect(marquee.locator("[data-marquee]")).toBeVisible();
+  const state = () => marquee.locator("[data-inner]").first().evaluate((el) => el.getAnimations().map((a) => a.playState)[0] ?? "none");
+  await marquee.hover();
+  await expect.poll(state).toBe("paused");
+  await page.mouse.move(0, 0);
+  await expect.poll(state).not.toBe("paused");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const anim = await card.locator(".nw-ticker-track").evaluate((el) => getComputedStyle(el).animationName);
-  expect(anim).toBe("none");
+  await page.reload();
+  const slide = card.getByTestId("home-telop").locator("[data-marquee]");
+  await expect(slide).toBeVisible();
+  expect(await slide.evaluate((el) => getComputedStyle(el).textOverflow)).toBe("ellipsis");
 });
 
 test("ニュース: 設定でホームに出す記事の数を変えると表示が変わる", async ({ page, context }) => {
@@ -124,14 +136,14 @@ test("ニュース: 設定でホームに出す記事の数を変えると表示
 
 test("ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
-  for (const width of [1280, 320]) {
+  for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await mock(page);
     await page.route(/\/api\/v1\/news\/sources$/, async (r) => {
       if (r.request().method() === "PUT") return r.fulfill({ json: { config: r.request().postDataJSON() } });
       return r.fallback();
     });
-    await establishSession(page, context);
+    if (width === 1280) await establishSession(page, context);
     await page.goto("/settings/news");
     await page.getByTestId("news-presets-button").click();
     const panel = page.getByTestId("news-presets");
@@ -144,6 +156,6 @@ test("ニュース: 設定 → ソースのプリセットで分野ごとに足�
     await expect(page.getByTestId("news-source-status")).toContainText("Phoronix: HTTP 500");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `test-results/news-presets-${width}.png`, fullPage: true });
-    await page.unroute(/.*/);
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   }
 });
