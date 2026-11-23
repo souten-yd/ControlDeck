@@ -60,3 +60,46 @@ for (const width of [320, 1280]) {
     expect(saved.ram_keep_gib).toBe(8);
   });
 }
+
+
+// 目的: Strata の登録で Inkling 2 Mini（strata-inkling）を選べる。選ぶと量子化が SQ-*・UD-* になり、思考の欄と
+// Qwen 用のメモリ設定は消え、投機デコードは「自動（内蔵の DSpark）」か「使わない」だけになる。保存に思考の値を載せない。
+// 根拠: 2026-11-23 利用者「Strata や Radiance で inkling がサポートされていれば候補として追加できるように」。
+// Inkling は思考を持たず、別のエンジンで Qwen 用の引数を受け付けない（backend の strata_gateway.OTHER_ENGINE_FAMILIES）。
+test("Strata registration offers Inkling 2 Mini without thinking or Qwen-only memory settings", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 900 });
+  await establishSession(page, context);
+  let saved: any;
+  await page.route("**/api/v1/models/runtime-environment", async route => {
+    const env = await (await route.fetch()).json();
+    env.policy.selected_runtime = "strata";
+    await route.fulfill({ json: env });
+  });
+  await page.route("**/api/v1/models/providers/*/models", route => route.fulfill({ json:
+    route.request().url().includes("/strata/") ? [{ id: "ink", name: "ink", size_bytes: 0, loaded: false, details: {} }] : [],
+  }));
+  const instance = { alias: "ink", family: "unsloth", model: "ud-iq4_xs", context: "128k", port: 8110, parallel: 1, loaded: false,
+    reasoning_effort: "low" };
+  await page.route("**/api/v1/models/strata/instances", route => route.fulfill({ json: { runtime: { installed: true }, instances: [instance] } }));
+  await page.route("**/api/v1/models/strata/instances/ink", async route => { saved = route.request().postDataJSON(); await route.fulfill({ json: saved }); });
+  await page.route("**/api/v1/models/strata/memory-estimate", route => route.fulfill({ json: { supported: false, note: "このモデル系列のKV係数は未対応です",
+    context_tokens: 131072, parallel: 1, model: {}, hardware: {} } }));
+  await page.route("**/api/v1/models/strata/instances/ink/memory", route => route.fulfill({ json: { active: false, rows: [] } }));
+  await page.goto("/models");
+  await page.getByRole("button", { name: "inkの個別設定を開く" }).click();
+  const sheet = page.getByRole("dialog", { name: "ink · 個別設定", exact: true });
+  await sheet.getByLabel("Strataモデル系列").selectOption("inkling-2-mini");
+  await expect(sheet.getByLabel("Strataモデル量子化")).toHaveValue("sq-20");
+  await expect(sheet.getByLabel("Strataモデル量子化").locator("option")).toHaveText(["sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-iq4_xs"]);
+  await expect(sheet.getByLabel("StrataKVのVRAM保持長", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("要求が深さを指定しないときの既定")).toHaveCount(0);
+  await expect(sheet.getByLabel("投機デコード").locator("option")).toHaveCount(2);
+  await page.screenshot({ path: "test-results/strata-inkling-390.png", fullPage: true });
+  await sheet.getByRole("button", { name: "保存", exact: true }).last().click();
+  await expect.poll(() => saved?.family).toBe("inkling-2-mini");
+  expect(saved.model).toBe("sq-20");
+  expect(saved.reasoning_effort).toBe("");
+  expect(saved.thinking_budget).toBe(0);
+  expect(saved.kv_resident).toBeNull();
+});

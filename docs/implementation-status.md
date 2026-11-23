@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-23 Strata で Inkling 2 Mini を登録できるように
+
+- 利用者「Strata や Radiance で inkling がサポートされているか最新の情報を確認して、サポートされていれば候補として追加できるように」。
+- 調べた結果（2026-11-23）: **Strata** は 0.2.19（11/22）から Thinking Machines の Inkling 2 Mini（総 26.4B・活性 3.4B）に専用エンジン `strata-inkling` で対応（R9700 で 99〜106 tok/s と公称）。手元は 0.2.20。系列名 `inkling-2-mini`、量子化は Strata の SQ-20（劣化なし 19.3GB）・SQ-15・SQ-10 と Unsloth の UD-*（0.2.20 で GGUF を直接）。`strata launch --family inkling-2-mini --model sq-20 --plan` で確かめた。**Radiance** は対応の PR（arch/inkling2、11/22）が Codeberg に出ているだけで、Release（手元 2.2.0）には未。**llama.cpp** は b12600 で対応（手元の b12388 は未対応）。
+- `strata_gateway._FAMILIES` に `inkling-2-mini`（sq-20・sq-15・sq-10・ud-q8_k_xl・ud-q4_k_xl・ud-iq4_xs）。Qwen とは別のエンジンなので `--ple-io`・`--kv-resident` と思考の設定を渡さない（strata-inkling は `--set` をそのままエンジンの引数へ足す。Strata の `inkling_kind.py`）。思考を持たない（`HAS_THINKING=False`）ので思考の既定は断り、起動後の `/settings` も送らない。投機デコードは自動（内蔵 DSpark）か使わないだけ。
+- 画面: Strata の登録の系列に「Inkling 2 Mini（Thinking Machines）」。選ぶと思考の欄・KV の VRAM 保持長・RAM 余裕を隠す。HF の検索で Inkling の置き場は inkling-2-mini 系列として出す。
+- テスト: `test_strata_gateway.py`、`test_hf_search.py`、E2E `strata-memory-settings.spec.ts`。実際の起動（エンジン約 94MB とモデル約 20GB の取得）は利用者の起動操作まで行っていない。
+
 ## 2026-11-23 メニューの「メイン」をなくす
 
 - 利用者「メインメニューのファイルズとリモートを管理に回して、メインという謎の項目を消して」。`navigation.tsx` のまとまり「メイン」を消し、Remote・Files を「管理」へ。Home・Apps は既定で「よく使う」に固定されていて、外したときは「管理」に出る。並びは変えない。

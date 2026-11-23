@@ -30,7 +30,16 @@ _FAMILIES = {
     # Unsloth's Flash-Next GGUFs: the two sizes Strata recommends for this family.
     "unsloth": {"ud-iq4_xs", "ud-q4_k_xl"},
     "deepseek41": {"ista-das-coder", "ist-das-2.00bpw"},
+    # Thinking Machines の Inkling 2 Mini（Strata 0.2.19 の strata-inkling エンジン。2026-11-23 追加）。
+    # SQ-* は Strata 自身の量子化（SQ-20 は元の重みと同じ答え・19.3GB。R9700 の 32GB に全部載る）、UD-* は Unsloth の GGUF。
+    "inkling-2-mini": {"sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-iq4_xs"},
 }
+# Qwen 系（strata-engine）とは別のエンジンで動く系列。Qwen 用の引数（--ple-io・--kv-resident）を渡さない。
+# strata-inkling は --set の値をそのままエンジンの引数へ足すので、知らない引数は起動を壊しうる
+# （Strata のソース terminal/serve/inkling_kind.py の engine_args。--vram-reserve-mib は受け付ける）。
+OTHER_ENGINE_FAMILIES = {"deepseek41", "inkling-2-mini"}
+# 思考を持たない系列（Strata の inkling_family.HAS_THINKING = False）。思考の既定を渡さない
+NO_THINKING_FAMILIES = {"inkling-2-mini"}
 # Strata takes any "<N>k"; past the trained 256K it adds yarn scaling itself.
 _CONTEXT = re.compile(r"^([1-9][0-9]{0,3})k$")
 _CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
@@ -64,10 +73,10 @@ PLE_IO_DEFAULT = "mmap"
 def engine_settings(cfg: dict) -> dict[str, str]:
     """起動時に --set で渡す設定。形の合わないものは渡さない（引数の注入を防ぐ）。"""
     defaults = dict(DEFAULT_ENGINE_SETTINGS)
-    if cfg.get("family") != "deepseek41":
+    if cfg.get("family") not in OTHER_ENGINE_FAMILIES:
         defaults["ple-io"] = PLE_IO_DEFAULT
     merged = {**defaults, **{str(k): str(v) for k, v in (cfg.get("engine_settings") or {}).items()}}
-    if cfg.get("kv_resident") is not None:
+    if cfg.get("kv_resident") is not None and cfg.get("family") not in OTHER_ENGINE_FAMILIES:
         merged["kv-resident"] = str(int(cfg["kv_resident"]))
     if cfg.get("ram_keep_gib") is not None:
         merged["STRATA_RAM_KEEP_GIB"] = format(float(cfg["ram_keep_gib"]), "g")
@@ -402,8 +411,12 @@ def save_instance(alias: str, *, family: str, model: str,
         raise StrataGatewayError("KVのVRAM保持長は4K〜1024Kの範囲で、1024トークン単位にしてください")
     if ram_keep_gib is not None and (not isinstance(ram_keep_gib, (int, float)) or not math.isfinite(ram_keep_gib) or not 0 <= ram_keep_gib <= 256):
         raise StrataGatewayError("RAM余裕は0〜256GiBにしてください")
-    if family == "deepseek41" and (kv_resident is not None or ram_keep_gib is not None):
+    if family in OTHER_ENGINE_FAMILIES and (kv_resident is not None or ram_keep_gib is not None):
         raise StrataGatewayError("KVのVRAM保持長とRAM余裕の指定はQwen系モデルで利用できます")
+    if family in NO_THINKING_FAMILIES and (reasoning_effort or int(thinking_budget)):
+        raise StrataGatewayError("このモデルは思考（thinking）を持たないので、思考の既定は指定できません")
+    if family == "inkling-2-mini" and drafting not in {"auto", "off"}:
+        raise StrataGatewayError("Inkling 2 Mini の投機デコードは「自動」（内蔵の DSpark）か「使わない」です")
     wanted = {"family": family, "model": model, "port": port, "context": context,
               "model_path": model_path, "kv": kv, "vision": vision, "parallel": parallel,
               "drafting": drafting, "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start),
@@ -518,7 +531,8 @@ def _start_locked(alias: str, *, explicit: bool) -> tuple[bool, str]:
         args += ["--set", f"{key}={value}"]
     # Thinking defaults go through POST /settings after the start (apply_thinking); "off" clears
     # any value an earlier launch saved into the preset's engine arguments.
-    args += ["--set", "reasoning-effort=off", "--set", "reasoning-budget-tokens=off"]
+    if cfg["family"] not in NO_THINKING_FAMILIES:
+        args += ["--set", "reasoning-effort=off", "--set", "reasoning-budget-tokens=off"]
     try:
         result = _run(args, timeout=7200 if explicit else 420)
     except StrataGatewayError as exc:
@@ -556,7 +570,7 @@ def thinking_defaults(cfg: dict) -> dict | None:
 def apply_thinking(alias: str) -> bool:
     """Send the thinking defaults to the running server. Never raises (a start must not fail on it)."""
     cfg = _read().get(alias)
-    if not cfg:
+    if not cfg or cfg.get("family") in NO_THINKING_FAMILIES:
         return False
     try:
         with httpx.Client(timeout=10, trust_env=False) as client:

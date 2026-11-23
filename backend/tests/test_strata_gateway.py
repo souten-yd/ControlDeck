@@ -357,3 +357,39 @@ def test_strata_refuses_quantizations_it_cannot_run_at_registration(tmp_path):
     (tmp_path / "broken.gguf").write_bytes(b"GGUF")
     strata_gateway.check_runnable("unsloth", tmp_path / "broken.gguf")                           # 読めないものも任せる
     assert strata_gateway.gguf_header(q4ks)["general.file_type"] == 14
+
+
+def test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments(monkeypatch, tmp_path):
+    """Inkling 2 Mini（Strata 0.2.19 の strata-inkling）を登録・起動できる。Qwen 用の引数と思考の設定は渡さない。
+    根拠: 2026-11-23 利用者「Strata や Radiance で inkling がサポートされていれば候補として追加できるように」。
+    strata-inkling は --set の値をそのままエンジンの引数へ足す（Strata の terminal/serve/inkling_kind.py）ので、
+    知らない引数（--ple-io・--kv-resident・思考）は起動を壊しうる。思考は持たない（inkling_family.HAS_THINKING=False）。
+    系列名と量子化は 0.2.20 の `strata launch --family inkling-2-mini --model sq-20 --plan` で確かめた。"""
+    from app.models_mgmt import local_llm
+    _managed(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_llm, "find", lambda alias: None)
+    monkeypatch.setattr(local_llm, "port_taken_by_other_runtime", lambda *a: False)
+    for port, size in enumerate(("sq-20", "sq-15", "sq-10", "ud-q4_k_xl"), start=8110):
+        assert strata_gateway.save_instance(f"inkling-{size.replace('_', '-')}", family="inkling-2-mini",
+                                            model=size, port=port)["model"] == size
+    with pytest.raises(strata_gateway.StrataGatewayError):          # Qwen の量子化名は通さない
+        strata_gateway.save_instance("ink-bad", family="inkling-2-mini", model="iq3_s", port=8119)
+    with pytest.raises(strata_gateway.StrataGatewayError, match="思考"):
+        strata_gateway.save_instance("ink-think", family="inkling-2-mini", model="sq-20", port=8119, reasoning_effort="low")
+    with pytest.raises(strata_gateway.StrataGatewayError, match="Qwen系"):
+        strata_gateway.save_instance("ink-kv", family="inkling-2-mini", model="sq-20", port=8119, kv_resident=32768)
+    with pytest.raises(strata_gateway.StrataGatewayError, match="DSpark"):
+        strata_gateway.save_instance("ink-mtp", family="inkling-2-mini", model="sq-20", port=8119, drafting="mtp")
+
+    settings = strata_gateway.launch_engine_settings({"family": "inkling-2-mini", "kv_resident": 32768})
+    assert "ple-io" not in settings and "kv-resident" not in settings
+    assert "vram-reserve-mib" in settings                     # strata-inkling が受け付ける（ep_dual_gpu.h）
+
+    seen = []
+    monkeypatch.setattr(strata_gateway, "_run", lambda args, timeout=0: (seen.append(args),
+                        subprocess.CompletedProcess(args, 1, "", "stop here"))[1])
+    strata_gateway._start_locked("inkling-sq-20", explicit=True)
+    joined = " ".join(seen[0])
+    assert seen[0][:5] == ["launch", "--family", "inkling-2-mini", "--model", "sq-20"]
+    assert "reasoning-effort" not in joined and "reasoning-budget-tokens" not in joined and "ple-io" not in joined
+    assert strata_gateway.apply_thinking("inkling-sq-20") is False   # 思考の既定を送らない

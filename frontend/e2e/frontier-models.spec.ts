@@ -34,7 +34,7 @@ test("キーを保存して有効にし、モデルを選び、確認のうえ�
   // キーが無いあいだは有効にできない。
   const enable = card.getByRole("checkbox", { name: /このプロバイダを有効にする/ });
   await expect(enable).toBeDisabled();
-  const keyInput = card.getByLabel("API キー", { exact: true });
+  const keyInput = card.getByLabel(/^API キー/);
   await expect(keyInput).toHaveAttribute("type", "password");
   await expect(keyInput).toHaveAttribute("autocomplete", "off");
   await keyInput.fill(KEY);
@@ -42,7 +42,7 @@ test("キーを保存して有効にし、モデルを選び、確認のうえ�
 
   // 保存後は末尾 4 文字だけ。入力欄もキーも画面に残らない。
   await expect(card.getByText("••••9f3c")).toBeVisible();
-  await expect(card.getByLabel("API キー", { exact: true })).toHaveCount(0);
+  await expect(card.getByLabel(/^API キー/)).toHaveCount(0);
   expect(await page.content()).not.toContain(KEY);
   expect(puts[0]).toEqual({ path: "openrouter", body: { api_key: KEY } });
   await expect(card.getByText("無効", { exact: true })).toBeVisible();
