@@ -461,7 +461,12 @@ def ui_verify_server(safe_job_id: str) -> dict | None:
     if not settings.get("ui_verify_allow_external"):
         # 安全境界ではない（Playwright MCP 自身の注意書き）。外へ出さないための既定。
         command += ["--allowed-origins", ";".join(LOOPBACK_ORIGINS)]
-    return {"type": "local", "command": command, "enabled": True, "timeout": 600_000}
+    # 録画（browser_start_video）が要る ffmpeg は、この MCP の版専用の置き場から読む。E2E・本体の Python の置き場とは
+    # 別（同じ置き場だと、版の違う playwright install が互いのブラウザを消す。2026-11-23）。
+    from app.features import playwright_browsers
+
+    return {"type": "local", "command": command, "enabled": True, "timeout": 600_000,
+            "environment": {"PLAYWRIGHT_BROWSERS_PATH": str(playwright_browsers.mcp_browsers_path())}}
 
 
 def _agent_prompt(name: str) -> str:
@@ -1514,6 +1519,10 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
     # リンク先が箱の外になり、Tab の plan 切替など利用者のキー設定が消える。
     # integration 全体を公開せず、TUI 設定の1枚だけを読み取り専用で渡す。
     readonly_paths.append(cli_config_path())
+    from app.features import playwright_browsers
+
+    if playwright_browsers.mcp_browsers_path().is_dir():
+        readonly_paths.append(playwright_browsers.mcp_browsers_path())   # MCP の録画用 ffmpeg（読み取り専用）
     gitconfig = real_home / ".gitconfig"
     if gitconfig.is_file():
         readonly_paths.append(gitconfig)

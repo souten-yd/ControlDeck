@@ -4,6 +4,7 @@ import { useMeta } from "../api/hooks";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
+import { writeClipboard } from "../lib/clipboard";
 import { ACCENTS, useAuth, useTheme, useToasts, type Theme } from "../stores";
 import { BottomSheet, ConfirmDialog, Skeleton } from "../components/ui";
 import { AlertsSettings } from "../features/alerts/AlertsSettings";
@@ -715,7 +716,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine"; route_gated: boolean;
+  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   available: boolean; installed: boolean; managed: boolean;
@@ -727,6 +728,14 @@ interface AddonState {
   repo?: string;
   /** GPUランタイムの構成（バックエンド / ROCmトラック / ホスト環境との整合）。 */
   runtime?: GpuRuntimeDetail;
+  /** OS のパッケージ（sudo が要る）。足りないものだけのコマンドをコピーさせる。ボタンで sudo は実行しない。 */
+  install_command?: string; missing_packages?: string[];
+  /** Playwright のブラウザ。版ごとの置き場と、入っているもの・足りないもの。 */
+  components?: PlaywrightComponent[];
+}
+
+interface PlaywrightComponent {
+  id: string; label: string; applicable: boolean; store: string; present: string[]; missing: string[];
 }
 
 interface GpuRuntimeDetail {
@@ -760,7 +769,7 @@ interface ReleaseStatus {
 /** pip・npm で入れる機能（PyPI / npm の最新版と比べて「更新あり」を出せる）。 */
 const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
 /** チェックを付けてまとめて導入できる種類（GPU ランタイム・アプリは個別に）。 */
-const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script"];
+const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script", "playwright-browsers"];
 
 /** GPUランタイム・pip・npm の機能の更新有無。GitHub・PyPI・npm を見るので一覧とは別クエリ・低頻度にする。 */
 function useReleaseStatus(addons: AddonState[] | undefined) {
@@ -1200,6 +1209,15 @@ function AddonsSection() {
       : addon.kind === "pip" || addon.kind === "python-lib" ? "python3が見つかりません" : "npmが見つかりません。Node.jsの導入が必要です";
   /** その時に必要な操作だけを1つ前に出す。残りは「詳細」に入れる。 */
   const primary = (addon: AddonState) => {
+    if (addon.kind === "system-packages") {
+      // sudo が要るのでボタンでは入れられない。足りないものだけのコマンドをコピーさせる
+      return addon.installed || !addon.install_command ? null : (
+        <button onClick={() => void writeClipboard(addon.install_command ?? "").then((ok) => show(ok ? "導入のコマンドをコピーしました。ターミナルで実行してください" : "コピーできませんでした", ok ? "info" : "error"))}
+          className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
+          コマンドをコピー
+        </button>
+      );
+    }
     if (addon.kind === "system-browser") {
       return addon.installed ? null : <span className="text-xs text-zinc-500">Chrome が見つかりません</span>;
     }
@@ -1315,6 +1333,9 @@ function AddonsSection() {
                       </div>
                       <div className="shrink-0">{primary(addon)}</div>
                     </div>
+                    {addon.kind === "system-packages" && !addon.installed && addon.install_command && (
+                      <p className="mt-2 break-all rounded-lg bg-zinc-100 px-2 py-1.5 font-mono text-[11px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{addon.install_command}</p>
+                    )}
                     {addon.installed && (
                       <details className="group mt-2" open={autoOpened.has(addon.id) || undefined}>
                         <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
@@ -1325,6 +1346,17 @@ function AddonsSection() {
                           {addon.kind === "gpu-runtime" && <GpuRuntimeDetails addon={addon} release={releases?.[addon.id] ?? null} />}
                           {addon.id === "maya-s" && <MayaSPanel addon={addon} />}
                           {OPENCODE_SETUP_KEYS[addon.id] && <OpenCodeFeatureSetup featureId={addon.id} />}
+                          {addon.kind === "playwright-browsers" && (
+                            <ul className="space-y-1 text-[11px] text-zinc-500">
+                              {(addon.components ?? []).map((c) => (
+                                <li key={c.id} className="break-all">
+                                  <span className="font-medium text-zinc-600 dark:text-zinc-300">{c.label}</span>
+                                  {c.applicable ? ` — ${c.present.length > 0 ? c.present.join("・") : "未導入"}${c.missing.length > 0 ? `（足りない: ${c.missing.join("・")}）` : ""}` : " — 対象の Playwright が未導入のため飛ばします"}
+                                  <span className="block font-mono text-zinc-400">{c.store}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                           <div className="flex flex-wrap gap-1.5">
                             {/* 音声エンジン（Supertonic 3）は上流が開発終了。更新は無く、保管庫の版を使う */}
                             {addon.kind === "speech-engine" && (
@@ -1348,7 +1380,7 @@ function AddonsSection() {
                                 className={`${btn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-300`}>無効化</button>
                             )}
                             {/* llama.cpp は登録済みモデル全部の土台なので、アドオン画面からは消させない。 */}
-                            {addon.id !== "llama-cpp" && addon.kind !== "managed-script" && addon.kind !== "system-browser" && (
+                            {addon.id !== "llama-cpp" && !["managed-script", "system-browser", "playwright-browsers", "system-packages"].includes(addon.kind) && (
                               <button onClick={() => setUninstalling(addon.id)} disabled={busy}
                                 className={`${btn} text-red-600 hover:bg-red-50 disabled:opacity-40 dark:hover:bg-red-950/40`}>アンインストール</button>
                             )}

@@ -105,7 +105,7 @@ def test_search_category_lists_the_search_components(monkeypatch, tmp_path):
     根拠: 2026-11-21 利用者「まとめて導入するのはこの検索機能に関する部分のこと。チェックを付けて一括導入でもいい」。"""
     monkeypatch.setattr(registry, "data_dir", lambda: tmp_path)
     ids = {fid for fid in registry.KNOWN_FEATURES if registry.category(fid) == "search"}
-    assert ids == {"searxng", "web-extract", "web-robots", "web-browser"}
+    assert ids == {"searxng", "web-extract", "web-robots", "web-browser", "playwright-browsers", "system-ocr"}
     assert registry.FEATURES["web-robots"]["packages"] == ["protego==0.7.0"]
 
 

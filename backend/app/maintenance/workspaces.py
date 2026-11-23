@@ -665,7 +665,9 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
         origin = _trusted_origin()
         slug = _origin_slug(origin)
         if not shutil.which("gh"):
-            raise SandboxError("gh（GitHub の CLI）が見つかりません。ホストに gh を入れてログインしてください")
+            from app.features import system_packages
+
+            raise SandboxError(f"gh（GitHub の CLI）が見つかりません。{system_packages.guide('system-gh')}。導入後に gh auth login でログインしてください")
         _gh("auth", "status")
         _host_git("push", origin, f"{ws_ref(name)}:refs/heads/{branch}", cwd=exp, timeout=GH_TIMEOUT)
         previous = adopted_state(box)

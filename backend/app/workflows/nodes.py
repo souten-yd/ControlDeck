@@ -1851,7 +1851,9 @@ async def node_ocr(config: dict, ctx: dict) -> dict:
     from app.files.service import FileAccessError, resolve
 
     if not _shutil.which("tesseract"):
-        raise NodeError("tesseract が未インストールです（sudo apt install tesseract-ocr tesseract-ocr-jpn）")
+        from app.features import system_packages
+
+        raise NodeError(f"tesseract が未インストールです。{system_packages.guide('system-ocr')}")
     path = render_template(str(config.get("path", "")), ctx)
     try:
         p = resolve(path)
@@ -2324,7 +2326,7 @@ async def node_browser(config: dict, ctx: dict) -> dict:
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        raise NodeError("Playwright が未インストールです（.venv で pip install playwright && playwright install chromium）")
+        raise NodeError("Playwright が未インストールです。本体の環境に playwright を入れ、設定 → 機能と拡張 → Playwright のブラウザ（画面の試験・画面確認係・録画）から導入してください")
     url = render_template(str(config.get("url", "")), ctx)
     if not url.startswith(("http://", "https://")):
         raise NodeError(f"不正な URL: {url}")
@@ -2342,6 +2344,10 @@ async def node_browser(config: dict, ctx: dict) -> dict:
     except egress.EgressRejected as e:
         raise NodeError(f"ブラウザで開けない URL です: {e}")
     try:
+        # 本体の Python の playwright 専用の置き場（E2E・MCP の置き場とは別。playwright が版の違うブラウザを消し合わない）
+        from app.features import playwright_browsers
+
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(playwright_browsers.python_browsers_path())
         async with async_playwright() as p:
             # この PC の Chrome を一時プロファイルで（Playwright の既定は別の Chromium を要し、入っていなかった）
             browser = await web_browser.launch(p)

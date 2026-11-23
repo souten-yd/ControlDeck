@@ -453,9 +453,12 @@ def _tool_dirs() -> list[Path]:
     names = ("opencode-v2", "opencode-superpowers", "opencode-adversarial-review",
              "opencode-auto-advisor", "playwright-mcp", "context7-mcp", "ast-grep")
     dirs = [features / n for n in names if (features / n).is_dir()]
-    browsers = _data_dir() / "cache" / "ms-playwright"
-    if browsers.is_dir():
-        dirs.append(browsers)
+    # E2E（箱の中の ./deck.sh e2e）のブラウザと、Playwright MCP の録画用 ffmpeg。版ごとに置き場が別
+    # （同じ置き場だと playwright install が互いのブラウザを消す。app/features/playwright_browsers.py）。
+    for store in ("ms-playwright", "ms-playwright-mcp"):
+        browsers = _data_dir() / "cache" / store
+        if browsers.is_dir():
+            dirs.append(browsers)
     return dirs
 
 

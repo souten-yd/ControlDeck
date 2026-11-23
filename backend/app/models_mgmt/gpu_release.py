@@ -199,7 +199,9 @@ def _safe_members(tar: tarfile.TarFile, root: Path):
 def _decompress_zst(archive: Path, destination: Path) -> None:
     zstd = shutil.which("zstd")
     if zstd is None:
-        raise ReleaseError("zstd が必要です（sudo apt install zstd）")
+        from app.features import system_packages
+
+        raise ReleaseError(f"zstd が必要です。{system_packages.guide('system-zstd')}")
     result = subprocess.run(
         [zstd, "-d", "-q", "-f", str(archive), "-o", str(destination)],
         capture_output=True, text=True, timeout=1800, check=False,

@@ -107,7 +107,7 @@ def targets() -> list[dict]:
     invalidate_feature_cache()
     return [item for item in list_features()
             if item.get("installed") and item.get("managed") and not item.get("error")
-            and item.get("kind") != "speech-engine"]
+            and item.get("kind") not in ("speech-engine", "playwright-browsers", "system-packages")]
 
 
 async def _update_one(item: dict, job=None) -> dict:

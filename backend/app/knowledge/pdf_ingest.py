@@ -75,7 +75,9 @@ async def _run(*argv: str, timeout: int = 120, cwd: Path | None = None) -> tuple
 def _require(tool: str) -> str:
     path = shutil.which(tool)
     if not path:
-        raise PdfError(f"{tool} がありません（poppler-utils / tesseract-ocr を導入してください）")
+        from app.features import system_packages
+
+        raise PdfError(f"{tool} がありません。{system_packages.guide('system-ocr')}")
     return path
 
 

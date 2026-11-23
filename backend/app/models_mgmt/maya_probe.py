@@ -193,7 +193,7 @@ def blockers(family: str) -> list[str]:
             import tokenizers  # noqa: F401
         except ImportError:
             out.append("Maya の Python に tokenizers がありません（DeepSeek の pack に要ります）。"
-                       "導入: <engine>/.venv/bin/pip install tokenizers")
+                       "設定 → 機能と拡張 → Project Maya（R9700）の「更新」で入れてください")
     return out
 
 
