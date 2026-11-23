@@ -70,7 +70,10 @@ async def _after_save(saved: dict, cfg: dict) -> dict:
     changed = saved["changed"]
     try:
         info["gist"] = await gist.enrich(changed)
-        if info["gist"]["done"]:
+        translated = await gist.translate(changed)
+        if translated["error"] and not info["gist"]["error"]:
+            info["gist"]["error"] = translated["error"]
+        if info["gist"]["done"] or translated["done"]:
             changed = await asyncio.to_thread(_reload, [i["id"] for i in changed])
     except Exception as exc:  # noqa: BLE001
         logger.warning("一言要約に失敗しました: %s", exc)

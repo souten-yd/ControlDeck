@@ -4,13 +4,14 @@
   クラウドは **無料のモデル（:free で終わる・価格 0）を上に出して「無料」と印を付け**、有料は選べても「有料」と警告する。
 - 外部への送信は Models の「外部への送信」で「ニュース（公開情報だけ）」を許可したときだけ（呼び出し元は "news"）。
   クラウドを選んでいて許可が無いときは、**ローカルへ黙って切り替えず**、LlmNotAllowed で呼び出し側が「作らない」と記録する。
-- 送るのは記事の題・抜粋・出どころ（公開情報）だけ。チャットの題・好み・出来事（ControlDeck の中の出来事）は渡さない（呼び出し側の約束。digest.py）。
+- 送るのは記事の題・抜粋・出どころ（公開情報）と、まとめのときだけ利用者が設定に書いた「まとめの重点」の文（設定の説明にも書く）。英語の抜粋の訳も同じ公開情報。チャットの題・好み・出来事（ControlDeck の中の出来事）は渡さない（呼び出し側の約束。digest.py）。
 - 呼び出しは既存の経路: ローカルは実インスタンスへ直結（呼ばれたらロードする方式・GPU の取り合いは既存の決まりのまま）、
   クラウドはゲートウェイ（送ってよいか・月の上限・データの扱いはそこで判定）。
 """
 from __future__ import annotations
 
 import asyncio
+import re
 import logging
 
 from app.models_mgmt import cloud
@@ -58,8 +59,32 @@ def check_allowed(model: str) -> None:
         raise LlmNotAllowed("このクラウドのモデルは、いまは使えません（Models でプロバイダを有効にし、使うモデルに選んでください）")
 
 
+# 混み合い（HTTP 429・「temporarily rate-limited」など）で断られたら、少し待ってからやり直す（2026-11-23 利用者
+# 「混み合いの制限などで一時的に断られた場合は、少し時間を置いてから再度実行する」。無料のモデルはすぐ 429 を返す）。
+# 上限額・許可が無い・モデルが無いなど、待っても変わらない失敗はやり直さない。
+RETRY_DELAYS = (20.0, 60.0, 120.0)
+_BUSY = re.compile(r"429|rate[ -]?limit|temporarily|too many requests|overloaded|retry shortly|混み合|混雑|503", re.IGNORECASE)
+
+
+def is_busy(message: str) -> bool:
+    """一時的な混み合いの失敗か（待てば通る見込みがある）。上限額の超過は含めない。"""
+    return bool(_BUSY.search(message or "")) and "上限額" not in (message or "")
+
+
 async def complete(model: str, messages: list[dict], *, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-    """1 回の生成。許可が無ければ LlmNotAllowed、それ以外の失敗は LlmUnavailable。"""
+    """1 回の生成。混み合いなら RETRY_DELAYS の間隔で待ってやり直す。許可が無ければ LlmNotAllowed、それ以外の失敗は LlmUnavailable。"""
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            return await _complete_once(model, messages, max_tokens=max_tokens, temperature=temperature)
+        except LlmUnavailable as exc:
+            if delay is None or not is_busy(str(exc)):
+                raise
+            logger.info("LLM が混み合っているので %d 秒後にやり直します（%s）: %s", int(delay), model, exc)
+            await asyncio.sleep(delay)
+    raise LlmUnavailable("LLM が混み合っていました")   # ここには来ない
+
+
+async def _complete_once(model: str, messages: list[dict], *, max_tokens: int = 2048, temperature: float = 0.3) -> str:
     from app.models_mgmt import gateway
     from app.models_mgmt.runtime_provider import RuntimeChatRequest, RuntimeProviderError, provider_for_request
 

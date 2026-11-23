@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 242 ファイル、2370 テスト（目的の未記入 93 ファイル）
-- E2E: 129 spec、281 テスト
+- backend: 242 ファイル、2382 テスト（目的の未記入 93 ファイル）
+- E2E: 129 spec、282 テスト
 
 ## backend（backend/tests）
 
@@ -2145,6 +2145,18 @@
 - `test_run_due_makes_each_missing_digest_once`
 - `test_news_loop_skips_fetch_in_quiet_hours`
 - `test_semantic_search_reranks_and_merges_same_titles` — 目的: 意味で探すは、並べ替え（reranker）の順で返し、見出しが同じ記事（別の URL）は 1 件にまとめること。
+- `test_focus_goes_into_the_prompt_and_prompt_asks_for_trend_tech_attention_and_three_lines` — 目的: 利用者が書いた重点の文がプロンプトに入り、話題ごとの傾向・主な技術・注目点と最後の 3 行を求めること。
+- `test_weekly_prompt_uses_weekly_wording`
+- `test_cloud_prompt_carries_focus_but_no_other_user_info` — 目的: 外部へ送る中身は、公開の記事の項目と重点の文だけ（出来事・利用者名・チャットの題は入らない）。
+- `test_focus_matching_articles_are_ranked_first`
+- `test_broken_answers_fall_back_to_headlines` — 目的: 存在しない [n] だらけ・見出し無し・引用無し・傾向無し・空の返事は、見出しの一覧（fallback）に落ちること。
+- `test_focus_setting_is_validated_and_limited`
+- `test_english_detection`
+- `test_translation_batches_20_per_call_saves_and_presents` — 目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
+- `test_translation_without_egress_permission_does_nothing`
+- `test_digest_rejects_english_and_retries_once` — 目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
+- `test_news_llm_retries_when_busy_and_not_when_over_budget` — 目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
+- `test_digest_shows_headlines_while_the_llm_is_working` — 目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
 
 ### backend/tests/test_notify_events.py
 
@@ -4151,6 +4163,7 @@
 - ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
 - ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
 - ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
+- ニュース: まとめは話題ごとの傾向・主な技術・注目点と「3 行」、英語の概要は「訳」の印、設定に重点の欄（${width}px）
 
 ### frontend/e2e/notification-settings.spec.ts
 

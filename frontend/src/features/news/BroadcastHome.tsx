@@ -1,3 +1,4 @@
+import { TranslatedMark } from "./TranslatedMark";
 import { useState, type CSSProperties } from "react";
 import { relativeTime, type NewsHome, type NewsItem, type NewsPrefs } from "../../api/news";
 import { InterestPanel, TrendsPanel } from "./NewsAside";
@@ -24,6 +25,7 @@ function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string)
           <>
             <h2 className="nw-head nw-onair-title" data-testid="onair-title">{link ? <a {...link}>{item.title}</a> : item.title}</h2>
             {item.summary && <p className="nw-muted" style={{ margin: 0, lineHeight: 1.6 }}>{item.summary}</p>}
+            <TranslatedMark item={item} />
             <p className="card-meta"><span>{item.source}</span><span>· {relativeTime(item.published_at)}</span></p>
             {item.topics.length > 0 && <ul className="card-chips" aria-label="話題">{item.topics.slice(0, 4).map((t) => <li key={t}><button type="button" onClick={() => onTopic(t)}>{t}</button></li>)}</ul>}
             {link && <a className="nw-btn on" style={{ alignSelf: "flex-start" }} {...link} aria-label="読む →">読む →</a>}

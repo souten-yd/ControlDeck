@@ -14,6 +14,8 @@ export interface NewsItem {
   channel?: string | null;
   /** 意味で探す（RAG）の結果: 当たった断片。archived はニュースの DB から消えて RAG にだけ残る記事（id=0・操作はできない） */
   snippet?: string; archived?: boolean;
+  /** 英語の抜粋を日本語に訳したもの（summary がその訳になり、元の抜粋は summary_original） */
+  translated?: boolean; summary_original?: string;
 }
 export interface NewsPage { items: NewsItem[]; next: string | null }
 export interface NewsQuery { view: NewsView; kinds: string; q: string; date: string; topic: string; source: string; channel?: string }
@@ -92,7 +94,7 @@ export interface NewsRuntimeSettings {
   digest_daily: { enabled: boolean; time: string };
   digest_weekly: { enabled: boolean; weekday: number; time: string };
   quiet: { enabled: boolean; start: string; end: string };
-  llm: { digest_model: string; gist_enabled: boolean; gist_model: string };
+  llm: { digest_model: string; gist_enabled: boolean; gist_model: string; digest_focus: string; translate_enabled: boolean };
   rag: { enabled: boolean; fulltext: boolean; on_prune: "keep" | "delete" };
   imagegen: { enabled: boolean; tier: ImagegenTierId; threads: number; max_per_run: number };
 }

@@ -123,6 +123,22 @@ export function NewsRuntimeCards() {
         <label className={label}>日刊・週刊のまとめ
           <ModelSelect name="まとめのモデル" value={draft.llm.digest_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, digest_model: v } })} /></label>
         <ModelNote model={draft.llm.digest_model} options={options.data} />
+        <label className={label}>まとめの重点（必ず含めること。日本語で、1 行に 1 つ。1000 文字まで）
+          <textarea aria-label="まとめの重点" data-testid="digest-focus" rows={4} maxLength={1000} value={draft.llm.digest_focus ?? ""} disabled={dis}
+            placeholder={"例:\nAI 技術の最新動向\nAI モデルの最新動向"}
+            onChange={(e) => set({ llm: { ...draft.llm, digest_focus: e.target.value } })} className={`${field} mt-1 w-full`} /></label>
+        <p className="text-[11px] text-zinc-500" data-testid="digest-focus-note">
+          ここに書いた話題を、まとめの先頭に必ず入れます（その日の記事に無ければ「今日は該当なし」と書きます）。<b>外部のモデルを選ぶと、この文も送られます</b>（記事の題・抜粋・出どころと同じく、まとめを作るときだけ）。未公開の情報は書かないでください。
+          {(draft.llm.digest_focus ?? "").length > 0 && <span className="tabular-nums"> {draft.llm.digest_focus.length} / 1000 文字</span>}
+        </p>
+        <div className="space-y-2">
+          <Toggle label="英語の記事の概要を日本語に訳す" hint="英語の記事の抜粋を日本語の 1〜2 文にして、一覧・カードに出します（題は訳しません。元の抜粋は「訳」を開くと見られます）。新しく取った記事に 20 件ずつ訳します。モデルは下の一言要約のモデルです。" value={draft.llm.translate_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, translate_enabled: on } })} />
+          {draft.llm.translate_enabled && !draft.llm.gist_enabled && <>
+            <label className={label}>訳のモデル（一言要約と共通）
+              <ModelSelect name="訳のモデル" value={draft.llm.gist_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, gist_model: v } })} /></label>
+            <ModelNote model={draft.llm.gist_model} options={options.data} />
+          </>}
+        </div>
         <div className="space-y-2">
           <Toggle label="記事の一言要約と話題の語付け" hint="新しく取った記事に付けます（既定は切）" value={draft.llm.gist_enabled} disabled={dis} onChange={(on) => set({ llm: { ...draft.llm, gist_enabled: on } })} />
           {draft.llm.gist_enabled && <>
