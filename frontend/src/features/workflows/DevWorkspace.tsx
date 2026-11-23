@@ -11,6 +11,7 @@ import { ReviewButton } from "./DiffAsk";
 import { WorkspaceMergeButton } from "./WorkspaceMerge";
 import { WorkspaceCheckpoints } from "./RestoreDialog";
 import { WorkspaceMediaSection } from "./WorkspaceMedia";
+import { WorkspaceDevices } from "./WorkspaceDevices";
 
 export type DevWorkspace = {
   name: string; source: string; source_label: string; branch: string;
@@ -21,6 +22,8 @@ export type DevWorkspace = {
   working?: boolean;
   /** 作業場で使うモデルの並び（先頭から使う。古い API では無い）。ヘッダの札に先頭を出す */
   model_chain?: string[];
+  /** 渡している USB 機器（既定は無し） */
+  devices?: { kind: "serial" | "adb"; id: string }[];
 };
 
 /** 作業場のモデルの並びの先頭を、ヘッダの札の文言にする（例 opencode-go/glm-5.3 → GLM-5.3（作業場））。 */
@@ -301,6 +304,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
             変更{diff ? "を閉じる" : "（行ごとの差分）を見る"}
           </button>
           {diff && <WorkspaceDiff name={name} />}
+          <WorkspaceDevices name={name} selected={workspace.devices ?? []} />
           <WorkspaceMediaSection name={name} ago={ago} />
           <WorkspaceCheckpoints name={name} busy={busy} onRestored={() => void qc.invalidateQueries({ queryKey: changesKey })} />
           {check && !check.passed && !check.stale && (

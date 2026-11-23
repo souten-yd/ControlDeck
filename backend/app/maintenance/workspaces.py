@@ -158,6 +158,8 @@ def summary(box: Sandbox) -> dict:
         "repo_path": str(box.repo),
         "target": box.target, "target_label": PRESETS[box.target]["short"],
         "capabilities": [c for c in sandbox.CAPABILITIES if c in box.capabilities], "adopt": box.adopt_mode,
+        # 渡している USB 機器（既定は無し。選び直しは set_devices だけ）
+        "devices": box.devices,
         # OpenCode（会話サーバー）がこの作業場で作業中か。消すときの確認の文言が強くなる
         "working": busy(box),
         # この作業場のモデルの並び（OpenCode は会話のモデルではなく、この先頭から使う。ヘッダの札に出す）
@@ -229,6 +231,30 @@ def create(username: str, source: str, name: str = "", *, target: str = "",
         # 作業場は git の履歴から作る。元のフォルダの未コミットの変更は入らない
         result["source_dirty"] = bool(sandbox._git("status", "--porcelain", cwd=repo))  # 元は利用者のもの（信用する）
     return result
+
+
+def set_devices(name: str, username: str, selected: list[dict]) -> dict:
+    """この作業場へ渡す USB 機器を、選んだものだけにする（全部置き換え）。利用者の API だけが呼ぶ。
+    今つながっている機器の一覧にあるものだけ選べる。反映は次に箱のコンテナを起こすとき（動いているものは変わらない）。
+    返す: {added, removed, devices}。"""
+    from app.maintenance import devices
+
+    box = get(name, username)
+    present = {(d["kind"], d["id"]) for d in devices.list_devices()}
+    chosen: list[dict] = []
+    for item in selected:
+        if not devices.valid_entry(item):
+            raise SandboxError("機器の指定が正しくありません")
+        entry = {"kind": item["kind"], "id": item["id"]}
+        if (entry["kind"], entry["id"]) not in present:
+            raise SandboxError(f"機器 {entry['id']} は今つながっていないので選べません")
+        if entry not in chosen:
+            chosen.append(entry)
+    before = box.devices
+    box.meta["devices"] = chosen
+    sandbox._save_meta(box.path, box.meta)
+    return {"added": [d for d in chosen if d not in before], "removed": [d for d in before if d not in chosen],
+            "devices": chosen}
 
 
 def delete(name: str, username: str, *, confirm: bool = False) -> None:
