@@ -1223,7 +1223,7 @@ export default function AssistantChat() {
           selectedMode === "research" ? "🧭 調査計画に沿って複数ソースを確認中..." :
           selectedMode === "web" || selectedMode === "academic" ? "🔎 検索中...（サーバー側で継続）" : "";
         ownRepliesRef.current.add(res.assistant_message_id);
-        append({ role: "assistant", content: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
+        append({ role: "assistant", content: "", placeholder: hint, streaming: true, messageId: res.assistant_message_id, persistStatus: "generating" });
         await streamMessage(res.assistant_message_id);
       } else if (selectedMode === "code") {
         // OpenCodeチャット実行: TUIへ遷移せず、サーバー側でheadless実行して

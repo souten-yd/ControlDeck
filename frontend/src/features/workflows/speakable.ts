@@ -6,31 +6,8 @@
 
 export const MAX_SPOKEN_CHARS = 1200;
 
-/** 回答の先頭に一時的に入る「進み具合」の文（送信直後に画面が置く「🔎 検索中...（サーバー側で継続）」と、
- *  「Web で調査中」「依頼を整理しています」のような状態の 1 行）。答えの本文ではないので読まない。
- *  2026-11-23 利用者「ウェブで調査中と読んでから本文を読み、その表示が消えて本文が入れ替わると、もう一回読む」。
- *  出どころ: AssistantChat の send が、Web・Deep・Research の送信直後に回答の content へこの文を置く（確定の本文は
- *  サーバーの content で置き換わる）。生成中の delta は、この文の直後へ続けて足される。 */
-const PROGRESS_HEAD = /^\s*(?:[\p{Extended_Pictographic}\uFE0F]+\s*)?[^\n。！？!?]{0,30}?(?:調査中|検索中|サーチ中|確認中|整理中|処理中|収集中)(?:\.{2,}|…+)(?:（サーバー側で継続）)?/u;
-/** 進み具合だけの 1 行（短く、「〜中」「〜しています」で終わる） */
-const PROGRESS_LINE = /^\s*(?:[\p{Extended_Pictographic}\uFE0F]+\s*)?[^\n。！？!?]{0,40}?(?:調査中|検索中|サーチ中|確認中|整理中|処理中|収集中|考え中|準備しています|整理しています|調べています)[.…。 ]*(?:（[^）\n]*）)?\s*$/u;
-
-/** 先頭の進み具合の文を落とす。本文が同じ行に続いていれば、その文の部分だけを落とす */
-export function dropProgressLines(markdown: string): string {
-  let text = markdown;
-  for (let guard = 0; guard < 8; guard++) {
-    const head = PROGRESS_HEAD.exec(text);
-    if (head) { text = text.slice(head[0].length); continue; }
-    const lineEnd = text.indexOf("\n");
-    const line = lineEnd < 0 ? text : text.slice(0, lineEnd);
-    if (line.trim() && PROGRESS_LINE.test(line)) { text = lineEnd < 0 ? "" : text.slice(lineEnd + 1); continue; }
-    break;
-  }
-  return text;
-}
-
 export function speakableText(markdown: string, maxChars = MAX_SPOKEN_CHARS): string {
-  let text = dropProgressLines(markdown.replace(/\r\n?/g, "\n"));
+  let text = markdown.replace(/\r\n?/g, "\n");
   // 出典・参考文献の節から後ろは読まない
   text = text.replace(/\n#{1,6}\s*(出典|参考|参考文献|Sources?|References?)[^\n]*\n[\s\S]*$/i, "\n");
   let code = false;

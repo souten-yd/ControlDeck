@@ -6,7 +6,8 @@
 //       API・WebSocket・マイク・音声合成は模擬する（LLM・音声認識・TTS を動かさない）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
-import { dropProgressLines, nextSpoken, speakableText, speechChunks, stablePrefix, voicedRange } from "../src/features/workflows/speakable";
+import type { Msg } from "../src/features/workflows/chatState";
+import { nextSpoken, speakableText, speechChunks, stablePrefix, voicedRange } from "../src/features/workflows/speakable";
 
 test("speakable text keeps the main words and drops code, tables, links and sources", () => {
   const spoken = speakableText([
@@ -451,15 +452,14 @@ test("progress lines are not read, and a rewritten head does not make the answer
   //       読んだ文を読み直さない。読んでいない文が先頭に差し込まれたら、それは読む。
   // 根拠: 2026-11-23 利用者「ウェブで調査中と読んでから題名や本文を読み、その表示が消えて 1 行目から入れ替わると、
   //       一通り読んだ後にもう一回読む」。位置ではなく内容（文ごとの指紋）で判定する。
-  expect(dropProgressLines("🔎 検索中...（サーバー側で継続）今日は晴れだよ。")).toBe("今日は晴れだよ。");
-  expect(dropProgressLines("Web で調査中...\n\n今日は晴れだよ。").trim()).toBe("今日は晴れだよ。");
-  expect(dropProgressLines("依頼を整理しています\n本文だよ。")).toBe("本文だよ。");
-  expect(dropProgressLines("🔬 Deep サーチ中...（サーバー側で継続）")).toBe("");
-  expect(dropProgressLines("検索中の結果は三件だよ。")).toBe("検索中の結果は三件だよ。");   // 本文の「検索中」は落とさない
+  // 仮の文（placeholder）は本文（content）に入れない。読み上げは content だけを見るので、構造上読まれない。本文の途中の「検索中」は読む
+  const waiting: Msg = { role: "assistant", content: "", placeholder: "🔎 検索中...（サーバー側で継続）", streaming: true };
+  expect(nextSpoken(waiting.content, "", false).text).toBe("");
+  expect(nextSpoken("検索中の結果は三件だよ。", "", true).text).toBe("検索中の結果は三件だよ。");
   const body = "# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。\n\n傘は要らないよ。";
   // 生成中の列（進み具合の文が先頭に付いている）→ 確定（進み具合が消え、出典の印が付き、題名が変わった）
-  const stream = ["🔎 検索中...（サーバー側で継続）", "🔎 検索中...（サーバー側で継続）# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。",
-    "🔎 検索中...（サーバー側で継続）# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。\n\n"];
+  const stream = ["", "# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。",
+    "# 横浜の天気\n\n今日は横浜、終日晴れで最高気温は十五度だよ。夕方からは風が出るよ。\n\n"];
   let queued = "";
   const parts: string[] = [];
   for (const text of stream) {
@@ -485,13 +485,13 @@ test("progress lines are not read, and a rewritten head does not make the answer
   // 進み具合の文を挟んだ細かい刻みでも、確定でも、同じ文字を 2 度読まない
   queued = "";
   const pieces: string[] = [];
-  const answer = `Web で調査中...\n横浜の天気を調べたよ。最高気温は十五度だよ。夕方は風が出るよ。`;
+  const answer = `横浜の天気を調べたよ。最高気温は十五度だよ。夕方は風が出るよ。`;
   for (let i = 1; i < answer.length; i++) {
     const next = nextSpoken(answer.slice(0, i), queued, false);
     queued = next.queued;
     if (next.text) pieces.push(next.text);
   }
-  pieces.push(nextSpoken(answer.replace("Web で調査中...\n", ""), queued, true).text);
+  pieces.push(nextSpoken(answer, queued, true).text);
   expect(pieces.join("")).toBe("横浜の天気を調べたよ。最高気温は十五度だよ。夕方は風が出るよ。");
 });
 
