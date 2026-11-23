@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 237 ファイル、2310 テスト（目的の未記入 93 ファイル）
-- E2E: 126 spec、270 テスト
+- backend: 238 ファイル、2315 テスト（目的の未記入 93 ファイル）
+- E2E: 127 spec、271 テスト
 
 ## backend（backend/tests）
 
@@ -1366,6 +1366,16 @@
 - `test_confidential_scope_never_connects`
 - `test_tool_registered_and_answer_shape`
 - `test_inkling_repos_map_to_the_inkling_family` — Inkling 2 Mini の Unsloth の置き場は Strata の inkling-2-mini 系列（strata-inkling、0.2.19〜）として出す。
+
+### backend/tests/test_home_notice.py
+
+目的: Home の通知の 1 行（/home-notices）の順位・解決で消える・閉じる。 目的: - 未解決の元（監視の警報・更新の失敗）を、重要度（エラー > 警告 > 注意 > 情報）→ 新しさの順に返す。 - 元が解決したら（警報の解除・次の更新の成功）一覧から消え、次に重要なものが先頭に来る。 - 「閉じる」は本人の画面だけ。閉じた件は出ず、元が解決した後は印も掃除される。 - 何も無ければ空（画面は行ごと出さない）。外へは出ない（承認・アプリ・更新の状態はモック）。 根拠: 2026-11-23 利用者「ホーム画面に最終的な通知の内容…重要度でインフォメーション、アテンション、ワーニング、エラー…解決されたら消して次に優先度の高い内容を表示」。
+
+- `test_empty_when_nothing`
+- `test_ranked_by_severity_then_resolves_to_next`
+- `test_same_level_newer_first`
+- `test_update_failure_shown_and_cleared_by_next_success`
+- `test_dismiss_hides_and_cleans_after_resolution`
 
 ### backend/tests/test_inline_code.py
 
@@ -3920,6 +3930,12 @@
 目的: 目的: 設定の「GPU 設定」で、周波数と電圧を別々に指定でき、試験設定は入力欄を埋めるだけで「適用」を押すまで書かないこと。 設定値と実測を分けて見られ、Models の共通設定から電力・静音が移り、移動ボタンが消えていること。 根拠: 2026-11-18 利用者「電力制限 210 W のままホットスポット温度を下げたい」。API は模擬する（実機へ書かない）。
 
 - GPU settings apply only on request (${width}px)
+
+### frontend/e2e/home-compact.spec.ts
+
+目的: 目的: モバイル（390 / 320px）のホームを詰め、状態のカード群が 1 画面に収まること。 - CPU+RAM・GPU+VRAM がそれぞれ 1 枚（2 本の線）で、横 1 段。履歴の選択の行（履歴・生データ・n 点）は無い。 - 電力の 4 項目（PSU 総出力・今回の起動中・今日・今月）が 1 行。 - LLM カードは見出しの行に「ローカル · 未ロード」。 - 一番上に通知の 1 行（最も重要な 1 件の札・本文・ほか n 件）。色だけでなく札の文字がある。PC（1280px）にも出る。 - どの幅でも横にはみ出さない。撮影: test-results/home-compact-{390,320,1280}.png（ライト）と -dark.png。 根拠: 2026-11-23 利用者「モバイルのホーム画面は 1 画面で今の情報とニュースを表示したい…履歴の 1 行は不要… 最終的な通知の内容を一行で表示して、重要度で題名と色を変えて」。API は模擬する（metrics は実体）。
+
+- home compact (${width}px, ${scheme})
 
 ### frontend/e2e/ios-keyboard-field.spec.ts
 

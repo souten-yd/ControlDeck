@@ -12,6 +12,8 @@ import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
 import { LlmHomeCard } from "../features/models/LlmHomeCard";
 import { NewsHomeCard } from "../features/news/NewsHomeCard";
+import { HomeNoticeLine } from "../features/alerts/HomeNoticeLine";
+import { readHistoryMinutes } from "../lib/homeHistory";
 
 interface HistorySample {
   timestamp: string;
@@ -26,23 +28,11 @@ interface HistoryResponse {
   samples: HistorySample[];
 }
 
-const HISTORY_RANGES = [
-  [15, "15分"],
-  [60, "1時間"],
-  [360, "6時間"],
-  [1440, "24時間"],
-  [10080, "7日"],
-  [43200, "30日"],
-  [129600, "90日"],
-  [525600, "1年"],
-] as const;
-
 export default function DashboardPage() {
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
-  const [historyMinutes, setHistoryMinutes] = useState(15);
-  const [rangeChoice, setRangeChoice] = useState("15");
-  const [customMinutes, setCustomMinutes] = useState("15");
+  // 履歴の長さは 設定 → 表示 で決める（Home には選択の行を置かない）
+  const [historyMinutes] = useState(readHistoryMinutes);
   const can = useAuth((s) => s.can);
   const { data: overview, isLoading } = useOverview();
   const { data: apps } = useApps();
@@ -88,6 +78,11 @@ export default function DashboardPage() {
       ? (overview.metrics as MetricsSnapshot)
       : null));
 
+  const vramNow =
+    m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
+      ? (m.gpu.vram_used_bytes / m.gpu.vram_total_bytes) * 100
+      : null;
+
   const running = apps?.filter((a) => a.runtime.status === "RUNNING") ?? [];
   const failed = apps?.filter((a) => a.runtime.status === "FAILED") ?? [];
 
@@ -95,56 +90,35 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-5xl space-y-2.5 p-3 md:space-y-4 md:p-6">
       {/* 題名は殻の上の行（☰ の右）に出る。ページの中には場所を取らない。 */}
       <PageHeader title="Home" className="mb-0" />
+      <HomeNoticeLine />
       <PendingApprovals />
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
-        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 md:mb-2">
-          <div className="flex items-center gap-2">
-            <label htmlFor="metrics-range" className="text-[11px] font-medium text-zinc-500">履歴</label>
-            <select
-              id="metrics-range"
-              value={rangeChoice}
-              onChange={(event) => {
-                const choice = event.target.value;
-                setRangeChoice(choice);
-                if (choice !== "custom") setHistoryMinutes(Number(choice));
-              }}
-              className="h-7 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900 md:h-8"
-            >
-              {HISTORY_RANGES.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
-              <option value="custom">任意…</option>
-            </select>
-          </div>
-          {rangeChoice === "custom" ? (
-            <form
-              className="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const minutes = Math.min(525600, Math.max(15, Number(customMinutes) || 15));
-                setCustomMinutes(String(minutes));
-                setHistoryMinutes(minutes);
-              }}
-            >
-              <label htmlFor="metrics-custom-minutes" className="sr-only">任意の履歴期間（分）</label>
-              <input
-                id="metrics-custom-minutes"
-                type="number"
-                min={15}
-                max={525600}
-                value={customMinutes}
-                onChange={(event) => setCustomMinutes(event.target.value)}
-                className="h-8 w-20 rounded-lg border border-zinc-300 bg-white px-2 text-xs dark:border-zinc-700 dark:bg-zinc-900"
-              />
-              <span className="text-[11px] text-zinc-500">分</span>
-              <button type="submit" className="h-8 rounded-lg bg-accent-600 px-2.5 text-xs font-medium text-white hover:bg-accent-700">適用</button>
-            </form>
-          ) : (
-            <span className="text-[11px] text-zinc-400" aria-live="polite">
-              {historyFetching ? "履歴を取得中…" : seeded ? `${seeded.resolution === "raw" ? "生データ" : seeded.resolution === "minute" ? "1分平均" : "1時間平均"} · ${seeded.samples.length}点` : ""}
-            </span>
-          )}
+        {/* モバイル（768px 未満）: CPU+RAM、GPU+VRAM を 1 枚に 2 本の線で出し、横 1 段にする（利用者 2026-11-23） */}
+        <div className="grid grid-cols-2 gap-2 md:hidden" data-testid="metrics-dual">
+          <DualTile
+            a={{ label: "CPU", percent: m?.cpu.percent ?? null, values: cpuValues, tone: "text-accent-500", dot: "bg-accent-500" }}
+            b={{ label: "RAM", percent: m?.memory.percent ?? null, values: ramValues, tone: "text-violet-500", dot: "bg-violet-500" }}
+            loading={!m}
+            notes={m ? [
+              m.cpu.temperature_c != null ? `${m.cpu.temperature_c.toFixed(0)}°C` : "",
+              m.cpu.fan_rpm != null ? `✻${m.cpu.fan_rpm}` : "",
+              `${(m.memory.used / 1024 ** 3).toFixed(0)}/${(m.memory.total / 1024 ** 3).toFixed(0)}GB`,
+            ] : []}
+          />
+          <DualTile
+            a={{ label: "GPU", percent: m?.gpu?.utilization_percent ?? null, values: gpuValues, tone: "text-accent-500", dot: "bg-accent-500" }}
+            b={{ label: "VRAM", percent: vramNow, values: vramValues, tone: "text-violet-500", dot: "bg-violet-500" }}
+            loading={!m}
+            notes={m?.gpu ? [
+              m.gpu.temperature_c != null ? `${m.gpu.temperature_c.toFixed(0)}°C` : "",
+              m.gpu.fan_rpm != null ? `✻${m.gpu.fan_rpm}` : "",
+              m.gpu.vram_used_bytes != null && m.gpu.vram_total_bytes
+                ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(0)}/${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)}GB` : "",
+            ] : ["GPU なし"]}
+          />
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:gap-3">
+        <div className="hidden grid-cols-4 gap-3 md:grid">
           <MetricTile
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
@@ -190,7 +164,7 @@ export default function DashboardPage() {
             }
           />
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 px-1 text-[11px] text-zinc-500 md:mt-3 md:gap-x-5 md:gap-y-1 md:text-xs">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1 text-[11px] text-zinc-500 md:mt-3 md:gap-x-5 md:gap-y-1 md:text-xs">
           {isLoading && !m ? (
             <Skeleton className="h-4 w-64" />
           ) : (
@@ -321,20 +295,20 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4" title={tip}>
       {/* PSU出力と電気代を同じ高さのstatとして横一列に並べ、空欄を作らない */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 md:gap-x-6 md:gap-y-4">
+      <div className="grid grid-cols-4 gap-x-2 md:gap-x-6">
         <div>
-          <p className="text-[11px] text-zinc-500 md:text-xs">PSU 総出力</p>
+          <p className="truncate text-[10px] text-zinc-500 md:text-xs">PSU 総出力</p>
           {psuOk ? (
             <>
-              <p className="num text-lg font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-2xl">
-                {power.output_power_w!.toFixed(0)} <span className="text-sm font-normal text-zinc-400 md:text-base">W</span>
+              <p className="num whitespace-nowrap text-[15px] font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-2xl">
+                {power.output_power_w!.toFixed(0)} <span className="text-[11px] font-normal text-zinc-400 md:text-base">W</span>
               </p>
-              <p className="num text-[10px] text-zinc-400">
-                コンセント側 約{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
+              <p className="num truncate text-[10px] text-zinc-400">
+                <span className="md:hidden">入力 約</span><span className="hidden md:inline">コンセント側 約</span>{power.estimated_input_power_w != null ? power.estimated_input_power_w.toFixed(0) : "—"} W
               </p>
             </>
           ) : (
-            <p className="mt-0.5 text-lg font-medium text-zinc-400">取得不可</p>
+            <p className="mt-0.5 text-sm font-medium text-zinc-400 md:text-lg">取得不可</p>
           )}
         </div>
         <CostItem label="今回の起動中" cost={power.session_cost_yen} kwh={power.session_energy_kwh} ok={psuOk} />
@@ -342,7 +316,7 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
         <CostItem label="今月" cost={power.month_cost_yen} kwh={power.month_energy_kwh} ok={psuOk} />
       </div>
       {/* 温度/FAN と単価情報は下端の1行に集約（FANはスカイブルーで区別） */}
-      <div className="num mt-2 flex items-center gap-x-2 overflow-x-auto whitespace-nowrap border-t border-zinc-100 pt-1.5 text-[10px] text-zinc-400 dark:border-zinc-800 md:mt-3 md:pt-2.5">
+      <div className="num mt-1.5 flex items-center gap-x-2 overflow-x-auto whitespace-nowrap border-t border-zinc-100 pt-1.5 text-[10px] text-zinc-400 dark:border-zinc-800 md:mt-3 md:pt-2.5">
         {psuOk && power.vrm_temperature_c != null && <span className="shrink-0" title="VRM温度">VRM {power.vrm_temperature_c}°</span>}
         {psuOk && power.case_temperature_c != null && <span className="shrink-0" title="ケース内温度">ケース {power.case_temperature_c}°</span>}
         {psuOk && power.fan_rpm != null && (
@@ -368,9 +342,9 @@ function PowerCard({ power }: { power: MetricsSnapshot["power"] }) {
 function CostItem({ label, cost, kwh, ok }: { label: string; cost: number | null; kwh: number | null; ok: boolean }) {
   return (
     <div>
-      <p className="text-[11px] text-zinc-500 md:text-xs">{label}</p>
-      <p className="num text-base font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-xl">{ok ? fmtYen(cost) : "概算不可"}</p>
-      {ok && <p className="num text-[10px] text-zinc-400">{fmtKwh(kwh)}</p>}
+      <p className="truncate text-[10px] text-zinc-500 md:text-xs">{label}</p>
+      <p className="num whitespace-nowrap text-[13px] font-semibold tracking-tight text-zinc-800 dark:text-zinc-100 md:mt-0.5 md:text-xl">{ok ? fmtYen(cost) : "概算不可"}</p>
+      {ok && <p className="num truncate text-[10px] text-zinc-400">{fmtKwh(kwh)}</p>}
     </div>
   );
 }
@@ -422,6 +396,32 @@ function ActiveAlerts() {
         ))}
       </ul>
     </section>
+  );
+}
+
+interface DualLine { label: string; percent: number | null; values: (number | null)[]; tone: string; dot: string }
+
+/** モバイル用: 2 つの使用率を 1 枚・2 本の線で出す。凡例は色つきの点＋「CPU 9%」の小さな数字（色だけに頼らず名前も書く）。 */
+function DualTile({ a, b, notes, loading }: { a: DualLine; b: DualLine; notes: string[]; loading: boolean }) {
+  const legend = (l: DualLine) => (
+    <span className="flex min-w-0 items-center gap-1">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${l.dot}`} aria-hidden />
+      <span className="text-[10px] font-medium text-zinc-500">{l.label}</span>
+      <span className="num text-[13px] font-semibold tracking-tight">{loading ? "—" : l.percent != null ? formatPercent(l.percent) : "N/A"}</span>
+    </span>
+  );
+  const enough = (l: DualLine) => l.values.filter((v) => v != null).length >= 2;
+  return (
+    <div className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-baseline justify-between gap-1">{legend(a)}{legend(b)}</div>
+      <div className="relative mt-1 h-9 rounded-md bg-zinc-50 dark:bg-zinc-800/40">
+        {enough(a) && <div className="absolute inset-0"><Sparkline values={a.values} fill className={a.tone} heightClass="h-9" /></div>}
+        {enough(b) && <div className="absolute inset-0"><Sparkline values={b.values} fill className={b.tone} heightClass="h-9" /></div>}
+      </div>
+      <p className="num mt-0.5 flex h-3.5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-zinc-400">
+        {notes.filter(Boolean).map((n, i) => <span key={i} className={n.startsWith("✻") ? "shrink-0 font-medium text-sky-500 dark:text-sky-400" : "truncate"}>{n}</span>)}
+      </p>
+    </div>
   );
 }
 

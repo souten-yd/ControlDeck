@@ -45,40 +45,55 @@ function shortModel(id: string): string {
 const Muted = ({ children = "—" }: { children?: React.ReactNode }) => <span className="text-zinc-400">{children}</span>;
 const Unit = ({ children }: { children: React.ReactNode }) => <span className="text-[10px] text-zinc-400 md:text-[11px]">{children}</span>;
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/** モバイルは「名前を上、値を下」にして 2 列に並べる（前処理と生成を横に・平均と今日を横に）。md 以上は従来どおり左右。 */
+function Row({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className="num flex items-baseline justify-between gap-1.5 text-[11px] leading-relaxed md:text-[13px]">
-      <span className="shrink-0 text-[10px] text-zinc-400 md:text-[11px]">{label}</span>
-      <span className="min-w-0 truncate text-right">{children}</span>
+    <div className={`num flex min-w-0 flex-col text-[11px] leading-tight md:flex-row md:items-baseline md:justify-between md:gap-1.5 md:text-[13px] md:leading-relaxed ${wide ? "col-span-2 md:col-auto" : ""}`}>
+      <span className="shrink-0 text-[9px] text-zinc-400 md:text-[11px]">{label}</span>
+      <span className="min-w-0 truncate md:text-right">{children}</span>
     </div>
   );
 }
 
-function CtxBar({ used, total }: { used: number | null | undefined; total: number | null | undefined }) {
+/** ctx は 1 行: モバイルは「ctx 12K / 131K」の右に幅半分ほどの棒を並べる（2 段にしない）。md 以上は従来どおり行の下に棒。 */
+function CtxRow({ used, total, children, className = "" }: {
+  used: number | null | undefined; total: number | null | undefined; children: React.ReactNode; className?: string;
+}) {
   const pct = used != null && total ? Math.min(100, (used / total) * 100) : 0;
   return (
-    <div className="mb-0.5 mt-px h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-      <div className={`h-full rounded-full ${pct >= 90 ? "bg-amber-500" : "bg-accent-500"}`} style={{ width: `${pct}%` }} />
+    <div className="col-span-2 flex items-center gap-2 md:contents">
+      <div className="num flex min-w-0 shrink-0 items-baseline gap-1.5 text-[11px] leading-tight md:justify-between md:text-[13px] md:leading-relaxed">
+        <span className="shrink-0 text-[9px] text-zinc-400 md:text-[11px]">ctx</span>
+        <span className={`shrink-0 whitespace-nowrap md:min-w-0 md:shrink md:truncate ${className}`}>{children}</span>
+      </div>
+      <div className="mb-0.5 mt-px h-1 min-w-4 max-w-[50%] flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700 md:max-w-none">
+        <div className={`h-full rounded-full ${pct >= 90 ? "bg-amber-500" : "bg-accent-500"}`} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
 
-function Column({ heading, to, model, badge, children }: {
-  heading: string; to: string; model: React.ReactNode; badge?: React.ReactNode; children: React.ReactNode;
+function Column({ heading, short, to, model, badge, children }: {
+  heading: string; short: string; to: string; model: React.ReactNode; badge?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <div className="min-w-0">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <Link to={to} className="truncate text-[10px] font-semibold text-zinc-500 hover:underline md:text-xs">{heading}</Link>
-        {badge}
+      {/* モバイルは 1 段目に大きめの見出し、2 段目に小さくモデル名。md 以上は見出しの下にモデル名 */}
+      <div className="min-w-0">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Link to={to} className="text-sm font-bold text-zinc-700 hover:underline dark:text-zinc-200 md:text-xs md:font-semibold md:text-zinc-500 md:dark:text-zinc-500">
+            <span className="md:hidden">{short}</span><span className="hidden md:inline">{heading}</span>
+          </Link>
+          <span className="hidden md:contents">{badge}</span>
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] leading-tight text-zinc-500 md:mb-1 md:mt-0.5 md:text-sm md:text-inherit">{model}</div>
       </div>
-      <div className="mb-1 mt-0.5 flex min-w-0 items-center gap-1.5 text-xs md:text-sm">{model}</div>
-      <div className="md:max-w-[18rem]">{children}</div>
+      <div className="mt-0.5 grid grid-cols-2 gap-x-2 gap-y-0.5 md:mt-0 md:block md:max-w-[18rem]">{children}</div>
     </div>
   );
 }
 
-const Divider = () => <div className="my-1 border-t border-zinc-100 dark:border-zinc-800" />;
+const Divider = () => <div className="col-span-2 my-0.5 border-t border-zinc-100 dark:border-zinc-800" />;
 
 function ModelName({ name, title, active, more = 0 }: { name: string; title?: string; active: boolean; more?: number }) {
   return (
@@ -111,7 +126,7 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
   // 平均は今日 LLM が処理していた間の積算（電力量 ÷ 時間）。処理中でも瞬間の値にしない。
   const watts = power?.avg_w;
   return (
-    <Column heading="ローカル LLM" to="/models?tab=llm"
+    <Column heading="ローカル LLM" short="ローカル" to="/models?tab=llm"
       badge={unloaded && (
         <span className="shrink-0 rounded border border-zinc-300 px-1 text-[9px] leading-tight text-zinc-500 dark:border-zinc-600 md:text-[10px]">アンロード</span>
       )}
@@ -131,10 +146,9 @@ function LocalColumn({ endpoints, failed, power, lastSeen }: {
         {!loading && decode > 0
           ? <span className={past}>{decode.toFixed(1)} <Unit>tok/s</Unit></span> : <Muted />}
       </Row>
-      <Row label="ctx">
-        <span className={past}>{used != null ? tokens(used) : <Muted />} / {total > 0 ? tokens(total) : "—"}</span>
-      </Row>
-      <CtxBar used={used} total={total} />
+      <CtxRow used={used} total={total} className={past}>
+        {used != null ? tokens(used) : <Muted />} / {total > 0 ? tokens(total) : "—"}
+      </CtxRow>
       <Divider />
       <Row label="平均">
         {on && watts != null
@@ -161,7 +175,7 @@ function CloudColumn({ summary, balance, balanceError }: {
   const ctxUsed = ctxFrom ? ctxFrom.prompt_tokens + ctxFrom.completion_tokens : null;
   const pending = <Muted>…</Muted>;
   return (
-    <Column heading="OpenRouter" to="/models?tab=frontier"
+    <Column heading="OpenRouter" short="OpenRouter" to="/models?tab=frontier"
       model={call ? <ModelName name={shortModel(call.model)} title={call.model} active more={running.length - 1} />
         : last ? <ModelName name={shortModel(last.model)} title={`${last.model}（直前）`} active={false} />
         : <Muted>{summary ? "なし" : "…"}</Muted>}>
@@ -169,10 +183,9 @@ function CloudColumn({ summary, balance, balanceError }: {
         {call?.phase === "waiting" ? <Muted>応答待ち</Muted> : ttft != null ? <>{ttft.toFixed(1)} <Unit>s</Unit></> : <Muted />}
       </Row>
       <Row label="生成">{speed != null ? <>{speed.toFixed(1)} <Unit>tok/s</Unit></> : <Muted />}</Row>
-      <Row label="ctx">
+      <CtxRow used={ctxUsed} total={ctxFrom?.context_length}>
         {ctxUsed != null ? tokens(ctxUsed) : <Muted />}{ctxFrom?.context_length ? ` / ${tokens(ctxFrom.context_length)}` : ""}
-      </Row>
-      <CtxBar used={ctxUsed} total={ctxFrom?.context_length} />
+      </CtxRow>
       <Divider />
       <Row label="残り">
         <span className={balance != null && balance < 1 ? "text-amber-600 dark:text-amber-400" : ""}>
@@ -224,7 +237,7 @@ export function LlmHomeCard() {
   const acct = account.data?.supported ? account.data : null;
   return (
     <section aria-label="LLM の利用状況"
-      className="rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
+      className="rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900 md:p-4">
       <div className={both ? "grid grid-cols-2 gap-x-3 md:gap-x-6" : ""}>
         {hasLocal && <LocalColumn endpoints={endpoints} failed={failed} power={capacity?.power} lastSeen={capacity?.last_local} />}
         {hasCloud && (

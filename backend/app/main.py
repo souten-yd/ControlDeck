@@ -304,6 +304,7 @@ from app.flow_app.router import router as flow_app_router  # noqa: E402
 from app.project_lab.router import router as project_lab_router  # noqa: E402
 from app.alerts.router import router as alerts_router  # noqa: E402
 from app.alerts.push_router import router as push_router  # noqa: E402
+from app.alerts.home_notice import router as home_notice_router  # noqa: E402
 from app.news.router import router as news_router  # noqa: E402
 from app.remote_desktop.router import router as remote_router  # noqa: E402
 from app.remote_desktop.settings_router import router as remote_desktop_settings_router  # noqa: E402
@@ -360,6 +361,7 @@ app.include_router(project_lab_router, prefix=API)
 app.include_router(workflows_router, prefix=API)
 app.include_router(alerts_router, prefix=API)
 app.include_router(push_router, prefix=API)
+app.include_router(home_notice_router, prefix=API)
 app.include_router(news_router, prefix=API)
 app.include_router(remote_router, prefix=API)
 app.include_router(remote_desktop_settings_router, prefix=API)
