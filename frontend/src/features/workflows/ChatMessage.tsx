@@ -9,6 +9,7 @@ import { ROLE_LABELS, type RoleKey } from "../opencode/RolesPanel";
 import { extractPlanQuestions } from "./planQuestions";
 import { PlanQuestionForm } from "./PlanQuestionForm";
 import { CodeDoneCard, OpenCodeChanges } from "./OpenCodeChanges";
+import { MessageMedia } from "./WorkspaceMedia";
 import { MessageActions, MessageEditor, type MessageAction } from "./MessageActions";
 import { OpenCodeActivity, CODE_STEPS_CARD, ToolRow } from "./OpenCodeActivity";
 import { MODES, type GenData, type GenStats, type Msg, type Quality } from "./chatState";
@@ -471,6 +472,7 @@ export function MessageBubble({
         {!msg.streaming && msg.messageId && msg.answeredBy === "code" && !unsettled && (
           <CodeDoneCard content={msg.content} todos={msg.todos} changeCount={msg.changes?.length ?? 0} />
         )}
+        {!msg.streaming && msg.messageId && <MessageMedia media={msg.media} />}
         {!msg.streaming && msg.messageId && conversationId && (msg.changes?.length ?? 0) > 0 && (
           <OpenCodeChanges conversationId={conversationId} messageId={msg.messageId} changes={msg.changes!} reverted={msg.reverted}
             canRevert={canRevertChanges} onReverted={() => onChangesReverted?.(msg.messageId!)} />

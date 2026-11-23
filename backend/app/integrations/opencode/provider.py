@@ -53,6 +53,8 @@ DEFAULT_SETTINGS = {
     "ui_verify": True,
     # UI 検証のブラウザに外部サイトへの通信を許すか。既定は手元（loopback）だけ。
     "ui_verify_allow_external": False,
+    # 作業場の画面の記録（撮影・動画）を、取り込み（PR）・マージの後に自動で消すか。容量を取るので任意（既定は切）。
+    "workspace_media_auto_delete": False,
     # 精密調査（ControlDeck の Deep Research を道具として渡す）。外部検索は別に許可が要る。
     "research_tool": True,
     "research_external": False,
@@ -245,7 +247,7 @@ def save_workflow(patch: dict) -> dict:
     settings = get_settings()
     for key in ("superpowers", "adversarial_review", "ui_verify", "ui_verify_allow_external",
                 "research_tool", "research_external", "context7", "github_cli", "developer_agent",
-                "auto_review"):
+                "auto_review", "workspace_media_auto_delete"):
         if key in patch:
             settings[key] = bool(patch[key])
     if "isolation" in patch:
@@ -451,6 +453,8 @@ def ui_verify_server(safe_job_id: str) -> dict | None:
         "--headless", "--isolated",
         "--viewport-size", UI_VERIFY_VIEWPORT,
         "--output-dir", str(output),
+        # 操作テストの動画（browser_start_video / browser_stop_video）。作業場では出力先が repo/.controldeck/media になる
+        "--caps=devtools",
         "--console-level", "warning",
         "--blocked-origins", ";".join(_blocked_origins()),
     ]

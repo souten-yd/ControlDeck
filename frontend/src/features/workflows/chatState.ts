@@ -78,8 +78,11 @@ export interface PersistMsg {
   error?: string;
   meta?: { changes?: CodeChange[]; reverted?: boolean; resumed?: boolean; mode?: string; mode_choice?: string; research_depth?: string; agent_choice?: string; agent?: "build" | "plan"; project_path?: string; timeline?: TimelineSeg[]; auto_handoff?: { task: string }; handoff?: { messages: number; chars: number }; archives?: { id: string; name: string }[];
     imports?: { name: string; path: string; files: number }[]; sources?: SourceItem[]; plan?: AssistantPlan; progress?: ResearchProgress[]; research?: DeepResearchResult; compaction?: CompactionNote; attachments?: string[];
-    tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode; confidential?: boolean; checkpoint?: { sha: string; count: number; workspace: string } };
+    tools?: OpenCodeTool[]; todos?: OpenCodeTodo[]; permissions?: OpenCodePermission[]; permission_mode?: PermissionMode; confidential?: boolean; checkpoint?: { sha: string; count: number; workspace: string };
+    media?: ChatMedia };
 }
+
+export interface ChatMedia { workspace: string; items: { path: string; kind: "image" | "video"; size: number }[] }
 
 export interface Msg {
   role: "user" | "assistant";
@@ -91,6 +94,8 @@ export interface Msg {
   resumed?: boolean;
   /** 自動保存の時点（「この時点に戻す」の戻し先） */
   checkpoint?: { sha: string; count: number; workspace: string };
+  /** この回に撮った画面・動画（作業場の画面の記録） */
+  media?: ChatMedia;
   /** 送った画像（表示用の URL） */
   images?: string[];
   /** 送った圧縮ファイルの名前（OpenCode のプロジェクトへ展開した） */
@@ -159,6 +164,7 @@ export function restoreMessage(convId: string, m: PersistMsg): Msg {
     reverted: m.meta?.reverted,
     resumed: m.meta?.resumed,
     checkpoint: m.meta?.checkpoint,
+    media: m.meta?.media,
     permissions: m.meta?.permissions,
     answeredBy: m.meta?.mode,
     confidentialAnswer: m.meta?.confidential,

@@ -17,6 +17,12 @@
    - console_errors / failed_requests、確かめられなかったこと（unverified）。
    - verdict: critical か major が 1 つでもあれば fail、確かめきれなかった項目があれば partial、それ以外は pass。
 
+## 操作テストの動画
+
+- 操作テスト（主な流れを通すとき）を頼まれたら、`browser_start_video`（cursor を有効にする）で録り始め、要所で `browser_take_screenshot` を撮り、終わったら必ず `browser_stop_video` で止める。章を分けたいときは `browser_video_chapter`。
+- 動画・画面写真は出力先（`.controldeck/media`）に残り、この回の終わりに利用者のチャットへ出る。ファイル名は手順が分かるようにする（`login-flow.webm`）。
+- 主の会話への要約に、手順ごとの合否と、撮ったファイル名を書く。
+
 ## 守ること
 
 - 開いてよいのは手元（localhost / 127.0.0.1）だけ。外部のサイトや ControlDeck 本体（8765）は開かない（遮られている）。

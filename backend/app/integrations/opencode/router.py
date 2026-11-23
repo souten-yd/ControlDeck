@@ -42,6 +42,7 @@ class WorkflowBody(BaseModel):
     roles: dict[str, str] | None = None
     ui_verify: bool | None = None
     ui_verify_allow_external: bool | None = None
+    workspace_media_auto_delete: bool | None = None
     research_tool: bool | None = None
     research_external: bool | None = None
     context7: bool | None = None
@@ -55,7 +56,8 @@ class RolesCheckBody(BaseModel):
 
 WORKFLOW_KEYS = ("superpowers", "adversarial_review", "auto_review", "auto_advisor", "review_model", "advisor_model",
                  "developer_agent", "developer_model", "roles",
-                 "ui_verify", "ui_verify_allow_external", "research_tool", "research_external", "context7", "github_cli", "isolation")
+                 "ui_verify", "ui_verify_allow_external", "workspace_media_auto_delete", "research_tool", "research_external",
+                 "context7", "github_cli", "isolation")
 
 
 class RunBody(AgentTargetBody):
@@ -328,6 +330,158 @@ def delete_workspace(
     return {"ok": True, "name": name}
 
 
+# ---- 画面の記録（撮影・操作テストの動画）。一覧・配信・削除（maintenance/workspace_media.py） ----
+def _media_error(exc: Exception) -> HTTPException:
+    from app.maintenance import workspace_media
+
+    return HTTPException(status_code=404 if isinstance(exc, workspace_media.MediaNotFound) else 422, detail=str(exc))
+
+
+def _media_file_response(box, path: str, range_header: str | None):
+    """ふつうのファイルだけを、許した content-type で返す。Range（動画のシーク）に応じる。"""
+    import os
+
+    from fastapi.responses import StreamingResponse
+
+    from app.maintenance import workspace_media
+
+    try:
+        fd, size, ctype = workspace_media.open_file(box, path)
+    except workspace_media.SandboxError as exc:
+        raise _media_error(exc) from exc
+    start, end, status = 0, size - 1, 200
+    if range_header:
+        import re
+
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if not match or not (match.group(1) or match.group(2)):
+            os.close(fd)
+            raise HTTPException(status_code=416, detail="Range が正しくありません", headers={"Content-Range": f"bytes */{size}"})
+        if match.group(1):
+            start = int(match.group(1))
+            end = min(int(match.group(2)), size - 1) if match.group(2) else size - 1
+        else:
+            start = max(0, size - int(match.group(2)))
+        if start >= size or start > end:
+            os.close(fd)
+            raise HTTPException(status_code=416, detail="Range が範囲外です", headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+
+    def chunks():
+        with os.fdopen(fd, "rb") as handle:
+            handle.seek(start)
+            left = end - start + 1
+            while left > 0:
+                data = handle.read(min(1024 * 1024, left))
+                if not data:
+                    break
+                left -= len(data)
+                yield data
+
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1),
+               "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox",
+               "Cache-Control": "private, no-store"}
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(chunks(), status_code=status, media_type=ctype, headers=headers)
+
+
+def _record_media_delete(db, user, request, resource: str, done: dict) -> None:
+    audit.record(db, "workspace.media.delete", user=user, resource_type="opencode_workspace",
+                 resource_id=resource, request=request, metadata={"count": done["count"], "size": done["size"]})
+
+
+@router.get("/workspaces-media")
+async def workspaces_media_summary(user: User = Depends(require_permission("terminal.use"))):
+    """自分の全作業場の、画面の記録の合計（件数・大きさ）と作業場ごとの内訳。"""
+    import asyncio
+
+    from app.maintenance import workspace_media
+
+    return await asyncio.to_thread(workspace_media.summary_for, user.username)
+
+
+@router.delete("/workspaces-media")
+async def workspaces_media_delete_all(
+    request: Request, user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """自分の全作業場の画面の記録を一斉に消す。"""
+    import asyncio
+
+    from app.maintenance import workspace_media
+
+    done = await asyncio.to_thread(workspace_media.delete_all_for, user.username)
+    _record_media_delete(db, user, request, "*", done)
+    return done
+
+
+@router.get("/workspaces/{name}/media")
+async def workspace_media_list(name: str, user: User = Depends(require_permission("terminal.use"))):
+    """作業場の画面の記録（撮影・動画）。新しい順・{path, kind, size, mtime}。"""
+    import asyncio
+
+    from app.maintenance import workspace_media
+
+    box = _owned_box(name, user)
+    return await asyncio.to_thread(workspace_media.media_list, box)
+
+
+@router.get("/workspaces/{name}/media/file")
+async def workspace_media_file(
+    name: str, path: str, request: Request, user: User = Depends(require_permission("terminal.use")),
+):
+    """記録 1 件の中身。一覧に出た相対パスだけ。symlink は辿らない。"""
+    box = _owned_box(name, user)
+    return _media_file_response(box, path, request.headers.get("range"))
+
+
+@router.delete("/workspaces/{name}/media/file")
+async def workspace_media_delete_one(
+    name: str, path: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    import asyncio
+
+    from app.maintenance import workspace_media
+
+    box = _owned_box(name, user)
+    try:
+        size = await asyncio.to_thread(workspace_media.delete_one, box, path)
+    except workspace_media.SandboxError as exc:
+        raise _media_error(exc) from exc
+    done = {"count": 1, "size": size}
+    _record_media_delete(db, user, request, name, done)
+    return done
+
+
+@router.delete("/workspaces/{name}/media")
+async def workspace_media_delete_all(
+    name: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db=Depends(get_db),
+):
+    """この作業場の画面の記録を全部消す。"""
+    import asyncio
+
+    from app.maintenance import workspace_media
+
+    box = _owned_box(name, user)
+    done = await asyncio.to_thread(workspace_media.delete_all, box)
+    _record_media_delete(db, user, request, name, done)
+    return done
+
+
+def _auto_delete_media(box, user, db, request) -> None:
+    """設定「取り込み・マージの後に記録を自動で消す」がオンなら、その作業場の記録を消す。失敗しても取り込みは止めない。"""
+    if not opencode.get_settings().get("workspace_media_auto_delete"):
+        return
+    from app.maintenance import workspace_media
+
+    try:
+        _record_media_delete(db, user, request, box.name, workspace_media.delete_all(box))
+    except Exception:  # noqa: BLE001
+        logger.warning("作業場 %s の画面の記録を自動で消せませんでした", box.name)
+
+
 class AdoptBody(BaseModel):
     confirm: bool = False
     commit_message: str = Field(default="", max_length=200)
@@ -507,6 +661,7 @@ async def workspace_adopt(
                  resource_id=name, request=request,
                  metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"],
                            "target": box.target, "capabilities": sorted(box.capabilities)})
+    _auto_delete_media(box, user, db, request)
     from app.alerts.events import notify_event
 
     notify_event("workspace_adopted", title="作業場を取り込みました", body=f"作業場 {name}", url="/assistant",
@@ -615,7 +770,7 @@ async def workspace_merge(
 
     if not body.confirm:
         raise HTTPException(status_code=422, detail="マージするには確認（confirm）が必要です")
-    _owned_box(name, user)
+    box = _owned_box(name, user)
     try:
         result = await asyncio.to_thread(workspaces.merge, name, user.username,
                                    acknowledge_l2=body.acknowledge_l2, confirm_phrase=body.l2_phrase)
@@ -627,6 +782,7 @@ async def workspace_merge(
                  resource_id=name, request=request,
                  metadata={"pr_url": result["pr_url"], "tier": result["tier"], "head": result["head"],
                            "guarded": result["guarded"]})
+    _auto_delete_media(box, user, db, request)
     from app.alerts.events import notify_event
 
     notify_event("workspace_adopted", title="作業場をマージしました", body=f"作業場 {name}", url="/assistant",

@@ -334,3 +334,8 @@ def test_isolation_setting_is_validated(monkeypatch, tmp_path):
     assert provider.save_workflow({"isolation": "host"})["isolation"] == "host"
     with pytest.raises(ValueError):
         provider.save_workflow({"isolation": "vm"})
+
+
+def test_browser_has_video_caps_for_the_operation_test(installed):
+    """操作テストの動画（browser_start_video）はこの版では --caps=devtools が要る。"""
+    assert "--caps=devtools" in provider.ui_verify_server("job1")["command"]
