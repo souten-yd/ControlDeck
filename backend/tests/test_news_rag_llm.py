@@ -700,3 +700,65 @@ def test_digest_rejects_english_and_retries_once():
     ja = "## ローカル LLM\n- 傾向: ノート PC で動く小さなモデルが増えている [1]\n- 主な技術・製品: Inkling 2 Mini と Qwen 3.8 [2]"
     assert digest.validate_body(ja, 3).startswith("## ローカル LLM")
     assert digest.japanese_ratio(ja) > 0.4 > digest.japanese_ratio(en)
+
+
+def test_news_llm_retries_when_busy_and_not_when_over_budget(monkeypatch):
+    """目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
+
+    根拠: 2026-11-23 利用者「混み合いの制限などで一時的に断られた場合は、少し時間を置いてから再度実行する」。
+    同日、無料のモデル（LFM 3 1.7B）が「temporarily rate-limited upstream」の 429 を返した。
+    """
+    import asyncio
+
+    import pytest
+
+    from app.news import llm
+
+    calls, slept = [], []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    async def flaky(model, messages, **kw):
+        calls.append(model)
+        if len(calls) < 3:
+            raise llm.LlmUnavailable("RuntimeProviderError: liquid/lfm-3-1.7b:free is temporarily rate-limited upstream (429)")
+        return "まとめ"
+
+    monkeypatch.setattr(llm, "_complete_once", flaky)
+    monkeypatch.setattr(llm.asyncio, "sleep", fake_sleep)
+    assert asyncio.run(llm.complete("m", [])) == "まとめ"
+    assert len(calls) == 3 and slept == list(llm.RETRY_DELAYS[:2])
+
+    async def over_budget(model, messages, **kw):
+        raise llm.LlmUnavailable("RuntimeProviderError: 今月の上限額に達しました（429）")
+
+    calls.clear(); slept.clear()
+    monkeypatch.setattr(llm, "_complete_once", over_budget)
+    with pytest.raises(llm.LlmUnavailable):
+        asyncio.run(llm.complete("m", []))
+    assert slept == []
+    assert llm.is_busy("HTTP 429 Too Many Requests") and not llm.is_busy("モデルが見つかりません")
+
+
+def test_digest_shows_headlines_while_the_llm_is_working(monkeypatch):
+    """目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
+
+    根拠: 2026-11-23 利用者「参照元の記事の名前や概要をそのまま記載し、LLM で変換が終わったものから順次変えていくような形にすれば、
+    見れないみたいな不具合は発生しない」。作成中のまま止まった行は、次の予定で作り直す（missing が数えない）。
+    """
+    from app.news import db as news_db
+
+    seed_articles()
+    seen = {}
+
+    async def slow(model, messages, **kw):
+        with news_db.session() as db:
+            row = db.scalar(select(NewsDigest).where(NewsDigest.period == "daily", NewsDigest.day == "2026-11-23"))
+            seen["pending"] = (row.error, row.fallback, row.body)
+        return GOOD_DIGEST
+
+    monkeypatch.setattr(llm, "complete", slow)
+    row = run(digest.generate("daily", "2026-11-23"))
+    assert seen["pending"][0] == digest.PENDING and seen["pending"][1] is True and "Qwen の新モデルが出た" in seen["pending"][2]
+    assert row["fallback"] is False and row["error"] == ""

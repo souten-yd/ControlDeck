@@ -170,6 +170,14 @@ def headline_body(groups: list[dict]) -> str:
     return "\n".join(parts).strip()
 
 
+PENDING = "作成中です（LLM のまとめができたら置き換わります）"
+
+
+def _exists(period: str, day: str) -> bool:
+    with news_db.session() as db:
+        return db.scalar(select(NewsDigest.id).where(NewsDigest.period == period, NewsDigest.day == day)) is not None
+
+
 def _save(period: str, day: str, *, body: str, ids: list[int], model: str, error: str, fallback: bool) -> dict:
     with news_db.session() as db:
         row = db.scalar(select(NewsDigest).where(NewsDigest.period == period, NewsDigest.day == day))
@@ -229,6 +237,10 @@ async def generate(period: str, day: str, *, now: datetime | None = None) -> dic
         if count == 0:
             row = await asyncio.to_thread(_save, period, day, body=headline_body([]), ids=[], model="", error="", fallback=True)
             return row
+        # LLM の結果を待つ間も見られるように、まだ無ければ先に見出しの一覧を置き、できたら置き換える（2026-11-23 利用者
+        # 「参照元の記事の名前や概要をそのまま記載し、LLM で変換が終わったものから順次変えていけば、見れない不具合は発生しない」）
+        if not await asyncio.to_thread(_exists, period, day):
+            await asyncio.to_thread(_save, period, day, body=headline_body(groups), ids=ids, model=model, error=PENDING, fallback=True)
         try:
             messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": _prompt(period, groups, focus)}]
             text = await llm.complete(model, messages, max_tokens=MAX_TOKENS)
@@ -269,7 +281,8 @@ async def run_due(now: datetime | None = None) -> list[dict]:
 
     def missing():
         with news_db.session() as db:
-            have = {(r.period, r.day) for r in db.scalars(select(NewsDigest).where(NewsDigest.day.in_([d for _, d in due])))}
+            have = {(r.period, r.day) for r in db.scalars(select(NewsDigest).where(NewsDigest.day.in_([d for _, d in due])))
+                    if not (r.error or "").startswith(PENDING)}   # 作成中のまま止まった（再起動など）ものは作り直す
         return [d for d in due if d not in have]
 
     made = []
