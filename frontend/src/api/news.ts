@@ -9,7 +9,7 @@ export type NewsView = "recommended" | "latest" | "starred";
 
 export interface NewsItem {
   id: number; kind: NewsKind; source: string; source_key: string; title: string; url: string | null;
-  summary: string; image_url: string | null; published_at: string; topics: string[]; state: NewsState; score?: number;
+  summary: string; image_url: string | null; image_ai?: boolean; published_at: string; topics: string[]; state: NewsState; score?: number;
   /** チャンネルの id（どのチャンネルに属するか。無ければ null） */
   channel?: string | null;
   /** 意味で探す（RAG）の結果: 当たった断片。archived はニュースの DB から消えて RAG にだけ残る記事（id=0・操作はできない） */
@@ -94,8 +94,9 @@ export interface NewsRuntimeSettings {
   quiet: { enabled: boolean; start: string; end: string };
   llm: { digest_model: string; gist_enabled: boolean; gist_model: string };
   rag: { enabled: boolean; fulltext: boolean; on_prune: "keep" | "delete" };
+  imagegen: { enabled: boolean; threads: number; max_per_run: number };
 }
-export interface NewsSettingsResponse { settings: NewsRuntimeSettings; weekdays: string[]; interval_minutes: number }
+export interface NewsSettingsResponse { settings: NewsRuntimeSettings; weekdays: string[]; interval_minutes: number; imagegen_available?: boolean }
 export interface LlmOptions {
   local: { id: string; name: string }[];
   cloud: { id: string; name: string; provider: string; free: boolean; paid: boolean }[];

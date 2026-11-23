@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.news import channels, gist, images, rag, settings, sources, store
+from app.news import channels, gist, imagegen, images, rag, settings, sources, store
 from app.news import db as news_db
 from app.news.db import NewsItem
 
@@ -86,6 +86,11 @@ async def _after_save(saved: dict, cfg: dict) -> dict:
         except Exception as exc:  # noqa: BLE001 - 取得そのものは成功させる
             logger.warning("RAG への取り込みに失敗しました: %s", exc)
             info["rag"]["error"] = _error_text(exc)
+    try:
+        info["imagegen"] = await asyncio.to_thread(imagegen.generate_pending, cfg)
+    except Exception as exc:  # noqa: BLE001 - 画像が作れなくても取得は成功
+        logger.warning("イメージ画像の生成に失敗しました: %s", exc)
+        info["imagegen"] = {"done": 0, "failed": 0, "skipped": "", "error": _error_text(exc)}
     return info
 
 

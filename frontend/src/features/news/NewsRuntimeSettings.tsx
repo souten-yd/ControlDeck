@@ -134,6 +134,25 @@ export function NewsRuntimeCards() {
         {saveButton}
       </Card>
 
+      <Card id="news-imagegen" title="画像の無い記事のイメージ画像（AI）" hint="取った記事に画像が無いとき、見出しからイメージ画像を作ります。ニュース専用の軽いモデルを、この PC の CPU と RAM だけで動かし（GPU は使いません）、作り終えたらすぐ解放します。品質より「イメージが付くこと」を優先します。画面には「AI 生成のイメージ」と出ます。">
+        <Toggle label="画像の無い記事に AI でイメージ画像を作る" hint="既定は切。取得のあと、新しい記事から順にまとめて作ります" value={draft.imagegen.enabled} disabled={dis} onChange={(on) => set({ imagegen: { ...draft.imagegen, enabled: on } })} />
+        {draft.imagegen.enabled && data.imagegen_available === false && (
+          <p role="alert" data-testid="imagegen-missing" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+            機能「ニュースの画像生成（CPU）」が未導入です（モデル約 1.7GB を取得します）。このままでは何も作りません。{" "}
+            <Link to="/settings/features" className="font-semibold underline">機能と拡張を開く</Link>
+          </p>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className={label}>使う CPU スレッド数（1〜16。低い優先度で動かします）
+            <input type="number" aria-label="画像生成のスレッド数" min={1} max={16} value={draft.imagegen.threads} disabled={dis || !draft.imagegen.enabled}
+              onChange={(e) => set({ imagegen: { ...draft.imagegen, threads: Number(e.target.value) } })} className={`${field} mt-1 w-full`} /></label>
+          <label className={label}>1 回の取得で作る枚数の上限（1〜100）
+            <input type="number" aria-label="画像生成の件数" min={1} max={100} value={draft.imagegen.max_per_run} disabled={dis || !draft.imagegen.enabled}
+              onChange={(e) => set({ imagegen: { ...draft.imagegen, max_per_run: Number(e.target.value) } })} className={`${field} mt-1 w-full`} /></label>
+        </div>
+        {saveButton}
+      </Card>
+
       <Card id="news-rag" title="検索（RAG）への蓄積" hint="取った記事を知識基盤（分野「ニュース」。公開情報）へ貯め、Knowledge の横断検索・AI アシスタントの知識の道具・ニュースの「意味で探す」に使います。ニュースのデータベース（news.sqlite3）とは別のファイルです。">
         <Toggle label="取った記事を RAG に貯める" hint="題・抜粋・出どころ・URL・日付・チャンネル・話題の語を 1 記事 1 文書に（同じ URL は更新）" value={draft.rag.enabled} disabled={dis} onChange={(on) => set({ rag: { ...draft.rag, enabled: on } })} />
         <Toggle label="本文も取り込む" hint="記事のページを読んで足します（外へ通信します。1 回の取得で 30 件まで。既定は切）" value={draft.rag.fulltext} disabled={dis || !draft.rag.enabled} onChange={(on) => set({ rag: { ...draft.rag, fulltext: on } })} />

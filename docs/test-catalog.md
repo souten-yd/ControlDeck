@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 241 ファイル、2353 テスト（目的の未記入 93 ファイル）
+- backend: 242 ファイル、2362 テスト（目的の未記入 93 ファイル）
 - E2E: 128 spec、279 テスト
 
 ## backend（backend/tests）
@@ -2066,6 +2066,20 @@
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
 - `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
+
+### backend/tests/test_news_imagegen.py
+
+目的: 目的: ニュースの「画像の無い記事に AI でイメージ画像を作る」（CPU の専用実行）の組み立て・上限・置き場・配る API・削除・未導入の振る舞いの試験。 子プロセス（モデル）は全部モック。外へは通信せず、GPU も使わない。 根拠: 2026-11-23 利用者「ニュースから画像が取れない場合は本文の意図を汲み取って、AI で生成画像をする…CPU と RAM の利用のみ…画像を生成したらすぐに アンロード…連続で生成…メディアフォージとかを使わずに、ニュースフィード独自の生成 AI を保有してほしい」。 守ること: - プロンプトは LLM を使わない規則（英語の見出しはそのまま・日本語は対応表か種類の決まり文句）で、文字・ロゴ・顔を避ける言い回しを含む。 - 設定が切・機能が未導入なら何もしない。件数・スレッド数の上限を子へ渡す。失敗した記事は再起動まで試さない。 - 画像は id（整数）だけでパスを組み、置き場の外・リンクは返さない。API はログインした人だけ、その人に見える記事だけ。 - 古い記事を消すと画像も消える。
+
+- `test_prompt_english_title_kept_japanese_mapped_and_style_guards`
+- `test_disabled_or_not_installed_does_nothing`
+- `test_generates_with_limits_sets_url_and_remembers_failures`
+- `test_worker_timeout_is_passed_and_child_killed`
+- `test_image_path_only_inside_dir_and_no_symlink`
+- `test_images_api_needs_login_and_visibility`
+- `test_prune_deletes_generated_images`
+- `test_settings_defaults_and_validation`
+- `test_feature_is_python_lib_with_pinned_cpu_only_packages_and_models`
 
 ### backend/tests/test_news_images_presets.py
 
