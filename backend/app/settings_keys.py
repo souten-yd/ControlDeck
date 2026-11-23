@@ -108,13 +108,16 @@ def _research() -> list[dict]:
          "fields": [{"name": "domains", "label": "足すドメイン（例: forum.example.com, discuss.example.org）", "configured": bool(extra), "plain": True}],
          "used_by": "AI アシスタントの調査（web_search の sites・read_page）", "manage": ""},
         {"id": "research:limits", "group": "research", "name": "調べる量（読むページ数・出典の上限）",
-         "note": "「観点ごとに読むページ数」はふつうの深さの値。速い調査は 2 少なく、深い調査は 3 多く読む（ニュースなど時事の依頼は最低 5 件）。"
+         "note": "「LLM を同時に使う本数」は 0 で自動（並列のスロットが 2 以上のローカルモデルなら、会話に 1 つ残して残りを使う。並列 1 は 1 本ずつ）。"
+                 "「観点ごとに読むページ数」はふつうの深さの値。速い調査は 2 少なく、深い調査は 3 多く読む（ニュースなど時事の依頼は最低 5 件）。"
                  "増やすほど確かだが時間がかかる。キーは不要。空の欄は今のまま",
          "signup": "", "configured": rk.limits() != {n: v[2] for n, v in rk.LIMITS.items()},
          "hint": f"{rk.limits()['read_per_aspect']} 件・上限 {rk.limits()['max_sources']} 件",
          "fields": [{"name": "read_per_aspect", "label": f"観点ごとに読むページ数（{rk.LIMITS['read_per_aspect'][0]}〜{rk.LIMITS['read_per_aspect'][1]}。今 {rk.limits()['read_per_aspect']}）",
                      "configured": True, "plain": True},
                     {"name": "max_sources", "label": f"出典の上限（{rk.LIMITS['max_sources'][0]}〜{rk.LIMITS['max_sources'][1]}。今 {rk.limits()['max_sources']}）",
+                     "configured": True, "plain": True},
+                    {"name": "llm_parallel", "label": f"LLM を同時に使う本数（{rk.LIMITS['llm_parallel'][0]}〜{rk.LIMITS['llm_parallel'][1]}。0 は自動＝モデルの並列数から。今 {rk.limits()['llm_parallel']}）",
                      "configured": True, "plain": True}],
          "used_by": "AI アシスタントの Web 調査・調査モード", "manage": ""},
     ]
