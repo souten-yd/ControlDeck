@@ -453,8 +453,8 @@ export function MessageBubble({
           </>
         )}
         {msg.streaming && !msg.content && !msg.thinking && !msg.build && (
-          <p role="status" aria-label="回答を待っています" className="flex h-7 items-center gap-1">
-            {[0, 1, 2].map((dot) => (
+          <p role="status" aria-label="回答を待っています" className="flex min-h-7 items-center gap-1">
+            {msg.placeholder ? <span className="text-sm text-zinc-500 dark:text-zinc-400">{msg.placeholder}</span> : [0, 1, 2].map((dot) => (
               <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-zinc-400" style={{ animationDelay: `${dot * 180}ms` }} />
             ))}
           </p>

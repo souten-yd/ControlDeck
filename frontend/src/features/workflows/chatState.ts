@@ -88,6 +88,8 @@ export interface ChatMedia { workspace: string; items: { path: string; kind: "im
 export interface Msg {
   role: "user" | "assistant";
   content: string;
+  /** 送信直後、本文が届くまでだけ出す仮の文（「🔎 検索中...」）。本文（content）には入れない（読み上げ・コピー・保存の対象にしないため） */
+  placeholder?: string;
   /** OpenCode がこの回で変えたファイル */
   changes?: CodeChange[];
   reverted?: boolean;

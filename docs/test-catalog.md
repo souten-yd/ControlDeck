@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 237 ファイル、2308 テスト（目的の未記入 93 ファイル）
-- E2E: 126 spec、268 テスト
+- backend: 237 ファイル、2310 テスト（目的の未記入 93 ファイル）
+- E2E: 126 spec、270 テスト
 
 ## backend（backend/tests）
 
@@ -2011,6 +2011,7 @@
 - `test_news_tables_live_in_their_own_file_not_the_main_db`
 - `test_fts_triggers_follow_insert_update_delete`
 - `test_late_columns_are_added_to_an_existing_file` — あとから足した列は、古いファイルを開いたとき 1 回足される（知識基盤と同じ仕組み）。
+- `test_codeberg_without_releases_reads_tags` — 目的: Release の機能を切った Codeberg のリポジトリでも、タグから更新の記事が取れること。
 
 ### backend/tests/test_news_channels.py
 
@@ -2035,6 +2036,7 @@
 - `test_archive_keep_prunes_but_keeps_starred`
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
+- `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースは入れる）。
 
 ### backend/tests/test_news_rag_llm.py
 
@@ -2069,7 +2071,7 @@
 - `test_quiet_hours_including_past_midnight`
 - `test_run_due_makes_each_missing_digest_once`
 - `test_news_loop_skips_fetch_in_quiet_hours`
-- `test_news_settings_reject_paid_cloud_models` — 目的: ニュースのまとめ・一言要約に有料のクラウドのモデルを選べないこと。
+- `test_semantic_search_reranks_and_merges_same_titles` — 目的: 意味で探すは、並べ替え（reranker）の順で返し、見出しが同じ記事（別の URL）は 1 件にまとめること。
 
 ### backend/tests/test_notify_events.py
 
@@ -3774,6 +3776,7 @@
 - after reading aloud, the microphone still opens on an iPhone-like audio session
 - a streamed answer with markdown is read without skipping or reading symbols
 - a finished answer that differs from the streamed one is not read twice nor skipped
+- progress lines are not read, and a rewritten head does not make the answer read again
 - turning reading off mid-answer silences it, and the rest of the stream does not restart it
 
 ### frontend/e2e/assistant-workspace-header-and-plan-card.spec.ts
@@ -4038,7 +4041,8 @@
 - ニュース: 保存済みの「紙面」「コンパクト」は経済紙・テキスト一覧として扱う
 - ニュース: 動きを減らす設定でテロップが止まる
 - ニュース: 新着・チャンネル・絞り込み・👍・隠す・アーカイブ・検索（${width}px）
-- ニュース: ホームのカード・メニュー・設定の入口
+- ニュース: ホームのカード（${design}）: まとめ・画像のカード・見出し・見た目
+- ニュース: ホームのカード・見出しは新しいタブで open を記録・まとめが今日の分でなければ出さない・メニュー・設定の入口
 - ニュース: 記事が無いとき「今すぐ取得する」が出る
 - ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
 - ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
