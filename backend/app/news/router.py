@@ -175,9 +175,8 @@ def get_settings(user: User = Depends(get_current_user)):
 @router.put("/settings")
 async def put_settings(body: dict, user: User = Depends(require_permission("settings.manage"))):
     try:
-        llm.reject_paid(news_settings.normalize(body), await _free_model_ids())
         return {"settings": await asyncio.to_thread(news_settings.save, body)}
-    except (sources.ConfigError, ValueError) as exc:
+    except sources.ConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

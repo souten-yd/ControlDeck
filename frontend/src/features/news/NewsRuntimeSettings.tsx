@@ -7,7 +7,7 @@ import { Card, field, ghost, primary } from "./settingsUi";
 
 const label = "block text-xs text-zinc-500";
 
-/** モデルの選択肢。ローカル → クラウドの無料（印つき）→ クラウドの有料（選べない。ニュースは有料を使わない方針）。 */
+/** モデルの選択肢。ローカル → クラウドの無料（印つき）→ クラウドの有料（警告つき。2026-11-23 利用者「有料モデルをニュースに使っても良い」）。 */
 function ModelSelect({ name, value, options, disabled, onChange }: { name: string; value: string; options: LlmOptions | undefined; disabled: boolean; onChange: (v: string) => void }) {
   const known = [...(options?.local ?? []).map((m) => m.id), ...(options?.cloud ?? []).map((m) => m.id)];
   const free = (options?.cloud ?? []).filter((m) => m.free);
@@ -17,7 +17,7 @@ function ModelSelect({ name, value, options, disabled, onChange }: { name: strin
       {!known.includes(value) && <option value={value}>{value}（一覧にありません）</option>}
       <optgroup label="ローカル">{(options?.local ?? [{ id: "auto", name: "auto" }]).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>
       {free.length > 0 && <optgroup label="クラウド（無料）">{free.map((m) => <option key={m.id} value={m.id}>無料 · {m.name}</option>)}</optgroup>}
-      {paid.length > 0 && <optgroup label="クラウド（有料）">{paid.map((m) => <option key={m.id} value={m.id} disabled>有料（選べません） · {m.name}</option>)}</optgroup>}
+      {paid.length > 0 && <optgroup label="クラウド（有料）">{paid.map((m) => <option key={m.id} value={m.id}>有料 · {m.name}</option>)}</optgroup>}
     </select>
   );
 }
@@ -29,7 +29,7 @@ function ModelNote({ model, options }: { model: string; options: LlmOptions | un
   return (
     <div className="mt-1 space-y-1 text-[11px]">
       {found?.free && <p><span className="rounded bg-emerald-600/15 px-1.5 py-0.5 font-semibold text-emerald-700 dark:text-emerald-400">無料</span> <span className="text-zinc-500">題・抜粋・出どころ（公開情報）だけを送ります。</span></p>}
-      {found && !found.free && <p role="alert" className="text-amber-700 dark:text-amber-400">有料のモデルは選べません。ニュースは無料のモデルかローカルの LLM だけを使います。</p>}
+      {found && !found.free && <p role="alert" className="text-amber-700 dark:text-amber-400">有料のモデルです。使った分の費用がかかります（Models の月の上限額が効きます）。</p>}
       {options && !options.egress && (
         <p role="alert" data-testid="egress-missing" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-amber-800 dark:text-amber-300">
           外部への送信が許可されていません。このままでは、まとめは作られません（ローカルへは切り替えません）。
