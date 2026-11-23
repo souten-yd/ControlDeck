@@ -143,7 +143,7 @@ def test_hn_discourse_reddit_search_use_the_channel_terms(monkeypatch):
 
     async def reddit(path, params):
         calls.append((path, params))
-        return {"data": {"children": [{"data": {"title": "R", "permalink": "/r/x/comments/1/r/", "created_utc": 1795000000}}]}}
+        return {"data": {"children": [{"data": {"title": "R: GGUF の配布", "permalink": "/r/x/comments/1/r/", "created_utc": 1795000000}}]}}
 
     monkeypatch.setattr(rt, "_get_json", get_json)
     monkeypatch.setattr(rt, "_reddit_oauth", reddit)
@@ -373,3 +373,26 @@ def test_refresh_uses_channel_search_sources(monkeypatch):
     service._last.update(started=0.0)
     result = asyncio.run(service.refresh(force=True))
     assert result["new"] == 1 and seen["lang"] == "ja"
+
+
+def test_forum_search_drops_posts_without_the_channel_terms(monkeypatch):
+    """目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースは入れる）。
+
+    根拠: 2026-11-23 本番で「特許」のチャンネルに Level1Techs の「Linux quirks you should know」などが 30 件ずつ入っていた
+    （検索の結果なら中身を見ずに入れていた）。チャンネルの語の既定から一般の英単語 Strata も外した（地層・建築の記事が入った）。
+    """
+    from app.news import channels as channels_mod
+    from app.workflows import research_tools as rt
+
+    async def get_json(url, **kw):
+        return {"topics": [{"id": 1, "slug": "a", "title": "Linux quirks you should know", "created_at": "2026-11-22T00:00:00Z"},
+                           {"id": 2, "slug": "b", "title": "特許の調べ方", "created_at": "2026-11-22T00:00:00Z"}]}
+
+    monkeypatch.setattr(rt, "_get_json", get_json)
+    c = ch(include=["特許", "patent"])
+    got = asyncio.run(sources.fetch_discourse_search(c, "forum.example.com"))
+    assert [i["title"] for i in got] == ["特許の調べ方"]
+    # すでに貯まった無関係な投稿も、フォーラムの検索の印だけではチャンネルに入らない。Google ニュースの結果は入る
+    assert not channels_mod.matches(c, kind="news", source_key="search:t:discourse-forum.example.com", title="Linux quirks")
+    assert channels_mod.matches(c, kind="news", source_key="search:t:gnews-ja", title="知財の動き")
+    assert "Strata" not in channels_mod.DEFAULT_CHANNELS[0]["include"]

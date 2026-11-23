@@ -34,7 +34,7 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,29}$")
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 DEFAULT_CHANNELS: list[dict] = [
-    {"id": "local-llm", "name": "ローカル LLM", "color": PALETTE[0], "include": ["llama.cpp", "Strata", "Qwen", "Inkling", "GGUF"],
+    {"id": "local-llm", "name": "ローカル LLM", "color": PALETTE[0], "include": ["llama.cpp", "Qwen", "Inkling", "GGUF"],
      "exclude": [], "kinds": [], "lang": "both", "limit": LIMIT_DEFAULT, "search": True},
     {"id": "amd-gpu", "name": "AMD・GPU", "color": PALETTE[1], "include": ["ROCm", "Radeon", "RDNA"],
      "exclude": [], "kinds": [], "lang": "both", "limit": LIMIT_DEFAULT, "search": True},
@@ -162,14 +162,19 @@ def _has(text: str, words: list[str]) -> bool:
     return any(w.lower() in low for w in words)
 
 
+def has_terms(text: str, words: list[str]) -> bool:
+    """text に words のどれかが含まれるか（大文字小文字を区別しない）。"""
+    return _has(text, words)
+
+
 def matches(channel: dict, *, kind: str, source_key: str, title: str, summary: str = "") -> bool:
     text = f"{title}\n{summary}"
     if channel["exclude"] and _has(text, channel["exclude"]):
         return False
     if channel["kinds"] and kind not in channel["kinds"]:
         return False
-    if source_key.startswith(f"search:{channel['id']}:"):
-        return True
+    if source_key.startswith(f"search:{channel['id']}:gnews"):
+        return True   # Google ニュースはその語で探した結果。ほかの検索（フォーラムなど）は下で語を確かめる（tag_search と同じ）
     if not channel["include"]:
         return bool(channel["kinds"])
     return _has(text, channel["include"])

@@ -1,5 +1,7 @@
 # 実装状況
 
+## 2026-11-23 ニュース: Release の機能を切った Codeberg のリポジトリ（Radiance）はタグから更新を読む（本番で HTTP 404 だった）。
+
 ## 2026-11-23 機能と拡張に「Playwright のブラウザ」と、追加で入れるもの（apt・Maya の tokenizers）の項目
 
 - 事故: Playwright は 3 つの版が同じ置き場 `data/cache/ms-playwright` を使っていた（E2E の @playwright/test 1.61・本体の venv の playwright 1.62・Playwright MCP の playwright-core 1.66）。`playwright install` は自分の版が知らない版のブラウザを片付けるので、2026-11-23 に 1.66 で `install ffmpeg` したら E2E の chromium-1228 などが消えた。
