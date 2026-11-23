@@ -776,7 +776,7 @@ def mirror_start(box: Sandbox) -> dict:
             break
         time.sleep(1)
     else:
-        tail = (box.path / "mirror" / "server.log").read_text(encoding="utf-8", errors="replace")[-1500:]
+        tail = _box_file_tail(box, "mirror", "server.log", 1500)
         raise SandboxError(f"ミラーが起動しませんでした:\n{tail}")
     password_file = box.path / "mirror" / "admin-password"
     if not password_file.exists():
@@ -798,6 +798,31 @@ def mirror_stop(box: Sandbox) -> None:
 
 LAB_COMMAND_MAX = 500
 LAB_LOG_TAIL = 4096
+
+
+def _box_file_tail(box: Sandbox, folder: str, filename: str, size: int) -> str:
+    """箱の AI が書ける場所（box.path の中）のファイルの末尾を、symlink を辿らずに読む。
+
+    箱の中から lab/・run.log を symlink に差し替えられると、ホストの別のファイルを読まされる。
+    folder も filename も O_NOFOLLOW で開き、ふつうのファイルでなければ読まない。"""
+    import stat
+
+    try:
+        folder_fd = os.open(box.path / folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return ""
+    try:
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
+    except OSError:
+        return ""
+    finally:
+        os.close(folder_fd)
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            return ""
+        handle.seek(max(0, info.st_size - size))
+        return handle.read(size).decode("utf-8", errors="replace")
 
 
 def lab_container(box: Sandbox) -> str:
@@ -853,9 +878,10 @@ def lab_start(box: Sandbox, command: str, *, by: str = "") -> dict:
     lab_dir = box.path / "lab"
     lab_dir.mkdir(mode=0o700, exist_ok=True)
     log = lab_dir / "run.log"
-    log.write_text("", encoding="utf-8")        # 開始ごとに作り直す
     env = {"PORT": str(box.port), "HOST": "0.0.0.0"}
-    argv = podman_argv(box, ["/bin/bash", "-c", 'exec /bin/bash -c "$1" >>"$2" 2>&1', "bash", actual, str(log)],
+    # ログは開始ごとに作り直す。空にするのは箱の中で（箱の AI は lab/ を書けるので、ホストが空にすると
+    # symlink を仕込まれてホストのファイルを空にされる）
+    argv = podman_argv(box, ["/bin/bash", "-c", ': >"$2"; exec /bin/bash -c "$1" >>"$2" 2>&1', "bash", actual, str(log)],
                        name=lab_container(box), detach=True, env=env)
     subprocess.run(argv, capture_output=True, text=True, timeout=60, check=True)
     meta = _read_meta(box.path)
@@ -873,10 +899,7 @@ def lab_stop(box: Sandbox) -> None:
 def lab_state(box: Sandbox) -> dict:
     lab = box.meta.get("lab") if isinstance(box.meta.get("lab"), dict) else {}
     running = _container_running(lab_container(box))
-    try:
-        tail = (box.path / "lab" / "run.log").read_text(encoding="utf-8", errors="replace")[-LAB_LOG_TAIL:]
-    except OSError:
-        tail = ""
+    tail = _box_file_tail(box, "lab", "run.log", LAB_LOG_TAIL)
     return {"running": running, "listening": running and _listening(box.port),
             "command": str(lab.get("command") or ""), "started_at": str(lab.get("started_at") or ""),
             "log_tail": tail}

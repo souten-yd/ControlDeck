@@ -61,7 +61,7 @@ def test_lab_start_passes_command_as_positional_argument(repo, podman):  # noqa:
     argv = podman["argv"][0]
     # bash -c の本文は固定。利用者の command は位置引数（$1）、ログの場所は $2
     assert argv[2] == sandbox.lab_container(box)
-    assert argv[3:6] == ["/bin/bash", "-c", 'exec /bin/bash -c "$1" >>"$2" 2>&1']
+    assert argv[3:6] == ["/bin/bash", "-c", ': >"$2"; exec /bin/bash -c "$1" >>"$2" 2>&1']
     assert argv[6] == "bash"
     actual = argv[7]
     base = sandbox.lab_base(box.name, state["started_at"])
@@ -72,13 +72,31 @@ def test_lab_start_passes_command_as_positional_argument(repo, podman):  # noqa:
     assert sandbox.load(box.name).meta["lab"]["by"] == "admin"
 
 
-def test_lab_start_stops_the_previous_one_and_resets_log(repo, podman):  # noqa: F811
+def test_lab_start_stops_the_previous_one_and_host_never_writes_the_log(repo, podman, tmp_path):  # noqa: F811
+    """前の lab は止める。ログを空にするのは箱の中（argv の `: >"$2"`）で、ホストは box.path の中のログを書かない。
+    根拠: 箱の AI は lab/ を書けるので、run.log をホストのファイルへの symlink にされると、ホストが空にしてしまう。"""
     box = workspaces_create_box()
     sandbox.lab_start(box, "first")
-    (box.path / "lab" / "run.log").write_text("old output")
+    precious = tmp_path / "precious.txt"
+    precious.write_text("host secret")
+    log = box.path / "lab" / "run.log"
+    log.unlink(missing_ok=True)
+    log.symlink_to(precious)
     second = sandbox.lab_start(box, "second")
     assert sandbox.lab_container(box) in podman["stops"]
-    assert second["log_tail"] == "" and second["command"] == "second"
+    assert second["command"] == "second"
+    assert precious.read_text() == "host secret", "ホストのファイルを空にしない"
+    assert second["log_tail"] == "", "symlink の先は読まない"
+
+
+def test_box_file_tail_does_not_follow_symlinked_folder(repo, tmp_path):  # noqa: F811
+    """lab/ そのものを symlink にされても辿らない（ミラーの server.log も同じ読み方）。"""
+    box = workspaces_create_box()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "run.log").write_text("host file")
+    (box.path / "lab").symlink_to(outside)
+    assert sandbox._box_file_tail(box, "lab", "run.log", 100) == ""
 
 
 def test_lab_start_refuses_while_mirror_runs_and_checks_length(repo, podman):  # noqa: F811

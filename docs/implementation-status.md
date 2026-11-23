@@ -8,6 +8,7 @@
 - 中継: `/project-view/w/{name}/{token}/...`（HTTP・WebSocket）。鍵は起こすたびに変わり、鍵違い 404・停止中 409・待ち受け前 425。Cookie・認証は上流へ渡さず、応答に CSP `sandbox`（allow-same-origin なし）を付けるので、別タブで開いても箱の中のアプリは ControlDeck の API に触れない。`_proxy_http`・WebSocket の中継は送り先のポートを受ける形にした（run の入口の振る舞いは同じ）。
 - テスト: `test_workspace_lab.py`、E2E `project-lab-workspaces.spec.ts`。実際の箱での通しは未。
 
+- Opus の監査で直した点: lab のログ（箱の AI が書ける `lab/run.log`）をホストが空にし・読んでいた。symlink にされるとホストのファイルを空にされ・読まされる。空にするのは箱の中で、読むのは `_box_file_tail`（フォルダもファイルも O_NOFOLLOW・ふつうのファイルだけ）。前からあったミラーの server.log の読み方も同じに。
 ## 2026-11-23 取り込みの PR の題（U18）
 
 - 前は最後のコミットの件名を PR の題にしていたので、ターンの終わりの自動保存（「作業途中の保存 #N（会話 … のターン）」）が題になっていた。
