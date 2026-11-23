@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-23 AssistantChat.tsx を分ける（ROADMAP Q1 の画面側）
+
+- `AssistantChat.tsx`（3,239 行）から、発言の表示の部品（`GenStatsBadge`・`ThinkingBlock`・`CodeTimeline`・`RoleModels`・`MessageBubble`・`UnsettledNotice`・`QualityBadge`・`SpeakerToggle` ほか）を `ChatMessage.tsx` へ、コンポーネントの外の補助（`uploadWithProgress`・`extendTimeline`・`settledStatus`・`restoreMessage`・`readHistoryCollapsed`・`loadSettings`・`MODES`・`Msg` などの型）を `chatState.ts` へ移した。本体は 2,381 行。
+- 移しただけで、振る舞い・DOM・文言は変えていない。import は ChatMessage → chatState、AssistantChat → 両方で、循環は無い。`MarkdownMessage` の遅延読み込みは使う側（ChatMessage）へ。外から AssistantChat を import するのは default export のみで変更なし。
+- ROADMAP Q1 は backend 側（chat_persist.py）が残るので ☐ のまま。
+
 ## 2026-11-23 作業場を箱の中で動かして preview（U12）
 
 - Project Lab の「作業場」に「動かす」欄。箱（podman）の中でアプリを動かし、待ち受けたら preview（iframe・別タブ）を出す。
