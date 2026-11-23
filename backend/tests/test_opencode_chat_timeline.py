@@ -9,6 +9,7 @@
     箱の外に残る場所へつなぐ
 """
 import asyncio
+import threading
 import time
 from pathlib import Path
 
@@ -541,9 +542,11 @@ def test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question(a
     _fake_opencode(monkeypatch, tmp_path, [])
     told: list[str] = []
     release = {"go": False}
+    asked = threading.Event()   # 仮の OpenCode が質問を出し終えた（これより先に割り込むと、割り込みが通ってしまい揺れていた）
 
     async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
         await on_tool({"id": "call_q", "name": "question", "status": "running", "input": {"questions": []}, "output": ""})
+        asked.set()
         while not release["go"]:
             await asyncio.sleep(0.02)
         return {"status": "succeeded", "error": ""}
@@ -564,6 +567,7 @@ def test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question(a
     item = admin_client.post(f"{base}/queue", headers=CSRF_HEADERS,
                              json={"content": "ISOの件です", "mode": "code", "model": "test", "code_project": tmp_path.name}).json()["item"]
     try:
+        assert asked.wait(30), "仮の OpenCode が質問を出さなかった"
         for _ in range(400):   # 最大 20 秒（関門の全体実行の負荷で回の開始が遅れても待てるように。2026-11-23 に 5 秒で揺れた）
             result = admin_client.post(f"{base}/queue/{item['id']}/steer", headers=CSRF_HEADERS)
             if result.status_code == 409 and "質問" in result.json()["detail"]:
