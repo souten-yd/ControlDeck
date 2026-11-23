@@ -13,22 +13,38 @@ function withCitations(text: string, sources: Digest["sources"]): ReactNode[] {
   });
 }
 
-/** まとめの本文（「## 見出し」と「- 文」だけの Markdown）と、出典の一覧。 */
+const TREND = /^(傾向|週の傾向|主な技術・製品|注目点)\s*[:：]\s*(.*)$/;
+const isThree = (heading: string) => /3\s*行/.test(heading);
+
+/** まとめの本文（「## 話題」と「- 傾向: …」「- 主な技術・製品: …」「- 注目点: …」、最後の「今日の 3 行」）と、出典の一覧。
+ *  「3 行」は読む順が先になるよう、画面では一番上に出す。見出しの一覧（LLM なし）の「- 題（出どころ） [n]」もそのまま読める。 */
 export function DigestBody({ digest }: { digest: Digest }) {
-  const blocks: ReactNode[] = [];
-  let bullets: ReactNode[] = [];
-  const flush = () => { if (bullets.length) { blocks.push(<ul key={`u${blocks.length}`} className="nw-digest-list">{bullets}</ul>); bullets = []; } };
+  const sections: { heading: string; rows: ReactNode[]; para: ReactNode[] }[] = [];
+  let current = { heading: "", rows: [] as ReactNode[], para: [] as ReactNode[] };
+  const push = () => { if (current.heading || current.rows.length || current.para.length) sections.push(current); };
   digest.body.split("\n").forEach((raw, i) => {
     const line = raw.trim();
     if (!line) return;
-    if (line.startsWith("#")) { flush(); blocks.push(<h4 key={i} className="nw-digest-ch">{line.replace(/^#+\s*/, "")}</h4>); }
-    else if (/^[-・*]\s/.test(line)) bullets.push(<li key={i}>{withCitations(line.replace(/^[-・*]\s*/, ""), digest.sources)}</li>);
-    else { flush(); blocks.push(<p key={i} style={{ margin: "4px 0" }}>{withCitations(line, digest.sources)}</p>); }
+    if (line.startsWith("#")) { push(); current = { heading: line.replace(/^#+\s*/, ""), rows: [], para: [] }; }
+    else if (/^[-・*]\s/.test(line)) {
+      const text = line.replace(/^[-・*]\s*/, "");
+      const m = TREND.exec(text);
+      current.rows.push(m
+        ? <li key={i} className="nw-digest-kv"><b className="nw-digest-k">{m[1]}</b><span>{withCitations(m[2], digest.sources)}</span></li>
+        : <li key={i}>{withCitations(text, digest.sources)}</li>);
+    } else current.para.push(<p key={i} style={{ margin: "4px 0" }}>{withCitations(line, digest.sources)}</p>);
   });
-  flush();
+  push();
+  const ordered = [...sections.filter((s) => isThree(s.heading)), ...sections.filter((s) => !isThree(s.heading))];
   return (
     <div data-testid="digest-body">
-      {blocks}
+      {ordered.map((s, i) => (
+        <section key={i} className={isThree(s.heading) ? "nw-digest-three" : "nw-digest-topic"} data-testid={isThree(s.heading) ? "digest-three" : "digest-topic"}>
+          {s.heading && <h4 className="nw-digest-ch">{s.heading}</h4>}
+          {s.para}
+          {s.rows.length > 0 && <ul className="nw-digest-list">{s.rows}</ul>}
+        </section>
+      ))}
       {digest.sources && digest.sources.length > 0 && (
         <details className="nw-digest-src">
           <summary>出典（{digest.sources.length} 件）</summary>

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 242 ファイル、2370 テスト（目的の未記入 93 ファイル）
-- E2E: 129 spec、281 テスト
+- backend: 239 ファイル、2334 テスト（目的の未記入 93 ファイル）
+- E2E: 127 spec、274 テスト
 
 ## backend（backend/tests）
 
@@ -665,10 +665,6 @@
 - `test_running_call_reports_time_to_first_token`
 - `test_context_lengths_are_fetched_at_most_hourly`
 - `test_summary_endpoint_requires_settings_manage`
-- `test_excluded_models_are_counted_against_the_public_list` — 目的: アカウントの設定で除外されたモデルの数（うち無料）を、鍵なしの公開の一覧との差で出す。
-- `test_public_list_failure_hides_the_count_without_breaking` — 目的: 公開の一覧が取れなくても、モデルの一覧は返し、除外の件数だけを出さない。
-- `test_non_openrouter_has_no_excluded_report` — 目的: OpenRouter 以外では公開の一覧を問い合わせない。根拠: 依頼「OpenRouter のときだけ」（2026-11-23）。
-- `test_refresh_ignores_the_zdr_cache` — 目的: 取り直すときは ZDR 一覧の 1 時間の覚えを使わず、問い合わせ直す。
 
 ### backend/tests/test_code_research.py
 
@@ -2065,51 +2061,7 @@
 - `test_archive_keep_prunes_but_keeps_starred`
 - `test_export_json_csv_and_formula_guard`
 - `test_refresh_uses_channel_search_sources` — 取得の流れ: チャンネルの設定からも検索のソースを作って取り、記事は保存される。
-- `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースも今の語が無ければ入れない）。
-
-### backend/tests/test_news_imagegen.py
-
-目的: 目的: ニュースの「画像の無い記事に AI でイメージ画像を作る」（CPU の専用実行）の組み立て・上限・置き場・配る API・削除・未導入の振る舞いの試験。 子プロセス（モデル）は全部モック。外へは通信せず、GPU も使わない。 根拠: 2026-11-23 利用者「ニュースから画像が取れない場合は本文の意図を汲み取って、AI で生成画像をする…CPU と RAM の利用のみ…画像を生成したらすぐに アンロード…連続で生成…メディアフォージとかを使わずに、ニュースフィード独自の生成 AI を保有してほしい」。 精度の段（2026-11-23 利用者「このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」）: 設定の既定は小・未導入の段は何も作らない・ 段ごとに台本の引数（段・スレッド・seed=記事の id・時間の上限）と件数の上限（大は少なめ）が変わる・段ごとに導入・削除できる（小は消せない）。 守ること: - プロンプトは LLM を使わない規則（英語の見出しはそのまま・日本語は対応表か種類の決まり文句）で、文字・ロゴ・顔を避ける言い回しを含む。 - 設定が切・機能が未導入なら何もしない。件数・スレッド数の上限を子へ渡す。失敗した記事は再起動まで試さない。 - 画像は id（整数）だけでパスを組み、置き場の外・リンクは返さない。API はログインした人だけ、その人に見える記事だけ。 - 古い記事を消すと画像も消える。
-
-- `test_prompt_english_title_kept_japanese_mapped_and_style_guards`
-- `test_disabled_or_not_installed_does_nothing`
-- `test_generates_with_limits_sets_url_and_remembers_failures`
-- `test_worker_timeout_is_passed_and_child_killed`
-- `test_image_path_only_inside_dir_and_no_symlink`
-- `test_images_api_needs_login_and_visibility`
-- `test_prune_deletes_generated_images`
-- `test_settings_defaults_and_validation`
-- `test_feature_is_python_lib_with_pinned_cpu_only_packages_and_models`
-- `test_tier_normalize_and_models_ready_per_tier`
-- `test_selected_tier_not_installed_skips_with_tier`
-- `test_job_carries_tier_seed_and_per_tier_cap_and_timeout`
-- `test_worker_args_per_tier` — 段ごとの台本の引数（子プロセスはモック）。
-- `test_tier_specs_are_consistent`
-- `test_lcm_schedule_and_guidance_embedding`
-- `test_remove_models_by_tier_keeps_other_tiers`
-- `test_feature_model_tier_install_and_remove`
-
-### backend/tests/test_news_images_presets.py
-
-目的: 目的: ニュースの「画像の取得」「自分のリポジトリの除外」「プリセット」「チャンネルの語を変えたときの振り分け」「ホームの表示数」の試験。外へ通信しない（HTTP は全部モック）。 根拠: 2026-11-23 利用者「本来ここには、ソースから取得した画像が表示されるべき…極力画像を撮ってほしい」「私が作っているコントロールデックとか私のリポジトリのデータは特に表示する必要はない」 「ニュースのソースの右側にプリセットボタン…無料のものを優先」「チャンネル02…以前設定していた AMD とか GPU とかの設定がそのまま残っている」「ホームに出す記事の数をどこかで設定できるように」。 守ること: og:image・twitter:image の取り出しと壊れた HTML・私的な IP・大きすぎる応答・取れなかった記事を再試行しない・自分のリポジトリは設定の移行（1 回）と一覧・チャンネルから除く・ プリセットの形（https・重複なし・分野・有料のサイトを入れない・設定の検査を通る）・語を変えたとき古い検索の結果が出ない・検索のやり直しの対象・home_items の範囲。
-
-- `test_extract_image_prefers_og_then_twitter_and_resolves_relative`
-- `test_extract_image_rejects_unsafe_and_survives_broken_html`
-- `test_rss_media_enclosure_and_first_img_are_used`
-- `test_fetch_page_image_reads_only_the_head_and_follows_redirects`
-- `test_fetch_page_image_refuses_private_addresses` — 実物の guarded_client を使う（私的・loopback の IP は接続前に断る。外へは出ない）。
-- `test_fill_only_new_items_without_image_and_never_retries`
-- `test_fill_is_capped_per_run`
-- `test_upsert_reports_new_ids`
-- `test_own_repo_not_in_defaults_and_removed_once_from_saved_config`
-- `test_own_repo_items_hidden_from_list_home_channels_and_digest`
-- `test_preset_list_shape`
-- `test_presets_exclude_paid_sites_and_pass_source_validation`
-- `test_presets_api`
-- `test_old_search_results_do_not_show_after_terms_change`
-- `test_changed_search_channels_detects_term_lang_and_new_channels`
-- `test_refresh_with_channel_ids_fetches_only_those_searches`
-- `test_home_items_pref_range`
+- `test_forum_search_drops_posts_without_the_channel_terms` — 目的: フォーラムの検索で、見出しにも抜粋にもチャンネルの語が無い投稿はチャンネルに入れないこと（Google ニュースは入れる）。
 
 ### backend/tests/test_news_rag_llm.py
 
@@ -2145,6 +2097,15 @@
 - `test_run_due_makes_each_missing_digest_once`
 - `test_news_loop_skips_fetch_in_quiet_hours`
 - `test_semantic_search_reranks_and_merges_same_titles` — 目的: 意味で探すは、並べ替え（reranker）の順で返し、見出しが同じ記事（別の URL）は 1 件にまとめること。
+- `test_focus_goes_into_the_prompt_and_prompt_asks_for_trend_tech_attention_and_three_lines` — 目的: 利用者が書いた重点の文がプロンプトに入り、話題ごとの傾向・主な技術・注目点と最後の 3 行を求めること。
+- `test_weekly_prompt_uses_weekly_wording`
+- `test_cloud_prompt_carries_focus_but_no_other_user_info` — 目的: 外部へ送る中身は、公開の記事の項目と重点の文だけ（出来事・利用者名・チャットの題は入らない）。
+- `test_focus_matching_articles_are_ranked_first`
+- `test_broken_answers_fall_back_to_headlines` — 目的: 存在しない [n] だらけ・見出し無し・引用無し・傾向無し・空の返事は、見出しの一覧（fallback）に落ちること。
+- `test_focus_setting_is_validated_and_limited`
+- `test_english_detection`
+- `test_translation_batches_20_per_call_saves_and_presents` — 目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
+- `test_translation_without_egress_permission_does_nothing`
 
 ### backend/tests/test_notify_events.py
 
@@ -2390,18 +2351,6 @@
 - `test_turn_records_checkpoint_and_sends_restore_note_to_the_agent`
 - `test_turn_records_checkpoint_when_the_agent_committed_by_itself`
 - `test_turn_without_new_commit_has_no_checkpoint`
-
-### backend/tests/test_parallel_slots.py
-
-目的: ローカル LLM の並列のスロット数から調査の同時実行数を決める部分のテスト（LLM・GPU・通信はすべてモック）。 目的: ランタイムの種類・設定の上書き・読めないときの安全側の値を固定し、調査で LLM を呼ぶ処理がスロット由来の本数を超えず、LLM を使わないページ読み取りはスロットに縛られないことを守る。 根拠: 2026-11-23 利用者「並列数が 5 並列なら、1 並列でメインの会話を継続して、あとの 4 並列で調査の要約など。並列数は事前に設定した ものを読み取って。並列 1 の場合は従来通り」。2026-11-15 の実測: Radiance・llama.cpp は並列で伸び、Strata は伸びず、Maya-S は並列で起動しない。
-
-- `test_helper_count_by_runtime`
-- `test_override_is_capped_by_slots_and_zero_means_auto`
-- `test_unreadable_config_is_one_for_local_and_default_for_external`
-- `test_model_alias_is_used_when_port_is_not_a_model`
-- `test_limit_setting_accepts_zero_to_eight`
-- `test_page_reads_ignore_slots_and_llm_work_is_capped_by_slots`
-- `test_reads_per_aspect_never_exceed_read_parallel`
 
 ### backend/tests/test_passkeys.py
 
@@ -3975,7 +3924,6 @@
 - キーを保存して有効にし、モデルを選び、確認のうえで外部への送信を許可できる（320px）
 - OpenRouter の費用・入力の扱い・残高が見え、並べ替えと絞り込みができる（320px）
 - 賢さ・コンテキスト・価格・対応機能・提供元を組み合わせて絞り込める（${width}px）
-- 一覧を取り直せて、アカウントの設定で除外されたモデルが見える（${width}px）
 
 ### frontend/e2e/generated-blazor-gui.spec.ts
 
@@ -4124,16 +4072,6 @@
 
 - メニューの項目を隠せる（${width}px）
 
-### frontend/e2e/news-sources-images.spec.ts
-
-目的: ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・プリセット・取得の失敗の件数を出さないこと。API は page.route で差し替える。 根拠: 2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…アクセントラインだけにして、表示を小さくする」「取れなかった総数が1件ありますと表示されてますけれども、ニュースのところで表示しないでほしい」 「ニュースのソースの右側にプリセットボタン」「ホームのニュースに、今日（無ければ昨日）のまとめの概要と、記事を何個か。何個かは設定できるように」。 撮影は test-results/news-noimg-*.png・news-home-digest-{today,yesterday,none}-{390,1280}.png・news-presets-{320,1280}.png。 */
-
-- ニュース: 画像の無い記事は大きな箱でなく細いアクセントラインで、取得の失敗の件数は出ない
-- ニュース: ホームのカード（まとめ: ${name}）はテロップ・まとめの概要・記事 5 件
-- ニュース: テロップ（共通の Marquee）は複数の項目をめくり、触れると止まり、動きを減らす設定では省略表示になる
-- ニュース: 設定でホームに出す記事の数を変えると表示が変わる
-- ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる
-
 ### frontend/e2e/news.spec.ts
 
 目的: ニュースの専門ページ（/news）: 放送局のデザイン・チャンネル・設定。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 画像はテストの中で作る SVG の data URI（外部の画像の URL は使わない）。 守ること: ON AIR・チャンネルの切り替え・テロップ・NOW/TODAY/THIS WEEK・チャンネルの区画・数字が出る／チャンネルを押すと ON AIR が変わる／ 設定でデザインを変えると見た目が変わる／チャンネルを足せる／携帯（390・320px）で 1 列・横にあふれない／ 新着・アーカイブ・検索・👍・隠すは 1 段目のまま使える。撮影は test-results/ に残す。 根拠: 2026-11-23 利用者「OZY のようなページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。 */
@@ -4151,6 +4089,7 @@
 - ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
 - ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
 - ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
+- ニュース: まとめは話題ごとの傾向・主な技術・注目点と「3 行」、英語の概要は「訳」の印、設定に重点の欄（${width}px）
 
 ### frontend/e2e/notification-settings.spec.ts
 
@@ -4271,13 +4210,6 @@
 目的: Settings →「API キー」: 外部のサービスのキーを 1 か所で。値は出さず、設定済みか・末尾の数文字だけ。消すのは確認つき。 根拠: 2026-11-21 利用者「EPO や特許庁の API のキーはどこで設定できる？設定の中にキーをまとめて。OpenRouter のキーも。消さないように」。 */
 
 - Settings: API キー（${width}px）
-
-### frontend/e2e/settings-news-imagegen-tiers.spec.ts
-
-目的: 設定 → ニュースの「モデルの精度」（小・中・大）と、機能と拡張の段ごとの導入ボタン。API は page.route で模擬する（モデルは取得しない）。 根拠: 2026-11-23 利用者「もうちょい精度の高いモデル使えないか？…このモデルを残しておいて、小中大みたいな感じで、選べるようにしてほしい、設定で」。 */
-
-- ニュースの画像生成: 精度の選択（${width}px）
-- ニュースの画像生成: 機能と拡張で段ごとに導入（${width}px）
 
 ### frontend/e2e/settings-playwright-browsers.spec.ts
 

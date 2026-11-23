@@ -1,3 +1,4 @@
+import { TranslatedMark } from "./TranslatedMark";
 import type { CSSProperties, ReactNode } from "react";
 import { KIND_STYLE, relativeTime, type NewsHome, type NewsItem, type NewsPrefs } from "../../api/news";
 import { ArchiveSection, ChannelSections, external, HomeAside, NumbersSection, Trio, visible } from "./BroadcastHome";
@@ -59,6 +60,7 @@ function Lead({ item, home, onOpen, onTopic, testId }: { item: NewsItem; home: N
         <p className="card-meta">{channel && <span className="nwd-tag">{channel.name}</span>}<span>{style.icon} {style.label}</span><span className="src">{item.source}</span><span>· {relativeTime(item.published_at)}</span></p>
         <h2 className="nw-head nwd-lead-title"><Title item={item} onOpen={onOpen} /></h2>
         {item.summary && <p className="nwd-lead-sum">{item.summary}</p>}
+        <TranslatedMark item={item} />
         {item.topics.length > 0 && <ul className="card-chips" aria-label="話題">{item.topics.slice(0, 4).map((t) => <li key={t}><button type="button" onClick={() => onTopic(t)}>{t}</button></li>)}</ul>}
       </div>
     </article>

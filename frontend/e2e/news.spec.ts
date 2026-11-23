@@ -10,7 +10,7 @@ import { establishSession, hasSession } from "./support/session";
 
 type Item = {
   id: number; kind: string; source: string; source_key: string; title: string; url: string; summary: string;
-  image_url: string | null; published_at: string; topics: string[]; state: Record<string, boolean>; channel?: string | null;
+  image_url: string | null; published_at: string; topics: string[]; state: Record<string, boolean>; channel?: string | null; translated?: boolean; summary_original?: string;
 };
 const noState = () => ({ open: false, like: false, dislike: false, hide: false, star: false });
 const at = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
@@ -25,7 +25,8 @@ const ITEMS: Item[] = [
   mk(1, "news", "ITmedia NEWS", "Qwen の新しいモデルが公開、GGUF 版の配布も同時に始まる", "ローカルで動かせるサイズの量子化版が最初から用意され、llama.cpp での動作確認も済んでいる。", 0.6, ["Qwen", "GGUF"], art("#f5c518", "#7c3aed", "Qwen")),
   mk(2, "release", "GitHub ggml-org/llama.cpp", "llama.cpp b9042", "ROCm の Flash Attention を高速化。Vulkan バックエンドの不具合を修正。", 1.5, ["llama.cpp", "ROCm"], art("#10b981", "#0f766e", "llama.cpp")),
   mk(3, "news", "Hacker News", "AMD Radeon AI PRO R9700 review: 32 GB for local inference", "412 点 · 187 コメント", 2, ["Radeon", "R9700"], art("#38bdf8", "#1d4ed8", "Radeon")),
-  mk(4, "news", "Phoronix", "ROCm 7.2 released with RDNA4 improvements", "Performance work for gfx1201 and new HIP features.", 3, ["ROCm", "RDNA"], null),
+  { ...mk(4, "news", "Phoronix", "ROCm 7.2 released with RDNA4 improvements", "gfx1201 と新しい HIP 機能の性能改善が入った。", 3, ["ROCm", "RDNA"], null),
+    translated: true, summary_original: "Performance work for gfx1201 and new HIP features across the stack." } as Item,
   mk(5, "news", "日本経済新聞", "生成 AI を使った特許調査、知財部門の半数が導入へ", "出願前の先行技術調査で AI を使う企業が増えている。", 4, ["特許", "知財"], art("#f472b6", "#9d174d", "特許")),
   mk(6, "forum", "forum.level1techs.com", "R9700 のファン制御を PID にしたら静かになった", "3 日間の運用で 78℃ に収まった、という報告。", 5, ["R9700"], null),
   mk(7, "release", "GitHub sst/opencode", "opencode v2.14.0", "サブエージェントの MCP 呼び出しを安定化。", 6, ["OpenCode"], art("#34d399", "#047857", "OpenCode")),
@@ -142,7 +143,7 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
   // 2 段目: まとめ・設定（更新・LLM・RAG）・意味で探す
   const settings = {
     feed_refresh_minutes: 15, digest_daily: { enabled: true, time: "06:30" }, digest_weekly: { enabled: true, weekday: 0, time: "07:00" },
-    quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto" },
+    quiet: { enabled: false, start: "01:00", end: "05:00" }, llm: { digest_model: "cloud:openrouter/meta/llama-3.3-70b:free", gist_enabled: false, gist_model: "auto", digest_focus: "", translate_enabled: true },
     rag: { enabled: true, fulltext: false, on_prune: "keep" },
     imagegen: { enabled: false, tier: "small", threads: 8, max_per_run: 30 },
   };
@@ -152,7 +153,7 @@ async function mockNews(page: Page, opts: { empty?: boolean; egress?: boolean; d
     id, period, label: period === "daily" ? "今朝のまとめ" : "今週のまとめ", day, body, model: "cloud:openrouter/meta/llama-3.3-70b:free", created_at: at(1),
     error: "", fallback: false, item_ids: [1, 2], sources: [{ id: 1, n: 1, title: ITEMS[0].title, source: "ITmedia NEWS", url: ITEMS[0].url }, { id: 2, n: 2, title: ITEMS[1].title, source: "GitHub", url: ITEMS[1].url }], ...extra });
   const daily = digestOf(1, "daily", new Date().toLocaleDateString("en-CA"),   // 今日の分（ホームのカードの「今朝のまとめ」は今日の分だけ出す）
-     "## ローカル LLM\n- Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n## AMD・GPU\n- llama.cpp が ROCm の Flash Attention を高速化した。[2]");
+     "## ローカル LLM\n- 傾向: Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n- 主な技術・製品: Qwen、GGUF、llama.cpp。[1][2]\n- 注目点: ROCm の Flash Attention が高速化した。[2]\n## 今日の 3 行\n- Qwen の新モデルが出た。[1]\n- llama.cpp が速くなった。[2]\n- ローカル LLM の更新が続く。[2]");
   const weekly = digestOf(2, "weekly", "2026-11-23", "## ローカル LLM\n- 見出しだけの一覧です。 [1]", { fallback: true, error: "接続できません", model: "auto" });
   await page.route(/\/api\/v1\/news\/digests$/, (route) => route.fulfill({ json: { latest: { daily, weekly }, digests: [daily, weekly, digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" })] } }));
   await page.route(/\/api\/v1\/news\/digests\/(\d+)$/, (route) => route.fulfill({ json: route.request().url().endsWith("/2") ? weekly : route.request().url().endsWith("/1") ? daily : digestOf(3, "daily", "2026-11-22", "", { error: "外部への送信が許可されていません" }) }));
@@ -655,3 +656,40 @@ test("ニュース: 検索を「意味で探す（RAG）」に切り替えられ
   await page.getByRole("button", { name: "全文", exact: true }).click();
   await expect(page.getByRole("heading", { name: "「Qwen」の検索結果" })).toBeVisible();
 });
+
+
+for (const [width, height] of [[1280, 900], [320, 700]] as const) {
+  test(`ニュース: まとめは話題ごとの傾向・主な技術・注目点と「3 行」、英語の概要は「訳」の印、設定に重点の欄（${width}px）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    const { savedSettings } = await mockNews(page);
+    await establishSession(page, context);
+    await page.goto("/news");
+    const daily = page.getByTestId("digest-daily");
+    await daily.locator("summary").click();
+    await expect(daily.getByTestId("digest-three")).toContainText("今日の 3 行");
+    await expect(daily.getByTestId("digest-topic").first()).toContainText("傾向");
+    await expect(daily.getByTestId("digest-topic").first()).toContainText("主な技術・製品");
+    await expect(daily.getByTestId("digest-topic").first()).toContainText("注目点");
+    const three = await daily.getByTestId("digest-three").boundingBox();
+    const topic = await daily.getByTestId("digest-topic").first().boundingBox();
+    expect(three!.y).toBeLessThan(topic!.y);                       // 3 行は先に読めるよう上に出す
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-digest-focus-${width}.png`);
+    // 訳の印: 開くと元の抜粋が見える。題は英語のまま
+    const mark = page.getByTestId("translated-mark").first();
+    await expect(mark).toBeVisible();
+    await mark.locator("summary").click();
+    await expect(mark).toContainText("Performance work for gfx1201");
+    // 設定: 重点の欄・訳の切り替え・外部へ送られる旨の説明
+    await page.goto("/settings/news");
+    await expect(page.getByTestId("digest-focus-note")).toContainText("外部のモデルを選ぶと、この文も送られます");
+    await page.getByTestId("digest-focus").fill("AI 技術の最新動向\nAI モデルの最新動向");
+    await page.getByRole("checkbox", { name: /英語の記事の概要を日本語に訳す/ }).uncheck();
+    await page.getByRole("button", { name: "保存", exact: true }).first().click();
+    await expect.poll(() => savedSettings.length).toBe(1);
+    expect(savedSettings[0]).toMatchObject({ llm: { digest_focus: "AI 技術の最新動向\nAI モデルの最新動向", translate_enabled: false } });
+    expect(await noOverflow(page)).toBe(true);
+    await shot(page, `test-results/news-digest-focus-settings-${width}.png`);
+  });
+}

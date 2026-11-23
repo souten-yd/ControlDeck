@@ -55,6 +55,8 @@ class NewsItem(Base):
     gist: Mapped[str] = mapped_column(Text, default="")
     # 記事のページから画像を取ろうとした印（取れなくても True。再試行しない）。app/news/images.py
     image_tried: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 英語の抜粋の日本語訳（LLM。2026-11-23 利用者「英語のニュースは日本語に訳して概要を記載」）。空なら訳していない。題は訳さない
+    summary_ja: Mapped[str] = mapped_column(Text, default="")
 
 
 class NewsAction(Base):
@@ -89,7 +91,7 @@ class NewsDigest(Base):
 
 
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
-_LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0")]
+_LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''")]
 
 _engines: dict[str, Engine] = {}
 _lock = threading.Lock()

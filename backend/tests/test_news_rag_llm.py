@@ -281,8 +281,12 @@ def seed_articles(now=None):
     add(f"/settings?news-event={me}-1", title="秘密の警報", kind="event", source="ControlDeck", uid=me, published=now - timedelta(hours=1))
 
 
+GOOD_DIGEST = ("## ローカル LLM\n- 傾向: モデルの量子化と高速化が進んでいる。[1][2]\n- 主な技術・製品: Qwen の新モデルと llama.cpp。[1][2][9]\n- 注目点: ROCm 対応。[2]\n"
+               "## 今日の 3 行\n- Qwen が出た。[1]\n- llama.cpp が速くなった。[2]\n- ROCm 対応が進む。[2]\n")
+
+
 class Spy:
-    def __init__(self, answer="## ローカル LLM\n- Qwen の新モデルが出た。[1][9]\n"):
+    def __init__(self, answer=GOOD_DIGEST):
         self.calls, self.answer = [], answer
 
     async def __call__(self, model, messages, **kw):
@@ -544,3 +548,137 @@ def test_semantic_search_reranks_and_merges_same_titles(monkeypatch):
 
     monkeypatch.setattr(rt, "rerank_scores", none)
     assert [h["title"] for h in asyncio.run(rag.search("q", 10))] == ["A", "Same title", "B"]
+
+
+# ---- まとめの形・重点・返事の検査・英語の訳（2026-11-23 利用者の要望） ----
+
+def _focus_cfg(focus: str, **extra):
+    cfg = settings.load()
+    cfg["llm"]["digest_focus"] = focus
+    cfg["llm"].update(extra)
+    cfg["digest_weekly"]["enabled"] = False
+    settings.save(cfg)
+
+
+def test_focus_goes_into_the_prompt_and_prompt_asks_for_trend_tech_attention_and_three_lines(monkeypatch):
+    """目的: 利用者が書いた重点の文がプロンプトに入り、話題ごとの傾向・主な技術・注目点と最後の 3 行を求めること。
+    根拠: 2026-11-23 利用者「AI モデルの最新動向…日本語で入力して、それをベースにまとめてもらう」「傾向と、メインの技術、注目すべき内容」。"""
+    seed_articles()
+    _focus_cfg("AI モデルの最新動向\nAI 技術の最新動向")
+    spy = Spy()
+    monkeypatch.setattr(llm, "complete", spy)
+    run(digest.generate("daily", "2026-11-23"))
+    text = "\n".join(m["content"] for m in spy.calls[0][1])
+    assert "AI モデルの最新動向" in text and "AI 技術の最新動向" in text and digest.FOCUS_NONE in text
+    assert "傾向" in text and "主な技術・製品" in text and "注目点" in text and "今日の 3 行" in text
+    _focus_cfg("")
+    spy2 = Spy()
+    monkeypatch.setattr(llm, "complete", spy2)
+    run(digest.generate("daily", "2026-11-23"))
+    assert "重点" not in "\n".join(m["content"] for m in spy2.calls[0][1])        # 重点が空なら枠も付けない
+
+
+def test_weekly_prompt_uses_weekly_wording(monkeypatch):
+    seed_articles()
+    spy = Spy()
+    monkeypatch.setattr(llm, "complete", spy)
+    run(digest.generate("weekly", "2026-11-23"))
+    text = spy.calls[0][1][1]["content"]
+    assert "週の傾向" in text and "今週の 3 行" in text
+
+
+def test_cloud_prompt_carries_focus_but_no_other_user_info(monkeypatch):
+    """目的: 外部へ送る中身は、公開の記事の項目と重点の文だけ（出来事・利用者名・チャットの題は入らない）。"""
+    seed_articles()
+    _focus_cfg("特許の動向", digest_model="cloud:openrouter/meta/llama:free")
+    configure_openrouter(["meta/llama:free"], egress=True)
+    spy = Spy()
+    monkeypatch.setattr(llm, "complete", spy)
+    run(digest.generate("daily", "2026-11-23"))
+    text = "\n".join(m["content"] for m in spy.calls[0][1])
+    assert "特許の動向" in text and "秘密の警報" not in text and "digest-user" not in text
+
+
+def test_focus_matching_articles_are_ranked_first(monkeypatch):
+    now = datetime.now(timezone.utc)
+    for i in range(8):
+        add(f"https://f.test/{i}", title=f"一般の話題 {i}", published=now - timedelta(hours=i + 1))
+    add("https://f.test/hit", title="特許の審査基準が変わる", published=now - timedelta(hours=20))
+    with news_db.session() as db:
+        groups = digest.gather(db, "daily", now, "特許")
+    titles = [i["title"] for g in groups for i in g["items"]]
+    assert titles[0] == "特許の審査基準が変わる"
+
+
+def test_broken_answers_fall_back_to_headlines(monkeypatch):
+    """目的: 存在しない [n] だらけ・見出し無し・引用無し・傾向無し・空の返事は、見出しの一覧（fallback）に落ちること。"""
+    for answer in ("## A\n- 傾向: x [8][9]\n", "- 傾向: x [1]", "## A\n- 傾向: 引用が無い\n", "## A\n- 注目点: x [1]\n", "   "):
+        with news_db.session() as db:
+            db.execute(delete(NewsItem)); db.execute(delete(NewsDigest)); db.commit()
+        seed_articles()
+        monkeypatch.setattr(llm, "complete", Spy(answer))
+        row = run(digest.generate("daily", "2026-11-23"))
+        assert row["fallback"] is True and "壊れていました" in row["error"]
+        assert "- Qwen の新モデルが出た" in row["body"]
+
+
+def test_focus_setting_is_validated_and_limited(admin_client):
+    hdr = {"X-Requested-With": "ControlDeck"}
+    assert settings.normalize({})["llm"]["digest_focus"] == "" and settings.normalize({})["llm"]["translate_enabled"] is True
+    ok = admin_client.put("/api/v1/news/settings", json={"llm": {"digest_focus": "AI 技術の最新動向\n\x00AI モデルの最新動向"}}, headers=hdr)
+    assert ok.status_code == 200 and ok.json()["settings"]["llm"]["digest_focus"] == "AI 技術の最新動向\nAI モデルの最新動向"
+    too_long = admin_client.put("/api/v1/news/settings", json={"llm": {"digest_focus": "あ" * 1001}}, headers=hdr)
+    assert too_long.status_code == 422 or too_long.status_code == 400
+
+
+def test_english_detection():
+    en = {"title": "ROCm 7.2 released with RDNA4 improvements", "summary": "Performance work for gfx1201 and new HIP features across the stack."}
+    assert gist.is_english(en)
+    assert not gist.is_english({"title": "Qwen の新モデル", "summary": "量子化に対応した新しいモデルが公開された"})
+    assert not gist.is_english({"title": "R9700 review", "summary": "412 点 · 187 コメント"})
+    assert not gist.is_english({"title": "English title only", "summary": ""})
+
+
+def _english_rows(count: int, tag: str = "e"):
+    ids = [add(f"https://{tag}.test/{i}", title=f"Title number {i} of the day", summary=f"This is an English excerpt number {i} about new GPU drivers and models.",
+               published=datetime.now(timezone.utc)) for i in range(count)]
+    with news_db.session() as db:
+        return ids, [store.item_dict(r) for r in db.scalars(select(NewsItem).where(NewsItem.id.in_(ids)).order_by(NewsItem.id))]
+
+
+def test_translation_batches_20_per_call_saves_and_presents(monkeypatch):
+    """目的: 英語の抜粋は 20 件で 1 回の呼び出し、日本語の概要を保存し、一覧は訳を出して元の抜粋も返すこと。題は訳さない。
+    根拠: 2026-11-23 利用者「英語のニュースとかは日本語に訳して概要を記載してほしいし、題名はそのままでいい」。"""
+    ids, rows = _english_rows(21)
+    calls = []
+
+    async def fake(model, messages, **kw):
+        calls.append((model, messages))
+        count = len([ln for ln in messages[1]["content"].splitlines() if ln[:1].isdigit() and ". " in ln[:5]])
+        return "\n".join(f"{n}|新しい GPU ドライバーとモデルの英語の記事です {n}" for n in range(1, count + 1))
+
+    monkeypatch.setattr(llm, "complete", fake)
+    out = run(gist.translate(rows))
+    assert out == {"done": 21, "error": ""} and len(calls) == 2           # 20 + 1
+    assert "題は訳さない" in calls[0][1][1]["content"]
+    with news_db.session() as db:
+        row = db.get(NewsItem, ids[0])
+        assert row.summary_ja.startswith("新しい GPU") and row.title == "Title number 0 of the day"
+        shown = store.present(row, {})
+    assert shown["translated"] is True and shown["summary"] == row.summary_ja and "English excerpt number 0" in shown["summary_original"]
+    # 訳済み・日本語の記事・設定が切のときは呼ばない
+    calls.clear()
+    with news_db.session() as db:
+        rows2 = [store.item_dict(r) for r in db.scalars(select(NewsItem))]
+    assert run(gist.translate(rows2))["done"] == 0 and calls == []
+    cfg = settings.load(); cfg["llm"]["translate_enabled"] = False; settings.save(cfg)
+    _, rows3 = _english_rows(1, "e2")
+    assert run(gist.translate([dict(r, summary_ja="") for r in rows3]))["done"] == 0 and calls == []
+
+
+def test_translation_without_egress_permission_does_nothing(monkeypatch):
+    _, rows = _english_rows(2)
+    cfg = settings.load(); cfg["llm"]["gist_model"] = "cloud:openrouter/meta/llama:free"; settings.save(cfg)
+    configure_openrouter(["meta/llama:free"], egress=False)
+    out = run(gist.translate(rows))
+    assert out["done"] == 0 and "許可されていません" in out["error"]

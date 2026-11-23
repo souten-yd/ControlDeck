@@ -1,3 +1,4 @@
+import { TranslatedMark } from "./TranslatedMark";
 import { useState, type CSSProperties } from "react";
 import { KIND_STYLE, relativeTime, useNewsAction, type NewsAction, type NewsItem } from "../../api/news";
 import { useToasts } from "../../stores";
@@ -51,6 +52,7 @@ export function NewsCard({ item, channel, label, hideRemoves = false, dimRead = 
         </p>
         <h3 className="card-title">{link ? <a {...link}>{item.title}</a> : item.title}</h3>
         {(item.summary || item.snippet) && <p className="card-sum">{item.summary || item.snippet}</p>}
+        <TranslatedMark item={item} />
         {archived && <p className="nw-muted" style={{ margin: 0, fontSize: ".72rem" }}>アーカイブ（RAG にだけ残っている記事）</p>}
         {item.topics.length > 0 && (
           <ul className="card-chips" aria-label="話題">

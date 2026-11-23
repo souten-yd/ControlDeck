@@ -72,7 +72,8 @@ def topics_of(item: NewsItem) -> list[str]:
 def item_dict(item: NewsItem) -> dict:
     """RAG・LLM へ渡す記事の形（出来事は呼ぶ側で除く）。"""
     return {"id": item.id, "kind": item.kind, "source": item.source, "source_key": item.source_key, "title": item.title, "url": item.url,
-            "summary": item.summary or "", "published_at": iso(item.published_at), "topics": topics_of(item), "gist": item.gist or ""}
+            "summary": item.summary or "", "summary_ja": item.summary_ja or "", "published_at": iso(item.published_at), "topics": topics_of(item),
+            "gist": item.gist or ""}
 
 
 def upsert_items(db: Session, items: list[dict]) -> dict:
@@ -102,6 +103,8 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
             row.kind, row.source, row.source_key = data["kind"], data["source"], data["source_key"]
             if row.gist:      # LLM が付けた話題の語は、取り直しで消さない
                 topics = json.dumps(list(dict.fromkeys(topics_of(row) + json.loads(topics))), ensure_ascii=False)
+            if row.summary != data["summary"]:
+                row.summary_ja = ""      # 抜粋が変わったら、古い訳は捨てて訳し直す
             row.title, row.summary, row.topics, row.fetched_at = data["title"], data["summary"], topics, now
             row.image_url = data.get("image_url") or row.image_url
             updated += 1
@@ -236,9 +239,12 @@ def states(db: Session, user_id: int, ids: list[int]) -> dict[int, dict]:
 def present(item: NewsItem, state: dict, score: float | None = None) -> dict:
     url = safe_url(item.url) or (_internal_path(item.url) if item.kind == "event" else None)
     row = {"id": item.id, "kind": item.kind, "source": item.source, "source_key": item.source_key, "title": item.title,
-           "url": url, "summary": item.summary, "image_url": safe_url(item.image_url) or (item.image_url if imagegen.is_generated_url(item.image_url) else None),
+           "url": url, "summary": item.summary_ja or item.summary,
+           "image_url": safe_url(item.image_url) or (item.image_url if imagegen.is_generated_url(item.image_url) else None),
            "image_ai": imagegen.is_generated_url(item.image_url), "published_at": iso(item.published_at),
            "topics": topics_of(item), "state": state}
+    if item.summary_ja:      # 訳した概要を summary に出し、元の抜粋は開いたとき見られるよう別に持つ
+        row["translated"], row["summary_original"] = True, item.summary
     if score is not None:
         row["score"] = round(score, 4)
     return row

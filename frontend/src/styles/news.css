@@ -162,6 +162,16 @@
 .nw-digest > summary::after { content: "＋"; margin-left: auto; color: var(--nw-muted); }
 .nw-digest[open] > summary::after { content: "－"; }
 .nw-digest-ch { font-size: .9rem; margin: 12px 0 4px; color: var(--nw-accent); }
+.nw-digest-topic { margin-top: 4px; }
+.nw-digest-three { margin: 8px 0 4px; padding: 6px 10px 8px; border-radius: var(--nw-radius); background: color-mix(in srgb, var(--nw-accent) 8%, transparent); }
+.nw-digest-three .nw-digest-ch { margin-top: 4px; }
+.nw-digest-kv { list-style: none; margin-left: -1.1em; display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 0 8px; }
+.nw-digest-k { font-size: .75rem; color: var(--nw-muted); font-weight: 700; padding-top: .15em; }
+@media (max-width: 480px) { .nw-digest-kv { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+.nw-orig { display: inline-block; margin: 2px 0 0; font-size: .72rem; }
+.nw-orig > summary { cursor: pointer; display: inline-block; padding: 1px 8px; border: 1px solid var(--nw-line); border-radius: 999px; color: var(--nw-muted); list-style: none; min-height: 20px; }
+.nw-orig > summary::-webkit-details-marker { display: none; }
+.nw-orig > p { margin: 4px 0 0; color: var(--nw-muted); line-height: 1.5; overflow-wrap: anywhere; }
 .nw-digest-list { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; line-height: 1.6; overflow-wrap: anywhere; }
 .nw-cite { color: var(--nw-accent); font-weight: 700; padding: 0 1px; }
 .nw-digest-src { margin-top: 10px; font-size: .78rem; }
