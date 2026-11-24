@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DEFAULT_PREFS, relativeTime, useNewsPrefs, useReader, useReaderAction, type ReaderBlock, type ReaderPage } from "../api/news";
 import { newsRootProps } from "../features/news/newsTheme";
@@ -65,6 +65,18 @@ export default function NewsReaderPage() {
   const retry = useReaderAction(id, "retry");
   const [showSrc, setShowSrc] = useState(false);
   const page = query.data;
+  // 一番上へ戻るボタン: 左上の「← ニュース」が見えている間は出さない（2026-11-24 利用者の要望）。
+  // 画面の外側の入れ物が縦に流れても window が流れても効くよう、見えるかどうかは IntersectionObserver で見る
+  const topRef = useRef<HTMLDivElement | null>(null);
+  const [barVisible, setBarVisible] = useState(true);
+  const ready = page?.status === "ready" || page?.status === "fetching";
+  useEffect(() => {
+    const el = topRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([entry]) => setBarVisible(entry.isIntersecting), { threshold: 0 });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ready]);
   // 本文を取り出せなかった記事は、失敗の画面を挟まず元の記事へ移る（同じタブ。新しいタブは iPhone で止められる。2026-11-24 利用者の要望）
   const jumpTo = page?.status === "failed" && /^https?:\/\//.test(page.source_url) ? page.source_url : "";
   useEffect(() => { if (jumpTo) window.location.replace(jumpTo); }, [jumpTo]);
@@ -84,16 +96,15 @@ export default function NewsReaderPage() {
   return (
     <div {...root}>
       <article className="nr" data-testid="reader" data-status={page.status}>
-        <div className="nr-bar">{back}</div>
+        <div className="nr-bar" ref={topRef}>{back}</div>
         <p className="nr-meta"><span>{item.source}</span><span>· {relativeTime(item.published_at)}</span></p>
         <h1 className="nr-title" data-testid="reader-title">{item.title}</h1>
         {item.image_url && <figure className="nr-hero"><img src={item.image_url} alt="" referrerPolicy="no-referrer" />{generated && <span className="nw-ai-mark">AI 生成のイメージ</span>}</figure>}
 
         <Summary page={page} retry={() => retry.mutate()} />
 
+        {/* アドレスの全文は出さず、元の記事を開くボタンだけ（2026-11-24 利用者の要望） */}
         <p className="nr-origin" data-testid="reader-origin">
-          <span className="nr-label">元の記事</span>
-          <a href={page.source_url} target="_blank" rel="noopener noreferrer" className="nr-url">{page.domain}<span className="nr-fullurl">{page.source_url}</span></a>
           <a href={page.source_url} target="_blank" rel="noopener noreferrer" className="nw-btn on" data-testid="reader-open-original">元の記事を開く ↗</a>
         </p>
 
@@ -118,6 +129,12 @@ export default function NewsReaderPage() {
           </>
         )}
       </article>
+      {!barVisible && (
+        <button type="button" className="nr-top" aria-label="一番上へ戻る" title="一番上へ戻る" data-testid="reader-top"
+          onClick={() => topRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" })}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5l-7 7m7-7l7 7M12 5v14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
+      )}
     </div>
   );
 }
