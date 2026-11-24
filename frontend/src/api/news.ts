@@ -75,6 +75,8 @@ export interface NewsProfile {
 }
 export interface NewsConfig {
   enabled: Record<string, boolean>; github: string[]; codeberg: string[]; rss: { name: string; url: string }[];
+  /** RSS が無いサイト: 記事の一覧のページを巡回する（robots.txt を守る・1 時間に 1 回・30 件まで） */
+  pages: { name: string; url: string }[];
   hackernews: boolean; huggingface: boolean; discourse: string[]; reddit: string[];
 }
 /** 設定 → ニュース → ソース →「プリセット」（backend/app/news/presets.py）。 */
@@ -85,6 +87,18 @@ export interface NewsPreset {
 export interface NewsPresets { groups: { id: string; label: string; hint: string; count: number }[]; items: NewsPreset[]; verified: string }
 export interface SourceStatus {
   source_key: string; label: string; kind: string; ok: boolean; skipped: string; error: string; count: number; at: string;
+  /** 最後に取れた時刻と、最後の失敗の理由（今は取れていても残る） */
+  ok_at?: string; last_error?: string;
+}
+/** 通信確認・サイトの発見（backend/app/news/probe.py）。 */
+export interface CheckResult {
+  ok: boolean; count: number; titles: string[]; ms: number; status: number | null; latest: string;
+  error: { code: string; message: string; status: number | null; location: string } | null;
+}
+export interface DiscoverFeed { url: string; count: number; latest: string; titles: string[] }
+export interface DiscoverResult {
+  url: string; title: string; mode: "feed" | "feeds" | "page" | "none"; feeds: DiscoverFeed[];
+  page: { count: number; titles: string[]; robots: boolean } | null; error: { code: string; message: string } | null;
 }
 export interface NewsSources {
   config: NewsConfig; kinds: Record<string, string>; reddit_key: boolean; limit: number;
@@ -269,6 +283,10 @@ export function useSaveNewsSources() {
     onSuccess: () => qc.invalidateQueries({ queryKey: [...key, "sources"] }),
   });
 }
+
+export const checkNewsSource = (body: { kind: string; value: string; name?: string }) =>
+  api<CheckResult>("/news/sources/check", { method: "POST", json: body });
+export const discoverNewsSite = (url: string) => api<DiscoverResult>("/news/sources/discover", { method: "POST", json: { url } });
 
 /** 「3 分前」「2 日前」。1 週間を過ぎたら日付。 */
 export function relativeTime(iso: string, now = Date.now()): string {

@@ -3,6 +3,13 @@
 
 
 
+## 2026-11-24 ニュースのソースを広げる: プリセット 35 件・サイトを追加・通信確認
+利用者「日本の AI だったり政治のメディアからクローリング先を追加して欲しい。note の記事を参考に。任意のサイトのクロール機能・サイト追加後の通信確認」（参考: note n0c1c1b8793e2、feeder.co の Ledge.ai、daige.st の 2026 年おすすめ RSS）。
+- プリセット: 本番と同じ取得（knowledge.sources.http_get）で RSS として読めたものだけを 2026-11-24 付きで追加。分野「VR・AR・ゲーム開発」「開発」を新設。旧 URL が移っていたもの（DeepMind・OpenAI・Unity・Oculus→Meta・PyTorch・Google Research）は移動先を入れた。Ledge.ai は公式の RSS が無い（feeder.co が自動生成）ので、記事の一覧の巡回の対象。
+- サイトを追加（`news/probe.py`・POST /news/sources/discover）: URL が RSS ならそのまま、HTML なら link rel=alternate と /feed・/rss・/atom.xml・/index.xml・/feed.xml・/rss.xml を試して読めた候補を出し、無ければ記事の一覧のページの巡回（config.pages。robots.txt を守る〔Protego があればそれ、無ければ標準の robotparser〕・同じサイトだけ・1 回 30 件・1 時間に 1 回）。ログイン・ロボット確認はすり抜けず理由を言う。
+- 通信確認（POST /news/sources/check）: 既存・追加のソースそれぞれに「通信確認」。件数・最新の見出し 3 件・秒数・HTTP の状態・失敗の理由（dns・timeout・blocked・login・notfound・redirect・format・robots・private）。フィードを足す前に自動で流し、取れなければ警告（「それでも保存」可）。ソースの状態に「最後に取れた」「前の失敗」を追加（service の ok_at・last_error）。
+- 試験: backend/tests/test_news_probe.py、E2E frontend/e2e/news-site-check.spec.ts（320・1280）。
+
 ## 2026-11-24 ニュースリーダー: 右下に一番上へ戻るボタン・元の記事はボタンだけ
 利用者「右下に最上段に移動するボタン、フローティングで常にスクロールしてもついてくる。左上のニュースへ戻るボタンが表示されている際は出さなくていい。記事のリンクはフルのリンクは不要で、元記事を開くボタンだけ」。右下に浮かぶ丸いボタン（safe-area を避ける）、「← ニュース」が見えている間は IntersectionObserver で隠す。押すとなめらかに上へ（動きを減らす設定ではすぐ）。元の記事のアドレスの全文を外し、「元の記事を開く」だけに。
 
