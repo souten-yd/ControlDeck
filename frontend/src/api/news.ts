@@ -16,6 +16,8 @@ export interface NewsItem {
   snippet?: string; archived?: boolean;
   /** 英語の抜粋を日本語に訳したもの（summary がその訳になり、元の抜粋は summary_original） */
   translated?: boolean; summary_original?: string;
+  /** リーダーで本文を取り出せなかった記事（一覧・カードは元の記事への直リンクにする） */
+  reader_failed?: boolean;
 }
 export interface NewsPage { items: NewsItem[]; next: string | null }
 export interface NewsQuery { view: NewsView; kinds: string; q: string; date: string; topic: string; source: string; channel?: string }

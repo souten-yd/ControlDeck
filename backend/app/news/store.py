@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.news import channels as channels_mod
 from app.news import db as news_db
-from app.news.db import NewsAction, NewsItem
+from app.news.db import NewsAction, NewsItem, NewsReader
 from app.news import imagegen, prefs, profile
 from app.news.sources import HIDDEN_SOURCE_PREFIXES, plain, safe_url
 from app.news.topics import extract_topics
@@ -250,6 +250,15 @@ def present(item: NewsItem, state: dict, score: float | None = None) -> dict:
     return row
 
 
+def mark_reader_failed(db: Session, items: list[dict]) -> list[dict]:
+    """リーダーで本文を取り出せなかった記事に reader_failed=True を付ける（画面はその記事を元の記事への直リンクにする。2026-11-24 利用者の要望）。"""
+    ids = [i["id"] for i in items if i.get("id", 0) > 0]
+    failed = set(db.scalars(select(NewsReader.item_id).where(NewsReader.item_id.in_(ids), NewsReader.status == "failed"))) if ids else set()
+    for i in items:
+        i["reader_failed"] = i.get("id") in failed
+    return items
+
+
 def list_items(db: Session, user_id: int, *, view: str = "latest", kinds: list[str] | None = None, source: str = "", topic: str = "",
                q: str = "", day: str = "", before: str = "", limit: int = PAGE_DEFAULT, now: datetime | None = None,
                channel: dict | None = None) -> dict:
@@ -273,7 +282,7 @@ def list_items(db: Session, user_id: int, *, view: str = "latest", kinds: list[s
         ranked = profile.rank(db, user_id, rows, st, now)
         offset = int(before[2:]) if before.startswith("o:") and before[2:].isdigit() else 0
         page = ranked[offset:offset + limit]
-        return {"items": [present(r, st[r.id], score) for r, score in page],
+        return {"items": mark_reader_failed(db, [present(r, st[r.id], score) for r, score in page]),
                 "next": f"o:{offset + limit}" if offset + limit < len(ranked) else None}
     if before:
         stamp, _, last = before.partition("|")
@@ -286,7 +295,7 @@ def list_items(db: Session, user_id: int, *, view: str = "latest", kinds: list[s
     more = len(rows) > limit
     rows = rows[:limit]
     st = states(db, user_id, [r.id for r in rows])
-    return {"items": [present(r, st[r.id]) for r in rows],
+    return {"items": mark_reader_failed(db, [present(r, st[r.id]) for r in rows]),
             "next": f"{iso(rows[-1].published_at)}|{rows[-1].id}" if more and rows else None}
 
 
@@ -303,7 +312,7 @@ def _channel_page(db: Session, user_id: int, channel: dict, conds: list, *, view
     scored = profile.rank(db, user_id, rows, st, now) if view == "recommended" else [(r, None) for r in rows]
     offset = int(before[2:]) if before.startswith("o:") and before[2:].isdigit() else 0
     page = scored[offset:offset + limit]
-    return {"items": [dict(present(r, st[r.id], score), channel=channel["id"]) for r, score in page],
+    return {"items": mark_reader_failed(db, [dict(present(r, st[r.id], score), channel=channel["id"]) for r, score in page]),
             "next": f"o:{offset + limit}" if offset + limit < len(scored) else None}
 
 

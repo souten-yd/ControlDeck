@@ -241,3 +241,24 @@ def test_reader_takes_turn_before_prep_and_prep_yields(monkeypatch):
     monkeypatch.setattr(prep, "_mark_failed", lambda ids: None)
     asyncio.run(go())
     assert cpu_llm.priority_waiting() == 0
+
+
+def test_reader_failed_flag_only_for_failed_extraction(client):
+    """目的: 本文の取り出しに失敗した記事だけ、一覧・ホームの応答に reader_failed=true が付く（成功・未取得・要約だけ失敗は false）。
+
+    根拠: 2026-11-24 利用者「取れなかったら、ページを挟まず、直リンクでよいです」。画面はこの印を見て元の記事へ直リンクにする。
+    """
+    bad = add("https://blocked.test/f", title="Failed one")
+    good = add("https://en.test/g", title="Good one")
+    fresh = add("https://en.test/h", title="Fresh one")
+    llm_stopped = add("https://en.test/i", title="LLM stopped")
+    reader._save(bad, status="failed", error="blocked: 403", blocks="[]")
+    reader._save(good, status="ok", blocks=json.dumps(reader.split_blocks(BODY_EN, "")), lang="other", summary="要約", text_hash="h")
+    reader._save(llm_stopped, status="ok", blocks="[]", llm_error="止まった", text_hash="h")
+    login(client, "news-reader")
+    items = {i["id"]: i for i in client.get("/api/v1/news/items?view=latest&limit=50").json()["items"]}
+    assert items[bad]["reader_failed"] is True
+    assert all(items[i]["reader_failed"] is False for i in (good, fresh, llm_stopped))
+    home = client.get("/api/v1/news/home").json()
+    flat = [i for i in [home["onair"], *home["now"], *home["today"], *home["week"]] if i]
+    assert flat and all(i["reader_failed"] is (i["id"] == bad) for i in flat)

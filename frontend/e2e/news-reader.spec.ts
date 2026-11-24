@@ -5,7 +5,7 @@ import { CHANNELS, ITEMS, art, buildHome, mockNews } from "./support/news-mock";
 /** ニュースの「あなたの興味」の × とニュースリーダー。API は page.route でモック（外へ通信しない）。
  *  目的: ①興味の × を押すと消え、読み直しても戻らず、「外した語」から戻せる ②記事を押すと外へ飛ばずリーダーが開き、
  *       要約 → 元の記事のリンク → 本文の順に並び、取り出した本文がすぐ出て、訳の途中（訳 n/m）→ 完了へ順に差し替わる
- *       ③取り出せないときは抜粋と「元の記事を開く」 ④release は今まで通り外へ ⑤携帯（320・390）・PC（1280）・ライト・ダークで崩れない。
+ *       ③取り出せないときは元の記事へ移り、一覧は直リンク ④release は今まで通り外へ ⑤携帯（320・390）・PC（1280）・ライト・ダークで崩れない。
  *  根拠: 2026-11-24 利用者「あなたの興味…それ × をしても消えない」「記事を押すと元ページへ飛ぶ…本文を取得して、英語なら日本語に翻訳して、リーダーみたいな形で
  *       表示…冒頭にその全文の要約、その下に元リンク先のアドレス、翻訳文をその下から」「LLM で変換が終わったものから順次変えていけば、見れない不具合は発生しない」。 */
 
@@ -119,6 +119,7 @@ test("ニュース: 記事を押すとリーダーが開き、要約 → 元の�
 });
 
 test("ニュース: リーダーの途中の状態の撮影（320・390・1280、ライト・ダーク）", async ({ page, context }) => {
+  test.setTimeout(120_000); // 6 通り（幅 3 × テーマ 2）を 1 本で撮るので、既定の 30 秒では足りない
   test.skip(!hasSession(), "ログイン情報がありません");
   await establishSession(page, context);
   for (const [width, height] of [[320, 700], [390, 844], [1280, 900]] as const) {
@@ -136,22 +137,29 @@ test("ニュース: リーダーの途中の状態の撮影（320・390・1280�
   }
 });
 
-test("ニュース: 本文を取り出せないときは抜粋と「元の記事を開く」を出し、取り直せる。release は外へ", async ({ page, context }) => {
+test("ニュース: 本文を取り出せないときは失敗の画面を挟まず元の記事へ移り、一度失敗した記事は一覧から直リンク。release も外へ", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   const { state } = await setup(page, context, { failing: true, width: 320, height: 700 });
+  // 元の記事のページ（外へは通信しない）
+  await page.route("https://example.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<html><title>original</title><body>original page</body></html>" }));
   await page.goto("/news/read/1");
-  await expect(page.getByTestId("reader-failed")).toContainText("本文を取り出せませんでした");
-  await expect(page.getByTestId("reader-failed")).toContainText("ローカルで動かせるサイズ");
-  await expect(page.getByTestId("reader-open-original")).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/reader-failed-320.png`, fullPage: true });
-  await page.getByRole("button", { name: "もう一度取り出す" }).click();
-  await expect.poll(() => state.retried).toBe(1);
-  // release の記事はリーダーを通さず、元のページへ（別タブのリンク）
+  await page.waitForURL("https://example.com/n/1");
+  await expect(page.locator("body")).toContainText("original page");
+  expect(state.retried).toBe(0);
+  // 一度失敗した記事（id 3）は、リーダーを通さず元の記事への直リンク（新しいタブ）。成功する記事は今までどおりリーダー
+  await page.route(/\/api\/v1\/news\/items\?.*/, (route) => route.fulfill({ json: { items: ITEMS.map((i) => ({ ...i, state: { ...i.state }, reader_failed: i.id === 3 })), next: null } }));
   await page.goto("/news");
   await page.getByRole("tab", { name: "新着" }).click();
+  const failedLink = page.locator("[data-news-card]", { hasText: "AMD Radeon AI PRO R9700 review" }).getByRole("link").first();
+  await expect(failedLink).toHaveAttribute("href", ITEMS.find((i) => i.id === 3)!.url);
+  await expect(failedLink).toHaveAttribute("target", "_blank");
+  await expect(failedLink).toHaveAttribute("rel", "noopener noreferrer");
+  await page.screenshot({ path: `${SHOTS}/reader-failed-320.png`, fullPage: true });
+  const ok = page.locator("[data-news-card]", { hasText: "Qwen" }).getByRole("link").first();
+  await expect(ok).toHaveAttribute("href", /\/news\/read\/\d+$/);
   const release = page.locator("[data-news-card]", { hasText: "llama.cpp b9042" }).getByRole("link").first();
   await expect(release).toHaveAttribute("href", "https://example.com/n/2");
   await expect(release).toHaveAttribute("target", "_blank");
-  const news = page.locator("[data-news-card]", { hasText: "AMD Radeon AI PRO R9700 review" }).getByRole("link").first();
-  await expect(news).toHaveAttribute("href", "/news/read/3");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: `${SHOTS}/reader-failed-1280.png`, fullPage: true });
 });
