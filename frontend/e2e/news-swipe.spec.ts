@@ -4,7 +4,7 @@ import { ITEMS, mockNews } from "./support/news-mock";
 
 /** ニュースの画面の「指でずらす」操作・流れる文字・上の部分。API は page.route でモック（外へ通信しない）。
  *  目的: ①ON AIR のチャンネルを左右の指でずらして変えられる（少しだけなら戻る・縦ならスクロールでチャンネルは変わらない）
- *       ②今朝/今週のまとめのカードを指でずらして切り替えられる ③Marquee がデータの読み直し（項目の配列が新しく作られる）で位置を巻き戻さない
+ *       ②（まとめはバブルに変えたので news-digest-bubbles.spec.ts へ移した）③Marquee がデータの読み直し（項目の配列が新しく作られる）で位置を巻き戻さない
  *       ④上の部分（取り直す・設定・表示・検索）が押せて、狭い幅でも低い。撮影は test-results/ と scratchpad の shots4 に残す。
  *  根拠: 2026-11-24 利用者「CH の上で左右にフリックすると CH が変わるようにして」「今週のまとめの上で左右にフリックすると今朝のまとめ」
  *       「流れる文字・フリップのアニメーションはスムーズに」「取り直すボタンがある行から今週のまとめまでの表示がやぼったい」。 */
@@ -115,46 +115,6 @@ test("ニュース: 新着の一覧を左右に指でずらすと前後のチャ
   await expect(page.getByTestId("list-swipe")).toBeVisible();
   await swipeAt(page, finger, "list-swipe", +120, -120, { dt: 25 });
   await expect(group.getByRole("button", { name: /CH 01/ })).toHaveAttribute("aria-pressed", "true");
-});
-
-test("ニュース: まとめのカードは狭い幅で 1 枚ずつ、指でずらすと今朝↔今週が切り替わり、広い幅は 2 枚並び", async ({ page, context }) => {
-  test.skip(!hasSession(), "ログイン情報がありません");
-  const { finger } = await setup(page, context, 390);
-  const track = page.getByTestId("digests-track");
-  await expect(track).toHaveAttribute("data-index", "0");
-  const dots = page.getByRole("tablist", { name: "まとめの切り替え" });
-  await expect(dots.getByRole("tab", { name: "今朝のまとめ" })).toHaveAttribute("aria-selected", "true");
-  const slide = (await page.getByTestId("digest-slide-daily").boundingBox())!;
-  const section = (await page.getByTestId("digests").boundingBox())!;
-  expect(Math.abs(slide.width - section.width)).toBeLessThan(2);          // 1 枚分の幅
-  const c = await center(page, "digests", 20);
-  // 途中: 指に付いて帯がずれる
-  await swipeAt(page, finger, "digests", +60, -60, { release: false }, 20);
-  expect(await track.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).m41)).toBeLessThan(-50);
-  await finger.up();                                                       // 120px < 25%（97px）ではないので切り替わる
-  await expect(track).toHaveAttribute("data-index", "1");
-  await expect(dots.getByRole("tab", { name: "今週のまとめ" })).toHaveAttribute("aria-selected", "true");
-  await expect.poll(() => track.evaluate((el) => Math.round(new DOMMatrix(getComputedStyle(el).transform).m41))).toBe(-Math.round(section.width));
-  await page.screenshot({ path: `${SHOTS}/digest-weekly-390.png` });
-  // 少しだけずらして離すと戻る
-  await swipeAt(page, finger, "digests", -20, +30, { dt: 30 }, 20);
-  await expect(track).toHaveAttribute("data-index", "1");
-  // 右へずらすと今朝へ
-  await swipeAt(page, finger, "digests", -110, +110, { dt: 25 }, 20);
-  await expect(track).toHaveAttribute("data-index", "0");
-  // 点でも切り替わる・開いた中身（＋）は今まで通り
-  await dots.getByRole("tab", { name: "今週のまとめ" }).click();
-  await expect(track).toHaveAttribute("data-index", "1");
-  await dots.getByRole("tab", { name: "今朝のまとめ" }).click();
-  await page.getByTestId("digest-daily").locator("summary").first().click();
-  await expect(page.getByTestId("digest-daily")).toHaveAttribute("open", "");
-
-  // 広い幅は 2 枚並び（点なし）
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(dots).toHaveCount(0);
-  const a = (await page.getByTestId("digest-slide-daily").boundingBox())!, b = (await page.getByTestId("digest-slide-weekly").boundingBox())!;
-  expect(b.x).toBeGreaterThan(a.x + a.width - 2);
-  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
 });
 
 test("ニュース: Marquee は項目の配列が作り直されても（読み直し）位置を巻き戻さず、要素も作り直さない", async ({ page, context }) => {

@@ -115,7 +115,7 @@ export interface LlmOptions {
 export interface Digest {
   id: number; period: "daily" | "weekly"; label: string; day: string; body: string; model: string; created_at: string;
   error: string; fallback: boolean; item_ids: number[];
-  sources?: { id: number; n: number; title: string; source: string; url: string | null }[];
+  sources?: { id: number; n: number; title: string; source: string; url: string | null; topics?: string[] }[];
 }
 export interface DigestsResponse { latest: { daily: Digest | null; weekly: Digest | null }; digests: Digest[] }
 export interface RefreshResult { started: boolean; reason: string; new?: number; failed?: number }

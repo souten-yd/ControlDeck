@@ -301,7 +301,8 @@ def get_digest(db, digest_id: int) -> dict | None:
     if row is None:
         return None
     ids = json.loads(row.item_ids or "[]")
-    items = {r.id: {"id": r.id, "title": r.title, "source": r.source, "url": store.present(r, {})["url"]}
+    items = {r.id: {"id": r.id, "title": r.title, "source": r.source, "url": store.present(r, {})["url"],
+                "topics": store.topics_of(r)}      # まとめの語（主な技術・製品）→ 話題の絞り込みへ移るための記事の話題
              for r in db.scalars(select(NewsItem).where(NewsItem.id.in_(ids or [0])))}
     return present(row, items)
 

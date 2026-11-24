@@ -4,7 +4,7 @@
  * 解決されたら消して次に優先度の高い内容を。重要度によって インフォメーション・アテンション・ワーニング・エラーの
  * 題名をつけて、色も変えて」。元は backend の /home-notices（警報・失敗したアプリ・更新の失敗・承認待ち）。
  * 色だけに頼らない: 札の文字（エラー・警告・注意・情報）と形の違うアイコンを必ず付ける。何も無ければ行ごと出さない。 */
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -45,7 +45,7 @@ function LevelIcon({ level }: { level: NoticeLevel }) {
   return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.01" /></svg>;
 }
 
-export function HomeNoticeLine() {
+function HomeNoticeLineBase() {
   const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ["home-notices"],
@@ -88,3 +88,6 @@ export function HomeNoticeLine() {
     </div>
   );
 }
+
+/** props なし。Home の 3 秒ごとのメトリクス更新で描き直されないよう memo にする（流れる文字を止めない）。 */
+export const HomeNoticeLine = memo(HomeNoticeLineBase);

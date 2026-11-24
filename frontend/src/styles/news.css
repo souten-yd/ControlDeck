@@ -179,7 +179,7 @@
 .nw-digest-src summary { cursor: pointer; color: var(--nw-muted); min-height: 32px; display: flex; align-items: center; }
 .nw-digest-src ol { margin: 4px 0 0; padding-left: 2em; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .nw-digest-src a { text-decoration: underline; }
-.nw-digest .nw-badge.line, .nw-digest-row .nw-badge.line { text-transform: none; letter-spacing: 0; font-weight: 600; border-color: var(--nw-line); }
+.nw-digest .nw-badge.line, .nw-bubble .nw-badge.line, .nw-digest-row .nw-badge.line { text-transform: none; letter-spacing: 0; font-weight: 600; border-color: var(--nw-line); }
 .nw-digest-archive { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
 .nw-digest-row { width: 100%; min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; text-align: left; padding: 6px 12px; border: 1px solid var(--nw-line); border-radius: var(--nw-radius); background: var(--nw-surface); }
 .nw-digest-archive > li > div, .nw-digest-archive > li > p { padding: 6px 12px 0; }
@@ -427,17 +427,22 @@
 
 /* ===== 指でずらす（チャンネル・まとめ）===== */
 .nw-swipe { touch-action: pan-y; }
-.nw-digests-track { display: flex; align-items: flex-start; transition: transform 240ms ease-out; will-change: transform; }
-.nw-digest-slide { flex: 0 0 100%; min-width: 0; }
-.nw-dots { display: flex; justify-content: center; gap: 2px; margin-top: 4px; }
-.nw-dots button { width: 24px; height: 20px; border: 0; background: transparent; padding: 0; display: grid; place-items: center; }
-.nw-dots button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--nw-line); transition: background-color 160ms ease-out, transform 160ms ease-out; }
-.nw-dots button[aria-selected="true"]::before { background: var(--nw-accent); transform: scale(1.25); }
-@media (min-width: 900px) {
-  .nw-digests-track { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--nw-gap); transform: none !important; transition: none; will-change: auto; }
-}
-@media (prefers-reduced-motion: reduce) { .nw-digests-track { transition-duration: 80ms; } }
-.nw[data-reduce="true"] .nw-digests-track { transition-duration: 80ms; }
+/* まとめのバブル: どの幅でも 1 行に 2 つ。タップした 1 つが横幅いっぱいに広がる（動きは DigestCards の FLIP） */
+.nw-bubbles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--nw-gap); align-items: stretch; }
+.nw-bubble { border: 1px solid var(--nw-line); border-left: 4px solid var(--nw-accent); border-radius: calc(var(--nw-radius) + 6px); background: var(--nw-surface); min-width: 0; box-shadow: var(--nw-shadow); overflow: hidden; will-change: transform; }
+.nw-bubble[data-open="true"] { grid-column: 1 / -1; order: -1; }
+.nw-bubble > p { padding: 8px 12px; }
+.nw-bubble-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; width: 100%; min-height: 44px; padding: 8px 12px; text-align: left; background: transparent; border: 0; color: inherit; cursor: pointer; position: relative; padding-right: 30px; }
+.nw-bubble-chev { position: absolute; right: 10px; top: 10px; color: var(--nw-muted); }
+.nw-bubble-day { font-size: .75rem; }
+.nw-bubble-hint { flex-basis: 100%; margin: 0; font-size: .78rem; line-height: 1.45; color: var(--nw-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.nw-bubble > p.nw-bubble-hint { padding: 0 12px 10px; }
+.nw-bubble-body { padding: 0 14px 12px; cursor: pointer; }
+.nw-bubble-badges { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.nw-bubble-tip { margin: 8px 0 0; font-size: .7rem; text-align: center; }
+.nw-digest-topic-btn { background: color-mix(in srgb, var(--nw-accent) 12%, transparent); color: var(--nw-accent); border: 1px solid color-mix(in srgb, var(--nw-accent) 40%, transparent); border-radius: 999px; padding: 0 8px; margin: 1px 2px; min-height: 24px; font: inherit; font-size: .9em; cursor: pointer; }
+.nw-digest-head-btn { background: transparent; border: 0; padding: 4px 0; margin: 0; color: inherit; font-weight: inherit; font-size: inherit; text-decoration: underline dotted; text-underline-offset: 3px; min-height: 32px; }
+@media (prefers-reduced-motion: reduce) { .nw-bubble { will-change: auto; } }
 
 /* ニュースリーダー（/news/read/<id>）。読みやすさ優先: 行の長さは 40 字前後、行間は広め、携帯でもはみ出さない。 */
 .nr { max-width: 44rem; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; min-width: 0; }

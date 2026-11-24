@@ -12,7 +12,7 @@
  *   key は項目の同一性（項目が増減しても表示中の項目を保つ）。activeKey/onChange は、表示中の項目に合わせて
  *   札・「1/3」・閉じる等を外に出したいときだけ（外側で表示中の項目を知る）。固定したい札・× は Marquee の外に置く。
  *   項目の中身が表示中に変わるときは node を変える（key は同じ）。 */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface MarqueeItem { key: string; node: ReactNode }
 
@@ -103,7 +103,7 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
   );
 }
 
-export function Marquee({ items, activeKey, onChange, className = "", speed = 50, pauseMs = 1000, holdMs = 4000, flipMs = 350 }: {
+function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, pauseMs = 1000, holdMs = 4000, flipMs = 350 }: {
   items: MarqueeItem[]; activeKey?: string; onChange?: (key: string) => void; className?: string;
   speed?: number; pauseMs?: number; holdMs?: number; flipMs?: number;
 }) {
@@ -169,3 +169,6 @@ export function Marquee({ items, activeKey, onChange, className = "", speed = 50
     </div>
   );
 }
+
+/** 親が描き直しても、items・props が同じなら描き直さない（流れの animation を付け直さない）。 */
+export const Marquee = memo(MarqueeBase);

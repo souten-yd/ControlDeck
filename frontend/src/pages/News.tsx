@@ -117,7 +117,7 @@ export default function NewsPage() {
             </ul>
           </details>
         )}
-        {showHome && <DigestCards />}
+        {showHome && <DigestCards onTopic={pickTopic} channels={chList} onChannel={pickChannel} />}
         {showHome ? (
           home.isLoading ? <div className="nw-skel" aria-busy="true" aria-label="読み込み中" style={{ minHeight: 320 }} /> : home.isError || !home.data ? (
             <p role="alert" className="nw-note">放送を読み込めませんでした。</p>

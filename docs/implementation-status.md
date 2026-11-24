@@ -13,6 +13,11 @@
 - リーダー: 取り出しが失敗（status failed）したら、失敗の画面を出さず `window.location.replace(元の URL)` で同じタブのまま移る（新しいタブは iPhone で止められる）。元の URL は解いた先（final_url）があればそれ。取り出し中の表示・訳の失敗の表示は従来どおり。「もう一度取り出す」は外した。
 - 一覧・カード・ON AIR・ホーム・意味検索の応答に `reader_failed`（news_reader が status=failed）を足し、`ArticleLink` が見て、一度失敗した記事は元の記事への直リンク（新しいタブ・noopener noreferrer）にする。
 - 試験: `test_reader_failed_flag_only_for_failed_extraction`、E2E `news-reader.spec.ts`（失敗の応答で元の URL へ移る・一覧は直リンク・成功する記事と release は従来どおり）。
+## 2026-11-24 ニュース: まとめを 2 つのバブルに・ホームの流れる文字を 3 秒ごとの更新から守る
+- 利用者「ホームの流れる文字は 60fps で滑らかに（サーバーから 60fps で取る意味ではない）」「今週のまとめ・今朝のまとめは 1 行に横並びのバブル 2 つ。タップで横幅いっぱいに展開、中をタップで最小化。気になった話題をタップで関連へ移動」。
+- 流れる文字の計測（E2E `home-marquee-smooth.spec.ts`、3 秒ごとのメトリクスを routeWebSocket で模擬、10 秒間 rAF で transform X を採取）: 直す前から 3 秒の境目の止まりは 1 フレーム（17ms）・60fps・animation の付け直し 0 回（CPU 6 倍遅くしても同じ）。Marquee は既に Web Animations の translate3d で合成だけで動くため、この環境で再現する止まりは無かった。念のため `NewsHomeCard`・`HomeNoticeLine`・`Marquee` を `memo` にして、Home の 3 秒ごとの描き直しに巻き込まれないようにし、同じ計測を回帰試験にした。
+- バブル（`DigestCards.tsx`）: カルーセル・点・フリックを外し、どの幅でも 1 行に 2 つ。タップで 1 つが全幅に開き（もう 1 つは下に小さく残る）、中の文字をタップすると戻る（リンク・話題・出典の開閉では戻らない）。FLIP（位置・幅）と本文のふわっと出る動き、reduced-motion は 80ms。
+- 話題へ: 「主な技術・製品」の語のうち出典の記事の話題と一致するものと、チャンネル名の見出しを押せる印にし、新着の話題・チャンネルの絞り込みへ移る。backend は `GET /news/digests` の出典に `topics` を足しただけ。
 
 ## 2026-11-24 ホーム: ファンは回転数だけ・容量を補足の行の右端へ・板に合わせたファンのドライバの案内
 利用者「回転数は RPM だけでいい。VRAM・RAM 容量はもう少し右下に」。PWM の割合を出さず（モバイル・PC）、RAM・VRAM の容量を補足の行の右端へ。本番の ASRock X870 Taichi Creator は nct6775 が No such device、nct6683 force=1 で NCT6686D（fan1〜fan7）が出た。機能と拡張の案内は板が ASRock なら nct6683 force=1（modules-load.d と modprobe.d の options）、ほかは nct6775。CPU の負荷で fan1・fan3 の PWM が上がり、マニュアルの配置から fan1 = CPU_FAN1・fan2 = CPU_FAN2（BIOS で W_PUMP に切り替えられる）。
