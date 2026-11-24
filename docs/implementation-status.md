@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-25 ニュースの話題の語が 1 文字ずつに分かれて保存されていた（直し）
+
+- 原因: `backend/app/news/prep.py`・`gist.py` が `extract_topics(*語)` と LLM の語を（題・概要・追加の語の）引数に展開し、3 つ目の語が 1 文字ずつに分かれていた。同じコードを移した QnapNewsHub で、ホットトピックの上位 10 が「n・s・e・t・r…」になって見つかった（利用者のスクリーンショット）。
+- 直し: `extract_topics(" ".join(語))`。保存済みの崩れは、ニュースの DB を開くときに 1 文字の語を外す（`db._repair_split_topics`・何度流しても同じ）。
+- 試験: `test_prep_topics_are_not_split_into_letters`・`test_split_topics_already_saved_are_repaired_on_open`。
+
 ## 2026-11-25 News を QNAP ニュースハブとつなぐ（v0.3 の ControlDeck 側・案 C の最初の接続）
 
 - 設定 → ニュースに「QNAP ニュースハブとつなぐ」を追加（`backend/app/news/hub_link.py`・`hub_sync.py`・`hub_jobs.py`、画面 `NewsHubSettings.tsx`）。相手の仕様はハブの `docs/DESIGN.md` 3 章。

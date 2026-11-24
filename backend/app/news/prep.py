@@ -162,7 +162,7 @@ def _apply(ids: list[int], parsed: dict[int, dict]) -> int:
                 row.img_prompt = got["img"]
             if got["topics"]:
                 have = [t for t in json.loads(row.topics or "[]") if isinstance(t, str)]
-                row.topics = json.dumps(list(dict.fromkeys(have + got["topics"] + extract_topics(*got["topics"])))[:12], ensure_ascii=False)
+                row.topics = json.dumps(list(dict.fromkeys(have + got["topics"] + extract_topics(" ".join(got["topics"]))))[:12], ensure_ascii=False)
             row.prep_tries = PREP_DONE
             done += 1
         db.commit()

@@ -850,3 +850,37 @@ def test_digest_shows_headlines_while_the_llm_is_working(monkeypatch):
     row = run(digest.generate("daily", "2026-11-23"))
     assert seen["pending"][0] == digest.PENDING and seen["pending"][1] is True and "Qwen の新モデルが出た" in seen["pending"][2]
     assert row["fallback"] is False and row["error"] == ""
+
+
+def test_prep_topics_are_not_split_into_letters(monkeypatch, prep_counter):
+    """目的: LLM の返した話題の語が 1 文字ずつに分かれて保存されないこと。
+    根拠: 2026-11-25、extract_topics(*語) と語を引数に展開していて、3 つ目の語（例 "tasks"）が "t" "a" "s" "k" に分かれていた
+    （同じ不具合の QnapNewsHub でホットトピックの上位 10 が「n・s・e・t・r…」になった）。"""
+    ids, rows = _rows(1, "split")
+
+    async def fake(model, messages, **kw):
+        body = json.loads(_answer(messages))
+        for v in body.values():
+            v["topics"] = ["Google", "Gemini", "tasks"]
+        return json.dumps(body, ensure_ascii=False)
+
+    monkeypatch.setattr(llm, "complete", fake)
+    run(prep_counter.run(rows))
+    with news_db.session() as db:
+        topics = json.loads(db.get(NewsItem, ids[0]).topics)
+    assert "tasks" in topics and not [t for t in topics if len(t) == 1]
+
+
+def test_split_topics_already_saved_are_repaired_on_open():
+    """目的: すでに崩れて保存された 1 文字の語を、DB を開くときに外す（何度流しても同じ）。根拠: 上と同じ不具合の残り。"""
+    with news_db.session() as db:
+        row = NewsItem(kind="news", source="a", source_key="a", title="t", url="https://x.test/split-old", summary="",
+                       published_at=datetime.now(timezone.utc), topics=json.dumps(["Gemini", "tasks", "t", "a", "s"]))
+        db.add(row)
+        db.commit()
+        item_id = row.id
+    with news_db.engine().begin() as conn:
+        assert news_db._repair_split_topics(conn) == 1
+        assert news_db._repair_split_topics(conn) == 0
+    with news_db.session() as db:
+        assert json.loads(db.get(NewsItem, item_id).topics) == ["Gemini", "tasks"]
