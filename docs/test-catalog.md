@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 248 ファイル、2452 テスト（目的の未記入 93 ファイル）
-- E2E: 137 spec、302 テスト
+- backend: 249 ファイル、2463 テスト（目的の未記入 93 ファイル）
+- E2E: 138 spec、304 テスト
 
 ## backend（backend/tests）
 
@@ -2109,6 +2109,22 @@
 - `test_cpu_prep_reports_a_start_failure_without_marking_items` — 目的: llama-server を起動できなかった・未導入のときは、理由を返し、記事の試行回数を進めないこと。
 - `test_settings_default_is_cpu_and_cpu_is_prep_only` — 目的: 下ごしらえの既定は CPU の Gemma。知らない cpu: は断り、まとめ・一言要約には CPU を選べず、今までのモデルは選べること。
 - `test_feature_status_install_and_uninstall` — 目的: 機能「ニュースの下ごしらえ（CPU の LLM）」: 未導入 → ファイルがあれば導入済み（置いてあるものは導入済みとみなす）→ アンインストールでファイルだけ消える。
+
+### backend/tests/test_news_hub_link.py
+
+目的: 目的: ControlDeck の「QNAP ニュースハブとつなぐ」（app/news/hub_link.py・hub_sync.py・hub_jobs.py と News 設定の hub 節）の試験。 **ハブの本物のコード（QnapNewsHub の uvicorn を一時の置き場で起こす）と往復**させ、つなぐ → 指紋 → 鍵を渡す → 差分 → 仕事を借りて返す → 画像を送る を通す。 ハブのリポジトリ（既定 /data1tb/ControlDeck/QnapNewsHub。環境変数 NEWSHUB_REPO で変える）の venv が無い環境では、往復の試験だけ skip する（それ以外はハブ無しで動く）。 外へは通信せず（127.0.0.1 だけ）、LLM と画像生成のモデルは模擬（ローカル LLM を呼ばない）。 根拠: 2026-11-25 利用者「ControlDeck に QNAP ニュースハブとつなぐ機能（v0.3 の ControlDeck 側）」（docs/PLAN-integrated-knowledge.md 1.5 章・案 C、QnapNewsHub の docs/DESIGN.md 3 章）。 守ること: - 封じ方（ECIES: X25519＋HKDF-SHA256＋AES-GCM・追加データに名前）がハブの link.py と同じで、**ハブが開けた鍵が送った鍵と一致する**（ハブの本物のコードで確かめる）。 - 指紋はハブの公開鍵から自分で計算し、ハブの画面の指紋と同じ。利用者が「同じ」と確かめるまで、同期・仕事・鍵の受け渡しをしない。 - トークン・秘密鍵・OpenRouter の鍵は、保存ファイル（暗号化）・画面の応答・ログに平文で出ない。 - 差分は冪等（二重に入れない）・cursor は 1 ページごとに保存・reset や範囲の変更で取り直す・delete と archive で消す（star は残す）。 - 出どころ: 既定は local（今の動きを変えない）・auto はハブが 2 回答えなければ local へ、答えたらハブへ・hub のあいだは自分で集めない。 - 借りた仕事は種類ごとに既存の処理で返し、画像は送ってから結果を返す。ハブが取り消されたら認証エラーを画面に出す。
+
+- `test_defaults_keep_todays_behavior_and_settings_are_validated`
+- `test_fingerprint_matches_hub_formula_and_url_is_checked`
+- `test_effective_source_auto_goes_local_after_two_failures_and_back`
+- `test_apply_changes_is_idempotent_merges_same_url_and_removes_except_starred`
+- `test_sync_saves_cursor_per_page_resets_and_refetches_on_scope_change`
+- `test_failed_job_page_does_not_move_cursor`
+- `test_hub_image_is_checked_against_its_sha256_name`
+- `test_hub_items_follow_feature_switches_and_manual_refresh`
+- `test_hub_endpoints_need_settings_manage`
+- `test_round_trip_with_real_hub_pair_secret_sync_jobs_image`
+- `test_mismatched_fingerprint_discards_the_pairing`
 
 ### backend/tests/test_news_imagegen.py
 
@@ -4444,6 +4460,13 @@
 
 - ニュースの下ごしらえ: 既定は CPU の Gemma（${width}px）
 - 機能と拡張: ニュースの下ごしらえ（CPU の LLM）の導入（${width}px）
+
+### frontend/e2e/settings-news-hub.spec.ts
+
+目的: 設定 → ニュースの「QNAP ニュースハブとつなぐ」: 出どころ・つなぐ（指紋の見比べ）・鍵を渡す・診断・つなぎを切る。API は page.route で模擬する（ハブへは通信しない）。 根拠: 2026-11-25 利用者「ControlDeck に QNAP ニュースハブとつなぐ機能」。指紋を利用者が見比べるまで使い始めない／トークン・鍵を画面に出さない／320 で崩れない。 */
+
+- ニュースハブ: つなぐ → 指紋の確認 → 診断（${width}px）
+- ニュースハブ: 同期の失敗が診断に出る・違う指紋は破棄できる
 
 ### frontend/e2e/settings-news-imagegen-tiers.spec.ts
 
