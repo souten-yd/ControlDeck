@@ -161,6 +161,8 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 
 ## 9. 作業記録（新しい順に追記）
 
+- 2026-11-25: 統合ナレッジ基盤（ControlDeck × QnapNewsHub）の計画と採否を `docs/PLAN-integrated-knowledge.md` に書いた（棚卸しの結果: Deep Research・GitHub 調査・Web 調査の結果は保存されていない、arXiv・GitHub・HF の構造化は無い）。実装は QnapNewsHub の完成の後。
+
 - 2026-11-22 GLM-5.3（開発の箱の OpenCode、K3）: 知識マップ・技術仮説のリンク。
   `backend/app/knowledge/map.py`（読み取りだけ。`GET /knowledge/documents/{ref}/map?hops=1|2`。
   1〜2 hop の文献を related_documents で広げ、承認済み・今の版のエッセンスをノードとエッジで
