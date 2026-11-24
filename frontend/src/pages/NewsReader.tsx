@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DEFAULT_PREFS, relativeTime, useNewsPrefs, useReader, useReaderAction, type ReaderBlock, type ReaderPage } from "../api/news";
 import { newsRootProps } from "../features/news/newsTheme";
@@ -51,7 +51,6 @@ function Summary({ page, retry }: { page: ReaderPage; retry: () => void }) {
     <section className="nr-summary" aria-labelledby="nr-sum-h" data-testid="reader-summary">
       <h2 id="nr-sum-h" className="nr-label">要約</h2>
       {lines.length > 0 ? lines.map((line, i) => <p key={i}>{line}</p>)
-        : page.status === "failed" ? <p className="nr-muted">本文を取り出せなかったので、要約はありません。</p>
         : page.llm_error ? <p className="nr-muted">要約を作れませんでした: {page.llm_error} <button type="button" className="nw-btn" onClick={retry}>もう一度</button></p>
         : <p className="nr-muted" aria-live="polite">{(page.working && PHASES[page.phase]) || PHASES.summarizing}</p>}
     </section>
@@ -66,12 +65,18 @@ export default function NewsReaderPage() {
   const retry = useReaderAction(id, "retry");
   const [showSrc, setShowSrc] = useState(false);
   const page = query.data;
+  // 本文を取り出せなかった記事は、失敗の画面を挟まず元の記事へ移る（同じタブ。新しいタブは iPhone で止められる。2026-11-24 利用者の要望）
+  const jumpTo = page?.status === "failed" && /^https?:\/\//.test(page.source_url) ? page.source_url : "";
+  useEffect(() => { if (jumpTo) window.location.replace(jumpTo); }, [jumpTo]);
   const root = newsRootProps(prefs);
   const back = <Link to="/news" className="nw-btn" data-testid="reader-back">← ニュース</Link>;
   if (query.isError || !Number.isFinite(id)) {
     return <div {...root}><div className="nr"><p>{back}</p><p role="alert">記事を読み込めませんでした。</p></div></div>;
   }
   if (!page) return <div {...root}><div className="nr"><p>{back}</p><p className="nr-muted">読み込んでいます…</p></div></div>;
+  if (page.status === "failed") {
+    return <div {...root}><div className="nr"><p className="nr-muted" role="status" data-testid="reader-redirecting">元の記事へ移動しています…</p>{!jumpTo && <p>{back}</p>}</div></div>;
+  }
   const item = page.item;
   const translating = page.lang !== "ja" && page.progress.total > 0;
   const finished = page.progress.done >= page.progress.total;
@@ -93,13 +98,6 @@ export default function NewsReaderPage() {
         </p>
 
         {page.status === "fetching" && <p className="nr-muted" aria-live="polite" data-testid="reader-fetching">{PHASES.fetching}</p>}
-        {page.status === "failed" && (
-          <div className="nr-failed" role="status" data-testid="reader-failed">
-            {page.excerpt && <p>{page.excerpt}</p>}
-            <p className="nr-muted">本文を取り出せませんでした。{page.error && `（${page.error}）`}元の記事を開いてください。</p>
-            <button type="button" className="nw-btn" disabled={retry.isPending} onClick={() => retry.mutate()}>もう一度取り出す</button>
-          </div>
-        )}
         {page.status === "ready" && (
           <>
             <div className="nr-tools">

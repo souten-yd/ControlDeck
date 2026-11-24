@@ -77,6 +77,7 @@ def build(db: Session, user_id: int, now: datetime | None = None) -> dict:
     top_channel = next((c for c in channels if c["id"] == top), None)
     interest = profile.summary(db, user_id, now)
     trend = store.trends(db, user_id, 14, now)
+    store.mark_reader_failed(db, [*onair, *(i for b in buckets.values() for i in b), *(i for sec in sections for i in sec["items"])])
     return {"channels": [{"id": c["id"], "name": c["name"], "color": c["color"], "number": c["number"]} for c in channels],
             "onair": onair[0] if onair else None, "ticker": ticker, "now": buckets["now"], "today": buckets["today"], "week": buckets["week"],
             "sections": sections, "interest": interest, "trends": trend,

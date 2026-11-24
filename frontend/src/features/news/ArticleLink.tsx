@@ -4,9 +4,9 @@ import type { NewsItem } from "../../api/news";
 
 const external = (url: string) => /^https?:\/\//.test(url);
 
-/** ControlDeck の中のリーダーで読む記事か（release・event・RAG にだけ残る記事・url の無い記事は今までどおり外へ）。 */
-export const readsInside = (item: Pick<NewsItem, "kind" | "url" | "archived" | "id">) =>
-  Boolean(item.url) && !item.archived && item.id > 0 && item.kind !== "release" && item.kind !== "event";
+/** ControlDeck の中のリーダーで読む記事か（release・event・取り出しに一度失敗した記事・RAG にだけ残る記事・url の無い記事は今までどおり外へ）。 */
+export const readsInside = (item: Pick<NewsItem, "kind" | "url" | "archived" | "id" | "reader_failed">) =>
+  Boolean(item.url) && !item.archived && item.id > 0 && item.kind !== "release" && item.kind !== "event" && !item.reader_failed;
 export const readerPath = (id: number) => `/news/read/${id}`;
 
 /** 記事へのリンク。リーダーで読む記事は /news/read/<id>（外へ飛ばない）、それ以外は元のページ（別タブ）。開いたら onOpen（好みの記録）。 */

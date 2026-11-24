@@ -369,4 +369,4 @@ def _semantic_items(db: Session, user_id: int, hits: list[dict]) -> list[dict]:
         out.append({"id": 0, "kind": meta.get("kind", "news"), "source": hit["source"], "source_key": meta.get("source_key", ""), "title": hit["title"],
                     "url": url, "summary": "", "image_url": None, "published_at": meta.get("published_at", ""), "topics": meta.get("topics", []),
                     "state": {a: False for a in store.ACTIONS}, "score": round(hit["score"], 4), "archived": True, "snippet": hit["text"][:240]})
-    return out
+    return store.mark_reader_failed(db, out)
