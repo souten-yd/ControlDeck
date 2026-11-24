@@ -252,14 +252,38 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(text or "")).strip()
 
 
+_IMG_DESC = re.compile(r"(?:サムネイル|アイキャッチ)(?:画像)?$|の画像$|\bthumbnail(?: image)?$|\bfeatured image$", re.I)
+_LEAD_DATE = re.compile(r"^(?P<cat>[^\d\s]{0,16}?)\s*(?P<d>20\d\d[/.\-年]\s?\d{1,2}[/.\-月]\s?\d{1,2}日?)\s*(?:[\[(（【][A-Za-z月火水木金土日]{1,4}[\])）】])?\s*")
+_DATE_ONLY = re.compile(r"^[\d/.\-年月日\s:\[\]()（）A-Za-z月火水木金土日]{0,30}$")
+
+
+def _split_title(raw: str) -> tuple[str, str]:
+    """見出しの文字から (先頭の分類と日付を外した見出し, 日付 'YYYY-MM-DD' か空) を返す。例:「ビジネス2026/11/16 [MON]見出し」。"""
+    text = _clean(raw)
+    m = _LEAD_DATE.match(text)
+    if not m:
+        return text, ""
+    nums = re.findall(r"\d+", m.group("d"))
+    return text[m.end():].strip(), f"{int(nums[0]):04d}-{int(nums[1]):02d}-{int(nums[2]):02d}"
+
+
+def _headline_score(title: str) -> int:
+    """見出しらしさ（大きいほど良い）。画像の説明・日付だけは 0（使わない）、10〜120 字が最良。"""
+    if not title or _IMG_DESC.search(title) or _DATE_ONLY.match(title):
+        return 0
+    return 3 if 10 <= len(title) <= 120 else 1
+
+
 def list_links(text: str, base: str, limit: int = PAGE_ITEMS) -> list[dict]:
     """一覧のページから、同じサイトの中の記事らしいリンク（{title, url, published}）を拾う。
     記事らしさ = 見出しの文字が一定以上ある・パスが記事の形（日付・/article/・/news/・長い数字・語をつないだ名前など）・
-    タグ/カテゴリ/ページ送り/ログイン等の案内ではない・一覧自身ではない。外のサイト・http・ファイルは捨てる。"""
+    タグ/カテゴリ/ページ送り/ログイン等の案内ではない・一覧自身ではない。外のサイト・http・ファイルは捨てる。
+    見出し: img の alt・「のサムネイル画像」等の画像の説明は使わず、先頭の分類と日付（「ビジネス2026/11/16 [MON]」）は外す
+    （日付は記事の日時に使う）。同じ URL のリンクが複数あれば、いちばん見出しらしいもの（10〜120 字・日付だけでない）を選ぶ。"""
     page = parse_html(text)
     host = site_of(urlsplit(base).hostname or "")
     base_key = urlunsplit(urlsplit(base)._replace(fragment="")).rstrip("/")
-    out, seen = [], set()
+    best: dict[str, dict] = {}
     for a in page.anchors:
         url = sources.safe_url(a["href"], base)
         if not url or not url.startswith("https://"):
@@ -268,18 +292,28 @@ def list_links(text: str, base: str, limit: int = PAGE_ITEMS) -> list[dict]:
         if site_of(parts.hostname or "") != host or _SKIP_EXT.search(parts.path) or _SKIP_PATH.search(parts.path + "/"):
             continue
         clean = urlunsplit(parts._replace(fragment=""))
-        if clean.rstrip("/") == base_key or parts.path in ("", "/") or clean in seen:
+        if clean.rstrip("/") == base_key or parts.path in ("", "/") or not _ARTICLE_HINT.search(parts.path):
             continue
-        title = _clean(a["text"]) or _clean(a.get("title", "")) or _clean(a.get("alt", ""))
+        title, date = _split_title(a["text"])
+        if _headline_score(title) == 0:
+            alt_title, alt_date = _split_title(a.get("title", ""))     # title 属性は使うが、img の alt は使わない
+            if _headline_score(alt_title):
+                title, date = alt_title, date or alt_date
+        score = _headline_score(title)
         # CJK は短くても意味がある。英数字だけの短い語（Home・Next 等）は案内として捨てる
         cjk = bool(re.search(r"[぀-ヿ㐀-鿿]", title))
-        if len(title) < (6 if cjk else 14) or not _ARTICLE_HINT.search(parts.path):
+        if score == 0 or len(title) < (6 if cjk else 14):
             continue
-        seen.add(clean)
-        out.append({"title": title[:300], "url": clean, "published": a.get("time", "")})
-        if len(out) >= limit:
-            break
-    return out
+        row = {"title": title[:300], "url": clean, "published": a.get("time", "") or date, "_score": score}
+        old = best.get(clean)
+        if old is None:
+            best[clean] = row
+        elif row["_score"] > old["_score"]:
+            row["published"] = row["published"] or old["published"]
+            best[clean] = row
+        else:
+            old["published"] = old["published"] or row["published"]
+    return [{k: v for k, v in r.items() if k != "_score"} for r in list(best.values())[:limit]]
 
 
 class _Robots:

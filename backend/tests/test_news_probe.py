@@ -210,3 +210,24 @@ def test_check_and_discover_api_for_admin(admin_client, monkeypatch):
     r = client.post("/api/v1/news/sources/discover", json={"url": "https://site.test/feed"}, headers=CSRF_HEADERS)
     assert r.status_code == 200 and r.json()["mode"] == "feed"
     assert client.post("/api/v1/news/sources/check", json={"kind": "bogus", "value": "x"}, headers=CSRF_HEADERS).status_code == 422
+
+
+LEDGE_HTML = """<html><body>
+<a href="/article/20001"><img src="a.jpg" alt="Anthropicの数学者、Claudeと証明を発見したと主張のサムネイル画像">Anthropicの数学者、Claudeと共に新しい証明を発見したと主張</a>
+<a href="/article/20001">Anthropicの数学者、Claudeと証明を発見したと主張のサムネイル画像</a>
+<a href="/article/20002">ビジネス2026/11/16 [MON]「人類はAIを使いこなせるか」専門家が語る未来</a>
+<a href="/article/20003">ビジネス2026/11/20 [FRI]AnthropicがNASDAQ上場を検討と報道</a>
+<a href="/article/20004">2026/11/21</a>
+<a href="/article/20004">国内の生成AI導入が進む、最新の調査結果を公開</a>
+</body></html>"""
+
+
+def test_list_links_cleans_headlines_ledge_style():
+    """目的: 一覧の巡回の見出しから、画像の説明・先頭の分類と日付を外し、同じ URL では見出しらしいものを選ぶ。
+    根拠: 2026-11-24 利用者の本番確認（Ledge.ai の見出しに「のサムネイル画像」「ビジネス2026/11/16 [MON]」が混ざった）。"""
+    links = {link["url"].rsplit("/", 1)[1]: link for link in probe.list_links(LEDGE_HTML, "https://ledge.ai/")}
+    assert links["20001"]["title"] == "Anthropicの数学者、Claudeと共に新しい証明を発見したと主張"
+    assert links["20002"]["title"] == "「人類はAIを使いこなせるか」専門家が語る未来" and links["20002"]["published"] == "2026-11-16"
+    assert links["20003"]["title"] == "AnthropicがNASDAQ上場を検討と報道" and links["20003"]["published"] == "2026-11-20"
+    assert links["20004"]["title"] == "国内の生成AI導入が進む、最新の調査結果を公開" and links["20004"]["published"] == ""
+    assert all("サムネイル" not in link["title"] for link in links.values())
