@@ -61,6 +61,43 @@ class NewsItem(Base):
     img_prompt: Mapped[str] = mapped_column(Text, default="", server_default="")
     # 下ごしらえの試行の回数（失敗のたびに +1。PREP_DONE なら済み。3 回で諦めて次の取得でも送らない）
     prep_tries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # ニュースハブから取り込んだ記事のハブ側の id（自分で集めた記事は NULL）。借りた仕事・差分の削除・更新の突き合わせに使う（app/news/hub_sync.py）
+    hub_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # ハブが持つ画像（ハブの中の道。認証が要る）。まだ取り込めていない間だけ入る。取り込んだら空にして image_url を自分の道にする
+    hub_image: Mapped[str] = mapped_column(String(300), default="", server_default="")
+
+
+class NewsHubEntity(Base):
+    """ハブの「物」（モデル・組織・製品など）の複製。ハブが正本で、ここは読むだけ（差分の同期で置き換わる）。"""
+
+    __tablename__ = "news_hub_entities"
+
+    hub_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    key: Mapped[str] = mapped_column(String(200), default="")
+    name: Mapped[str] = mapped_column(String(200), default="")
+    type: Mapped[str] = mapped_column(String(24), default="other")
+    first_seen: Mapped[str] = mapped_column(String(24), default="")
+    last_seen: Mapped[str] = mapped_column(String(24), default="")
+    article_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class NewsHubEvent(Base):
+    """ハブの「イベント」（同じ出来事を報じた記事のまとまり）の複製。article_ids はハブ側の記事の id（JSON 配列）。"""
+
+    __tablename__ = "news_hub_events"
+
+    hub_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    rep_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str] = mapped_column(String(400), default="")
+    n_articles: Mapped[int] = mapped_column(Integer, default=0)
+    n_sources: Mapped[int] = mapped_column(Integer, default=0)
+    has_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_at: Mapped[str] = mapped_column(String(24), default="")
+    last_at: Mapped[str] = mapped_column(String(24), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    summary_model: Mapped[str] = mapped_column(String(200), default="")
+    entities: Mapped[str] = mapped_column(Text, default="[]")
+    article_ids: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class NewsAction(Base):
@@ -136,7 +173,8 @@ class NewsFetchLog(Base):
 
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
 _LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''"),
-                                        ("news_items", "img_prompt", "TEXT DEFAULT ''"), ("news_items", "prep_tries", "INTEGER NOT NULL DEFAULT 0")]
+                                        ("news_items", "img_prompt", "TEXT DEFAULT ''"), ("news_items", "prep_tries", "INTEGER NOT NULL DEFAULT 0"),
+                                        ("news_items", "hub_id", "INTEGER"), ("news_items", "hub_image", "VARCHAR(300) NOT NULL DEFAULT ''")]
 
 _engines: dict[str, Engine] = {}
 _lock = threading.Lock()
@@ -151,6 +189,8 @@ def _add_missing_columns(conn) -> None:
     for table, column, decl in _LATE_COLUMNS:
         if column not in {c["name"] for c in have.get_columns(table)}:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+    if "hub_id" in {c["name"] for c in inspect(conn).get_columns("news_items")}:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_news_items_hub_id ON news_items (hub_id)"))
 
 
 def _open(file: Path) -> Engine:

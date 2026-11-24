@@ -34,7 +34,16 @@ DEFAULTS: dict = {
     "rag": {"enabled": True, "fulltext": False, "on_prune": "keep"},
     # 画像の無い記事に AI でイメージ画像を作る（CPU だけ。機能「ニュースの画像生成（CPU）」が要る。既定は切）
     "imagegen": {"enabled": False, "tier": "small", "threads": 8, "max_per_run": 30},
+    # QNAP ニュースハブとつなぐ（app/news/hub_*.py。2026-11-25 利用者の案 C）。既定はローカル（今の動きを変えない）。ハブの設定とは別。
+    "hub": {"source": "local", "sync_minutes": 5, "kinds": ["items", "entities", "events"], "channels": [], "categories": [],
+            "features": {"imagegen": False, "reader": True, "rag": True},
+            "jobs": {"enabled": False, "kinds": ["summarize_hq", "extract_retry", "image"], "max_per_run": 5, "interval_minutes": 15}},
 }
+HUB_SOURCES = ("local", "hub", "auto")        # データの出どころ: 自分で集める・ハブ・自動（ハブが答えなければローカル、戻ったらハブ）
+HUB_KINDS = ("items", "entities", "events")   # 受け取る種類（ハブの /changes の kinds）
+HUB_CATEGORIES = ("release", "news", "model", "forum", "reddit")    # 記事の種類（ハブの categories）
+HUB_JOB_KINDS = ("summarize_hq", "extract_retry", "image")          # 借りられる仕事（embed・event_merge はまだ受けない）
+_HUB_ID = re.compile(r"^[\w\-.]{1,60}$")
 IMAGEGEN_TIERS = ("small", "medium", "large")   # news/imagegen_worker.TIERS と同じ（設定は重い部品を読み込まないよう、ここに持つ）
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
@@ -148,7 +157,37 @@ def normalize(raw: object) -> dict:
     out["imagegen"] = {"enabled": _bool(gen, "enabled", False), "tier": tier,
                        "threads": _int(gen.get("threads", 8), "画像生成のスレッド数", 1, 16),
                        "max_per_run": _int(gen.get("max_per_run", 30), "画像生成の 1 回の件数", 1, 100)}
+    out["hub"] = _hub(_table(raw, "hub"))
     return out
+
+
+def _pick(value: object, allowed: tuple[str, ...], label: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        raise ConfigError(f"{label}は文字列の一覧です")
+    bad = [v for v in value if v not in allowed]
+    if bad:
+        raise ConfigError(f"{label}に知らない値があります: {bad[0]}")
+    return [v for v in allowed if v in value]
+
+
+def _hub(raw: dict) -> dict:
+    """ハブとつなぐ設定。出どころ・受け取る範囲・機能の入切・借りる仕事。形が違えば断る（黙って直さない）。"""
+    base = DEFAULTS["hub"]
+    source = raw.get("source", base["source"])
+    if source not in HUB_SOURCES:
+        raise ConfigError("データの出どころは local（自分で集める）・hub（ハブ）・auto（自動）のどれかです")
+    channels = raw.get("channels", [])
+    if not isinstance(channels, list) or len(channels) > 50 or any(not isinstance(c, str) or not _HUB_ID.match(c) for c in channels):
+        raise ConfigError("受け取るチャンネルは、チャンネルの id の一覧（50 件まで）です")
+    features = _table(raw, "features")
+    jobs = _table(raw, "jobs")
+    return {"source": source, "sync_minutes": _int(raw.get("sync_minutes", base["sync_minutes"]), "ハブの同期の間隔（分）", 1, 240),
+            "kinds": _pick(raw.get("kinds", base["kinds"]), HUB_KINDS, "受け取る種類") or list(HUB_KINDS)[:1],
+            "channels": list(dict.fromkeys(channels)), "categories": _pick(raw.get("categories", []), HUB_CATEGORIES, "受け取る分類"),
+            "features": {"imagegen": _bool(features, "imagegen", False), "reader": _bool(features, "reader", True), "rag": _bool(features, "rag", True)},
+            "jobs": {"enabled": _bool(jobs, "enabled", False), "kinds": _pick(jobs.get("kinds", base["jobs"]["kinds"]), HUB_JOB_KINDS, "借りる仕事の種類"),
+                     "max_per_run": _int(jobs.get("max_per_run", 5), "仕事を借りる 1 回の件数", 1, 20),
+                     "interval_minutes": _int(jobs.get("interval_minutes", 15), "仕事を借りる間隔（分）", 1, 240)}}
 
 
 def load() -> dict:

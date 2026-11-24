@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.news import channels, fetchlog, gist, imagegen, images, prep, rag, settings, sources, store
+from app.news import channels, fetchlog, gist, hub_sync, imagegen, images, prep, rag, settings, sources, store
 from app.news import db as news_db
 from app.news.db import NewsItem
 
@@ -86,6 +86,24 @@ def _reload(ids: list[int]) -> list[dict]:
         return [store.item_dict(r) for r in db.scalars(select(NewsItem).where(NewsItem.id.in_(ids or [0])))]
 
 
+async def ingest_rag(changed: list[dict], cfg: dict, removed_urls: list[str]) -> dict:
+    """取り込んだ記事を RAG へ（設定が入のときだけ）。失敗しても取得・同期の結果は変えない（理由だけ返す）。ハブの同期（hub_sync.py）も同じ道を使う。"""
+    info: dict = {"added": 0, "error": ""}
+    if not cfg["rag"]["enabled"]:
+        return info
+    try:
+        chans = channels.load()["channels"]
+        by_url = {i["url"]: [c["name"] for c in chans if channels.matches(c, kind=i["kind"], source_key=i["source_key"], title=i["title"], summary=i["summary"])]
+                  for i in changed}
+        info.update(await rag.ingest_items(changed, by_url, fulltext=cfg["rag"]["fulltext"]))
+        if removed_urls:
+            info["removed"] = await asyncio.to_thread(rag.delete_urls, removed_urls)
+    except Exception as exc:  # noqa: BLE001 - 取得そのものは成功させる
+        logger.warning("RAG への取り込みに失敗しました: %s", exc)
+        info["error"] = _error_text(exc)
+    return info
+
+
 async def _after_save(saved: dict, cfg: dict) -> dict:
     """取った後の仕事（一言要約・RAG への取り込み・RAG の掃除）。失敗しても取得の結果は変えない（理由だけ返す）。"""
     info: dict = {"gist": {"done": 0, "error": ""}, "prep": {"done": 0, "calls": 0, "error": ""}, "rag": {"added": 0, "error": ""}}
@@ -101,17 +119,7 @@ async def _after_save(saved: dict, cfg: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("一言要約に失敗しました: %s", exc)
         info["gist"]["error"] = _error_text(exc)
-    if cfg["rag"]["enabled"]:
-        try:
-            chans = channels.load()["channels"]
-            by_url = {i["url"]: [c["name"] for c in chans if channels.matches(c, kind=i["kind"], source_key=i["source_key"], title=i["title"], summary=i["summary"])]
-                      for i in changed}
-            info["rag"].update(await rag.ingest_items(changed, by_url, fulltext=cfg["rag"]["fulltext"]))
-            if saved["removed_urls"]:
-                info["rag"]["removed"] = await asyncio.to_thread(rag.delete_urls, saved["removed_urls"])
-        except Exception as exc:  # noqa: BLE001 - 取得そのものは成功させる
-            logger.warning("RAG への取り込みに失敗しました: %s", exc)
-            info["rag"]["error"] = _error_text(exc)
+    info["rag"].update(await ingest_rag(changed, cfg, saved["removed_urls"]))
     try:
         info["imagegen"] = await asyncio.to_thread(imagegen.generate_pending, cfg)
     except Exception as exc:  # noqa: BLE001 - 画像が作れなくても取得は成功
@@ -196,9 +204,15 @@ async def news_loop() -> None:
     await asyncio.sleep(FIRST_DELAY_SECONDS)
     while True:
         if os.environ.get("CONTROL_DECK_NEWS_AUTO") != "0":
+            try:      # ニュースハブとの同期・仕事の貸し出し（失敗しても自分の取得は止めない）
+                await hub_sync.tick()
+            except Exception:  # noqa: BLE001
+                logger.exception("ニュースハブの見張りに失敗しました")
             try:
                 conf = settings.load()
-                if not settings.in_quiet(conf, datetime.now()):
+                if hub_sync.effective_source(conf) == "hub":      # 出どころがハブのあいだは、自分では集めない（auto は答えなくなったらここを通って集め始める）
+                    pass
+                elif not settings.in_quiet(conf, datetime.now()):
                     listing = sources.build_sources(sources.load_config(), channels.load()["channels"])
                     due = due_keys(listing, _last_fetch, time.monotonic(), channels.load()["interval_minutes"])
                     if due:

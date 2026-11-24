@@ -118,6 +118,22 @@ export interface NewsRuntimeSettings {
   llm: { digest_model: string; gist_enabled: boolean; gist_model: string; digest_focus: string; prep_enabled: boolean; prep_model: string; prep_max_per_run: number };
   rag: { enabled: boolean; fulltext: boolean; on_prune: "keep" | "delete" };
   imagegen: { enabled: boolean; tier: ImagegenTierId; threads: number; max_per_run: number };
+  /** QNAP ニュースハブとつなぐ（backend/app/news/settings.py の hub）。ハブ側の設定とは別。 */
+  hub?: NewsHubSettings;
+}
+export type NewsHubSource = "local" | "hub" | "auto";
+export interface NewsHubSettings {
+  source: NewsHubSource; sync_minutes: number; kinds: string[]; channels: string[]; categories: string[];
+  features: { imagegen: boolean; reader: boolean; rag: boolean };
+  jobs: { enabled: boolean; kinds: string[]; max_per_run: number; interval_minutes: number };
+}
+/** ハブとのつなぎと診断（GET /news/hub。トークン・鍵は含まない）。 */
+export interface NewsHubStatus {
+  linked: boolean; verified: boolean; url: string; name: string; my_fingerprint: string; hub_fingerprint: string; paired_at: string; verified_at: string;
+  cursor: number; latest: number; source: NewsHubSource; effective_source: "local" | "hub"; openrouter_key: boolean; imagegen_ready: boolean;
+  sync: { last_at: string; last_ok_at: string; last_error: string; failures: number; reachable: boolean | null; counts: Record<string, number>; total: Record<string, number> };
+  jobs: { last_at: string; last_error: string; done: number; failed: number; rejected: number; recent: { at: string; kind: string; status: string; error: string }[] };
+  secret: { sent_at: string; error: string };
 }
 export type ImagegenTierId = "small" | "medium" | "large";
 /** 画像生成のモデルの精度（小・中・大）。1 枚の目安の時間・取得の大きさ・RAM の目安と、導入済みか。 */
@@ -381,3 +397,18 @@ export function useManageMutations() {
     }),
   };
 }
+
+// ---- QNAP ニュースハブとつなぐ ----
+const hubKey = [...key, "hub"];
+export const useNewsHub = () => useQuery({ queryKey: hubKey, queryFn: () => api<NewsHubStatus>("/news/hub"), staleTime: 5_000 });
+
+function useHubAction<T = NewsHubStatus, V = void>(fn: (v: V) => Promise<T>) {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: fn, onSettled: () => { qc.invalidateQueries({ queryKey: hubKey }); qc.invalidateQueries({ queryKey: [...key, "settings"] }); } });
+}
+export const usePairHub = () => useHubAction((v: { url: string; code: string; name: string }) => api<NewsHubStatus>("/news/hub/pair", { method: "POST", json: v }));
+export const useConfirmHub = () => useHubAction((match: boolean) => api<NewsHubStatus>("/news/hub/confirm", { method: "POST", json: { match } }));
+export const useDisconnectHub = () => useHubAction(() => api<NewsHubStatus>("/news/hub", { method: "DELETE" }));
+export const useSendHubSecret = () => useHubAction(() => api<NewsHubStatus>("/news/hub/secret", { method: "POST" }));
+export const useHubSyncNow = () => useHubAction((reset: boolean) => api<{ result: { ok: boolean; error?: string; skipped?: string; counts?: Record<string, number> }; status: NewsHubStatus }>("/news/hub/sync", { method: "POST", json: { reset } }));
+export const useHubJobsNow = () => useHubAction(() => api<{ result: { claimed: number; done?: number; failed?: number; rejected?: number; error?: string; skipped?: string }; status: NewsHubStatus }>("/news/hub/jobs/run", { method: "POST" }));

@@ -5,15 +5,18 @@ import asyncio
 import os
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.news.db import get_news_db
+from app.audit import service as audit
+from app.database import get_db
 from app.models import User
 from app.news import channels as channels_mod
+from app.news import hub_jobs, hub_link, hub_sync
 from app.news import feedgen, fetchlog, probe, sourcemgr, cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
@@ -106,6 +109,8 @@ def _reader_item(item_id: int, user: User, db: Session) -> NewsItem:
     item = db.get(NewsItem, item_id)
     if item is None or (item.user_id is not None and item.user_id != user.id) or item.kind == "event":
         raise HTTPException(status_code=404, detail="記事が見つかりません")
+    if item.hub_id is not None and not news_settings.load()["hub"]["features"]["reader"]:
+        raise HTTPException(status_code=409, detail="ハブから受け取った記事のリーダーは、設定で切になっています（ニュースの設定 → ニュースハブ）")
     return item
 
 
@@ -141,6 +146,8 @@ async def reader_retry(item_id: int, user: User = Depends(get_current_user), db:
 
 @router.post("/refresh")
 async def refresh(user: User = Depends(get_current_user)):
+    if hub_sync.effective_source() == "hub":      # 出どころがハブのあいだは、自分では集めず、ハブの続きを取る
+        return {"started": True, "reason": "", "hub": True, **{k: v for k, v in (await hub_sync.sync()).items() if k in ("ok", "counts", "error", "skipped")}}
     return await service.refresh()
 
 
@@ -390,6 +397,15 @@ def get_image(item_id: int, user: User = Depends(get_current_user), db: Session 
     return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
 
 
+@router.get("/images/hub/{name}")
+def get_hub_image(name: str, user: User = Depends(get_current_user)):
+    """ハブが生成した画像の写し（ログインした人だけ）。名前は <sha256>.<webp|png|jpg> の形だけ。"""
+    found = imagegen.hub_image_path(name)
+    if found is None:
+        raise HTTPException(status_code=404, detail="画像がありません")
+    return FileResponse(found[0], media_type=found[1], headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
 @router.put("/settings")
 async def put_settings(body: dict, user: User = Depends(require_permission("settings.manage"))):
     try:
@@ -499,3 +515,100 @@ def _semantic_items(db: Session, user_id: int, hits: list[dict]) -> list[dict]:
                     "url": url, "summary": "", "image_url": None, "published_at": meta.get("published_at", ""), "topics": meta.get("topics", []),
                     "state": {a: False for a in store.ACTIONS}, "score": round(hit["score"], 4), "archived": True, "snippet": hit["text"][:240]})
     return store.mark_reader_failed(db, out)
+
+
+# ---- QNAP ニュースハブとつなぐ（app/news/hub_link.py・hub_sync.py・hub_jobs.py。設定の管理権限が要る） ----
+
+HUB_MANAGE = Depends(require_permission("settings.manage"))
+
+
+class HubPairBody(BaseModel):
+    url: str = Field(min_length=8, max_length=300)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    name: str = Field(default=hub_link.NAME_DEFAULT, min_length=1, max_length=60)
+
+
+class HubConfirmBody(BaseModel):
+    match: bool
+
+
+class HubSyncBody(BaseModel):
+    reset: bool = False
+
+
+def _hub_error(exc: hub_link.HubError) -> HTTPException:
+    """つながらない（status 0）は 502、ハブが断った・形が違うは 422（メッセージは利用者に見せてよい文だけ）。"""
+    return HTTPException(status_code=502 if exc.status == 0 else 422, detail=exc.message)
+
+
+def _hub_status() -> dict:
+    from app.models_mgmt import cloud
+
+    conf = news_settings.load()
+    state = hub_link.load()
+    return {**hub_link.public_view(state), "source": conf["hub"]["source"], "effective_source": hub_sync.effective_source(conf, state),
+            "openrouter_key": bool(cloud.api_key("openrouter")),
+            "imagegen_ready": imagegen.available(conf["imagegen"]["tier"])}
+
+
+@router.get("/hub")
+def hub_status(user: User = HUB_MANAGE):
+    """つないだ状態・最後の同期・cursor・借りた仕事の成否（トークン・鍵は含まない）。"""
+    return _hub_status()
+
+
+@router.post("/hub/pair")
+def hub_pair(body: HubPairBody, request: Request, user: User = HUB_MANAGE, db=Depends(get_db)):
+    """ハブの URL と 6 桁の番号でつなぐ。返す指紋（ハブの公開鍵から自分で計算したもの）を、ハブの画面の指紋と見比べて /hub/confirm を押す。"""
+    try:
+        hub_link.pair(body.url, body.code, body.name)
+    except hub_link.HubError as exc:
+        audit.record(db, "news.hub_pair", user=user, request=request, resource_type="news_hub", result="failure", metadata={"error": exc.message})
+        raise _hub_error(exc) from exc
+    audit.record(db, "news.hub_pair", user=user, request=request, resource_type="news_hub", metadata={"url": hub_link.load()["url"]})
+    return _hub_status()
+
+
+@router.post("/hub/confirm")
+def hub_confirm(body: HubConfirmBody, request: Request, user: User = HUB_MANAGE, db=Depends(get_db)):
+    """指紋を見比べた結果。同じなら使い始め、違うなら保存したトークンと鍵を捨てる（ハブの画面で、相手を取り消してください）。"""
+    try:
+        hub_link.confirm(body.match)
+    except hub_link.HubError as exc:
+        raise _hub_error(exc) from exc
+    audit.record(db, "news.hub_confirm", user=user, request=request, resource_type="news_hub", metadata={"match": body.match})
+    return _hub_status()
+
+
+@router.delete("/hub")
+def hub_disconnect(request: Request, user: User = HUB_MANAGE, db=Depends(get_db)):
+    """つなぎを切る（保存したトークン・鍵・cursor を捨てる。取り込んだ記事は残す）。ハブ側の取り消しは、ハブの画面の「つないだ ControlDeck」から。"""
+    hub_link.disconnect()
+    audit.record(db, "news.hub_disconnect", user=user, request=request, resource_type="news_hub")
+    return _hub_status()
+
+
+@router.post("/hub/secret")
+def hub_send_secret(request: Request, user: User = HUB_MANAGE, db=Depends(get_db)):
+    """利用者が押したときだけ、OpenRouter の鍵をハブの公開鍵で封じて渡す（値は画面・ログ・応答・監査に出さない）。"""
+    try:
+        hub_link.send_openrouter_key()
+    except hub_link.HubError as exc:
+        audit.record(db, "news.hub_secret", user=user, request=request, resource_type="news_hub", result="failure", metadata={"name": hub_link.SECRET_NAME})
+        raise _hub_error(exc) from exc
+    audit.record(db, "news.hub_secret", user=user, request=request, resource_type="news_hub", metadata={"name": hub_link.SECRET_NAME})
+    return _hub_status()
+
+
+@router.post("/hub/sync")
+async def hub_sync_now(body: HubSyncBody, user: User = HUB_MANAGE):
+    """いま差分を取る（reset=true は cursor を 0 に戻して最初から）。出どころが local でも、つないで確かめてあれば取れる。"""
+    result = await hub_sync.sync(reset=body.reset)
+    return {"result": {k: v for k, v in result.items() if k in ("ok", "counts", "error", "skipped", "pages", "images", "rag", "imagegen")}, "status": await asyncio.to_thread(_hub_status)}
+
+
+@router.post("/hub/jobs/run")
+async def hub_jobs_now(user: User = HUB_MANAGE):
+    """いま仕事を借りて処理する（設定の「借りる種類」・件数のとおり）。"""
+    result = await hub_jobs.run_once()
+    return {"result": result, "status": await asyncio.to_thread(_hub_status)}

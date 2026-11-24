@@ -36,6 +36,8 @@ logger = logging.getLogger("control_deck.news.imagegen")
 FEATURE_ID = "news-imagegen"
 URL_PREFIX = "/api/v1/news/images/"
 _URL_RE = re.compile(r"^/api/v1/news/images/\d{1,12}\.webp$")
+HUB_URL_PREFIX = "/api/v1/news/images/hub/"       # ニュースハブが生成した画像の写し（app/news/hub_sync.py。名前は中身の sha256）
+_HUB_URL_RE = re.compile(r"^/api/v1/news/images/hub/[0-9a-f]{64}\.(webp|png|jpg)$")
 TIMEOUT_SECONDS = 900          # 子プロセス全体の上限（小・中。段ごとの上限は imagegen_worker.TIER_SPECS の job_timeout。超えたら殺す。できた分は残る）
 TIERS = imagegen_worker.TIERS
 TIER_DEFAULT = "small"
@@ -132,12 +134,27 @@ def image_path(item_id: object) -> Path | None:
     return path
 
 
+def hub_images_dir() -> Path:
+    return images_dir() / "hub"
+
+
+def hub_image_path(name: str) -> tuple[Path, str] | None:
+    """ハブの画像の写しのファイル。名前が <sha256>.<webp|png|jpg> の形で、置き場の直下にある実ファイルだけ。"""
+    if not _HUB_URL_RE.match(f"{HUB_URL_PREFIX}{name}"):
+        return None
+    root = hub_images_dir().resolve()
+    path = root / name
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != root:
+        return None
+    return path, {"webp": "image/webp", "png": "image/png", "jpg": "image/jpeg"}[name.rsplit(".", 1)[1]]
+
+
 def url_for(item_id: int) -> str:
     return f"{URL_PREFIX}{int(item_id)}.webp"
 
 
 def is_generated_url(value: object) -> bool:
-    return isinstance(value, str) and bool(_URL_RE.match(value))
+    return isinstance(value, str) and bool(_URL_RE.match(value) or _HUB_URL_RE.match(value))
 
 
 def delete_images(item_ids: list[int]) -> int:
@@ -244,10 +261,14 @@ def _job_timeout(tier: object) -> int:
     return int(imagegen_worker.TIER_SPECS[normalize_tier(tier)]["job_timeout"])
 
 
-def pending(limit: int) -> list[dict]:
-    """画像の無い記事（新しい順）。event・作れなかった記事は除く。"""
+def pending(limit: int, include_hub: bool = False) -> list[dict]:
+    """画像の無い記事（新しい順）。event・作れなかった記事は除く。ハブから取り込んだ記事は include_hub のときだけ
+    （ハブの画像がまだ取り込めていない記事は、いつでも除く）。"""
     with news_db.session() as db:
-        rows = db.scalars(select(NewsItem).where(NewsItem.image_url.is_(None), NewsItem.kind != "event")
+        query = select(NewsItem).where(NewsItem.image_url.is_(None), NewsItem.kind != "event", NewsItem.hub_image == "")
+        if not include_hub:
+            query = query.where(NewsItem.hub_id.is_(None))
+        rows = db.scalars(query
                           .order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(limit + len(_failed))).all()
         picked = [r for r in rows if r.id not in _failed][:limit]
         out = []
@@ -275,7 +296,7 @@ def generate_pending(cfg: dict, *, runner=None) -> dict:
         # 1 回の件数は、設定の上限と、段ごとの上限（大は少なめ）の小さい方
         limit = max(COUNT_MIN, min(int(conf.get("max_per_run", COUNT_DEFAULT)), COUNT_MAX, imagegen_worker.TIER_SPECS[tier]["max_per_run"]))
         threads = max(THREADS_MIN, min(int(conf.get("threads", THREADS_DEFAULT)), THREADS_MAX))
-        items = pending(limit)
+        items = pending(limit, include_hub=bool(cfg.get("hub", {}).get("features", {}).get("imagegen")))
         if not items:
             return {"done": 0, "failed": 0, "skipped": "nothing"}
         job = {"tier": tier, "models_dir": str(models_dir()), "out_dir": str(images_dir()), "threads": threads,
@@ -296,3 +317,25 @@ def generate_pending(cfg: dict, *, runner=None) -> dict:
         return {"done": len(ok_ids), "failed": len(items) - len(ok_ids), "skipped": "", "tier": tier}
     finally:
         _lock.release()
+
+
+def render_files(items: list[dict], conf: dict, out_dir: Path, *, runner=None) -> dict[int, Path]:
+    """ハブから借りた画像の仕事など、記事の DB に載せない画像を作る。items は [{id, title, summary, kind, topics, img}]（id はハブ側の記事の id でよい）。
+    out_dir/<id>.webp に作り、作れたものだけ {id: パス} で返す。未導入なら空。設定の「入・切」は見ない（呼ぶ側が借りる仕事の設定で決める）。
+    同時に動かすのは 1 本だけ（generate_pending と同じ錠）。"""
+    tier = normalize_tier(conf.get("tier"))
+    if not items or not available(tier):
+        return {}
+    with _lock:
+        threads = max(THREADS_MIN, min(int(conf.get("threads", THREADS_DEFAULT)), THREADS_MAX))
+        job = {"tier": tier, "models_dir": str(models_dir()), "out_dir": str(out_dir), "threads": threads, "deadline_seconds": _job_timeout(tier) - 60,
+               "items": [{"id": i["id"], "prompt": build_prompt(i["title"], i["summary"], i["kind"], i["topics"], i.get("img", "")), "seed": i["id"]} for i in items]}
+        rows = (runner or _run_worker)(job)
+    asked = {i["id"] for i in items}
+    root = Path(out_dir).resolve()
+    out: dict[int, Path] = {}
+    for row in rows:
+        path = root / f"{row['id']}.webp"
+        if row.get("ok") is True and row["id"] in asked and path.is_file() and not path.is_symlink() and path.resolve().parent == root:
+            out[row["id"]] = path
+    return out

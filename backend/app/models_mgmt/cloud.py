@@ -181,6 +181,21 @@ def save_provider(provider_id: str, patch: dict) -> dict:
     return status()
 
 
+def api_key(provider_id: str) -> str:
+    """プロバイダの API キー（平文）。無ければ空。呼び出した側が、画面・ログ・応答へ出さない責任を持つ
+    （ニュースハブへ封じて渡す app/news/hub_link.py が使う）。"""
+    from app.security.crypto import decrypt_text
+
+    _provider(provider_id)
+    token = _read()["providers"].get(provider_id, {}).get("key")
+    if not token:
+        return ""
+    try:
+        return decrypt_text(str(token))
+    except Exception:  # noqa: BLE001 - 壊れた保存値は「無い」と同じ扱い（理由は呼び出し側が利用者へ伝える）
+        return ""
+
+
 def save_egress(patch: dict) -> dict:
     if not isinstance(patch, dict) or set(patch) - set(CALLERS) or not all(isinstance(v, bool) for v in patch.values()):
         raise CloudError(f"呼び出し元は {' / '.join(CALLERS)} を true / false で指定します")

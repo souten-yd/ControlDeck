@@ -4,6 +4,7 @@ import { DEFAULT_PREFS, LEGACY_DESIGNS, useNewsChannels, useNewsPrefs, useSaveCh
 import { useAuth, useToasts } from "../../stores";
 import { NewsSourcesSettings } from "./NewsSourcesSettings";
 import { NewsRuntimeCards } from "./NewsRuntimeSettings";
+import { NewsHubCard } from "./NewsHubSettings";
 import { Card, field, ghost, primary } from "./settingsUi";
 
 /** 語の入力（Enter か読点・カンマで追加、× で外す）。 */
@@ -239,6 +240,7 @@ export function NewsSettings() {
       <ChannelsCard />
       <NewsSourcesSettings />
       <NewsRuntimeCards />
+      <NewsHubCard />
       <PrefsCards />
       <ArchiveCard />
     </>

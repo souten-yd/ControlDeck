@@ -1,5 +1,17 @@
 # 実装状況
 
+## 2026-11-25 News を QNAP ニュースハブとつなぐ（v0.3 の ControlDeck 側・案 C の最初の接続）
+
+- 設定 → ニュースに「QNAP ニュースハブとつなぐ」を追加（`backend/app/news/hub_link.py`・`hub_sync.py`・`hub_jobs.py`、画面 `NewsHubSettings.tsx`）。相手の仕様はハブの `docs/DESIGN.md` 3 章。
+- **データの出どころ**（設定 `hub.source`）: ローカル（既定・今の動き）／ハブ／自動（ハブが続けて 2 回答えなければ自分で集め、答えたらハブへ戻る）。つないでいない・指紋を確かめていないときは常にローカル。ハブのあいだは自分では集めず、「取り直す」はハブの同期になる。受け取る範囲（種類・チャンネル・分類・間隔）と機能の入・切（画像生成・リーダー・RAG）は `hub` 設定（ハブ側の設定とは別）。
+- **つなぐ**: URL＋6 桁で `POST /link/pair`。X25519 の鍵対を作り、トークンと秘密鍵は既存の Fernet で暗号化して `data/news/hub.json`（0600）。**両方の指紋を出し、利用者が「同じ」を押すまで同期・仕事・鍵の受け渡しをしない**（ハブの指紋は返された公開鍵から自分で計算）。「違う」で破棄。切る＝トークン・鍵・cursor を捨てる（取り込んだ記事は残す）。監査に pair・confirm・disconnect・secret。
+- **鍵を渡す**: 押したときだけ。ハブの `link.seal` と同じ ECIES（X25519＋HKDF-SHA256＋AES-GCM・追加データに名前）。値は画面・ログ・応答・監査に出ない。
+- **差分**: `GET /changes` を既定 5 分ごと。記事・物（`news_hub_entities`）・イベント（`news_hub_events`）を news.sqlite3 へ。記事は `hub_id` 列で冪等（同じ url の自分の記事にはハブの id を付ける）。1 ページごとにコミットしてから cursor 保存・reset／範囲変更で 0 から取り直す・delete／archive は行を消す（star は残す）。ハブの AI 画像は sha256 を確かめて `data/news/images/hub/` へ写す。
+- **仕事を借りる**: `/jobs/claim` → summarize_hq（まとめのモデル）・extract_retry（一言要約のモデル）は既存の `llm.complete`、image は既存の `imagegen.render_files`（CPU）→ `PUT /artifacts/items/{id}/image` → `/jobs/complete`。1 回の件数・間隔・同時 1 本・入切は設定（既定は切）。ローカルのモデルを選んでいると GPU を使う（画面に明記）。取得しない時間帯は借りない。
+- **診断**: 設定画面の中に、つないだ状態・ハブの応答・最後の同期・cursor／最新・入れた数・借りた仕事の成否と最近の仕事・エラーを出す。
+- **確かめたこと**: `backend/tests/test_news_hub_link.py`（11 件）。ハブの本物の uvicorn（QnapNewsHub の venv・一時の置き場・127.0.0.1）と往復し、つなぐ → 指紋一致 → 鍵（ハブの本物のコードで開けて一致）→ 差分（冪等・reset）→ 仕事 3 種（LLM・画像モデルは模擬）→ 画像 → 取り消されたら認証エラー、までを通した。ハブの venv が無い環境では往復だけ skip。E2E `settings-news-hub.spec.ts`（320・1280）。
+- **確かめていないこと**: 本物の LLM・画像モデルでの借りた仕事（ローカル LLM は呼んでいない）・評価用のハブ（8787）や NAS 実機との通信・LAN を越えた経路（TLS）・長時間の運転。ハブ画像の写しは記事を消しても残る（sha256 名で共有のため）。物・イベントは保存するだけで、画面にはまだ出さない。
+
 ## 2026-11-24 Models の追加ディスク /data2tb
 
 - 稼働環境の `config/config.yaml` の `files.allowed_roots` に `/data2tb` を追加し、Web サービスを再起動して反映した。
