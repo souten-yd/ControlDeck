@@ -57,7 +57,7 @@ def _apply(ids: list[int], parsed: dict[int, tuple[str, list[str]]]) -> int:
             except ValueError:
                 have = []
             row.gist = gist[:GIST_CHARS * 2]
-            row.topics = json.dumps(list(dict.fromkeys(have + words + extract_topics(*words)))[:12], ensure_ascii=False)
+            row.topics = json.dumps(list(dict.fromkeys(have + words + extract_topics(" ".join(words))))[:12], ensure_ascii=False)
             done += 1
         db.commit()
         return done

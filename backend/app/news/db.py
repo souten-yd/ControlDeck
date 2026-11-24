@@ -211,11 +211,38 @@ def _open(file: Path) -> Engine:
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         _add_missing_columns(conn)
+        _repair_split_topics(conn)
         try:
             create_fts(conn)
         except Exception as exc:  # noqa: BLE001 - 検索は LIKE に落ちる
             logger.warning("全文検索の索引を用意できません: %s", exc)
     return engine
+
+
+def _repair_split_topics(conn) -> int:
+    """話題の語に紛れ込んだ 1 文字の語を外す（何度流しても同じ）。直した記事の数。
+    2026-11-25: 下ごしらえと一言要約が extract_topics(*語) と LLM の語を引数に展開していて、3 つ目の語が 1 文字ずつに分かれて
+    保存されていた（同じ不具合の QnapNewsHub ではホットトピックの上位が「n・s・e・t」になった）。直したのは prep.py・gist.py。"""
+    import json
+
+    cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(news_items)").fetchall()}
+    if "topics" not in cols:
+        return 0
+    fixed = 0
+    for item_id, raw in conn.exec_driver_sql("""SELECT id, topics FROM news_items WHERE topics LIKE '%"_"%'""").fetchall():
+        try:
+            words = json.loads(raw or "[]")
+        except ValueError:
+            continue
+        if not isinstance(words, list):
+            continue
+        kept = [w for w in words if isinstance(w, str) and len(w.strip()) > 1]
+        if len(kept) != len(words):
+            conn.exec_driver_sql("UPDATE news_items SET topics = ? WHERE id = ?", (json.dumps(kept, ensure_ascii=False), item_id))
+            fixed += 1
+    if fixed:
+        logger.warning("ニュースの話題の語の 1 文字の崩れを %d 件の記事で直しました", fixed)
+    return fixed
 
 
 def engine() -> Engine:
