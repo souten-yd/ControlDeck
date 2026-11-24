@@ -451,8 +451,6 @@
 .nr-summary { border: 1px solid var(--nw-line); border-left: 4px solid var(--nw-accent); background: var(--nw-surface); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; margin: 0 !important; }
 .nr-summary p { margin: 0; line-height: 1.8; font-size: 1rem; }
 .nr-origin { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
-.nr-url { display: flex; flex-direction: column; min-width: 0; flex: 1 1 14rem; font-weight: 700; text-decoration: underline !important; text-underline-offset: 3px; }
-.nr-fullurl { font-weight: 400; font-size: .72rem; color: var(--nw-muted); overflow-wrap: anywhere; word-break: break-all; }
 .nr-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: .85rem; }
 .nr-progress { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--nw-accent); }
 .nr-toggle { display: inline-flex; gap: 6px; align-items: center; min-height: 32px; }
@@ -470,3 +468,12 @@
 .nr-failed { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; border: 1px dashed var(--nw-line); border-radius: 12px; padding: 12px 14px; }
 .nr-failed p { margin: 0; line-height: 1.7; }
 @media (max-width: 480px) { .nr-body { font-size: 1rem; } .nr-summary p { font-size: .98rem; } }
+
+/* リーダーの一番上へ戻るボタン（右下に浮かせて、スクロールしてもついてくる） */
+.nr-top { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 40;
+  width: 48px; height: 48px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--nw-accent); color: var(--nw-accent-fg); border: 0; box-shadow: 0 6px 18px rgb(0 0 0 / 0.35); cursor: pointer;
+  animation: nr-top-in .18s ease-out; }
+.nr-top:focus-visible { outline: 2px solid var(--nw-fg); outline-offset: 2px; }
+@keyframes nr-top-in { from { opacity: 0; transform: translate3d(0, 8px, 0); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .nr-top { animation: none; } }

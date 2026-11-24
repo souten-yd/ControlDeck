@@ -114,8 +114,25 @@ test("ニュース: 記事を押すとリーダーが開き、要約 → 元の�
   const origin = page.getByTestId("reader-open-original");
   await expect(origin).toHaveAttribute("href", "https://example.com/n/1");
   await expect(origin).toHaveAttribute("target", "_blank");
-  await expect(page.getByTestId("reader-origin")).toContainText("example.com");
+  // アドレスの全文は出さない（元の記事を開くボタンだけ。2026-11-24 利用者の要望）
+  await expect(page.getByTestId("reader-origin")).not.toContainText("https://");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth));
+  // 一番上へ戻るボタン: 「← ニュース」が見えている間は出ず、下へ流すと右下に出て、押すと上へ戻る
+  await expect(page.getByTestId("reader-top")).toHaveCount(0);
+  await page.getByTestId("reader-body").evaluate((el) => {
+    el.insertAdjacentHTML("beforeend", "<div style='height:3000px' data-testid='reader-spacer'></div>");
+  });
+  await page.getByTestId("reader-spacer").scrollIntoViewIfNeeded();
+  const top = page.getByTestId("reader-top");
+  await expect(top).toBeVisible();
+  const box = (await top.boundingBox())!;
+  const vw = await page.evaluate(() => window.innerWidth);
+  const vh = await page.evaluate(() => window.innerHeight);
+  expect(box.x + box.width).toBeGreaterThan(vw - 80);
+  expect(box.y + box.height).toBeGreaterThan(vh - 100);
+  await top.click();
+  await expect(page.getByTestId("reader-back")).toBeInViewport();
+  await expect(page.getByTestId("reader-top")).toHaveCount(0);
 });
 
 test("ニュース: リーダーの途中の状態の撮影（320・390・1280、ライト・ダーク）", async ({ page, context }) => {
