@@ -179,7 +179,7 @@ def test_health_command_catalog_does_not_expose_argv(admin_client):
 # hwmon に何も出ないので、CPU ファンは本当に読めない。読めないことと、
 # 0 rpm（止まっている）は別なので、推測で埋めない。
 
-def test_the_cpu_fan_is_only_reported_when_something_names_it(tmp_path, monkeypatch):
+def test_the_cpu_fan_uses_the_label_then_the_chosen_number(tmp_path, monkeypatch):
     from app.monitoring import cpu_fan
 
     root = tmp_path / "hwmon"
@@ -190,11 +190,16 @@ def test_the_cpu_fan_is_only_reported_when_something_names_it(tmp_path, monkeypa
     (chip / "pwm1").write_text("128\n", encoding="utf-8")
     monkeypatch.setattr(cpu_fan, "HWMON_ROOT", root)
     monkeypatch.setattr(cpu_fan, "_from_sensors", lambda: (None, None))
+    monkeypatch.setattr(cpu_fan, "_settings_path", lambda: tmp_path / "cpu-fan.json")
 
-    # 番号しかない状態では採用しない。fan1 が CPU とは限らず、当てにすると
-    # 筐体ファンや水冷ポンプを CPU ファンとして出してしまう。
-    assert cpu_fan.read_cpu_fan() == (None, None)
+    # 名前が無い板では、利用者が選んだ番号（既定 fan1）を使う（2026-11-24 の利用者の依頼で、
+    # 以前の「番号だけでは採用しない」から変えた。選ぶのは 設定 → 表示）。
+    assert cpu_fan.read_cpu_fan() == (620, 50)
+    (chip / "fan2_input").write_text("900\n", encoding="utf-8")
+    cpu_fan.save_index(2)
+    assert cpu_fan.read_cpu_fan() == (900, None)
 
+    # ラベルがあればそれを優先する
     (chip / "fan1_label").write_text("CPU Fan\n", encoding="utf-8")
     assert cpu_fan.read_cpu_fan() == (620, 50)
 
@@ -211,6 +216,7 @@ def test_a_non_super_io_chip_is_never_read_as_the_cpu_fan(tmp_path, monkeypatch)
     (chip / "fan1_input").write_text("900\n", encoding="utf-8")
     monkeypatch.setattr(cpu_fan, "HWMON_ROOT", root)
     monkeypatch.setattr(cpu_fan, "_from_sensors", lambda: (None, None))
+    monkeypatch.setattr(cpu_fan, "_settings_path", lambda: tmp_path / "cpu-fan.json")
 
     assert cpu_fan.read_cpu_fan() == (None, None)
 

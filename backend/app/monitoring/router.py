@@ -163,6 +163,32 @@ def control_deck_auto_update_save(
     return {**result, "busy": auto_update.busy_reasons()}
 
 
+@router.get("/cpu-fan")
+def cpu_fan_settings(user: User = Depends(require_permission("system.view"))):
+    """CPU ファンの選び方。candidates は回転している板のファン（回転数 0 は除く）。"""
+    from app.monitoring import cpu_fan
+
+    rpm, pwm = cpu_fan.read_cpu_fan()
+    return {"index": cpu_fan.configured_index(), "candidates": cpu_fan.list_fans(),
+            "current": {"rpm": rpm, "pwm_percent": pwm}}
+
+
+@router.put("/cpu-fan")
+def cpu_fan_save(
+    body: dict, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    from app.audit import service as audit
+    from app.monitoring import cpu_fan
+
+    try:
+        index = cpu_fan.save_index(body.get("index"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "system.cpu_fan_index", user=user, resource_type="system", request=request, metadata={"index": index})
+    return {"index": index}
+
+
 # L2 の承認（docs/POLICY-autonomous-development.md）。依頼は CLI（./deck.sh approval request）から作る。
 @router.get("/approvals")
 def approvals_list(include_done: bool = False, user: User = Depends(require_permission("settings.manage"))):

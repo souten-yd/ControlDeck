@@ -47,7 +47,24 @@ FEATURES: dict[str, dict] = {
         "summary": "開発の作業場の取り込みで Pull Request を作る。導入後に `gh auth login` でログインも要る。"
                    "OS のパッケージ（sudo が要る）なので、表示されたコマンドをコピーして自分で実行する",
     },
+    "system-nct6775": {
+        "name": "マザーボードのファン（nct6775 ドライバ）",
+        "kind": "system-packages",
+        "category": "tools",
+        "route_gated": False,
+        "packages": {},
+        "module": "nct6775",
+        "summary": "CPU ファンの回転数と PWM を Home に出す。Nuvoton の Super I/O（NCT6799 など）のドライバを読み込むと /sys/class/hwmon に出る。"
+                   "読み込みは sudo が要るので、表示されたコマンドをコピーして自分で実行する。常に読み込むには /etc/modules-load.d の設定も要る",
+    },
 }
+
+
+def _module_loaded(name: str) -> bool:
+    """hwmon にそのドライバのチップが出ているか（読み込み済みの判定）。"""
+    from app.monitoring import cpu_fan
+
+    return bool(cpu_fan._super_io_directories())
 
 
 def _has(probe: dict) -> bool:
@@ -58,16 +75,24 @@ def _has(probe: dict) -> bool:
 
 
 def missing_packages(feature_id: str) -> list[str]:
+    module = FEATURES[feature_id].get("module")
+    if module:
+        return [] if _module_loaded(module) else [module]
     return [package for package, probe in FEATURES[feature_id]["packages"].items() if not _has(probe)]
 
 
 def install_command(feature_id: str) -> str:
     """足りないパッケージだけの導入コマンド。揃っていれば空。"""
     missing = missing_packages(feature_id)
+    module = FEATURES[feature_id].get("module")
+    if module:
+        return (f"sudo modprobe {module} && echo {module} | sudo tee /etc/modules-load.d/{module}.conf") if missing else ""
     return f"sudo apt install -y {' '.join(missing)}" if missing else ""
 
 
 def guide(feature_id: str) -> str:
     """道具が無いときのエラーに添える案内（機能と拡張の項目と、コピーできるコマンド）。"""
+    if FEATURES[feature_id].get("module"):
+        return f"設定 → 機能と拡張 → {FEATURES[feature_id]['name']}（{install_command(feature_id)}）"
     command = install_command(feature_id) or f"sudo apt install -y {' '.join(FEATURES[feature_id]['packages'])}"
     return f"設定 → 機能と拡張 → {FEATURES[feature_id]['name']} から導入してください（{command}）"
