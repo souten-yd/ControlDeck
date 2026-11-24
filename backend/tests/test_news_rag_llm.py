@@ -388,6 +388,7 @@ def test_digest_api_lists_and_returns_sources(admin_client, monkeypatch):
     assert listing["latest"]["daily"]["label"] == "今朝のまとめ" and listing["latest"]["weekly"] is None
     detail = admin_client.get(f"/api/v1/news/digests/{listing['digests'][0]['id']}").json()
     assert {s["url"] for s in detail["sources"]} == {"https://d.test/1", "https://d.test/2"} and detail["sources"][0]["n"] == 1
+    assert all(isinstance(s["topics"], list) for s in detail["sources"])     # 話題の絞り込みへ移る印に使う（2026-11-24 利用者）
     assert admin_client.get("/api/v1/news/digests/99999").status_code == 404
     assert admin_client.post("/api/v1/news/digests/run", json={"period": "monthly"}, headers={"X-Requested-With": "ControlDeck"}).status_code == 422
 

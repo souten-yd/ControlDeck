@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { memo, useMemo, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   DEFAULT_PREFS, KIND_STYLE, LEGACY_DESIGNS, relativeTime, useDigests, useNewsAction, useNewsChannels, useNewsItems, useNewsPrefs, useNewsSettings,
@@ -59,7 +59,7 @@ export function digestLead(digest: Digest | null | undefined, day = today()): st
 const hostOf = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
 
 /** ホームの小さなニュースのカード: 今朝のまとめ・おすすめの 1 位（画像つき）・残りの見出し。見た目はニュースのページの表示のデザインに合わせる。 */
-export function NewsHomeCard() {
+function NewsHomeCardBase() {
   const feedMinutes = useNewsSettings().data?.settings.feed_refresh_minutes ?? 0;      // 設定「ホームのフィードの更新の間隔」
   const { data, isLoading, isError } = useNewsItems({ view: "recommended", kinds: "", q: "", date: "", topic: "", source: "" }, true, feedMinutes);
   const prefs = useNewsPrefs().data ?? DEFAULT_PREFS;
@@ -158,3 +158,6 @@ export function NewsHomeCard() {
     </section>
   );
 }
+
+/** props を持たないので memo で包み、Home の 3 秒ごとのメトリクス更新（親の描き直し）に巻き込まれて描き直されないようにする（流れる文字の滑らかさ）。 */
+export const NewsHomeCard = memo(NewsHomeCardBase);

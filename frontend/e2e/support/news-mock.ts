@@ -145,7 +145,7 @@ export async function mockNews(page: Page, opts: { empty?: boolean; egress?: boo
   const egress = { allowed: opts.egress ?? false };
   const digestOf = (id: number, period: string, day: string, body: string, extra: object = {}) => ({
     id, period, label: period === "daily" ? "今朝のまとめ" : "今週のまとめ", day, body, model: "cloud:openrouter/meta/llama-3.3-70b:free", created_at: at(1),
-    error: "", fallback: false, item_ids: [1, 2], sources: [{ id: 1, n: 1, title: ITEMS[0].title, source: "ITmedia NEWS", url: ITEMS[0].url }, { id: 2, n: 2, title: ITEMS[1].title, source: "GitHub", url: ITEMS[1].url }], ...extra });
+    error: "", fallback: false, item_ids: [1, 2], sources: [{ id: 1, n: 1, title: ITEMS[0].title, source: "ITmedia NEWS", url: ITEMS[0].url, topics: ITEMS[0].topics }, { id: 2, n: 2, title: ITEMS[1].title, source: "GitHub", url: ITEMS[1].url, topics: ITEMS[1].topics }], ...extra });
   const daily = digestOf(1, "daily", new Date().toLocaleDateString("en-CA"),   // 今日の分（ホームのカードの「今朝のまとめ」は今日の分だけ出す）
      "## ローカル LLM\n- 傾向: Qwen の新モデルが公開され、GGUF 版も同時に配布された。[1]\n- 主な技術・製品: Qwen、GGUF、llama.cpp。[1][2]\n- 注目点: ROCm の Flash Attention が高速化した。[2]\n## 今日の 3 行\n- Qwen の新モデルが出た。[1]\n- llama.cpp が速くなった。[2]\n- ローカル LLM の更新が続く。[2]");
   const weekly = digestOf(2, "weekly", "2026-11-23", "## ローカル LLM\n- 見出しだけの一覧です。 [1]", { fallback: true, error: "接続できません", model: "auto" });

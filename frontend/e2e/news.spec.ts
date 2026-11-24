@@ -427,13 +427,14 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await expect(daily).toContainText("今朝のまとめ");
     await expect(weekly).toContainText("今週のまとめ");
     await expect(weekly.getByTestId("digest-fallback")).toContainText("見出しの一覧（LLM なし）");   // LLM なしの印
-    await daily.locator("summary").first().click();
+    await daily.getByRole("button", { name: /今朝のまとめ/ }).click();
     await expect(daily.getByTestId("digest-body")).toContainText("Qwen の新モデルが公開され");
     // 出典の [1] は記事へのリンク
     const cite = daily.getByTestId("digest-body").getByRole("link", { name: "[1]" }).first();
     await expect(cite).toHaveAttribute("href", ITEMS[0].url);
     await expect(cite).toHaveAttribute("rel", /noopener/);
-    await weekly.locator("summary").first().click();
+    await weekly.getByRole("button", { name: /今週のまとめ/ }).click();      // バブルは 1 つずつ開く（今朝は小さく戻る）
+    await expect(weekly.getByTestId("digest-open")).toBeVisible();
     expect(await noOverflow(page)).toBe(true);
     await shot(page, `test-results/news-digest-${width}.png`);
     // アーカイブにまとめの一覧（作れなかった回は理由）
@@ -516,7 +517,7 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await establishSession(page, context);
     await page.goto("/news");
     const daily = page.getByTestId("digest-daily");
-    await daily.locator("summary").first().click();
+    await daily.getByRole("button", { name: /今朝のまとめ/ }).click();
     await expect(daily.getByTestId("digest-three")).toContainText("今日の 3 行");
     await expect(daily.getByTestId("digest-topic").first()).toContainText("傾向");
     await expect(daily.getByTestId("digest-topic").first()).toContainText("主な技術・製品");
