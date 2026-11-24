@@ -438,3 +438,35 @@
 }
 @media (prefers-reduced-motion: reduce) { .nw-digests-track { transition-duration: 80ms; } }
 .nw[data-reduce="true"] .nw-digests-track { transition-duration: 80ms; }
+
+/* ニュースリーダー（/news/read/<id>）。読みやすさ優先: 行の長さは 40 字前後、行間は広め、携帯でもはみ出さない。 */
+.nr { max-width: 44rem; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.nr-bar { display: flex; gap: 8px; }
+.nr-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; color: var(--nw-muted); font-size: .8rem; }
+.nr-title { margin: 0; font-size: clamp(1.35rem, 5vw, 1.9rem); line-height: 1.35; font-weight: 800; overflow-wrap: anywhere; }
+.nr-hero { margin: 0; position: relative; border-radius: var(--nw-radius); overflow: hidden; background: var(--nw-surface); }
+.nr-hero img { display: block; width: 100%; max-height: 15rem; object-fit: cover; }
+.nr-label { margin: 0; font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: var(--nw-muted); }
+.nr-muted { color: var(--nw-muted); font-size: .85rem; margin: 0; }
+.nr-summary { border: 1px solid var(--nw-line); border-left: 4px solid var(--nw-accent); background: var(--nw-surface); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; margin: 0 !important; }
+.nr-summary p { margin: 0; line-height: 1.8; font-size: 1rem; }
+.nr-origin { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.nr-url { display: flex; flex-direction: column; min-width: 0; flex: 1 1 14rem; font-weight: 700; text-decoration: underline !important; text-underline-offset: 3px; }
+.nr-fullurl { font-weight: 400; font-size: .72rem; color: var(--nw-muted); overflow-wrap: anywhere; word-break: break-all; }
+.nr-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: .85rem; }
+.nr-progress { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--nw-accent); }
+.nr-toggle { display: inline-flex; gap: 6px; align-items: center; min-height: 32px; }
+.nr-body { display: flex; flex-direction: column; gap: 14px; font-size: 1.02rem; line-height: 1.9; overflow-wrap: anywhere; }
+.nr-body p, .nr-body ul, .nr-body blockquote { margin: 0; }
+.nr-body ul { padding-left: 1.3em; }
+.nr-body blockquote { border-left: 3px solid var(--nw-line); padding-left: 12px; color: var(--nw-muted); }
+.nr-h { margin: 8px 0 0; font-size: 1.2rem; line-height: 1.5; font-weight: 800; }
+.nr-pending { opacity: .62; }
+.nr-pending::before { content: "未訳"; display: inline-block; font-size: .62rem; letter-spacing: .1em; border: 1px solid var(--nw-line); border-radius: 999px; padding: 0 6px; margin-bottom: 2px; color: var(--nw-muted); }
+.nr-src { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--nw-line); color: var(--nw-muted); font-size: .85rem; line-height: 1.6; }
+.nr-note { color: var(--nw-muted); font-size: .75rem; margin: 2px 0 0; }
+.nr-code { margin: 0; padding: 10px 12px; background: var(--nw-surface); border: 1px solid var(--nw-line); border-radius: 10px; overflow-x: auto; font-size: .82rem; line-height: 1.5; max-width: 100%; }
+.nr-fig { margin: 0; } .nr-fig img { max-width: 100%; height: auto; border-radius: 10px; display: block; }
+.nr-failed { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; border: 1px dashed var(--nw-line); border-radius: 12px; padding: 12px 14px; }
+.nr-failed p { margin: 0; line-height: 1.7; }
+@media (max-width: 480px) { .nr-body { font-size: 1rem; } .nr-summary p { font-size: .98rem; } }

@@ -57,6 +57,7 @@ _GPU_USED = re.compile(r"offloaded [1-9]\d*/\d+ layers to GPU|\b(?:ROCm|CUDA|Vul
 _run_lock = threading.Lock()          # 同時に 2 つ起動しない
 _live: set["CpuLlmServer"] = set()
 _live_lock = threading.Lock()
+_priority_waiting = 0             # 順番待ちをしているリーダー（利用者が待っている）の数。下ごしらえは次のバッチの前に譲る
 
 
 class CpuLlmUnavailable(RuntimeError):
@@ -287,13 +288,16 @@ class CpuLlmServer:
             _live.discard(self)
 
     # 非同期
-    async def complete(self, messages: list[dict], *, max_tokens: int, schema: dict | None = None, temperature: float = 0.2) -> str:
+    async def complete(self, messages: list[dict], *, max_tokens: int, schema: dict | None = None, temperature: float = 0.2,
+                       think: bool | None = None) -> str:
         """1 回の生成。schema があれば llama-server の response_format: json_schema で出力の形を強制する（壊れた JSON が出ない）。"""
         import httpx
 
         if self.proc is None or self.proc.poll() is not None:
             raise CpuLlmUnavailable("llama-server が止まっています")
         body: dict = {"model": "news-cpu", "messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": False}
+        if think is not None:      # False なら考える過程（reasoning）を出さない（長い入力だと考えるだけで出力の上限を使い切り、答えが空になる）
+            body["chat_template_kwargs"] = {"enable_thinking": think}
         if schema is not None:
             body["response_format"] = {"type": "json_schema", "json_schema": {"name": "prep", "strict": True, "schema": schema}}
         try:
@@ -312,9 +316,16 @@ class CpuLlmServer:
 
 
 @contextlib.asynccontextmanager
-async def session() -> AsyncIterator[CpuLlmServer]:
+async def session(priority: bool = False) -> AsyncIterator[CpuLlmServer]:
     """下ごしらえの 1 回の実行の間だけ llama-server を起動する。抜けるときは（例外・キャンセルでも）必ず止める。同時に 2 つは起動しない。"""
-    got = await asyncio.to_thread(_run_lock.acquire, True, WAIT_OTHER)
+    global _priority_waiting
+    if priority:
+        _priority_waiting += 1
+    try:
+        got = await asyncio.to_thread(_run_lock.acquire, True, WAIT_OTHER)
+    finally:
+        if priority:
+            _priority_waiting -= 1
     if not got:
         raise CpuLlmUnavailable("別の下ごしらえが終わるのを待ちましたが、終わりませんでした")
     server = CpuLlmServer()
@@ -326,6 +337,11 @@ async def session() -> AsyncIterator[CpuLlmServer]:
             await asyncio.shield(asyncio.to_thread(server.stop))
         finally:
             _run_lock.release()
+
+
+def priority_waiting() -> int:
+    """リーダー（利用者が待っている）が CPU の LLM の順番を待っているか。待っていれば下ごしらえは次のバッチの前に譲る。"""
+    return _priority_waiting
 
 
 def stop_all() -> None:

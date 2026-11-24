@@ -288,9 +288,11 @@ for (const width of [1280, 320]) {
 
     // 見出しを開くと open を記録する
     const link = page.getByTestId("section-local-llm").getByRole("link", { name: /Qwen の新しいモデル/ }).first();
-    await link.evaluate((a) => a.addEventListener("click", (e) => e.preventDefault()));
-    await link.click();
+    await link.click();      // 外へ飛ばず、ControlDeck の中のリーダー（/news/read/<id>）が開く
+    await expect(page).toHaveURL(/\/news\/read\/1$/);
     await expect.poll(() => opened).toContain(1);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/news$/);
 
     // 新着: チャンネルと種類で絞る
     await page.getByRole("tab", { name: "新着" }).click();
@@ -382,8 +384,8 @@ test("ニュース: ホームのカード・見出しは新しいタブで open 
   const home = page.getByRole("region", { name: "ニュース" });
   const link = home.getByRole("link", { name: /Qwen の新しいモデル/ });
   await expect(link).toBeVisible();
-  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
-  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("href", "/news/read/1");      // リーダーで読む（外へ飛ばない）
+  await expect(home.getByRole("link", { name: /llama.cpp b9042/ })).toHaveAttribute("target", "_blank");      // release は今まで通り外へ
   await expect(home.getByTestId("home-digest")).toHaveCount(0);
   await page.locator("[data-shell-sidebar]").getByRole("link", { name: "News", exact: true }).click();
   await expect(page).toHaveURL(/\/news$/);

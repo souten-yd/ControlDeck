@@ -5,6 +5,7 @@ import { relativeTime, type NewsHome, type NewsItem, type NewsPrefs } from "../.
 import { InterestPanel, TrendsPanel } from "./NewsAside";
 import { Media, NewsCard, type CardChannel } from "./NewsCard";
 import { chNo } from "./newsTheme";
+import { ArticleLink } from "./ArticleLink";
 
 export const external = (url: string) => /^https?:\/\//.test(url);
 export const visible = (items: NewsItem[]) => items.filter((i) => !i.state.hide);
@@ -20,19 +21,18 @@ function OnAir({ home, onTopic, onOpen }: { home: NewsHome; onTopic: (t: string)
   const item = choice === "all" ? (home.onair && !home.onair.state.hide ? home.onair : null) : visible(section?.items ?? [])[0] ?? null;
   const channel = home.channels.find((c) => c.id === (choice === "all" ? item?.channel : choice));
   const color = channel?.color;
-  const link = item?.url ? { href: item.url, ...(external(item.url) ? { target: "_blank", rel: "noopener noreferrer" } : {}), onClick: () => onOpen(item.id) } : null;
   return (
     <section ref={swipe.ref} {...swipe.handlers} className="nw-onair nw-swipe" data-testid="onair-swipe" aria-label="ON AIR" style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
       <div className="nw-onair-copy" data-swipe-move>
         <p className="nw-live"><i aria-hidden /> ON AIR{channel && <span className="nw-kicker" data-testid="onair-channel"> · {chNo(channel.number)} · {channel.name}</span>}</p>
         {item ? (
           <>
-            <h2 className="nw-head nw-onair-title" data-testid="onair-title">{link ? <a {...link}>{item.title}</a> : item.title}</h2>
+            <h2 className="nw-head nw-onair-title" data-testid="onair-title"><ArticleLink item={item} onOpen={() => onOpen(item.id)}>{item.title}</ArticleLink></h2>
             {item.summary && <p className="nw-muted" style={{ margin: 0, lineHeight: 1.6 }}>{item.summary}</p>}
             <TranslatedMark item={item} />
             <p className="card-meta"><span>{item.source}</span><span>· {relativeTime(item.published_at)}</span></p>
             {item.topics.length > 0 && <ul className="card-chips" aria-label="話題">{item.topics.slice(0, 4).map((t) => <li key={t}><button type="button" onClick={() => onTopic(t)}>{t}</button></li>)}</ul>}
-            {link && <a className="nw-btn on" style={{ alignSelf: "flex-start" }} {...link} aria-label="読む →">読む →</a>}
+            {item.url && <span style={{ alignSelf: "flex-start" }}><ArticleLink item={item} onOpen={() => onOpen(item.id)} className="nw-btn on" label="読む →">読む →</ArticleLink></span>}
           </>
         ) : <p className="nw-muted">このチャンネルにはまだ記事がありません。</p>}
       </div>

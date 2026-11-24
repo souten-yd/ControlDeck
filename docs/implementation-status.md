@@ -11,6 +11,15 @@
 - CPU ファン: `monitoring/cpu_fan.py` を拡張（読み取りだけ）。優先は hwmon の `fanN_label`（CPU_FAN など）→ `sensors -j` の名前 → 設定の番号（既定 fan1、`data/cpu-fan.json`）。回転数と PWM（pwmN/255 を %）。ドライバが無い・読めないときは何も出さない。`GET/PUT /system/cpu-fan`（候補は回転数 0 を除く）。設定 → 表示 に「CPU ファン」の選択。補足の行は「✻1200 rpm・PWM 45%」（320px では rpm・PWM の文字を省く）。
 - 機能と拡張: 「マザーボードのファン（nct6775 ドライバ）」（`system_packages.py`）。`sudo modprobe nct6775 && echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf` をコピーして自分で実行（ボタンで sudo は実行しない）。hwmon に Super I/O が出ていれば導入済み。
 - 試験: `backend/tests/test_cpu_fan.py`、E2E `frontend/e2e/home-cpu-fan-colors.spec.ts`（色の computed style・容量の位置・ファンの表示〔WebSocket を模擬〕）。
+## 2026-11-24 ニュースリーダー（記事を ControlDeck の中で読む）と、「あなたの興味」の × で消えない不具合
+- 利用者「あなたの興味…それ × をしても消えない」「記事を押すと元ページへ飛ぶ…本文を取得して、英語なら日本語に翻訳して、リーダーみたいな形で表示…冒頭にその全文の要約、その下に元リンク先のアドレス、翻訳文をその下から」「参照元の記事の名前や概要をそのまま記載し、LLM で変換が終わったものから順次変えていけば、見れない不具合は発生しない」。
+- × の原因: 画面の「あなたの興味」はホームの 1 回の読み込み（`home.interest`）から描くのに、`useMuteTopic` は別のキャッシュ（`profile`）しか差し替えていなかった（API は成功して muted.json も更新されていた）。ホームの `interest` も同じ結果へ差し替え、ホームを読み直すようにした。「外した語」の押して戻す（`PUT /news/profile/mute` の `muted:false`）は既にあり、E2E で確認。
+- リーダー: `/news/read/<記事の id>`（`pages/NewsReader.tsx`・`features/news/ArticleLink.tsx`）。記事の題・カード・ON AIR・ホームのカードは release・event・RAG にだけ残る記事を除き、外へ飛ばずリーダーを開く（開いたことは今まで通り好みの記録）。上から 要約 → 元の記事（ドメインと URL・「元の記事を開く」は新しいタブ）→ 本文（英語は日本語の訳、「原文も表示」で併記・日本語はそのまま）。取り出せなければ抜粋と「元の記事を開く」「もう一度取り出す」。
+- 本文: `app/news/reader.py`。`web_collector.fetch.collect`（私的 IP の遮断・大きさ 4MB・時間 20 秒・Trafilatura）で取り、Google ニュースは `gnews.resolve` で元の URL に解いてから。Markdown を 段落・見出し・リスト・引用・コード・画像・表 に分け（長い段落は文の切れ目で 1500 字以内）、`news_reader` 表（記事ごと・本文の hash・要約・訳・止まった理由）に保存する。次からは通信も LLM も使わずすぐ出す。
+- 順に差し替え: `GET /news/items/{id}/reader` は取り出し中・要約待ち・訳の途中（段落ごとの `ja`・`訳 n/m`）をそのまま返し、画面が 1.5 秒ごとに読み直す。仕事は裏の task（記事ごとに 1 つ）。要約 → 先頭から段落を最大 6 つ・1800 字ずつ 1 回で訳す（json_schema で番号ごと・訳せなかった段落だけ 1 回送り直し）。上限 1 万字、残りは `POST …/reader/more`（「続きを訳す」）。止まったら `llm_error` と「続きから訳す」（`…/reader/retry`）。
+- モデル: 下ごしらえと同じ `llm.prep_model`（既定は CPU の Gemma 4 E2B）。`cpu_llm.session(priority=True)` で順番を取り（同時に 2 つ起動しない）、下ごしらえは次のバッチの前に譲る（`priority_waiting()`）。リーダーの呼び出しは `enable_thinking:false`（考える過程だけで出力の上限を使い切り、要約が空になった: 本番の実測）。外部のモデルを選んでいるときは外部への送信の許可（呼び出し元 news）に従い、記事の本文を送る（設定の説明に「リーダーで開いた記事の本文を送る」と明記）。
+- 試験: `backend/tests/test_news_reader.py`・`frontend/e2e/news-reader.spec.ts`。
+
 ## 2026-11-24 ニュースの画面: 指でずらしてチャンネル・まとめを切り替え、流れる文字をなめらかに、上の部分をすっきり
 - 利用者「CH の上で左右にフリックすると CH が変わるように」「NEWS の右から左に流れるやつはスムーズに」「今週のまとめの上で左右にフリックすると今朝のまとめ」「取り直すボタンがある行から今週のまとめまでの表示がやぼったい」。
 - 指でずらす部品 `components/useSwipe.ts`: 最初の 8px で横か縦かを決め（縦はページのスクロールに任せる）、指に付いて動き、離した位置（幅の 25%）か速さ（0.45px/ms）で前後へ。端は 0.25 倍に重くして止める。画面の左右 20px は始点にしない（メニューを引く操作 `useNavSwipe` と同じ。`data-swipe-surface` の中はこちらを優先し、端だけ今まで通りメニュー）。transform と opacity だけ・ease-out・reduced-motion は 80ms。ON AIR（放送局）と新着・アーカイブの一覧（全チャンネル → CH 01 → …）に、まとめの 2 枚は狭い幅で 1 枚幅のカルーセル（点 2 つ）。デザインごとのホームには「いまのチャンネル」の切り替えが無いので付けていない（チャンネルのナビは一覧への入口）。

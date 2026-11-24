@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { KIND_STYLE, relativeTime, type NewsHome, type NewsItem, type NewsPrefs } from "../../api/news";
 import { ArchiveSection, ChannelSections, external, HomeAside, NumbersSection, Trio, visible } from "./BroadcastHome";
 import { Media } from "./NewsCard";
+import { ArticleLink } from "./ArticleLink";
 import { chNo } from "./newsTheme";
 
 /** 放送局以外のデザインの「ホーム」。中身（まとめ・ON AIR の 1 本・チャンネル・数字・アーカイブ）は放送局と同じデータで、
@@ -13,13 +14,8 @@ export interface DesignHomeProps {
 }
 
 /** 記事への a の属性（外部は別タブ・開いたら既読の記録）。 */
-function linkProps(item: NewsItem, onOpen: (id: number) => void) {
-  if (!item.url) return null;
-  return { href: item.url, ...(external(item.url) ? { target: "_blank", rel: "noopener noreferrer" } : {}), ...(item.archived ? {} : { onClick: () => onOpen(item.id) }) };
-}
 function Title({ item, onOpen }: { item: NewsItem; onOpen: (id: number) => void }) {
-  const link = linkProps(item, onOpen);
-  return link ? <a {...link}>{item.title}</a> : <>{item.title}</>;
+  return <ArticleLink item={item} onOpen={() => onOpen(item.id)}>{item.title}</ArticleLink>;
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false });
 const domain = (url: string | null) => { try { return url && external(url) ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };

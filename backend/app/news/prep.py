@@ -237,16 +237,19 @@ async def run(items: list[dict]) -> dict:
         return {"done": 0, "calls": 0, "error": why}
     try:
         async with cpu_llm.session() as server:      # 1 回の実行の間だけ起動し、終わったら必ず止める
-            return await _run_batches(todo, CPU_BATCH, lambda part: _ask_cpu(server, part), deadline=time.monotonic() + CPU_RUN_SECONDS)
+            return await _run_batches(todo, CPU_BATCH, lambda part: _ask_cpu(server, part), deadline=time.monotonic() + CPU_RUN_SECONDS, ask_yield=lambda: cpu_llm.priority_waiting() > 0)
     except cpu_llm.CpuLlmUnavailable as exc:
         logger.warning("CPU の LLM を使えませんでした: %s", exc)
         return {"done": 0, "calls": 0, "error": str(exc)}
 
 
-async def _run_batches(todo: list[dict], batch: int, ask, *, deadline: float | None = None) -> dict:
+async def _run_batches(todo: list[dict], batch: int, ask, *, deadline: float | None = None, ask_yield=None) -> dict:
     done = calls = 0
     for start in range(0, len(todo), batch):
         part = todo[start:start + batch]
+        if ask_yield is not None and ask_yield():
+            await asyncio.to_thread(_mark_failed, [i["id"] for i in todo[start:]])      # リーダーに譲る。残りは次の取得で送り直す
+            return {"done": done, "calls": calls, "error": "リーダーに順番を譲りました（残りは次の取得で下ごしらえします）"}
         if deadline is not None and time.monotonic() > deadline:
             await asyncio.to_thread(_mark_failed, [i["id"] for i in todo[start:]])      # 残りは次の取得で送り直す
             return {"done": done, "calls": calls, "error": "時間切れ（残りは次の取得で下ごしらえします）"}

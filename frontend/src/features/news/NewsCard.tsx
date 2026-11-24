@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 import { KIND_STYLE, relativeTime, useNewsAction, type NewsAction, type NewsItem } from "../../api/news";
 import { useToasts } from "../../stores";
 import { chNo } from "./newsTheme";
+import { ArticleLink } from "./ArticleLink";
 
 export interface CardChannel { id: string; name: string; color: string; number: number }
 
@@ -20,7 +21,6 @@ export function Media({ item, color, className = "card-media", children }: { ite
   );
 }
 
-const external = (url: string) => /^https?:\/\//.test(url);
 
 /** 放送局のカード。label は NOW・TODAY・THIS WEEK など（札）。read は既読を薄くするとき。 */
 export function NewsCard({ item, channel, label, hideRemoves = false, dimRead = false, onTopic }: {
@@ -38,7 +38,6 @@ export function NewsCard({ item, channel, label, hideRemoves = false, dimRead = 
   };
   const open = () => send("open");
   const archived = item.archived === true;      // RAG にだけ残る記事: 操作の相手（id）が無い
-  const link = item.url ? { href: item.url, ...(external(item.url) ? { target: "_blank", rel: "noopener noreferrer" } : {}), ...(archived ? {} : { onClick: open, onAuxClick: open }) } : null;
   return (
     <article data-news-card className={`nw-card${dimRead && item.state.open ? " read" : ""}`} style={color ? ({ "--ch": color } as CSSProperties) : undefined}>
       <Media item={item} color={color}>{label && <span className="nw-badge">{label}</span>}</Media>
@@ -50,7 +49,7 @@ export function NewsCard({ item, channel, label, hideRemoves = false, dimRead = 
           <span className="src">{item.source}</span>
           <span>· {relativeTime(item.published_at)}</span>
         </p>
-        <h3 className="card-title">{link ? <a {...link}>{item.title}</a> : item.title}</h3>
+        <h3 className="card-title"><ArticleLink item={item} onOpen={open}>{item.title}</ArticleLink></h3>
         {(item.summary || item.snippet) && <p className="card-sum">{item.summary || item.snippet}</p>}
         <TranslatedMark item={item} />
         {archived && <p className="nw-muted" style={{ margin: 0, fontSize: ".72rem" }}>アーカイブ（RAG にだけ残っている記事）</p>}
@@ -60,7 +59,7 @@ export function NewsCard({ item, channel, label, hideRemoves = false, dimRead = 
           </ul>
         )}
         <div className="card-foot">
-          {link ? <a className="card-read" {...link} aria-label="読む →">読む →</a> : <span />}
+          {item.url ? <ArticleLink item={item} onOpen={open} className="card-read" label="読む →">読む →</ArticleLink> : <span />}
           {!archived && <div className="card-acts" role="group" aria-label="操作">
             <button type="button" aria-pressed={item.state.like} onClick={() => toggle("like")} title="もっと見たい">👍<span className="sr-only"> もっと</span></button>
             <button type="button" aria-pressed={item.state.dislike} onClick={() => toggle("dislike")} title="興味なし">👎<span className="sr-only"> 興味なし</span></button>
