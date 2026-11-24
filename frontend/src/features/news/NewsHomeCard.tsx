@@ -7,6 +7,7 @@ import {
 import { Marquee } from "../../components/Marquee";
 import { Skeleton } from "../../components/ui";
 import { Media } from "./NewsCard";
+import { ArticleLink } from "./ArticleLink";
 import { chNo, newsRootProps } from "./newsTheme";
 import "../../styles/news.css";
 
@@ -56,7 +57,6 @@ export function digestLead(digest: Digest | null | undefined, day = today()): st
 }
 
 const hostOf = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
-const linkProps = (url: string) => (/^https?:/.test(url) ? { target: "_blank", rel: "noopener noreferrer" } : {});
 
 /** ホームの小さなニュースのカード: 今朝のまとめ・おすすめの 1 位（画像つき）・残りの見出し。見た目はニュースのページの表示のデザインに合わせる。 */
 export function NewsHomeCard() {
@@ -83,9 +83,7 @@ export function NewsHomeCard() {
     return index < 0 ? null : { ...channels[index], number: index + 1 };
   };
   const style = (item: NewsItem) => { const c = channelOf(item); return c ? ({ "--ch": c.color } as CSSProperties) : undefined; };
-  const title = (item: NewsItem) => item.url
-    ? <a href={item.url} {...linkProps(item.url)} onClick={() => act.mutate({ id: item.id, action: "open" })}>{item.title}</a>
-    : <>{item.title}</>;
+  const title = (item: NewsItem) => <ArticleLink item={item} onOpen={() => act.mutate({ id: item.id, action: "open" })}>{item.title}</ArticleLink>;
   const meta = (item: NewsItem) => {
     const c = channelOf(item);
     const kind = KIND_STYLE[item.kind] ?? KIND_STYLE.news;

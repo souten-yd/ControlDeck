@@ -228,7 +228,11 @@ export function useMuteTopic() {
     mutationFn: ({ topic, muted }: { topic: string; muted: boolean }) =>
       api<NewsProfile>("/news/profile/mute", { method: "PUT", json: { topic, muted } }),
     onSuccess: (profile) => {
+      // 「あなたの興味」の画面はホームの 1 回の読み込み（home.interest）から描く。profile だけ差し替えても画面は変わらない
+      // （2026-11-24 利用者「× をしても消えない」の原因）ので、ホームの興味も同じ結果へ差し替える。
       qc.setQueryData([...key, "profile"], profile);
+      qc.setQueryData<NewsHome>([...key, "home"], (old) => old && { ...old, interest: profile });
+      qc.invalidateQueries({ queryKey: [...key, "home"] });
       qc.invalidateQueries({ queryKey: [...key, "items"] });
     },
   });
@@ -284,3 +288,27 @@ export const KIND_STYLE: Record<NewsKind, { label: string; icon: string; band: s
   reddit: { label: "Reddit", icon: "🗣️", band: "from-orange-500/80 to-red-500/80" },
   event: { label: "出来事", icon: "🔔", band: "from-zinc-500/80 to-slate-600/80" },
 };
+
+
+/** ニュースリーダー（backend/app/news/reader.py）。取り出し・要約・訳の途中の状態をそのまま返す。 */
+export interface ReaderBlock { t: "h" | "p" | "ul" | "q" | "code" | "img" | "table"; src: string; level?: number; alt?: string; ja?: string | null; fail?: boolean }
+export interface ReaderPage {
+  item: { id: number; title: string; source: string; kind: NewsKind; published_at: string; url: string; image_url: string | null };
+  status: "fetching" | "ready" | "failed"; working: boolean; phase: string; excerpt: string;
+  blocks: ReaderBlock[]; summary: string; progress: { done: number; total: number }; remaining: number;
+  domain: string; source_url: string; lang: string; error: string; llm_error: string; model: string;
+}
+export function useReader(id: number) {
+  return useQuery({
+    queryKey: [...key, "reader", id], queryFn: () => api<ReaderPage>(`/news/items/${id}/reader`),
+    // 取り出し中・要約と訳の途中は 1.5 秒ごとに読み直し、できた所から差し替える
+    refetchInterval: (q) => (q.state.data && !q.state.data.working && q.state.data.status !== "fetching" ? false : 1500),
+  });
+}
+export function useReaderAction(id: number, path: "more" | "retry") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<ReaderPage>(`/news/items/${id}/reader/${path}`, { method: "POST" }),
+    onSuccess: (page) => qc.setQueryData([...key, "reader", id], page),
+  });
+}

@@ -94,6 +94,28 @@ class NewsDigest(Base):
     fallback: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class NewsReader(Base):
+    """ニュースリーダー（記事を ControlDeck の中で読む）の保存。記事ごとに 1 行。
+    blocks は本文を段落などに分けた JSON 配列 [{"t": 種類, "src": 原文, "ja": 訳 or null, ...}]。text_hash は取り出した本文（Markdown）の hash（版）。
+    summary は全文の日本語の要約。status=ok は本文を取り出せた、failed は取り出せなかった（error に理由）。llm_error は要約・訳が止まった理由（空なら止まっていない）。"""
+
+    __tablename__ = "news_reader"
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("news_items.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(10), default="ok")
+    error: Mapped[str] = mapped_column(Text, default="")
+    text_hash: Mapped[str] = mapped_column(String(64), default="")
+    final_url: Mapped[str] = mapped_column(String(1000), default="")
+    lang: Mapped[str] = mapped_column(String(8), default="")
+    blocks: Mapped[str] = mapped_column(Text, default="[]")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    char_limit: Mapped[int] = mapped_column(Integer, default=10000)
+    model: Mapped[str] = mapped_column(String(200), default="")
+    llm_error: Mapped[str] = mapped_column(Text, default="")
+    extractor: Mapped[str] = mapped_column(String(80), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
 _LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''"),
                                         ("news_items", "img_prompt", "TEXT DEFAULT ''"), ("news_items", "prep_tries", "INTEGER NOT NULL DEFAULT 0")]

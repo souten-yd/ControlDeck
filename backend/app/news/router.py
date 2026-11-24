@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, service, sources, store
+from app.news import cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -100,6 +100,43 @@ def item_action(item_id: int, body: ActionBody, user: User = Depends(get_current
     if state is None:
         raise HTTPException(status_code=404, detail="記事が見つかりません")
     return {"state": state}
+
+
+def _reader_item(item_id: int, user: User, db: Session) -> NewsItem:
+    item = db.get(NewsItem, item_id)
+    if item is None or (item.user_id is not None and item.user_id != user.id) or item.kind == "event":
+        raise HTTPException(status_code=404, detail="記事が見つかりません")
+    return item
+
+
+async def _reader_view(item: NewsItem) -> dict:
+    row = (await asyncio.to_thread(reader._load, item.id))[1]  # noqa: SLF001
+    if reader.needs_job(row):
+        reader.ensure_job(item.id)
+    return reader.view(item, row)
+
+
+@router.get("/items/{item_id}/reader")
+async def get_reader(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """リーダー（本文・要約・訳）。未取得なら取り出しを裏で始め、途中の状態をそのまま返す（画面が読み直す）。"""
+    return await _reader_view(_reader_item(item_id, user, db))
+
+
+@router.post("/items/{item_id}/reader/more")
+async def reader_more(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """続きを訳す。"""
+    item = _reader_item(item_id, user, db)
+    if not await asyncio.to_thread(reader.more, item_id):
+        raise HTTPException(status_code=409, detail="本文がまだ取り出せていません")
+    return await _reader_view(item)
+
+
+@router.post("/items/{item_id}/reader/retry")
+async def reader_retry(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """取り出せなかった記事の取り直し、止まった要約・訳の続き。"""
+    item = _reader_item(item_id, user, db)
+    await asyncio.to_thread(reader.retry, item_id)
+    return await _reader_view(item)
 
 
 @router.post("/refresh")

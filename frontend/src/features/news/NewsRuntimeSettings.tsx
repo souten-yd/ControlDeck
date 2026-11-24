@@ -122,7 +122,7 @@ export function NewsRuntimeCards() {
         </div>
       </Card>
 
-      <Card id="news-llm" title="使う LLM" hint="用途ごとに選べます。ニュースは公開情報なので、OpenRouter の無料のモデルをおすすめします（ローカルのモデルでも構いません）。LLM に送るのは記事の題・抜粋・出どころだけで、チャットの題・好み・ControlDeck の出来事は送りません。">
+      <Card id="news-llm" title="使う LLM" hint="用途ごとに選べます。ニュースは公開情報なので、OpenRouter の無料のモデルをおすすめします（ローカルのモデルでも構いません）。LLM に送るのは記事の題・抜粋・出どころだけで、チャットの題・好み・ControlDeck の出来事は送りません。ただしリーダー（記事を押して開く画面）で外部のモデルを選んでいるときは、開いた記事の本文（公開情報）を要約と翻訳のために送ります（外部への送信の許可に従います）。">
         <label className={label}>日刊・週刊のまとめ
           <ModelSelect name="まとめのモデル" value={draft.llm.digest_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, digest_model: v } })} /></label>
         <ModelNote model={draft.llm.digest_model} options={options.data} />

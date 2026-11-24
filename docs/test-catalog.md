@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 245 ファイル、2413 テスト（目的の未記入 93 ファイル）
-- E2E: 133 spec、293 テスト
+- backend: 246 ファイル、2425 テスト（目的の未記入 93 ファイル）
+- E2E: 134 spec、297 テスト
 
 ## backend（backend/tests）
 
@@ -753,7 +753,7 @@
 - `test_selected_fan_missing_or_unreadable`
 - `test_missing_hwmon_root_is_silent`
 - `test_save_index_validates_and_broken_file_falls_back`
-- `test_driver_guide_command`
+- `test_driver_guide_command` — 目的: 板に合うファンのドライバの読み込みと、再起動後も読み込む設定のコマンドを出すこと。読み込み済みなら空。
 
 ### backend/tests/test_credential_security.py
 
@@ -2203,6 +2203,23 @@
 - `test_digest_rejects_english_and_retries_once` — 目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
 - `test_news_llm_retries_when_busy_and_not_when_over_budget` — 目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
 - `test_digest_shows_headlines_while_the_llm_is_working` — 目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
+
+### backend/tests/test_news_reader.py
+
+目的: 目的: ニュースリーダー（app/news/reader.py）の試験。本文の取り出し・LLM・通信は全部モック。 根拠: 2026-11-24 利用者「各ニュースの項目を押すと…本文を取得して、英語だった場合は日本語に翻訳して、リーダーみたいな形で表示…冒頭にその全文の要約を書いて、 要約の下に元リンク先のアドレスを記載した上で、翻訳文をその下から書く」「LLM で変換が終わったものから順次変えていけば、見れない不具合は発生しない」。 守ること: 本文の段落の分け方・訳の途中の状態を API が返す・要約と訳の保存と再利用（2 回目は LLM を呼ばない）・取り出せないとき・ CPU の LLM を 2 つ起動しない（リーダーは順番を取り、下ごしらえは譲る）・Google ニュースは元の URL に解いてから取る。
+
+- `test_split_blocks_kinds_and_title_dropped`
+- `test_long_paragraph_is_split_and_window_limits`
+- `test_detect_lang_and_parse_rules`
+- `test_job_extracts_summarizes_translates_and_saves`
+- `test_api_returns_midway_state_and_requires_visibility`
+- `test_japanese_article_is_summarized_not_translated`
+- `test_extraction_failure_keeps_excerpt_and_can_retry`
+- `test_llm_stops_midway_and_resumes_from_there`
+- `test_more_raises_limit_and_translates_rest`
+- `test_google_news_resolves_before_fetching`
+- `test_external_model_respects_egress_permission`
+- `test_reader_takes_turn_before_prep_and_prep_yields` — リーダーが順番を待っている間は、下ごしらえが次のバッチの前に譲る（CPU の LLM を 2 つ起動しない）。
 
 ### backend/tests/test_notify_events.py
 
@@ -4075,7 +4092,7 @@
 
 ### frontend/e2e/home-cpu-fan-colors.spec.ts
 
-目的: 目的: ホームのモバイルのカードで、(1) 利用率と RAM・VRAM の色が違う（computed style・ライト/ダーク）、 (2) RAM・VRAM の容量がグラフの右下に重なる、(3) CPU のカードの補足の行に CPU ファンの回転数と PWM が出る （API はモック）、(4) どの幅でも横にはみ出さない。撮影: test-results/home-fan-colors-{390,320,1280}[-dark].png。 根拠: 2026-11-24 利用者「CPU のところに回転数の表示を追加して・RAM の容量はグラフの右下に・利用率と VRAM 使用率の色が同じなので変えて」。
+目的: 目的: ホームのモバイルのカードで、(1) 利用率と RAM・VRAM の色が違う（computed style・ライト/ダーク）、 (2) RAM・VRAM の容量が補足の行の右端、(3) CPU のカードの補足の行に CPU ファンの回転数が出る（PWM は出さない） （API はモック）、(4) どの幅でも横にはみ出さない。撮影: test-results/home-fan-colors-{390,320,1280}[-dark].png。 根拠: 2026-11-24 利用者「CPU のところに回転数の表示を追加して・RAM の容量はグラフの右下に・利用率と VRAM 使用率の色が同じなので変えて」。
 
 - home cpu fan, colors, capacity (${width}px, ${scheme})
 - home without a readable CPU fan shows nothing for it (390px)
@@ -4195,6 +4212,15 @@
 
 - ニュース設定: 今日の下ごしらえの呼び出し回数と上限（${width}px）
 - ニュース: ON AIR はチャンネルに合う記事（${width}px）
+
+### frontend/e2e/news-reader.spec.ts
+
+目的: ニュースの「あなたの興味」の × とニュースリーダー。API は page.route でモック（外へ通信しない）。 目的: ①興味の × を押すと消え、読み直しても戻らず、「外した語」から戻せる ②記事を押すと外へ飛ばずリーダーが開き、 要約 → 元の記事のリンク → 本文の順に並び、取り出した本文がすぐ出て、訳の途中（訳 n/m）→ 完了へ順に差し替わる ③取り出せないときは抜粋と「元の記事を開く」 ④release は今まで通り外へ ⑤携帯（320・390）・PC（1280）・ライト・ダークで崩れない。 根拠: 2026-11-24 利用者「あなたの興味…それ × をしても消えない」「記事を押すと元ページへ飛ぶ…本文を取得して、英語なら日本語に翻訳して、リーダーみたいな形で 表示…冒頭にその全文の要約、その下に元リンク先のアドレス、翻訳文をその下から」「LLM で変換が終わったものから順次変えていけば、見れない不具合は発生しない」。 */
+
+- ニュース: 興味の × で語が消え、読み直しても戻らず、「外した語」から戻せる
+- ニュース: 記事を押すとリーダーが開き、要約 → 元の記事 → 本文の順で、訳が段落ごとに差し替わる
+- ニュース: リーダーの途中の状態の撮影（320・390・1280、ライト・ダーク）
+- ニュース: 本文を取り出せないときは抜粋と「元の記事を開く」を出し、取り直せる。release は外へ
 
 ### frontend/e2e/news-sources-images.spec.ts
 
