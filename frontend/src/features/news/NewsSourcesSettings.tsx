@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Toggle } from "../models/formControls";
 import { useNewsPresets, useNewsSources, useSaveNewsSources, type NewsConfig, type NewsPreset } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
+import { CheckButton, CheckResultView, SiteAdder } from "./NewsSourceTools";
+import { checkNewsSource, relativeTime, type CheckResult } from "../../api/news";
 
 type ListKey = "github" | "codeberg" | "discourse" | "reddit";
 const LISTS: { key: ListKey; label: string; placeholder: string }[] = [
@@ -73,6 +75,8 @@ export function NewsSourcesSettings() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [feed, setFeed] = useState({ name: "", url: "" });
   const [showPresets, setShowPresets] = useState(false);
+  const [chip, setChip] = useState<{ id: string; result: CheckResult | null; failed: string } | null>(null);
+  const [pre, setPre] = useState<{ busy: boolean; result: CheckResult | null }>({ busy: false, result: null });
   useEffect(() => { if (data) setConfig(data.config); }, [data]);
   if (!config || !data) return null;
 
@@ -82,6 +86,19 @@ export function NewsSourcesSettings() {
       onSuccess: (r) => setConfig(r.config),
       onError: (e) => { setConfig(data.config); toast(e instanceof Error ? e.message : "保存できませんでした", "error"); },
     });
+  };
+  /** フィードを保存する前に、自動で通信確認を流す。取れれば保存、取れなければ警告して「それでも保存」を選ばせる。 */
+  const commitFeed = () => {
+    persist({ ...config, rss: [...config.rss, { name: feed.name.trim(), url: feed.url.trim() }] });
+    setFeed({ name: "", url: "" });
+    setPre({ busy: false, result: null });
+  };
+  const precheck = async () => {
+    setPre({ busy: true, result: null });
+    try {
+      const result = await checkNewsSource({ kind: "rss", value: feed.url.trim(), name: feed.name.trim() });
+      if (result.ok) commitFeed(); else setPre({ busy: false, result });
+    } catch { setPre({ busy: false, result: { ok: false, count: 0, titles: [], ms: 0, status: null, latest: "", error: { code: "other", message: "確認できませんでした", status: null, location: "" } } }); }
   };
   const add = (key: ListKey) => {
     const value = (drafts[key] ?? "").trim();
@@ -111,8 +128,9 @@ export function NewsSourcesSettings() {
         <h3 className="text-xs font-medium text-zinc-500">RSS・Atom のフィード</h3>
         <ul className="mt-2 space-y-1">
           {config.rss.map((f) => (
-            <li key={f.url} className="flex items-center gap-2 text-xs">
+            <li key={f.url} className="flex flex-wrap items-center gap-2 text-xs">
               <span className="min-w-0 flex-1 break-all"><span className="font-medium">{f.name}</span> <span className="text-zinc-500">{f.url}</span></span>
+              {canEdit && <CheckButton kind="rss" value={f.url} name={f.name} testId="news-check-rss" />}
               {canEdit && <button type="button" aria-label={`${f.name} を外す`} onClick={() => persist({ ...config, rss: config.rss.filter((x) => x.url !== f.url) })} className="min-h-9 shrink-0 rounded-lg px-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">削除</button>}
             </li>
           ))}
@@ -120,13 +138,39 @@ export function NewsSourcesSettings() {
         {canEdit && (
           <form className="mt-2 flex flex-col gap-2 sm:flex-row" onSubmit={(e) => {
             e.preventDefault();
-            if (feed.url.trim()) persist({ ...config, rss: [...config.rss, { name: feed.name.trim(), url: feed.url.trim() }] });
-            setFeed({ name: "", url: "" });
+            if (feed.url.trim()) void precheck();
           }}>
             <input aria-label="フィードの名前" value={feed.name} onChange={(e) => setFeed({ ...feed, name: e.target.value })} placeholder="名前" className={`${input} sm:max-w-40`} />
             <input aria-label="フィードの URL" value={feed.url} onChange={(e) => setFeed({ ...feed, url: e.target.value })} placeholder="https://example.com/feed.xml" className={input} />
-            <button type="submit" disabled={save.isPending} className="min-h-10 shrink-0 rounded-lg bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">フィードを追加</button>
+            <button type="submit" disabled={save.isPending || pre.busy} className="min-h-10 shrink-0 rounded-lg bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">{pre.busy ? "確認中…" : "フィードを追加"}</button>
           </form>
+        )}
+        {pre.result && (
+          <div className="mt-2" data-testid="news-feed-precheck">
+            <CheckResultView result={pre.result} testId="news-precheck-result" />
+            {!pre.result.ok && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-red-600 dark:text-red-400">警告: このフィードは今は取れません。</span>
+                <button type="button" onClick={commitFeed} className="min-h-9 rounded-lg border border-zinc-300 px-3 dark:border-zinc-700" data-testid="news-feed-force">それでも保存</button>
+                <button type="button" onClick={() => setPre({ busy: false, result: null })} className="min-h-9 rounded-lg border border-zinc-300 px-3 dark:border-zinc-700">やめる</button>
+              </div>
+            )}
+          </div>
+        )}
+        {canEdit && <SiteAdder config={config} busy={save.isPending} onChange={persist} />}
+        {(config.pages ?? []).length > 0 && (
+          <div className="mt-4">
+            <h3 className="text-xs font-medium text-zinc-500">記事の一覧のページ（RSS が無いサイト・巡回）</h3>
+            <ul className="mt-2 space-y-1">
+              {config.pages.map((f) => (
+                <li key={f.url} className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="min-w-0 flex-1 break-all"><span className="font-medium">{f.name}</span> <span className="text-zinc-500">{f.url}</span></span>
+                  {canEdit && <CheckButton kind="page" value={f.url} name={f.name} testId="news-check-page" />}
+                  {canEdit && <button type="button" aria-label={`${f.name} を外す`} onClick={() => persist({ ...config, pages: config.pages.filter((x) => x.url !== f.url) })} className="min-h-9 shrink-0 rounded-lg px-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">削除</button>}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
       {data.sources.length > 0 && (
@@ -134,7 +178,9 @@ export function NewsSourcesSettings() {
           <summary className="cursor-pointer text-xs font-medium text-zinc-500">ソースの状態（取れなかったもの {data.sources.filter((x) => !x.ok).length} 件）</summary>
           <ul className="mt-2 space-y-1 text-xs">
             {[...data.sources].sort((a, b) => Number(a.ok) - Number(b.ok)).map((x) => (
-              <li key={x.source_key} className={x.ok ? "text-zinc-500" : "text-red-600 dark:text-red-400"}>{x.ok ? "✓" : "✗"} {x.label}{x.ok ? `（${x.count} 件）` : `: ${x.error}`}{x.skipped ? `: ${x.skipped}` : ""}</li>
+              <li key={x.source_key} className={x.ok ? "text-zinc-500" : "text-red-600 dark:text-red-400"}>{x.ok ? "✓" : "✗"} {x.label}{x.ok ? `（${x.count} 件）` : `: ${x.error}`}{x.skipped ? `: ${x.skipped}` : ""}
+                {x.ok_at && <span className="text-zinc-400"> · 最後に取れた {relativeTime(x.ok_at)}</span>}
+                {x.last_error && x.last_error !== x.error && <span className="text-amber-600 dark:text-amber-400"> · 前の失敗: {x.last_error}</span>}</li>
             ))}
           </ul>
         </details>
@@ -147,10 +193,12 @@ export function NewsSourcesSettings() {
             {config[key].map((value) => (
               <li key={value} className="flex items-center gap-1 rounded-full border border-zinc-200 py-0.5 pl-3 pr-1 text-xs dark:border-zinc-700">
                 {value}
+                {canEdit && <CheckButton kind={key} value={value} label="確認" testId={`news-check-${key}`} onResult={(r, failed) => setChip({ id: `${key}:${value}`, result: r, failed })} />}
                 {canEdit && <button type="button" aria-label={`${value} を外す`} onClick={() => remove(key, value)} className="grid h-7 w-7 place-items-center rounded-full text-zinc-400 hover:text-red-500">×</button>}
               </li>
             ))}
           </ul>
+          {chip && chip.id.startsWith(`${key}:`) && (chip.result ? <div><p className="mt-1 text-[11px] text-zinc-500">{chip.id.slice(key.length + 1)}</p><CheckResultView result={chip.result} /></div> : chip.failed ? <p role="alert" className="mt-1 text-xs text-red-600">{chip.failed}</p> : null)}
           {canEdit && (
             <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); add(key); }}>
               <input aria-label={`${label}を追加`} value={drafts[key] ?? ""} onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })} placeholder={placeholder} className={input} />

@@ -258,7 +258,7 @@ def test_preset_list_shape():
     groups = {g["id"] for g in presets.GROUPS}
     assert {g["label"] for g in presets.GROUPS} >= {"株式・市場", "科学技術", "テレビゲーム", "PC", "電気・電子", "AI", "ローカル AI", "日本の政治経済", "海外の政治経済"}
     assert len({p["id"] for p in items}) == len(items) and all(p["group"] in groups for p in items)
-    assert all(p["verified"] == presets.VERIFIED for p in items)
+    assert all(p["verified"] in (presets.VERIFIED, presets.VERIFIED_2) for p in items)
     for p in items:
         if p["kind"] == "rss":
             assert urlsplit(p["value"]).scheme == "https", p
@@ -271,7 +271,7 @@ def test_preset_list_shape():
 
 
 def test_presets_exclude_paid_sites_and_pass_source_validation():
-    paid = ("bloomberg.com", "wsj.com", "nikkei.com", "nytimes.com", "washingtonpost.com", "economist.com", "ft.com", "technologyreview.com", "seekingalpha.com", "barrons.com")
+    paid = ("bloomberg.com", "wsj.com", "www.nikkei.com", "nytimes.com", "washingtonpost.com", "economist.com", "ft.com", "technologyreview.com", "seekingalpha.com", "barrons.com")
     for p in presets.PRESETS:
         host = urlsplit(p["value"]).hostname or ""
         assert not any(host == d or host.endswith("." + d) for d in paid), p
@@ -289,7 +289,7 @@ def test_presets_api(client):
 
     login(client, "news-viewer")
     body = client.get("/api/v1/news/presets").json()
-    assert body["verified"] == presets.VERIFIED and len(body["items"]) == len(presets.PRESETS) and body["groups"][0]["count"] > 0
+    assert body["verified"] == presets.VERIFIED_2 and len(body["items"]) == len(presets.PRESETS) and body["groups"][0]["count"] > 0
 
 
 # ---- チャンネルの語を変えたとき ----

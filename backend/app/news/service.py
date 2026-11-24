@@ -129,6 +129,9 @@ async def refresh(*, force: bool = False, channel_ids: list[str] | None = None) 
                 if key not in keep:
                     _status.pop(key)
         for source, _, info in results:
+            # 最後に取れた時刻は、失敗しても前回の値を残す（画面の「最後に取れた」「最後の失敗」）
+            info["ok_at"] = info["at"] if info["ok"] and not info["skipped"] else (_status.get(source.key) or {}).get("ok_at", "")
+            info["last_error"] = (_status.get(source.key) or {}).get("last_error", "") if info["ok"] else info["error"]
             _status[source.key] = info
         _last.update(finished=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), new=saved["new"])
         after = await _after_save(saved, conf)

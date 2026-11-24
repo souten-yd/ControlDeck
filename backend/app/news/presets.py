@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 VERIFIED = "2026-11-23"
+VERIFIED_2 = "2026-11-24"      # 2 回目に足したもの（本番と同じ取得 http_get で、RSS として 1 件以上読めた日）
 
 GROUPS: list[dict] = [
     {"id": "stock", "label": "株式・市場", "hint": "市況・企業・中央銀行・金融当局"},
@@ -21,13 +22,20 @@ GROUPS: list[dict] = [
     {"id": "electronics", "label": "電気・電子", "hint": "半導体・電子工作・エネルギー"},
     {"id": "ai", "label": "AI", "hint": "AI 全般（研究所・企業・日本語の解説）"},
     {"id": "local-ai", "label": "ローカル AI", "hint": "llama.cpp・ollama・vLLM などの更新、Hugging Face、コミュニティ"},
+    {"id": "xr", "label": "VR・AR・ゲーム開発", "hint": "Quest・SteamVR・Unity など"},
+    {"id": "dev", "label": "開発", "hint": "企業のテックブログ・開発者向けの新着"},
     {"id": "jp-politics", "label": "日本の政治経済", "hint": "国内の報道・省庁・日銀"},
     {"id": "world-politics", "label": "海外の政治経済", "hint": "海外の報道・国際機関"},
 ]
 
 
-def _rss(group: str, name: str, url: str, lang: str = "ja", note: str = "") -> dict:
-    return {"group": group, "kind": "rss", "name": name, "value": url, "lang": lang, "note": note, "key": False}
+def _rss(group: str, name: str, url: str, lang: str = "ja", note: str = "", verified: str = "") -> dict:
+    return {"group": group, "kind": "rss", "name": name, "value": url, "lang": lang, "note": note, "key": False, "verified": verified or VERIFIED}
+
+
+def _n(group: str, name: str, url: str, lang: str = "ja", note: str = "") -> dict:
+    """2026-11-24 に足したもの（参考の note の記事・daige.st の一覧・日本の AI/政治のメディア）。"""
+    return _rss(group, name, url, lang, note, VERIFIED_2)
 
 
 def _gh(group: str, repo: str, note: str = "") -> dict:
@@ -228,6 +236,45 @@ _ENTRIES: list[dict] = [
     _rss("world-politics", "Straits Times World", "https://www.straitstimes.com/news/world/rss.xml", "en"),
     _rss("world-politics", "UN News", "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "en", "国連"),
     _rss("world-politics", "Fox News World", "https://moxie.foxnews.com/google-publisher/world.xml", "en"),
+    # 2026-11-24 に足した分（利用者の参考: note 記事 n0c1c1b8793e2 = [note]、daige.st の 2026 年おすすめ = [daige]）
+    _n("ai", "Google Research ブログ", "https://research.google/blog/rss/", "en", "[note] 旧 feedburner は 2024 年で止まっていたので新しい URL"),
+    _n("ai", "Zenn NLP", "https://zenn.dev/topics/nlp/feed", note="[note]"),
+    _n("ai", "Zenn 機械学習", "https://zenn.dev/topics/%E6%A9%9F%E6%A2%B0%E5%AD%A6%E7%BF%92/feed", note="[note]"),
+    _n("ai", "Qiita 機械学習", "https://qiita.com/tags/%E6%A9%9F%E6%A2%B0%E5%AD%A6%E7%BF%92/feed", note="[note]"),
+    _n("ai", "note #LLM", "https://note.com/hashtag/LLM/rss", note="[note]"),
+    _n("ai", "ブレインパッド", "https://blog.brainpad.co.jp/rss", note="[note]"),
+    _n("ai", "Medium @kyakuno（エッジ AI）", "https://medium.com/feed/@kyakuno", note="[note]"),
+    _n("ai", "Sakana AI", "https://sakana.ai/feed.xml", "en", "国内の AI 企業"),
+    _n("ai", "ELYZA（Zenn）", "https://zenn.dev/p/elyza/feed", note="国内の AI 企業"),
+    _n("ai", "Zenn LLM-jp", "https://zenn.dev/topics/llmjp/feed", note="国産 LLM"),
+    _n("ai", "AWS 日本語ブログ", "https://aws.amazon.com/jp/blogs/news/feed/"),
+    _n("ai", "NVIDIA 日本語ブログ", "https://blogs.nvidia.co.jp/feed/"),
+    _n("ai", "ITmedia エンタープライズ", "https://rss.itmedia.co.jp/rss/2.0/enterprise.xml"),
+    _n("ai", "日経 xtech", "https://xtech.nikkei.com/rss/index.rdf", note="無料の見出し・抜粋"),
+    _n("ai", "gihyo.jp", "https://gihyo.jp/feed/rss2"),
+    _n("ai", "Impress Watch", "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf"),
+    _n("ai", "The Rundown AI", "https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml", "en", "[daige] AI のデイリー"),
+    _n("local-ai", "PyTorch ブログ", "https://pytorch.org/blog/feed/", "en", "[note]"),
+    # VR・AR・ゲーム開発
+    _n("xr", "Meta Quest ブログ", "https://www.meta.com/blog/rss/", "en", "[note] 旧 Oculus ブログ"),
+    _n("xr", "SteamVR 更新情報", "https://steamcommunity.com/games/250820/rss/", "en", "[note]"),
+    _n("xr", "Unity ブログ", "https://unity.com/blog/rss", "en", "[note]"),
+    # 開発（企業のテックブログ）
+    _n("dev", "Apple Developer ニュース", "https://developer.apple.com/jp/news/rss/news.rss", note="[note]"),
+    _n("dev", "メルカリ エンジニアリング", "https://engineering.mercari.com/blog/feed.xml", note="[note]"),
+    _n("dev", "リクルート テックブログ", "https://blog.recruit.co.jp/data/index.xml", note="[note]"),
+    _n("dev", "LINEヤフー テックブログ", "https://techblog.lycorp.co.jp/ja/feed/index.xml", note="[note]"),
+    _n("dev", "DeNA エンジニアリング", "https://engineering.dena.com/index.xml", note="[note]"),
+    _n("dev", "NTT Com エンジニアブログ", "https://engineers.ntt.com/feed", note="[note]"),
+    _n("dev", "Publickey", "https://www.publickey1.jp/atom.xml", note="[note]"),
+    _n("dev", "ByteByteGo", "https://blog.bytebytego.com/feed", "en", "[daige] システム設計"),
+    _n("dev", "Product Hunt", "https://www.producthunt.com/feed", "en", "[daige] 新製品"),
+    # 日本の政治
+    _n("jp-politics", "朝日新聞 政治", "https://www.asahi.com/rss/asahi/politics.rdf"),
+    _n("jp-politics", "首相官邸 新着", "https://www.kantei.go.jp/index-jnews.rdf", note="公式"),
+    _n("jp-politics", "デジタル庁 新着", "https://www.digital.go.jp/rss/news.xml", note="公式"),
+    _n("jp-politics", "文部科学省 新着", "https://www.mext.go.jp/b_menu/news/index.rdf", note="公式"),
+    _n("jp-politics", "国民民主党 新着", "https://new-kokumin.jp/feed", note="政党の公式"),
 ]
 
 # 同じ値が分野をまたいで重複しないよう、最初に出た分野だけ残す（rss は URL、それ以外は kind と値で比べる）
@@ -238,7 +285,7 @@ for _e in _ENTRIES:
     if _k in _seen:
         continue
     _seen.add(_k)
-    PRESETS.append({**_e, "id": f"{_e['kind']}:{_e['value']}", "verified": VERIFIED})
+    PRESETS.append({**_e, "id": f"{_e['kind']}:{_e['value']}", "verified": _e.get("verified") or VERIFIED})
 del _e, _k
 
 
@@ -247,4 +294,4 @@ def listing() -> dict:
     counts: dict[str, int] = {}
     for p in PRESETS:
         counts[p["group"]] = counts.get(p["group"], 0) + 1
-    return {"groups": [dict(g, count=counts.get(g["id"], 0)) for g in GROUPS], "items": PRESETS, "verified": VERIFIED}
+    return {"groups": [dict(g, count=counts.get(g["id"], 0)) for g in GROUPS], "items": PRESETS, "verified": VERIFIED_2}

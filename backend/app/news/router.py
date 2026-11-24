@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
+from app.news import probe, cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -164,6 +164,29 @@ def put_sources(body: dict, user: User = Depends(require_permission("settings.ma
         return {"config": sources.save_config(body)}
     except sources.ConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class DiscoverBody(BaseModel):
+    url: str = Field(min_length=8, max_length=800)
+
+
+class CheckBody(BaseModel):
+    kind: str = Field(pattern="^(rss|page|github|codeberg|discourse|reddit|hackernews|huggingface)$")
+    value: str = Field(default="", max_length=800)
+    name: str = Field(default="", max_length=60)
+
+
+@router.post("/sources/discover")
+async def discover_site(body: DiscoverBody, user: User = Depends(require_permission("settings.manage"))):
+    """「サイトを追加」: URL が RSS ならそのまま、HTML なら RSS の候補（link rel・よくある場所）と、記事の一覧の巡回の可否を返す。
+    外への取得は既存の安全な取得（内部アドレスの遮断・大きさと時間の上限）。保存はしない。"""
+    return await probe.discover(body.url.strip())
+
+
+@router.post("/sources/check")
+async def check_source(body: CheckBody, user: User = Depends(require_permission("settings.manage"))):
+    """通信確認: そのソースを今この場で 1 回取り、件数・最新の見出し 3 件・かかった時間・HTTP の状態・失敗の理由を返す。保存はしない。"""
+    return await probe.check(body.kind, body.value.strip(), body.name.strip())
 
 
 @router.get("/home")

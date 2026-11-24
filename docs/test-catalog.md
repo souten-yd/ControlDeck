@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 246 ファイル、2427 テスト（目的の未記入 93 ファイル）
-- E2E: 136 spec、300 テスト
+- backend: 247 ファイル、2442 テスト（目的の未記入 93 ファイル）
+- E2E: 137 spec、302 テスト
 
 ## backend（backend/tests）
 
@@ -2155,6 +2155,26 @@
 - `test_imagegen_prompt_uses_prep_description_over_fixed_phrase` — 目的: 下ごしらえの英語の描写があれば、決まり文句（地球儀）ではなくそれを絵のプロンプトにすること。
 - `test_gnews_signature_at_the_end_of_a_large_page_is_found` — 目的: Google ニュースの中継のページが 512KB を超え、署名が末尾にあっても解けること。
 
+### backend/tests/test_news_probe.py
+
+目的: 目的: ニュースの「サイトを追加」（RSS の発見・記事の一覧のページの巡回）と「通信確認」の試験。外へ通信しない（HTTP は probe.http_fetch の差し替えで全部モック）。 根拠: 2026-11-24 利用者「任意のサイトのクロール機能を追加できるのか、サイト追加後に通信確認みたいなことがあるといい」 「日本の AI だったりとか政治の情報メディアのサイトからクローリング先を追加して欲しい」。以前から「有料なのは使わない（無料を優先）」。 守ること: RSS/Atom の判定・HTML からの RSS の発見（link rel と /feed など）・一覧のページから記事らしいリンクだけを拾う（外のサイト・案内・タグを除く・件数の上限）・ robots.txt を守る・頻度の上限（前回の結果を返す）・ロボット確認とログインを回避せず理由を言う・通信確認の結果の形（成功と各種の失敗）・設定の検査（pages）・プリセットの形。
+
+- `test_feed_detection_and_non_feed`
+- `test_list_links_picks_only_article_like_same_site_links`
+- `test_list_links_limit_and_www_is_same_site`
+- `test_discover_feed_url_as_is`
+- `test_discover_finds_link_rel_and_common_places`
+- `test_discover_falls_back_to_list_page_and_reports_robots`
+- `test_discover_does_not_bypass_challenge_or_login`
+- `test_fetch_follows_redirects_only_when_asked`
+- `test_crawl_respects_robots_and_gap`
+- `test_robots_missing_allows_but_server_error_denies`
+- `test_check_success_shape_and_failures`
+- `test_check_page_and_other_kinds`
+- `test_pages_config_validation_and_build_sources`
+- `test_new_presets_are_free_https_unique_and_grouped`
+- `test_check_and_discover_api_for_admin`
+
 ### backend/tests/test_news_rag_llm.py
 
 目的: 目的: ニュースの RAG への蓄積・LLM の選択と外部送信の許可・更新のタイミング・日刊週刊のまとめの試験。外へは通信しない（LLM・埋め込み・ページ取得は全部モック）。 根拠: 2026-11-23 利用者「ニュースページ及びフィードの更新タイミング、その際に利用する LLM は個別に設定できること。このデータは基本公開情報だと 思うので OpenRouter の無料 LLM の利用を想定している。もちろんローカル LLM でも良い。検索した情報については、RAG に蓄積し、後で串刺し検索へ 利用したりできるようにして。ニュース用のデータベースは他と分けておいて。」 守ること: - 記事は知識基盤の分野 news（public）へ入り、横断検索（クラウド向けを含む）に出る。本文の取り込みは設定を入れたときだけ。 - クラウドのモデルを選んでいて外部への送信が許可されていなければ、ローカルへ黙って切り替えず、その回のまとめを作らない（理由を残す）。 - クラウドへ出来事・チャットの題・好みは送らない。LLM が落ちたら、印つきの見出しの一覧のまとめになる。 - まとめの時刻・曜日・取得しない時間帯・通知。
@@ -4237,6 +4257,13 @@
 - ニュース: 記事を押すとリーダーが開き、要約 → 元の記事 → 本文の順で、訳が段落ごとに差し替わる
 - ニュース: リーダーの途中の状態の撮影（320・390・1280、ライト・ダーク）
 - ニュース: 本文を取り出せないときは失敗の画面を挟まず元の記事へ移り、一度失敗した記事は一覧から直リンク。release も外へ
+
+### frontend/e2e/news-site-check.spec.ts
+
+目的: ニュースのソース: 「サイトを追加」（RSS の候補・記事の一覧の巡回）と「通信確認」（既存のソース・追加前の自動確認・失敗の表示）。API は page.route で差し替える。 根拠: 2026-11-24 利用者「任意のサイトのクロール機能を追加できるのか、サイト追加後に通信確認みたいなことがあるといい」。 撮影は test-results/news-site-check-{320,1280}.png・news-site-fail-{320,1280}.png。 */
+
+- ニュース: サイトを追加 → 候補の RSS を選んで保存・既存のソースの通信確認・最後に取れた時刻
+- ニュース: 記事の一覧の巡回で追加・取れないフィードは保存の前に警告（それでも保存はできる）
 
 ### frontend/e2e/news-sources-images.spec.ts
 

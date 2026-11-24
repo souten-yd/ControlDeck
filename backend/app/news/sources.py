@@ -29,6 +29,7 @@ KINDS = ("release", "news", "model", "forum", "reddit", "event")
 KIND_LABELS = {"release": "更新", "news": "ニュース", "model": "モデル", "forum": "フォーラム", "reddit": "Reddit", "event": "出来事"}
 MAX_PER_LIST = 200      # プリセットを足しても入る数（分野ごとに 15〜60 件）
 MAX_PER_SOURCE = 30
+MAX_PAGES = 30           # 一覧のページを巡回するソースの数（1 つあたり 1 時間に 1 回・30 件まで）
 SUMMARY_CHARS = 300
 TITLE_CHARS = 300
 
@@ -38,6 +39,7 @@ DEFAULT_CONFIG: dict = {
     "codeberg": ["StillDeadcode/radiance"],
     "rss": [{"name": "GIGAZINE", "url": "https://gigazine.net/news/rss_2.0/"},
             {"name": "Phoronix", "url": "https://www.phoronix.com/rss.php"}],
+    "pages": [],           # 記事の一覧のページを巡回するソース（RSS が無いサイト。probe.crawl_list）
     "hackernews": True,
     "huggingface": True,
     "discourse": ["forum.level1techs.com", "discuss.huggingface.co"],
@@ -142,6 +144,18 @@ def normalize(raw: object) -> dict:
         seen.add(url)
         cleaned.append({"name": (str(feed.get("name") or "").strip() or urlsplit(url).hostname or "RSS")[:60], "url": url})
     out["rss"] = cleaned
+    pages = raw.get("pages", [])
+    if not isinstance(pages, list):
+        raise ConfigError("pages は一覧です")
+    if len(pages) > MAX_PAGES:
+        raise ConfigError(f"pages は {MAX_PAGES} 件までです")
+    out["pages"] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            raise ConfigError("pages の各項目は {name, url} です")
+        url = https_url(page.get("url"))
+        if all(p["url"] != url for p in out["pages"]):
+            out["pages"].append({"name": (str(page.get("name") or "").strip() or urlsplit(url).hostname or "サイト")[:60], "url": url})
     return out
 
 
@@ -284,6 +298,16 @@ async def fetch_rss(feed: dict) -> list[dict]:
         return parse_feed(raw, url=feed["url"], name=feed["name"])
     except ET.ParseError as exc:
         raise RuntimeError(f"フィードを読めません: {exc}") from exc
+
+
+async def fetch_page(page: dict) -> list[dict]:
+    """RSS が無いサイト: 記事の一覧のページを巡回する（robots.txt を守る・同じサイトだけ・件数と頻度の上限。news/probe.py）。"""
+    from app.news import probe
+
+    try:
+        return await probe.crawl_list(page["url"], page["name"])
+    except probe.ProbeError as exc:
+        raise RuntimeError(exc.message) from exc
 
 
 # ---- GitHub・Codeberg の Release ----
@@ -574,6 +598,7 @@ def build_sources(cfg: dict, channels: list[dict] | None = None) -> list[Source]
         sources += [Source(f"codeberg:{r}", f"Codeberg {r}", "release", lambda r=r: fetch_codeberg(r)) for r in cfg["codeberg"]]
     if on.get("news"):
         sources += [Source(f"rss:{f['url']}", f["name"], "news", lambda f=f: fetch_rss(f)) for f in cfg["rss"]]
+        sources += [Source(f"page:{f['url']}", f"{f['name']}（一覧）", "news", lambda f=f: fetch_page(f)) for f in cfg.get("pages", [])]
         if cfg.get("hackernews"):
             sources.append(Source("hn", "Hacker News", "news", fetch_hn))
     if on.get("model") and cfg.get("huggingface"):
