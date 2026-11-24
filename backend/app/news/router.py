@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.news.db import get_news_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import probe, cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
+from app.news import feedgen, fetchlog, probe, sourcemgr, cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
 from app.security.deps import get_current_user, require_permission
@@ -187,6 +187,112 @@ async def discover_site(body: DiscoverBody, user: User = Depends(require_permiss
 async def check_source(body: CheckBody, user: User = Depends(require_permission("settings.manage"))):
     """通信確認: そのソースを今この場で 1 回取り、件数・最新の見出し 3 件・かかった時間・HTTP の状態・失敗の理由を返す。保存はしない。"""
     return await probe.check(body.kind, body.value.strip(), body.name.strip())
+
+
+class GenerateBody(BaseModel):
+    type: str = Field(pattern="^(keyword|github|steam|arxiv)$")
+    keyword: str = Field(default="", max_length=200)
+    lang: str = Field(default="ja", max_length=4)
+    target: str = Field(default="", max_length=300)
+    what: str = Field(default="releases", max_length=12)
+    branch: str = Field(default="main", max_length=100)
+    cats: list[str] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/sources/generate")
+def generate_feed(body: GenerateBody, user: User = Depends(require_permission("settings.manage"))):
+    """「フィードを作る」: キーワード・GitHub・Steam・arXiv の入力から取得先の URL を組み立てる（通信はしない。確認は /sources/check）。"""
+    try:
+        return feedgen.generate(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _manage_rows(db: Session) -> list[dict]:
+    cfg = sources.load_config()
+    stats, bars, totals = fetchlog.summary(db), fetchlog.week_bars(db), fetchlog.article_totals(db)
+    mem = {s["source_key"]: s for s in service.status()["sources"]}
+    rows = []
+    for e in sourcemgr.entries(cfg):
+        st = stats.get(e["key"]) or {}
+        live = mem.get(e["key"]) or {}
+        rows.append({**e, "last_at": st.get("last_at", "") or live.get("at", ""), "last_ok_at": st.get("last_ok_at", "") or live.get("ok_at", ""),
+                     "last_ok": st.get("last_ok"), "last_error": st.get("last_error", ""), "last_count": st.get("last_count", 0), "last_status": st.get("last_status"),
+                     "last_skipped": st.get("last_skipped", ""), "week": bars.get(e["key"], [None] * 7), "total": totals.get(e["key"], 0)})
+    return rows
+
+
+@router.get("/sources/manage")
+def manage_list(user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """「取得先の管理」の一覧: 設定にある全ソース（止めているものも）と、取得の実績（最終取得・最終成功・直近の結果・7 日の成功率・記事の累計）。"""
+    from app.workflows import research_keys
+
+    cfg = sources.load_config()
+    return {"items": _manage_rows(db), "groups": presets.listing()["groups"], "default_interval": channels_mod.load()["interval_minutes"],
+            "reddit_key": research_keys.reddit() is not None, "limit": sources.MAX_PER_LIST, "interval_range": [sources.INTERVAL_MIN, sources.INTERVAL_MAX],
+            "formats": sourcemgr.FORMAT_LABELS, "running": service.status()["running"], "enabled": cfg["enabled"]}
+
+
+@router.get("/sources/manage/detail")
+def manage_detail(key: str = Query(min_length=1, max_length=600), limit: int = Query(default=fetchlog.HISTORY_DEFAULT, ge=1, le=fetchlog.KEEP),
+                  user: User = Depends(get_current_user), db: Session = Depends(get_news_db)):
+    """1 件の詳細: 取得の履歴（直近 limit 回）と、そのソースから入った最近の記事。"""
+    row = next((r for r in _manage_rows(db) if r["key"] == key), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="そのソースはありません")
+    return {"item": row, "history": fetchlog.history(db, key, limit), "articles": fetchlog.recent_articles(db, key)}
+
+
+class BulkBody(BaseModel):
+    action: str = Field(pattern="^(enable|disable|delete|interval|check)$")
+    keys: list[str] = Field(min_length=1, max_length=300)
+    interval: int | None = Field(default=None, ge=0, le=sources.INTERVAL_MAX)
+
+
+@router.post("/sources/manage/bulk")
+async def manage_bulk(body: BulkBody, user: User = Depends(require_permission("settings.manage")), db: Session = Depends(get_news_db)):
+    """選んだソースへの一括の操作。enable・disable・delete・interval（0 は既定に戻す）は設定へ保存、check は通信確認（保存しない・同時 4・40 件まで）。"""
+    cfg = sources.load_config()
+    if body.action == "check":
+        by_key = {e["key"]: e for e in sourcemgr.entries(cfg)}
+        wanted = [by_key[k] for k in body.keys if k in by_key][:40]
+        gate = asyncio.Semaphore(4)
+
+        async def one(e: dict) -> dict:
+            async with gate:
+                return {"key": e["key"], **await probe.check(e["kind"], e["value"], e["name"])}
+        return {"results": await asyncio.gather(*[one(e) for e in wanted])}
+    try:
+        sourcemgr.apply(cfg, body.action, body.keys, body.interval)
+        saved = sources.save_config(cfg)
+    except sources.ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.action == "delete":
+        fetchlog.forget(db, body.keys)
+    return {"count": len(body.keys), "items": _manage_rows(db), "enabled": saved["enabled"]}
+
+
+class AddItem(BaseModel):
+    kind: str = Field(pattern="^(rss|page|github|codeberg|discourse|reddit|hackernews|huggingface)$")
+    value: str = Field(default="", max_length=800)
+    name: str = Field(default="", max_length=60)
+    interval: int | None = Field(default=None, ge=0, le=sources.INTERVAL_MAX)
+
+
+class AddBody(BaseModel):
+    items: list[AddItem] = Field(min_length=1, max_length=400)
+
+
+@router.post("/sources/manage/add")
+def manage_add(body: AddBody, user: User = Depends(require_permission("settings.manage")), db: Session = Depends(get_news_db)):
+    """取得先を足す（目録からのまとめ・フィードを作る手伝い・サイトを追加）。すでにあるものは足さず、間隔だけ付ける。"""
+    cfg = sources.load_config()
+    try:
+        added = sourcemgr.add(cfg, [i.model_dump() for i in body.items])
+        sources.save_config(cfg)
+    except sources.ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"added": added, "items": _manage_rows(db)}
 
 
 @router.get("/home")

@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 VERIFIED = "2026-11-23"
 VERIFIED_2 = "2026-11-24"      # 2 回目に足したもの（本番と同じ取得 http_get で、RSS として 1 件以上読めた日）
 
@@ -277,21 +280,62 @@ _ENTRIES: list[dict] = [
     _n("jp-politics", "国民民主党 新着", "https://new-kokumin.jp/feed", note="政党の公式"),
 ]
 
+# 目録（catalog.json）: 利用者の一覧（CSV）の URL を、本番と同じ取得で確かめたもの（確かめた日・最新の記事・件数つき）と、入れなかったものの理由。
+# 2026-11-24 利用者「これらを元に、情報収集の蓄積、ナレッジ化を効率的に実施してほしい」「有料なのは使わない」「登録時に HTTP 応答、XML 形式、最終更新日時を検証し、配信停止済みのフィードを除外」。
+# 作り方と基準: HTTP 200・RSS/Atom として 1 件以上読める・最新の記事が 90 日以内（政府・規制当局の公式の発表は 365 日以内。stale 印）。Reddit は API キーがあるときだけ取るので取得の確認はしていない（key 印）。
+CATALOG_PATH = Path(__file__).with_name("catalog.json")
+
+
+def _load_catalog() -> dict:
+    try:
+        return json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"verified": VERIFIED_2, "groups": [], "items": [], "excluded": []}
+
+
+CATALOG = _load_catalog()
+GROUPS = GROUPS + [g for g in CATALOG["groups"] if g["id"] not in {x["id"] for x in GROUPS}]
+
 # 同じ値が分野をまたいで重複しないよう、最初に出た分野だけ残す（rss は URL、それ以外は kind と値で比べる）
 PRESETS: list[dict] = []
-_seen: set[tuple[str, str]] = set()
+_seen: dict[tuple[str, str], dict] = {}
 for _e in _ENTRIES:
     _k = (_e["kind"], _e["value"].lower())
     if _k in _seen:
         continue
-    _seen.add(_k)
-    PRESETS.append({**_e, "id": f"{_e['kind']}:{_e['value']}", "verified": _e.get("verified") or VERIFIED})
-del _e, _k
+    _p = {**_e, "id": f"{_e['kind']}:{_e['value']}", "verified": _e.get("verified") or VERIFIED, "also": [], "interval": 0, "recommended": False}
+    _seen[_k] = _p
+    PRESETS.append(_p)
+for _e in CATALOG["items"]:
+    _k = (_e["kind"], _e["value"].lower())
+    if _k in _seen:      # 既存のプリセットと同じ URL: 重ねず、目録の分野を加え、間隔・おすすめを引き継ぐ
+        _p = _seen[_k]
+        _p["also"] = [g for g in dict.fromkeys(_p["also"] + [_e["group"], *_e.get("also", [])]) if g != _p["group"]]
+        _p["interval"] = _p["interval"] or _e.get("interval", 0)
+        _p["recommended"] = _p["recommended"] or _e.get("recommended", False)
+        continue
+    _p = {"group": _e["group"], "also": _e.get("also", []), "kind": _e["kind"], "name": _e["name"], "value": _e["value"], "lang": _e.get("lang", "en"),
+          "note": _e.get("note", ""), "key": _e["kind"] == "reddit", "verified": _e.get("verified", CATALOG["verified"]), "id": f"{_e['kind']}:{_e['value']}",
+          "interval": _e.get("interval", 0), "recommended": _e.get("recommended", False), "latest": _e.get("latest", ""), "count": _e.get("count", 0),
+          "stale": _e.get("stale", False)}
+    _seen[_k] = _p
+    PRESETS.append(_p)
+del _e, _k, _p
+
+EXCLUDED: list[dict] = CATALOG["excluded"]
+
+
+def groups_of(kind: str, value: str) -> list[str]:
+    """そのソースが載っている目録の分野（id）。目録に無ければ空。"""
+    p = _seen.get((kind, value.lower()))
+    return [p["group"], *p["also"]] if p else []
 
 
 def listing() -> dict:
-    """画面用: {"groups": [...], "items": [...]}（件数つきの分野と、全プリセット）。"""
+    """画面用: {"groups": [...], "items": [...], "excluded": [...]}（件数つきの分野と、全プリセット、入れなかったもの）。"""
     counts: dict[str, int] = {}
     for p in PRESETS:
-        counts[p["group"]] = counts.get(p["group"], 0) + 1
-    return {"groups": [dict(g, count=counts.get(g["id"], 0)) for g in GROUPS], "items": PRESETS, "verified": VERIFIED_2}
+        for g in (p["group"], *p["also"]):
+            counts[g] = counts.get(g, 0) + 1
+    return {"groups": [dict(g, count=counts.get(g["id"], 0)) for g in GROUPS if counts.get(g["id"], 0)], "items": PRESETS, "verified": CATALOG["verified"],
+            "excluded": EXCLUDED}

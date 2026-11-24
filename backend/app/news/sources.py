@@ -27,7 +27,7 @@ logger = logging.getLogger("control_deck.news.sources")
 
 KINDS = ("release", "news", "model", "forum", "reddit", "event")
 KIND_LABELS = {"release": "更新", "news": "ニュース", "model": "モデル", "forum": "フォーラム", "reddit": "Reddit", "event": "出来事"}
-MAX_PER_LIST = 200      # プリセットを足しても入る数（分野ごとに 15〜60 件）
+MAX_PER_LIST = 500      # 目録（プリセット 300 件前後）を足しても入る数
 MAX_PER_SOURCE = 30
 MAX_PAGES = 30           # 一覧のページを巡回するソースの数（1 つあたり 1 時間に 1 回・30 件まで）
 SUMMARY_CHARS = 300
@@ -44,7 +44,12 @@ DEFAULT_CONFIG: dict = {
     "huggingface": True,
     "discourse": ["forum.level1techs.com", "discuss.huggingface.co"],
     "reddit": ["LocalLLaMA"],
+    "intervals": {},       # ソースごとの取得の間隔（分）。{source_key: 分}。無いソースは設定の既定（channels の interval_minutes）
+    "disabled": [],        # 止めているソースの source_key（設定には残すが取らない）
 }
+INTERVAL_MIN, INTERVAL_MAX = 5, 10080     # ソースごとの取得の間隔（分）の範囲（5 分〜1 週間）
+MAX_PER_RUN = 60          # 1 回の取得で取るソースの数の上限（見張り）
+MAX_DISABLED = 1000
 
 # 利用者自身のリポジトリの記事は出さない（2026-11-23 利用者「私が作っているコントロールデックとか私のリポジトリのデータは特に表示する必要はない」）。
 # source_key の先頭で判定する（貯まった記事の一覧・ホーム・まとめ・チャンネルから除く）。
@@ -149,6 +154,24 @@ def normalize(raw: object) -> dict:
         raise ConfigError("pages は一覧です")
     if len(pages) > MAX_PAGES:
         raise ConfigError(f"pages は {MAX_PAGES} 件までです")
+    ivs = raw.get("intervals", {})
+    if not isinstance(ivs, dict):
+        raise ConfigError("intervals は {source_key: 分} の表です")
+    out["intervals"] = {}
+    for key, minutes in ivs.items():
+        try:
+            minutes = int(minutes)
+        except (TypeError, ValueError):
+            raise ConfigError(f"取得の間隔は整数（分）です: {str(key)[:60]}") from None
+        if not INTERVAL_MIN <= minutes <= INTERVAL_MAX:
+            raise ConfigError(f"取得の間隔は {INTERVAL_MIN}〜{INTERVAL_MAX} 分です")
+        if len(str(key)) > 600:
+            raise ConfigError("source_key が長すぎます")
+        out["intervals"][str(key)] = minutes
+    off = raw.get("disabled", [])
+    if not isinstance(off, list) or len(off) > MAX_DISABLED:
+        raise ConfigError("disabled は source_key の一覧です")
+    out["disabled"] = list(dict.fromkeys(str(k)[:600] for k in off))
     out["pages"] = []
     for page in pages:
         if not isinstance(page, dict):
@@ -588,9 +611,23 @@ class Source:
     label: str
     kind: str
     fetch: Callable[[], Awaitable[list[dict]]]
+    interval: int = 0          # 分。0 は設定の既定
 
 
 def build_sources(cfg: dict, channels: list[dict] | None = None) -> list[Source]:
+    """設定から取得するソースの一覧。止めているソース（disabled）は含めない。間隔はソースごとの値（intervals）。"""
+    from dataclasses import replace
+
+    off, ivs = set(cfg.get("disabled", [])), cfg.get("intervals", {})
+    sources = [replace(s, interval=ivs.get(s.key, 0)) for s in _configured_sources(cfg) if s.key not in off]
+    if channels:
+        from app.workflows import research_keys
+
+        sources += search_sources(cfg, channels, reddit_key=research_keys.reddit() is not None)
+    return sources
+
+
+def _configured_sources(cfg: dict) -> list[Source]:
     on = cfg["enabled"]
     sources: list[Source] = []
     if on.get("release"):
@@ -607,8 +644,4 @@ def build_sources(cfg: dict, channels: list[dict] | None = None) -> list[Source]
         sources += [Source(f"discourse:{d}", d, "forum", lambda d=d: fetch_discourse(d)) for d in cfg["discourse"]]
     if on.get("reddit"):
         sources += [Source(f"reddit:{s}", f"r/{s}", "reddit", lambda s=s: fetch_reddit(s)) for s in cfg["reddit"]]
-    if channels:
-        from app.workflows import research_keys
-
-        sources += search_sources(cfg, channels, reddit_key=research_keys.reddit() is not None)
     return sources

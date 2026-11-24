@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
-/** ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・プリセット・取得の失敗の件数を出さないこと。API は page.route で差し替える。
+/** ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・取得の失敗の件数を出さないこと。API は page.route で差し替える。
  *  根拠: 2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…アクセントラインだけにして、表示を小さくする」「取れなかった総数が1件ありますと表示されてますけれども、ニュースのところで表示しないでほしい」
  *  「ニュースのソースの右側にプリセットボタン」「ホームのニュースに、今日（無ければ昨日）のまとめの概要と、記事を何個か。何個かは設定できるように」。
  *  撮影は test-results/news-noimg-*.png・news-home-digest-{today,yesterday,none}-{390,1280}.png・news-presets-{320,1280}.png。 */
@@ -132,30 +132,4 @@ test("ニュース: 設定でホームに出す記事の数を変えると表示
   await input.fill("7");
   await expect.poll(() => saved.length).toBeGreaterThan(0);
   expect((saved[saved.length - 1] as { display: { home_items: number } }).display.home_items).toBe(7);
-});
-
-test("ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる", async ({ page, context }) => {
-  test.skip(!hasSession(), "ログイン情報がありません");
-  for (const width of [1280, 390, 320]) {
-    await page.setViewportSize({ width, height: 900 });
-    await mock(page);
-    await page.route(/\/api\/v1\/news\/sources$/, async (r) => {
-      if (r.request().method() === "PUT") return r.fulfill({ json: { config: r.request().postDataJSON() } });
-      return r.fallback();
-    });
-    if (width === 1280) await establishSession(page, context);
-    await page.goto("/settings/news");
-    await page.getByTestId("news-presets-button").click();
-    const panel = page.getByTestId("news-presets");
-    await expect(panel.getByText("ollama/ollama")).toBeVisible();
-    await panel.getByRole("checkbox", { name: /ollama\/ollama/ }).check();
-    await expect(panel.getByRole("checkbox", { name: /ollama\/ollama/ })).toBeChecked();
-    await panel.getByRole("tab", { name: /テレビゲーム/ }).click();
-    await expect(panel.getByText("4Gamer.net")).toBeVisible();
-    await page.getByTestId("news-source-status").locator("summary").click();
-    await expect(page.getByTestId("news-source-status")).toContainText("Phoronix: HTTP 500");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: `test-results/news-presets-${width}.png`, fullPage: true });
-    await page.unrouteAll({ behavior: "ignoreErrors" });
-  }
 });

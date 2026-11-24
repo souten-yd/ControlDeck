@@ -78,13 +78,18 @@ export interface NewsConfig {
   /** RSS が無いサイト: 記事の一覧のページを巡回する（robots.txt を守る・1 時間に 1 回・30 件まで） */
   pages: { name: string; url: string }[];
   hackernews: boolean; huggingface: boolean; discourse: string[]; reddit: string[];
+  /** ソースごとの取得の間隔（分。{source_key: 分}）と、止めているソース。無いソースは設定の既定の間隔 */
+  intervals?: Record<string, number>; disabled?: string[];
 }
 /** 設定 → ニュース → ソース →「プリセット」（backend/app/news/presets.py）。 */
 export interface NewsPreset {
-  id: string; group: string; kind: "rss" | "github" | "codeberg" | "discourse" | "reddit"; name: string; value: string;
+  id: string; group: string; also?: string[]; kind: "rss" | "github" | "codeberg" | "discourse" | "reddit"; name: string; value: string;
   lang: "ja" | "en"; note: string; key: boolean; verified: string;
+  /** 取得の間隔の既定（分。0 は設定の既定）・おすすめ・確かめたときの最新の記事の日と件数・365 日基準で入れた公式（stale） */
+  interval?: number; recommended?: boolean; latest?: string; count?: number; stale?: boolean;
 }
-export interface NewsPresets { groups: { id: string; label: string; hint: string; count: number }[]; items: NewsPreset[]; verified: string }
+export interface NewsExcluded { group: string; name: string; value: string; reason: string }
+export interface NewsPresets { groups: { id: string; label: string; hint: string; count: number }[]; items: NewsPreset[]; verified: string; excluded?: NewsExcluded[] }
 export interface SourceStatus {
   source_key: string; label: string; kind: string; ok: boolean; skipped: string; error: string; count: number; at: string;
   /** 最後に取れた時刻と、最後の失敗の理由（今は取れていても残る） */
@@ -280,7 +285,7 @@ export function useSaveNewsSources() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (config: NewsConfig) => api<{ config: NewsConfig }>("/news/sources", { method: "PUT", json: config }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: [...key, "sources"] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: [...key, "sources"] }); qc.invalidateQueries({ queryKey: [...key, "manage"] }); },
   });
 }
 
@@ -331,4 +336,48 @@ export function useReaderAction(id: number, path: "more" | "retry") {
     mutationFn: () => api<ReaderPage>(`/news/items/${id}/reader/${path}`, { method: "POST" }),
     onSuccess: (page) => qc.setQueryData([...key, "reader", id], page),
   });
+}
+
+/** 取得先の管理（backend/app/news/sourcemgr.py・fetchlog.py）。 */
+export interface ManagedSource {
+  key: string; kind: string; format: string; name: string; value: string; domain: string; enabled: boolean; interval: number; groups: string[];
+  last_at: string; last_ok_at: string; last_ok: boolean | null; last_error: string; last_count: number; last_status: number | null; last_skipped: string;
+  /** 直近 7 日（古い日→今日）の成功率 0〜100・その日に取っていなければ null */
+  week: (number | null)[]; total: number;
+}
+export interface ManageList {
+  items: ManagedSource[]; groups: { id: string; label: string; hint: string; count: number }[]; default_interval: number; reddit_key: boolean; limit: number;
+  interval_range: [number, number]; formats: Record<string, string>; running: boolean;
+}
+export interface FetchHistoryRow { at: string; ok: boolean; status: number | null; count: number; new: number; ms: number; error: string; skipped: string }
+export interface ManageDetail { item: ManagedSource; history: FetchHistoryRow[]; articles: { id: number; title: string; url: string; published_at: string }[] }
+export interface GeneratedFeed { kind: "rss" | "github"; value: string; name: string; lang: "ja" | "en" }
+export type GenerateRequest =
+  | { type: "keyword"; keyword: string; lang: "ja" | "en" }
+  | { type: "github"; target: string; what: "releases" | "commits" | "tags"; branch?: string }
+  | { type: "steam"; target: string }
+  | { type: "arxiv"; cats: string[] };
+export type BulkAction = "enable" | "disable" | "delete" | "interval";
+
+export const useManageList = () =>
+  useQuery({ queryKey: [...key, "manage"], queryFn: () => api<ManageList>("/news/sources/manage"), staleTime: 10_000 });
+export const useManageDetail = (k: string | null) =>
+  useQuery({ queryKey: [...key, "manage", "detail", k], enabled: k !== null, staleTime: 5_000,
+    queryFn: () => api<ManageDetail>(`/news/sources/manage/detail?${new URLSearchParams({ key: k ?? "", limit: "50" })}`) });
+export const generateFeed = (body: GenerateRequest) => api<GeneratedFeed>("/news/sources/generate", { method: "POST", json: body });
+export const bulkCheck = (keys: string[]) => api<{ results: (CheckResult & { key: string })[] }>("/news/sources/manage/bulk", { method: "POST", json: { action: "check", keys } });
+
+export function useManageMutations() {
+  const qc = useQueryClient();
+  const done = () => { qc.invalidateQueries({ queryKey: key }); };
+  return {
+    bulk: useMutation({
+      mutationFn: (b: { action: BulkAction; keys: string[]; interval?: number }) => api<{ count: number }>("/news/sources/manage/bulk", { method: "POST", json: b }),
+      onSuccess: done,
+    }),
+    add: useMutation({
+      mutationFn: (items: { kind: string; value: string; name?: string; interval?: number }[]) => api<{ added: number }>("/news/sources/manage/add", { method: "POST", json: { items } }),
+      onSuccess: done,
+    }),
+  };
 }

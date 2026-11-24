@@ -116,6 +116,24 @@ class NewsReader(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class NewsFetchLog(Base):
+    """取得の履歴（ソースごと・1 回ごと。直近 200 回まで、古いものは消す）。画面「取得先の管理」の実績・成功率・履歴の元（app/news/fetchlog.py）。
+    status は HTTP の状態（取れた = 200・失敗は読み取れた値。分からなければ NULL）。count は取れた記事の数、new は新着（初めて保存した記事）の数。"""
+
+    __tablename__ = "news_fetch_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(600), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    new: Mapped[int] = mapped_column(Integer, default=0)
+    ms: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    skipped: Mapped[str] = mapped_column(Text, default="")
+
+
 # 後から足した列（既にあるファイルにも足す。そのファイルを初めて開いたとき 1 回）。（表, 列, 宣言）
 _LATE_COLUMNS: list[tuple[str, str, str]] = [("news_items", "image_tried", "BOOLEAN NOT NULL DEFAULT 0"), ("news_items", "summary_ja", "TEXT DEFAULT ''"),
                                         ("news_items", "img_prompt", "TEXT DEFAULT ''"), ("news_items", "prep_tries", "INTEGER NOT NULL DEFAULT 0")]
