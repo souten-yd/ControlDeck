@@ -27,6 +27,9 @@ HOST = "news.google.com"
 BATCHEXECUTE_URL = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
 TIMEOUT_SECONDS = 8
 READ_BYTES = 512 * 1024
+# 中継のページ（約 590KB）の署名は末尾にある（2026-11-24 本番で 591,579 文字目。512KB で切ると必ず解けなかった）。
+# 署名を探しながら読み、見つかったら止める。上限はこちら
+PAGE_MAX_BYTES = 2 * 1024 * 1024
 UA = "Mozilla/5.0 (compatible; ControlDeckNews/1.0)"
 _SG = re.compile(r'data-n-a-sg="([^"]+)"')
 _TS = re.compile(r'data-n-a-ts="([^"]+)"')
@@ -115,6 +118,20 @@ async def _read_text(resp: httpx.Response) -> str:
     return bytes(buf[:READ_BYTES]).decode("utf-8", errors="replace")
 
 
+async def _read_signature(resp: httpx.Response) -> tuple[str, str] | None:
+    """中継のページを読みながら署名（data-n-a-sg と data-n-a-ts）を探し、両方見つかったら読むのをやめる。PAGE_MAX_BYTES まで。"""
+    buf = bytearray()
+    async for chunk in resp.aiter_bytes():
+        buf += chunk
+        text = bytes(buf).decode("utf-8", errors="replace")
+        found = parse_signature(text)
+        if found:
+            return found
+        if len(buf) >= PAGE_MAX_BYTES:
+            break
+    return None
+
+
 async def resolve(url: str, client: httpx.AsyncClient | None = None) -> str | None:
     """Google ニュースの記事 URL から元の記事の URL。解けなければ None（例外は投げない）。client は試験用。"""
     art_id = article_id(url)
@@ -133,7 +150,7 @@ async def resolve(url: str, client: httpx.AsyncClient | None = None) -> str | No
             async with http.stream("GET", page) as resp:
                 if resp.status_code != 200:
                     return None
-                found = parse_signature(await _read_text(resp))
+                found = await _read_signature(resp)
             if not found:
                 return None
             async with http.stream("POST", BATCHEXECUTE_URL, content=build_body(art_id, *found),
