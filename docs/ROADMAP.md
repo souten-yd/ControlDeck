@@ -96,7 +96,7 @@
 
 ## 統合ナレッジ基盤（2026-11-25 利用者。QnapNewsHub の完成の後）
 
-ニュース・Web 調査・Deep Research・論文・GitHub・HF・特許・規格・メモを共通の知識として持ち、多方向・多階層のグラフ検索（MPKR）で引く。**計画と採否は `docs/PLAN-integrated-knowledge.md`**。順番: QnapNewsHub をニュースの v1.0 まで完成（その残りの v0.5・v0.6 は統合の土台として汎用に作る）→ I0（評価の問いと基準値）→ I1〜I10。機密（特許の自分のアイデア・機密の会話・規格）は当面 ControlDeck のローカルのまま。
+ニュース・Web 調査・Deep Research・論文・GitHub・HF・特許・規格・メモを共通の知識として持ち、多方向・多階層のグラフ検索（MPKR）で引く。**計画と採否は `docs/PLAN-integrated-knowledge.md`**。順番: QnapNewsHub をニュースの v1.0 まで完成（その残りの v0.5・v0.6 は統合の土台として汎用に作る）→ I0（評価の問いと基準値）→ I1〜I10。2026-11-25 に案 C を決定: QNAP リサーチハブを全分野（機密を含む）の正本にし、ControlDeck は複製を持って分析する。
 
 ## ニュースの専門ページ（2026-11-23）
 
