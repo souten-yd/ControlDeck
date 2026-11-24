@@ -106,7 +106,8 @@ export async function mockNews(page: Page, opts: { empty?: boolean; egress?: boo
     item.state = { ...item.state, [body.action]: body.on };
     return route.fulfill({ json: { state: item.state } });
   });
-  const today = new Date().toISOString().slice(0, 10);
+  // 「今日」は記事の日付から取る（世界時の 0 時台〔日本の 9 時台〕は、数時間前の記事が前の日付になり、その日の記事が 0 件になって揺れた）
+  const today = (items[0]?.published_at ?? new Date().toISOString()).slice(0, 10);
   await page.route(/\/api\/v1\/news\/archive/, (route) => route.fulfill({ json: { days: opts.empty ? [] : [{ date: today, count: items.length }, { date: "2026-10-30", count: 2 }], total: items.length, starred: 0 } }));
   await page.route(/\/api\/v1\/news\/trends/, (route) => route.fulfill({ json: buildHome(ITEMS, channels).trends }));
   await page.route(/\/api\/v1\/news\/profile$/, (route) => route.fulfill({ json: buildHome(ITEMS, channels).interest }));
