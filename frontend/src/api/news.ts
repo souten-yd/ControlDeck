@@ -407,6 +407,9 @@ function useHubAction<T = NewsHubStatus, V = void>(fn: (v: V) => Promise<T>) {
   return useMutation({ mutationFn: fn, onSettled: () => { qc.invalidateQueries({ queryKey: hubKey }); qc.invalidateQueries({ queryKey: [...key, "settings"] }); } });
 }
 export const usePairHub = () => useHubAction((v: { url: string; code: string; name: string }) => api<NewsHubStatus>("/news/hub/pair", { method: "POST", json: v }));
+/** LAN でハブを探した結果（見つけた分と、試した場所）。URL は候補にするだけ。つなぐには番号と指紋の見比べが要る。 */
+export interface HubFound { name: string; version: string; url: string; fingerprint: string; from: string }
+export const useDiscoverHub = () => useMutation({ mutationFn: () => api<{ found: HubFound[]; tried: string[] }>("/news/hub/discover", { method: "POST" }) });
 export const useConfirmHub = () => useHubAction((match: boolean) => api<NewsHubStatus>("/news/hub/confirm", { method: "POST", json: { match } }));
 export const useDisconnectHub = () => useHubAction(() => api<NewsHubStatus>("/news/hub", { method: "DELETE" }));
 export const useSendHubSecret = () => useHubAction(() => api<NewsHubStatus>("/news/hub/secret", { method: "POST" }));
