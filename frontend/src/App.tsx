@@ -25,6 +25,7 @@ import KnowledgePage from "./pages/Knowledge";
 const PatentsPage = lazy(() => import("./pages/Patents"));
 const NewsPage = lazy(() => import("./pages/News"));
 const NewsReaderPage = lazy(() => import("./pages/NewsReader"));
+const NewsSourcesPage = lazy(() => import("./pages/NewsSources"));
 const PatentCasePage = lazy(() => import("./pages/PatentCase"));
 import ModelsPage from "./pages/Models";
 import AssistantPage from "./pages/Assistant";
@@ -141,6 +142,7 @@ function buildRouter() {
       { path: "patents", element: <LazyPage><PatentsPage /></LazyPage> },
       { path: "patents/:id", element: <LazyPage><PatentCasePage /></LazyPage> },
       { path: "news", element: <LazyPage><NewsPage /></LazyPage> },
+      { path: "news/sources", element: <LazyPage><NewsSourcesPage /></LazyPage> },
       { path: "news/read/:id", element: <LazyPage><NewsReaderPage /></LazyPage> },
       { path: "models", element: <ModelsPage /> },
       { path: "assistant", element: <AssistantPage /> },

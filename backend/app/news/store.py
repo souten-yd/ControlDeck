@@ -110,7 +110,8 @@ def upsert_items(db: Session, items: list[dict]) -> dict:
             updated += 1
     db.commit()
     return {"new": new, "updated": updated, "changed": [item_dict(r) for r in touched if r.kind != "event"],
-            "new_ids": [r.id for r in touched if r.id is not None and r.url not in existing]}
+            "new_ids": [r.id for r in touched if r.id is not None and r.url not in existing],
+            "new_urls": [u for u in by_url if u not in existing]}
 
 
 def prune(db: Session, limit: int | None = None, removed_urls: list[str] | None = None) -> int:

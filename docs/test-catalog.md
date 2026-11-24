@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 247 ファイル、2442 テスト（目的の未記入 93 ファイル）
+- backend: 248 ファイル、2452 テスト（目的の未記入 93 ファイル）
 - E2E: 137 spec、302 テスト
 
 ## backend（backend/tests）
@@ -2056,6 +2056,20 @@
 - `test_late_columns_are_added_to_an_existing_file` — あとから足した列は、古いファイルを開いたとき 1 回足される（知識基盤と同じ仕組み）。
 - `test_codeberg_without_releases_reads_tags` — 目的: Release の機能を切った Codeberg のリポジトリでも、タグから更新の記事が取れること。
 
+### backend/tests/test_news_catalog.py
+
+目的: 目的: ニュースの取得先の目録（catalog.json）・ソースごとの取得の間隔・フィードを作る手伝い・取得先の管理（API・取得の履歴）の試験。外へ通信しない。 根拠: 2026-11-24 利用者「これらを元に、情報収集の蓄積、ナレッジ化を効率的に実施してほしい」「有料なのは使わない」 「登録時に HTTP 応答、XML 形式、最終更新日時を検証し、配信停止済みのフィードを除外する方式を推奨」「設定の中にボタンを置き、別の管理ページに飛ばして、疎通確認だったりとか、 これまでの取得実績、最終取得日時などを…新しいサイトの追加、削除などができるように」。 守ること: 目録は https・URL の重複なし・分野あり・確かめた日あり・有料でない・Reddit はキー印／間隔の来たソースだけを 1 回の上限つきで選ぶ／ 作った URL の組み立てと不正な入力の拒否／履歴は 1 ソース 200 回まで／一括の操作は設定を壊さない。
+
+- `test_catalog_shape_unique_https_grouped_verified_free`
+- `test_catalog_has_requested_groups_intervals_and_recommended`
+- `test_due_keys_only_sources_whose_interval_has_come_and_cap`
+- `test_intervals_and_disabled_in_config_and_build_sources`
+- `test_feedgen_builds_urls_and_rejects_bad_input`
+- `test_fetchlog_keeps_200_per_source_and_summarizes`
+- `test_refresh_with_keys_records_history_and_skips_other_sources`
+- `test_manage_api_list_detail_bulk_add_and_permissions`
+- `test_manage_write_needs_settings_manage`
+
 ### backend/tests/test_news_channels.py
 
 目的: 目的: ニュースチャンネル（app/news/channels.py・home.py・prefs.py）の試験。HTTP は全部モック（外へ通信しない）。 根拠: 2026-11-23 利用者「設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」「OZY のようなページのデザインを参考に」。 守ること: チャンネルの語での所属判定と外す語・Google ニュースの RSS の整形と URL・検索のソースの組み立て・/home の形（1 回で全区画）・ 設定の検査（チャンネル・表示・好み）・好みの強さがおすすめの順位に効く・ミュートの語とソース・書き出し（JSON・CSV の式の無害化）。
@@ -2174,6 +2188,7 @@
 - `test_pages_config_validation_and_build_sources`
 - `test_new_presets_are_free_https_unique_and_grouped`
 - `test_check_and_discover_api_for_admin`
+- `test_list_links_cleans_headlines_ledge_style` — 目的: 一覧の巡回の見出しから、画像の説明・先頭の分類と日付を外し、同じ URL では見出しらしいものを選ぶ。
 
 ### backend/tests/test_news_rag_llm.py
 
@@ -4258,22 +4273,22 @@
 - ニュース: リーダーの途中の状態の撮影（320・390・1280、ライト・ダーク）
 - ニュース: 本文を取り出せないときは失敗の画面を挟まず元の記事へ移り、一度失敗した記事は一覧から直リンク。release も外へ
 
-### frontend/e2e/news-site-check.spec.ts
-
-目的: ニュースのソース: 「サイトを追加」（RSS の候補・記事の一覧の巡回）と「通信確認」（既存のソース・追加前の自動確認・失敗の表示）。API は page.route で差し替える。 根拠: 2026-11-24 利用者「任意のサイトのクロール機能を追加できるのか、サイト追加後に通信確認みたいなことがあるといい」。 撮影は test-results/news-site-check-{320,1280}.png・news-site-fail-{320,1280}.png。 */
-
-- ニュース: サイトを追加 → 候補の RSS を選んで保存・既存のソースの通信確認・最後に取れた時刻
-- ニュース: 記事の一覧の巡回で追加・取れないフィードは保存の前に警告（それでも保存はできる）
-
 ### frontend/e2e/news-sources-images.spec.ts
 
-目的: ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・プリセット・取得の失敗の件数を出さないこと。API は page.route で差し替える。 根拠: 2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…アクセントラインだけにして、表示を小さくする」「取れなかった総数が1件ありますと表示されてますけれども、ニュースのところで表示しないでほしい」 「ニュースのソースの右側にプリセットボタン」「ホームのニュースに、今日（無ければ昨日）のまとめの概要と、記事を何個か。何個かは設定できるように」。 撮影は test-results/news-noimg-*.png・news-home-digest-{today,yesterday,none}-{390,1280}.png・news-presets-{320,1280}.png。 */
+目的: ニュース: 画像の無い記事のアクセントライン・ホームのカード（テロップ・まとめの概要・表示数）・取得の失敗の件数を出さないこと。API は page.route で差し替える。 根拠: 2026-11-23 利用者「無意味なアイコンを貼ったデカデカとしたエリア…アクセントラインだけにして、表示を小さくする」「取れなかった総数が1件ありますと表示されてますけれども、ニュースのところで表示しないでほしい」 「ニュースのソースの右側にプリセットボタン」「ホームのニュースに、今日（無ければ昨日）のまとめの概要と、記事を何個か。何個かは設定できるように」。 撮影は test-results/news-noimg-*.png・news-home-digest-{today,yesterday,none}-{390,1280}.png・news-presets-{320,1280}.png。 */
 
 - ニュース: 画像の無い記事は大きな箱でなく細いアクセントラインで、取得の失敗の件数は出ない
 - ニュース: ホームのカード（まとめ: ${name}）はテロップ・まとめの概要・記事 5 件
 - ニュース: テロップ（共通の Marquee）は複数の項目をめくり、触れると止まり、動きを減らす設定では省略表示になる
 - ニュース: 設定でホームに出す記事の数を変えると表示が変わる
-- ニュース: 設定 → ソースのプリセットで分野ごとに足し外しできる
+
+### frontend/e2e/news-sources-manage.spec.ts
+
+目的: ニュース: 取得先の管理（/news/sources）。一覧・絞り込み・詳細と履歴・通信確認・間隔の変更・有効/無効・削除・一括・目録（おすすめをまとめて足す）・フィードを作る手伝い・サイトを追加。API は page.route で差し替える。 根拠: 2026-11-24 利用者「設定の中にボタンを置き、別の管理ページに飛ばして、疎通確認だったりとか、これまでの取得実績、最終取得日時などを確認、サイトごとに確認できたりとか、新しいサイトの追加、削除などができるように」 「これらを元に、情報収集の蓄積、ナレッジ化を効率的に実施してほしい」（目録・分野ごとの取得の間隔・フィードを作る手伝い）。 撮影は test-results/news-sources-{list,detail,add}-{320,1280}-{light,dark}.png。 */
+
+- 取得先の管理: 一覧・絞り込み・詳細と履歴・通信確認・間隔と有効/無効・削除・一括
+- 取得先の管理: おすすめをまとめて足す・分野で足す・フィードを作る手伝い（通信確認つき）・サイトを追加
+- 設定 → ニュース: ソースは要点と「取得先を管理」への入口だけ
 
 ### frontend/e2e/news-swipe.spec.ts
 
