@@ -1,5 +1,9 @@
 # 実装状況
 
+
+## 2026-11-24 ホーム: ファンは回転数だけ・容量を補足の行の右端へ・板に合わせたファンのドライバの案内
+利用者「回転数は RPM だけでいい。VRAM・RAM 容量はもう少し右下に」。PWM の割合を出さず（モバイル・PC）、RAM・VRAM の容量を補足の行の右端へ。本番の ASRock X870 Taichi Creator は nct6775 が No such device、nct6683 force=1 で NCT6686D（fan1〜fan7）が出た。機能と拡張の案内は板が ASRock なら nct6683 force=1（modules-load.d と modprobe.d の options）、ほかは nct6775。CPU の負荷で fan1・fan3 の PWM が上がり、マニュアルの配置から fan1 = CPU_FAN1・fan2 = CPU_FAN2（BIOS で W_PUMP に切り替えられる）。
+
 ## 2026-11-24 ホーム: CPU ファンの回転数・PWM、RAM・VRAM の色と容量の位置
 - 利用者「CPU ファンの回転数や PWM の変調率を CPU のところに。RAM・VRAM の容量はグラフの右下に。GPU・CPU の利用率と VRAM 使用率の色が同じなので変えて」。
 - 色: モバイルの 2 枚のカードで、CPU・GPU は青のまま、RAM・VRAM は橙（線・点・見出しの数字。ライト・ダーク）。PC のカードも RAM・VRAM を橙に（高負荷の赤・橙黄は優先）。凡例の文字は残す。

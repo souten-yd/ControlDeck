@@ -11,6 +11,8 @@ gh（GitHub の CLI）も案内だけにした。GitHub の Release の tar を�
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import glob
 import shutil
 
@@ -48,14 +50,15 @@ FEATURES: dict[str, dict] = {
                    "OS のパッケージ（sudo が要る）なので、表示されたコマンドをコピーして自分で実行する",
     },
     "system-nct6775": {
-        "name": "マザーボードのファン（nct6775 ドライバ）",
+        "name": "マザーボードのファン（Nuvoton のドライバ）",
         "kind": "system-packages",
         "category": "tools",
         "route_gated": False,
         "packages": {},
         "module": "nct6775",
-        "summary": "CPU ファンの回転数と PWM を Home に出す。Nuvoton の Super I/O（NCT6799 など）のドライバを読み込むと /sys/class/hwmon に出る。"
-                   "読み込みは sudo が要るので、表示されたコマンドをコピーして自分で実行する。常に読み込むには /etc/modules-load.d の設定も要る",
+        "summary": "CPU ファンの回転数を Home に出す。Nuvoton の Super I/O のドライバを読み込むと /sys/class/hwmon に出る。"
+                   "ASRock の AM5 の板（NCT6686D/6687D）は nct6683 を force=1 で、ほかの板（NCT67xx）は nct6775。"
+                   "読み込みは sudo が要るので、表示されたコマンドをコピーして自分で実行する（再起動後も読み込む設定を含む）",
     },
 }
 
@@ -81,12 +84,27 @@ def missing_packages(feature_id: str) -> list[str]:
     return [package for package, probe in FEATURES[feature_id]["packages"].items() if not _has(probe)]
 
 
+def fan_driver_command(board_vendor: str | None = None) -> str:
+    """板に合うファンのドライバの読み込みと、再起動後も読み込む設定のコマンド。
+    ASRock の AM5 の板は NCT6686D/6687D で、nct6775 は「No such device」になる。nct6683 を force=1 で読む
+    （2026-11-24 本番の ASRock X870 Taichi Creator で確認: nct6683 が NCT6686D を見つけ、fan1〜fan7 が出た）。"""
+    if board_vendor is None:
+        try:
+            board_vendor = Path("/sys/class/dmi/id/board_vendor").read_text(encoding="utf-8").strip()
+        except OSError:
+            board_vendor = ""
+    if "asrock" in board_vendor.lower():
+        return ("sudo modprobe nct6683 force=1 && echo nct6683 | sudo tee /etc/modules-load.d/nct6683.conf"
+                " && echo 'options nct6683 force=1' | sudo tee /etc/modprobe.d/nct6683.conf")
+    return "sudo modprobe nct6775 && echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf"
+
+
 def install_command(feature_id: str) -> str:
     """足りないパッケージだけの導入コマンド。揃っていれば空。"""
     missing = missing_packages(feature_id)
     module = FEATURES[feature_id].get("module")
     if module:
-        return (f"sudo modprobe {module} && echo {module} | sudo tee /etc/modules-load.d/{module}.conf") if missing else ""
+        return fan_driver_command() if missing else ""
     return f"sudo apt install -y {' '.join(missing)}" if missing else ""
 
 
