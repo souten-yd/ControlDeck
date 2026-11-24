@@ -120,3 +120,26 @@ def test_imagegen_prompt_uses_prep_description_over_fixed_phrase():
     used = imagegen.build_prompt("日本の経済ニュース", "", "news", img="a sleeping cat on a stack of old books")
     assert used.startswith("a sleeping cat on a stack of old books") and imagegen.STYLE in used
     assert imagegen.build_prompt("x", img="日本語の描写").count("日本語") == 0           # 英語以外は使わない
+
+
+def test_gnews_signature_at_the_end_of_a_large_page_is_found():
+    """目的: Google ニュースの中継のページが 512KB を超え、署名が末尾にあっても解けること。
+
+    根拠: 2026-11-24 本番で中継のページが約 593KB、署名は 591,579 文字目にあり、先頭 512KB だけ読んでいたため
+    Google ニュースの記事は 1 件も元の記事に解けなかった（リーダーの本文・記事の画像が取れない原因の 6 割）。
+    """
+    import asyncio
+
+    import httpx
+
+    from app.news import gnews
+
+    page = ("x" * (600 * 1024)) + '<div data-n-a-sg="SIG" data-n-a-ts="123"></div>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text=page)
+        return httpx.Response(200, text=')]}\'\n\n[["wrb.fr","Fbv4je","[\\"garturlres\\",\\"https://example.com/a\\",1]",null,null,null,"1"]]')
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert asyncio.run(gnews.resolve("https://news.google.com/rss/articles/CBMiAUFVX3lxTE5ldw?hl=ja", client=client)) == "https://example.com/a"

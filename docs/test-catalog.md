@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 246 ファイル、2425 テスト（目的の未記入 93 ファイル）
+- backend: 246 ファイル、2426 テスト（目的の未記入 93 ファイル）
 - E2E: 134 spec、297 テスト
 
 ## backend（backend/tests）
@@ -2153,6 +2153,7 @@
 - `test_gnews_resolve_refuses_private_addresses_with_real_guard` — 実物の guarded_client を使う（Google の API が私的な IP を返しても、後段の取得で断る）。ここでは通信せず legacy の解きだけ確かめる。
 - `test_channel_fit_beats_a_newer_unrelated_article_in_ranking_and_onair` — 目的: おすすめの点でチャンネルに合う記事を強く上げ、合わない記事（HN のトップなど）は下げる（消さない）。ON AIR は合う記事から選ぶ。新着の並びは変えない。
 - `test_imagegen_prompt_uses_prep_description_over_fixed_phrase` — 目的: 下ごしらえの英語の描写があれば、決まり文句（地球儀）ではなくそれを絵のプロンプトにすること。
+- `test_gnews_signature_at_the_end_of_a_large_page_is_found` — 目的: Google ニュースの中継のページが 512KB を超え、署名が末尾にあっても解けること。
 
 ### backend/tests/test_news_rag_llm.py
 
