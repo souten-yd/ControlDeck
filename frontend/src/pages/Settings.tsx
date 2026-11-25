@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMeta } from "../api/hooks";
-import { clearDebugFlags, liveOff, marqueeCss } from "../lib/debugFlags";
+import { clearDebugFlags, liveOff, marqueeCss, marqueeDebug } from "../lib/debugFlags";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
@@ -273,7 +273,7 @@ function AccountSection() {
 /** 実機でテロップのカクつきを切り分ける目印（URL の ?marquee=css / ?live=off）。付いていれば見せて、ここから解除できる。 */
 function DebugFlagsSettings() {
   const [, bump] = useState(0);
-  const on = [marqueeCss() && "テロップを CSS の @keyframes で動かす（?marquee=css）", liveOff() && "ホームの取り直しとメトリクスの描き直しを止める（?live=off）"].filter(Boolean) as string[];
+  const on = [marqueeCss() && "テロップを CSS の @keyframes で動かす（?marquee=css）", marqueeDebug() && "テロップの下に動きの計測を出す（?marquee=debug）", liveOff() && "ホームの取り直しとメトリクスの描き直しを止める（?live=off）"].filter(Boolean) as string[];
   return (
     <section className={card} data-testid="debug-flags">
       <h3 className="mb-1 text-sm font-semibold">切り分け用の目印</h3>
