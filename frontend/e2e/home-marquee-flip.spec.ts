@@ -90,3 +90,20 @@ test("ResizeObserver が繰り返し発火し、onfinish が早く来ても、�
   await expect(page.locator("[data-testid=home-telop] [data-marquee]")).toBeVisible();
   await expect(page.getByTestId("marquee-debug")).toHaveCount(0);
 });
+
+/** 収まる項目は文字数から決めた「読む時間」見せる（一律 4 秒だと短い見出しが次々替わって「すごい速さ」に見えた）。
+ *  根拠: 2026-11-26 利用者の iPhone の ?marquee=debug の写し（d=0 total=4000・early=0）。デバッグの表示はテロップの枠の外（body）に出し、テロップを隠さない。 */
+test("収まる項目は読む時間（全角 30 文字で 8 秒）見せ、デバッグの表示はテロップを隠さない", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await establishSession(page, context);
+  const line = "あ".repeat(30);   // 2 秒 + 30 × 0.2 秒 = 8 秒
+  await mock(page, `## 今日の 3 行\n- ${line}[1]\n- ${"い".repeat(30)}[1]`);
+  await page.goto("/?marquee=debug");
+  const dbg = page.getByTestId("marquee-debug").filter({ hasText: "d=0 total=8000" });
+  await expect(dbg).toHaveCount(1);
+  expect(await dbg.evaluate((el) => !el.closest("[data-testid=home-telop]"))).toBe(true);
+  await page.goto("/settings/appearance");
+  await page.getByRole("button", { name: /解除する/ }).click();
+});

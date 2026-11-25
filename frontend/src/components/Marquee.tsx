@@ -2,7 +2,8 @@
  *
  * 2026-11-23 利用者「複数の情報があれば、その一つの情報を流したら、次フリップして別の情報を流す。情報のあるだけ流す。
  * 一つしかなければ、同じテロップをずっと流し続ける」「表示しきらなかった場合は右から左へ自動で流す（ニュースフィードも）」。
- * - 幅に収まる項目は流さず holdMs（既定 4 秒）見せてからめくる。1 件だけで収まるなら止めたまま。
+ * - 幅に収まる項目は流さず、読む時間（readHoldMs: 文字数から。holdMs が下限・10 秒が上限）見せてからめくる。1 件だけで収まるなら止めたまま。
+ *   2026-11-26 iPhone の ?marquee=debug の写しで、短い見出しが一律 4 秒でめくれて「すごい速さで変わる」と見えていた（早いめくりは 0 回）。
  * - 収まらない項目は speed(px/秒) で流し、端で pauseMs 止まる。1 件だけなら同じ項目を流し続ける（めくらない）。
  * - 最後の次は最初へ戻る。めくる動きは flipMs（上へ抜けて次が下から入る）。
  * - 触れる（マウスは載せている間）・押す（タッチは押すたび 停止/再開）と一時停止。
@@ -13,6 +14,7 @@
  *   札・「1/3」・閉じる等を外に出したいときだけ（外側で表示中の項目を知る）。固定したい札・× は Marquee の外に置く。
  *   項目の中身が表示中に変わるときは node を変える（key は同じ）。 */
 import { countRender, marqueeCss, marqueeDebug } from "../lib/debugFlags";
+import { createPortal } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface MarqueeItem { key: string; node: ReactNode }
@@ -43,6 +45,24 @@ function cssAnimation(el: HTMLElement, keyframes: string, durationMs: number, on
 }
 
 /** 1 項目の層。横に流す・見せる時間を数えるのは Web Animations で行い（止める・再開が 1 か所で済む）、終わったら onDone。 */
+/** 収まる項目を見せる時間: 読む速さに合わせる。日本語など全角は 1 文字 1、半角は 0.5 と数え、2 秒＋1 文字 0.2 秒。holdMs が下限、10 秒が上限。 */
+function debugRoot(): HTMLElement {
+  let el = document.getElementById("marquee-debug-root");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "marquee-debug-root";
+    el.className = "pointer-events-none fixed inset-x-1 top-[calc(env(safe-area-inset-top)+4px)] z-[100] flex flex-col gap-1";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+export function readHoldMs(text: string, holdMs: number): number {
+  let w = 0;
+  for (const ch of text) w += (ch.codePointAt(0) ?? 0) > 0x2e7f ? 1 : 0.5;
+  return Math.round(Math.min(10000, Math.max(holdMs, 2000 + w * 200)));
+}
+
 function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone, onStat }: {
   node: ReactNode; multi: boolean; speed: number; pauseMs: number; holdMs: number;
   reduced: boolean; paused: boolean; onDone: () => void; onStat?: (line: string) => void;
@@ -128,11 +148,12 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone, o
       stat.current.dist = dist; stat.current.total = total;
       meta.current = { pauseMs, move, dist, speed };
     } else if (multi) {
-      if (marqueeCss()) { css = cssAnimation(i, "@keyframes NAME{from{opacity:1}to{opacity:1}}", holdMs, true); a = css.anim; }
-      else a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: holdMs });   // 見せる時間を数えるだけ
-      if (carry.current.hold > 0) a.currentTime = Math.min(carry.current.hold, holdMs - 1);
-      minShow.current = holdMs;
-      stat.current.dist = 0; stat.current.total = holdMs;
+      const hold = readHoldMs(i.textContent ?? "", holdMs);   // 読み切れる時間だけ見せる
+      if (marqueeCss()) { css = cssAnimation(i, "@keyframes NAME{from{opacity:1}to{opacity:1}}", hold, true); a = css.anim; }
+      else a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: hold });   // 見せる時間を数えるだけ
+      if (carry.current.hold > 0) a.currentTime = Math.min(carry.current.hold, hold - 1);
+      minShow.current = hold;
+      stat.current.dist = 0; stat.current.total = hold;
       meta.current = null;
     }
     if (!a) return;
@@ -227,9 +248,11 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
           onStat={dbg ? (line) => { const k = cur.key; setStats((p) => [...p.filter((x) => x[0] !== k), [k, line] as [string, string]].slice(-4)); } : undefined} />
       </div>
       {dbg && (
-        <div data-testid="marquee-debug" className="pointer-events-none whitespace-pre-wrap break-all font-mono text-[9px] leading-tight opacity-70">
+        // テロップの枠の中に置くとテロップ自体を押し出して隠す（2026-11-26 iPhone の写し）。body の上端に重ねる
+        // テロップが複数（お知らせ・ニュース）あっても重ならないよう、共通の箱に縦に積む
+        createPortal(<div data-testid="marquee-debug" className="whitespace-pre-wrap break-all rounded bg-black/75 p-1 font-mono text-[9px] leading-tight text-white">
           {stats.map(([k, l]) => `${k.slice(0, 12)} ${l}`).join("\n")}
-        </div>
+        </div>, debugRoot())
       )}
       {leaving && (
         <div className="pointer-events-none absolute inset-0 whitespace-nowrap will-change-transform" ref={leaveRef}>
