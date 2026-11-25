@@ -43,7 +43,10 @@ function ModelNote({ model, options }: { model: string; options: LlmOptions | un
   );
 }
 
-export function NewsRuntimeCards() {
+export type RuntimePart = "update" | "llm" | "imagegen" | "rag";
+
+/** part で、どのカードを出すかを選ぶ（設定 → ニュースのタブごとに 1 つ）。 */
+export function NewsRuntimeCards({ part }: { part: RuntimePart }) {
   const { data } = useNewsSettings();
   const channels = useNewsChannels();
   const options = useLlmOptions();
@@ -78,7 +81,7 @@ export function NewsRuntimeCards() {
   const prepCpu = (draft.llm.prep_model ?? "").startsWith("cpu:");
   return (
     <>
-      <Card id="news-update" title="更新のタイミング" hint={`ニュースのページの取得・ホームのフィード・日刊と週刊のまとめを、別々に決めます。時刻はサーバーの地域の時刻です。${canEdit ? "" : "変更には設定の管理権限が要ります。"}`}>
+      {part === "update" && <Card id="news-update" title="更新のタイミング" hint={`ニュースのページの取得・ホームのフィード・日刊と週刊のまとめを、別々に決めます。時刻はサーバーの地域の時刻です。${canEdit ? "" : "変更には設定の管理権限が要ります。"}`}>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className={label}>ニュースのページの取得の間隔（分。15〜360）
             <input type="number" aria-label="取得の間隔" min={15} max={360} value={interval} disabled={dis} onChange={(e) => setInterval(e.target.value)} className={`${field} mt-1 w-full`} /></label>
@@ -120,9 +123,9 @@ export function NewsRuntimeCards() {
           </>}
           {runDigest.isPending && <span role="status" className="text-xs text-zinc-500">作っています…</span>}
         </div>
-      </Card>
+      </Card>}
 
-      <Card id="news-llm" title="使う LLM" hint="用途ごとに選べます。ニュースは公開情報なので、OpenRouter の無料のモデルをおすすめします（ローカルのモデルでも構いません）。LLM に送るのは記事の題・抜粋・出どころだけで、チャットの題・好み・ControlDeck の出来事は送りません。ただしリーダー（記事を押して開く画面）で外部のモデルを選んでいるときは、開いた記事の本文（公開情報）を要約と翻訳のために送ります（外部への送信の許可に従います）。">
+      {part === "llm" && <Card id="news-llm" title="使う LLM" hint="用途ごとに選べます。ニュースは公開情報なので、OpenRouter の無料のモデルをおすすめします（ローカルのモデルでも構いません）。LLM に送るのは記事の題・抜粋・出どころだけで、チャットの題・好み・ControlDeck の出来事は送りません。ただしリーダー（記事を押して開く画面）で外部のモデルを選んでいるときは、開いた記事の本文（公開情報）を要約と翻訳のために送ります（外部への送信の許可に従います）。">
         <label className={label}>日刊・週刊のまとめ
           <ModelSelect name="まとめのモデル" value={draft.llm.digest_model} options={options.data} disabled={dis} onChange={(v) => set({ llm: { ...draft.llm, digest_model: v } })} /></label>
         <ModelNote model={draft.llm.digest_model} options={options.data} />
@@ -173,9 +176,9 @@ export function NewsRuntimeCards() {
         </div>
         <p className="text-[11px] text-zinc-500">LLM が使えないときは、LLM なしの「見出しの一覧」のまとめを作り、印を付けます。外部への送信が許可されていないときは、まとめを作りません。OpenRouter のデータの扱いが厳しい（収集する提供元へ送らない）と、無料のモデルが選ばれないことがあります（Models の設定）。</p>
         {saveButton}
-      </Card>
+      </Card>}
 
-      <Card id="news-imagegen" title="画像の無い記事のイメージ画像（AI）" hint="取った記事に画像が無いとき、見出しからイメージ画像を作ります。ニュース専用のモデルを、この PC の CPU と RAM だけで動かし（GPU は使いません）、作り終えたらすぐ解放します。小・中・大で、速さと絵の良さを選べます。人物と文字は描かせない言い回しにしています。画面には「AI 生成のイメージ」と出ます。">
+      {part === "imagegen" && <Card id="news-imagegen" title="画像の無い記事のイメージ画像（AI）" hint="取った記事に画像が無いとき、見出しからイメージ画像を作ります。ニュース専用のモデルを、この PC の CPU と RAM だけで動かし（GPU は使いません）、作り終えたらすぐ解放します。小・中・大で、速さと絵の良さを選べます。人物と文字は描かせない言い回しにしています。画面には「AI 生成のイメージ」と出ます。">
         <Toggle label="画像の無い記事に AI でイメージ画像を作る" hint="既定は切。取得のあと、新しい記事から順にまとめて作ります" value={draft.imagegen.enabled} disabled={dis} onChange={(on) => set({ imagegen: { ...draft.imagegen, enabled: on } })} />
         <fieldset className="space-y-2" disabled={dis || !draft.imagegen.enabled}>
           <legend className={label}>モデルの精度（高いほど絵は良くなりますが、遅く、容量・RAM も増えます）</legend>
@@ -213,9 +216,9 @@ export function NewsRuntimeCards() {
               onChange={(e) => set({ imagegen: { ...draft.imagegen, max_per_run: Number(e.target.value) } })} className={`${field} mt-1 w-full`} /></label>
         </div>
         {saveButton}
-      </Card>
+      </Card>}
 
-      <Card id="news-rag" title="検索（RAG）への蓄積" hint="取った記事を知識基盤（分野「ニュース」。公開情報）へ貯め、Knowledge の横断検索・AI アシスタントの知識の道具・ニュースの「意味で探す」に使います。ニュースのデータベース（news.sqlite3）とは別のファイルです。">
+      {part === "rag" && <Card id="news-rag" title="検索（RAG）への蓄積" hint="取った記事を知識基盤（分野「ニュース」。公開情報）へ貯め、Knowledge の横断検索・AI アシスタントの知識の道具・ニュースの「意味で探す」に使います。ニュースのデータベース（news.sqlite3）とは別のファイルです。">
         <Toggle label="取った記事を RAG に貯める" hint="題・抜粋・出どころ・URL・日付・チャンネル・話題の語を 1 記事 1 文書に（同じ URL は更新）" value={draft.rag.enabled} disabled={dis} onChange={(on) => set({ rag: { ...draft.rag, enabled: on } })} />
         <Toggle label="本文も取り込む" hint="記事のページを読んで足します（外へ通信します。1 回の取得で 30 件まで。既定は切）" value={draft.rag.fulltext} disabled={dis || !draft.rag.enabled} onChange={(on) => set({ rag: { ...draft.rag, fulltext: on } })} />
         <label className={label}>古い記事をニュースのデータベースから消すとき
@@ -224,7 +227,7 @@ export function NewsRuntimeCards() {
             <option value="delete">RAG からも一緒に消す</option>
           </select></label>
         {saveButton}
-      </Card>
+      </Card>}
     </>
   );
 }

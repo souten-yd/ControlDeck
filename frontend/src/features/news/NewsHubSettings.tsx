@@ -5,7 +5,7 @@ import {
   type HubFound, type NewsHubSettings, type NewsHubSource,
 } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
-import { Card, field, ghost, primary } from "./settingsUi";
+import { Card, Fold, field, ghost, primary } from "./settingsUi";
 
 const label = "block text-xs text-zinc-500";
 const SOURCES: { id: NewsHubSource; name: string; note: string }[] = [
@@ -145,6 +145,8 @@ export function NewsHubCard() {
         </div>
       )}
 
+      {st.sync.last_error && <p role="alert" data-testid="hub-diag-error" className="rounded-lg border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-700 dark:text-red-300">同期の失敗: {st.sync.last_error}</p>}
+      <Fold id="news-hub-detail" title="詳しい設定（範囲・機能・仕事を借りる）">
       <fieldset className="space-y-2" disabled={dis}>
         <legend className={label}>受け取る範囲</legend>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -190,10 +192,11 @@ export function NewsHubCard() {
           </p>
         </>}
       </div>
+      </Fold>
       {canEdit && <button type="button" onClick={commit} disabled={!dirty || save.isPending} className={primary}>保存</button>}
 
-      <div className="space-y-2 rounded-xl border border-zinc-200 p-3 text-xs dark:border-zinc-700" data-testid="hub-diagnostics">
-        <p className="font-semibold">診断</p>
+      <Fold id="news-hub-diag" title="診断">
+      <div className="space-y-2 text-xs" data-testid="hub-diagnostics">
         <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
           <div><dt className="text-zinc-500">つないだ状態</dt><dd data-testid="hub-diag-state">{!st.linked ? "つないでいません" : st.verified ? "つながっています（指紋を確認済み）" : "指紋の確認待ち"}</dd></div>
           <div><dt className="text-zinc-500">ハブの応答</dt><dd>{st.sync.reachable === null ? "まだ確かめていません" : st.sync.reachable ? "答えています" : `答えません（続けて ${st.sync.failures} 回）`}</dd></div>
@@ -202,7 +205,6 @@ export function NewsHubCard() {
           <div><dt className="text-zinc-500">前回の同期で入れた数</dt><dd className="tabular-nums">記事 {st.sync.counts.items ?? 0}・物 {st.sync.counts.entities ?? 0}・イベント {st.sync.counts.events ?? 0}・消した {st.sync.counts.removed ?? 0}</dd></div>
           <div><dt className="text-zinc-500">借りた仕事の成否</dt><dd className="tabular-nums" data-testid="hub-diag-jobs">成功 {st.jobs.done}・失敗 {st.jobs.failed}・ハブが断った {st.jobs.rejected}</dd></div>
         </dl>
-        {st.sync.last_error && <p role="alert" data-testid="hub-diag-error" className="rounded-lg border border-red-500/40 bg-red-500/10 p-2 text-red-700 dark:text-red-300">同期の失敗: {st.sync.last_error}</p>}
         {st.jobs.last_error && <p role="status" className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-2 text-amber-800 dark:text-amber-300">仕事: {st.jobs.last_error}</p>}
         {st.jobs.recent.length > 0 && <ul className="space-y-0.5 text-[11px] text-zinc-500" aria-label="最近の仕事">
           {st.jobs.recent.slice(0, 6).map((r, i) => <li key={`${r.at}-${i}`} className="tabular-nums">{when(r.at)} · {r.kind} · {STATUS_TEXT[r.status] ?? r.status}{r.error ? `（${r.error}）` : ""}</li>)}
@@ -213,6 +215,7 @@ export function NewsHubCard() {
           <button type="button" className={ghost} disabled={jobsNow.isPending} onClick={() => jobsNow.mutate(undefined, { onSuccess: (r) => toast(r.result.error ? `仕事を借りられませんでした: ${r.result.error}` : `仕事 ${r.result.claimed} 件を処理しました`, r.result.error ? "error" : "success"), onError: fail })}>今すぐ仕事を借りる</button>
         </div>}
       </div>
+      </Fold>
     </Card>
   );
 }

@@ -27,7 +27,7 @@ for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
     await establishSession(page, context);
     await page.route(/\/api\/v1\/news\/settings$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: settings }) : route.continue());
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=image");
     const card = page.getByRole("region", { name: "画像の無い記事のイメージ画像（AI）" });   // Card の id は見出し（h2）に付くので、領域の名前で取る
     await expect(card.getByTestId("imagegen-tier-option-small")).toBeVisible();
     await expect(card.getByTestId("imagegen-tier-option-large")).toContainText("約 4.2GB");

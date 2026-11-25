@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router-dom";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Toggle } from "../models/formControls";
 import { DEFAULT_PREFS, LEGACY_DESIGNS, useNewsChannels, useNewsPrefs, useSaveChannels, useSavePrefs, type ChannelsConfig, type NewsChannel, type NewsDesign, type NewsDisplay, type NewsPrefs, type NewsTaste } from "../../api/news";
@@ -233,16 +234,36 @@ function ArchiveCard() {
   );
 }
 
-/** 設定 → ニュース。チャンネル・ソース・更新・LLM・RAG・表示・好み・アーカイブ。 */
+const TABS = [["basic", "基本"], ["sources", "取得先"], ["llm", "LLM"], ["hub", "ニュースハブ"], ["image", "画像"], ["display", "表示"], ["store", "蓄積"]] as const;
+type NewsTab = typeof TABS[number][0];
+
+/** 設定 → ニュース。節ごとのタブで 1 つだけ出す（縦に長くしない）。タブは URL の ?tab= に残す。 */
 export function NewsSettings() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get("tab");
+  const tab: NewsTab = TABS.find(([id]) => id === requested)?.[0] ?? "basic";
+  const setTab = (id: NewsTab) => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (id === "basic") next.delete("tab"); else next.set("tab", id);
+    return next;
+  });
   return (
     <>
-      <ChannelsCard />
-      <NewsSourcesSettings />
-      <NewsRuntimeCards />
-      <NewsHubCard />
-      <PrefsCards />
-      <ArchiveCard />
+      <div role="tablist" aria-label="ニュースの設定" data-news-tabs className="-mx-4 flex gap-1.5 overflow-x-auto overscroll-x-contain px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:px-0">
+        {TABS.map(([id, name]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+            className={`min-h-11 shrink-0 whitespace-nowrap rounded-full border px-3.5 text-sm ${tab === id
+              ? "border-accent-500/50 bg-accent-50 font-medium text-accent-700 dark:border-accent-500/40 dark:bg-accent-600/15 dark:text-accent-300"
+              : "border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70"}`}>{name}</button>
+        ))}
+      </div>
+      {tab === "basic" && <><ChannelsCard /><NewsRuntimeCards part="update" /></>}
+      {tab === "sources" && <NewsSourcesSettings />}
+      {tab === "llm" && <NewsRuntimeCards part="llm" />}
+      {tab === "hub" && <NewsHubCard />}
+      {tab === "image" && <NewsRuntimeCards part="imagegen" />}
+      {tab === "display" && <PrefsCards />}
+      {tab === "store" && <><NewsRuntimeCards part="rag" /><ArchiveCard /></>}
     </>
   );
 }

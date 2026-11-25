@@ -207,7 +207,7 @@ test("設定 → ニュース: ソースは要点と「取得先を管理」へ�
   await page.setViewportSize({ width: 320, height: 900 });
   await mock(page);
   await establishSession(page, context);
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=sources");
   await expect(page.getByTestId("news-sources-brief")).toContainText("取得先 5 件");
   await expect(page.getByTestId("news-sources-brief")).toContainText("失敗中 1");
   await page.getByTestId("news-manage-link").click();

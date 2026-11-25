@@ -106,10 +106,15 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
   await page.goto("/settings/news");
   await expect(page.getByRole("heading", { name: "チャンネル（検索テーマ）" })).toBeVisible();
   await expect(page.locator("[data-channel-editor]")).toHaveCount(5);
+  // 節ごとのタブで 1 つずつ出す（縦に長くしない）
+  await page.getByRole("tab", { name: "取得先" }).click();
   await expect(page.getByRole("heading", { name: "ニュースのソース" })).toBeVisible();
+  await page.getByRole("tab", { name: "表示" }).click();
   await expect(page.getByRole("heading", { name: "表示のデザイン" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "好み" })).toBeVisible();
+  await page.getByRole("tab", { name: "蓄積" }).click();
   await expect(page.getByRole("heading", { name: "アーカイブ" })).toBeVisible();
+  await page.getByRole("tab", { name: "基本" }).click();
   await shot(page, "test-results/news-settings-1280.png");
 
   // チャンネルを足して保存する（語は Enter で足す）
@@ -130,6 +135,7 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
   await expect(page.locator("[data-channel-editor]").first().getByLabel("CH 1 の名前")).toHaveValue("AMD・GPU");
 
   // デザインを経済紙に: 設定は保存され、ニュースの見た目（背景色）が変わる
+  await page.getByRole("tab", { name: "表示" }).click();
   await page.getByRole("radio", { name: /経済紙/ }).click();
   await expect.poll(() => saved.prefs.length).toBeGreaterThan(0);
   expect((saved.prefs.at(-1)!.display as { design: string }).design).toBe("finance");
@@ -142,7 +148,7 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
   await shot(page, "test-results/news-finance-1280.png");
 
   // 表示の項目: テロップ・数字を消す、画像を消す
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=display");
   // 保存はすぐ画面に反映される（キャッシュの更新は少し遅れるので、click の後に状態を待つ）
   await page.getByRole("checkbox", { name: "テロップを出す" }).click();
   await expect(page.getByRole("checkbox", { name: "テロップを出す" })).not.toBeChecked();
@@ -167,7 +173,7 @@ test("ニュース: 5 つのデザインを順に選ぶ（並び・特徴の要�
   await page.setViewportSize({ width: 1280, height: 900 });
   await mockNews(page);
   await establishSession(page, context);
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=display");
   // 見本の縮小図つきで 5 つ選べる
   await expect(page.getByRole("radio")).toHaveCount(5);
   await expect(page.locator("[data-design-option]")).toHaveCount(5);
@@ -175,7 +181,7 @@ test("ニュース: 5 つのデザインを順に選ぶ（並び・特徴の要�
   await shot(page, "test-results/news-theme-picker-1280.png");
   for (const d of DESIGN_CASES) {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=display");
     await page.getByRole("radio", { name: new RegExp(d.label) }).click();
     await expect(page.getByRole("radio", { name: new RegExp(d.label) })).toBeChecked();
     await page.waitForTimeout(400);      // 保存が済んでから開き直す
@@ -233,7 +239,7 @@ test("ニュース: ダークでも 5 つのデザインが読める（背景と
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => document.documentElement.classList.add("dark"));
   for (const d of DESIGN_CASES.slice(1)) {
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=display");
     await page.getByRole("radio", { name: new RegExp(d.label) }).click();
     await expect(page.getByRole("radio", { name: new RegExp(d.label) })).toBeChecked();
     await page.goto("/news");
@@ -256,7 +262,7 @@ test("ニュース: 保存済みの「紙面」「コンパクト」は経済紙
     if (old === "paper") await establishSession(page, context);
     await page.goto("/news");
     await expect(page.getByTestId("news-root")).toHaveAttribute("data-design", now);
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=display");
     await expect(page.getByRole("radio", { name: new RegExp(label) })).toBeChecked();
   }
 });
@@ -266,7 +272,7 @@ test("ニュース: 動きを減らす設定でテロップが止まる", async 
   await page.setViewportSize({ width: 1280, height: 900 });
   await mockNews(page);
   await establishSession(page, context);
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=display");
   await page.getByRole("checkbox", { name: "動きを減らす" }).click();
   await expect(page.getByRole("checkbox", { name: "動きを減らす" })).toBeChecked();
   await page.waitForTimeout(300);
@@ -458,11 +464,20 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     await expect(page.getByLabel("週刊の曜日")).toHaveValue("0");
     await expect(page.getByLabel("週刊の時刻")).toHaveValue("07:00");
     await expect(page.getByRole("button", { name: "今すぐ日刊のまとめを作る" })).toBeVisible();
+    // 更新の設定を変えて保存（基本のタブ）
+    await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
+    await page.getByLabel("日刊の時刻").fill("05:45");
+    await page.getByLabel("週刊の曜日").selectOption("4");
+    await page.getByRole("checkbox", { name: /取得しない時間帯を決める/ }).check();
+    await page.getByRole("button", { name: "保存", exact: true }).first().click();
+    await expect.poll(() => savedSettings.length).toBe(1);
+    expect(savedSettings[0]).toMatchObject({ feed_refresh_minutes: 5, digest_daily: { time: "05:45" }, digest_weekly: { weekday: 4 }, quiet: { enabled: true } });
     // LLM: 無料が先で「無料」「有料」の印
+    await page.getByRole("tab", { name: "LLM" }).click();
     const select = page.getByLabel("まとめのモデル");
+    await expect.poll(async () => (await select.locator("option").allTextContents()).some((t) => t.startsWith("有料 ·"))).toBe(true);      // タブを開いてから選択肢が届く
     const options = await select.locator("option").allTextContents();
     expect(options.findIndex((t) => t.startsWith("無料 ·"))).toBeLessThan(options.findIndex((t) => t.startsWith("有料 ·")));
-    await expect(page.getByRole("heading", { name: "検索（RAG）への蓄積" })).toBeVisible();
     if (!egress) {
       await expect(page.getByTestId("egress-missing")).toContainText("外部への送信が許可されていません");
       await expect(page.getByRole("link", { name: "Models を開く" })).toBeVisible();
@@ -473,15 +488,13 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     await select.selectOption("cloud:openrouter/anthropic/claude-x");
     await expect(page.getByText("有料のモデルです")).toBeVisible();
     await select.selectOption("cloud:openrouter/meta/llama-3.3-70b:free");
-    // 更新の設定を変えて保存
-    await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
-    await page.getByLabel("日刊の時刻").fill("05:45");
-    await page.getByLabel("週刊の曜日").selectOption("4");
-    await page.getByRole("checkbox", { name: /取得しない時間帯を決める/ }).check();
+    // RAG（蓄積のタブ）
+    await page.getByRole("tab", { name: "蓄積" }).click();
+    await expect(page.getByRole("heading", { name: "検索（RAG）への蓄積" })).toBeVisible();
     await page.getByLabel("古い記事を消すときの RAG").selectOption("delete");
     await page.getByRole("button", { name: "保存", exact: true }).first().click();
-    await expect.poll(() => savedSettings.length).toBe(1);
-    expect(savedSettings[0]).toMatchObject({ feed_refresh_minutes: 5, digest_daily: { time: "05:45" }, digest_weekly: { weekday: 4 }, quiet: { enabled: true }, rag: { on_prune: "delete" } });
+    await expect.poll(() => savedSettings.length).toBe(2);
+    expect(savedSettings[1]).toMatchObject({ rag: { on_prune: "delete" } });
     expect(await noOverflow(page)).toBe(true);
     await shot(page, `test-results/news-settings-llm-${width}.png`);
   });
@@ -533,7 +546,7 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
     await mark.locator("summary").click();
     await expect(mark).toContainText("Performance work for gfx1201");
     // 設定: 重点の欄・訳の切り替え・外部へ送られる旨の説明
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=llm");
     await expect(page.getByTestId("digest-focus-note")).toContainText("外部のモデルを選ぶと、この文も送られます");
     await page.getByTestId("digest-focus").fill("AI 技術の最新動向\nAI モデルの最新動向");
     await page.getByRole("checkbox", { name: /記事の下ごしらえ/ }).uncheck();

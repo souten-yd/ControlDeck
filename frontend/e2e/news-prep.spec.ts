@@ -39,7 +39,7 @@ for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 640 : 900 });
     await establishSession(page, context);
     await page.route(/\/api\/v1\/news\/settings$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: settings }) : route.continue());
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=llm");
     await expect(page.getByTestId("prep-calls")).toContainText("今日の下ごしらえの呼び出し 37 回");
     await expect(page.getByTestId("prep-max")).toHaveValue("100");
     await page.getByTestId("prep-calls").scrollIntoViewIfNeeded();
