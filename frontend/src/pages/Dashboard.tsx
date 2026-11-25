@@ -11,6 +11,7 @@ import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
 import { LlmHomeCard } from "../features/models/LlmHomeCard";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { NewsHomeCard } from "../features/news/NewsHomeCard";
 import { HomeNoticeLine } from "../features/alerts/HomeNoticeLine";
 import { readHistoryMinutes } from "../lib/homeHistory";
@@ -29,6 +30,8 @@ interface HistoryResponse {
 }
 
 export default function DashboardPage() {
+  // 3 秒ごとの更新で、見えていない側（モバイルでは PC 用の 4 枚）の SVG まで描き直さない。幅は CSS（md=768px）と同じ
+  const wide = useMediaQuery("(min-width: 768px)");
   const latest = useMetrics((s) => s.latest);
   const history = useMetrics((s) => s.history);
   // 履歴の長さは 設定 → 表示 で決める（Home には選択の行を置かない）
@@ -95,7 +98,7 @@ export default function DashboardPage() {
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
         {/* モバイル（768px 未満）: CPU+RAM、GPU+VRAM を 1 枚に 2 本の線で出し、横 1 段にする（利用者 2026-11-23） */}
-        <div className="grid grid-cols-2 gap-2 md:hidden" data-testid="metrics-dual">
+        {!wide && <div className="grid grid-cols-2 gap-2 md:hidden" data-testid="metrics-dual">
           <DualTile
             a={{ label: "CPU", percent: m?.cpu.percent ?? null, values: cpuValues, tone: "text-accent-500", dot: "bg-accent-500", ink: "text-accent-600 dark:text-accent-400" }}
             b={{ label: "RAM", percent: m?.memory.percent ?? null, values: ramValues, tone: "text-orange-500 dark:text-orange-400", dot: "bg-orange-500 dark:bg-orange-400", ink: "text-orange-600 dark:text-orange-400" }}
@@ -117,8 +120,8 @@ export default function DashboardPage() {
             capacity={m?.gpu?.vram_used_bytes != null && m.gpu.vram_total_bytes
               ? `${(m.gpu.vram_used_bytes / 1024 ** 3).toFixed(0)}/${(m.gpu.vram_total_bytes / 1024 ** 3).toFixed(0)}GB` : ""}
           />
-        </div>
-        <div className="hidden grid-cols-4 gap-3 md:grid">
+        </div>}
+        {wide && <div className="hidden grid-cols-4 gap-3 md:grid">
           <MetricTile
             label="CPU"
             value={m ? formatPercent(m.cpu.percent) : null}
@@ -164,7 +167,7 @@ export default function DashboardPage() {
                 : undefined
             }
           />
-        </div>
+        </div>}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1 text-[11px] text-zinc-500 md:mt-3 md:gap-x-5 md:gap-y-1 md:text-xs">
           {isLoading && !m ? (
             <Skeleton className="h-4 w-64" />

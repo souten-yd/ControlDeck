@@ -102,6 +102,11 @@
 - モデル: 下ごしらえと同じ `llm.prep_model`（既定は CPU の Gemma 4 E2B）。`cpu_llm.session(priority=True)` で順番を取り（同時に 2 つ起動しない）、下ごしらえは次のバッチの前に譲る（`priority_waiting()`）。リーダーの呼び出しは `enable_thinking:false`（考える過程だけで出力の上限を使い切り、要約が空になった: 本番の実測）。外部のモデルを選んでいるときは外部への送信の許可（呼び出し元 news）に従い、記事の本文を送る（設定の説明に「リーダーで開いた記事の本文を送る」と明記）。
 - 試験: `backend/tests/test_news_reader.py`・`frontend/e2e/news-reader.spec.ts`。
 
+## 2026-11-25 ホームのテロップ: モバイルの条件で測り、余計な描き直しを減らす
+- 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。390x844・DPR 3・タッチ・CPU 1/4/6 倍遅くの Chromium で 15 秒測ったが、現行コードでもテロップは 60fps・長いコマ 0・やり直し 0・DOM の変化 0（合成器で動いている: トレースの compositeFailed=0）。Chromium では再現せず。WebKit（iOS）は Playwright の webkit に system ライブラリが無く起動できないため未確認。
+- 実際にあった無駄: モバイルでも PC 用の 4 枚（非表示）の SVG スパークラインを 3 秒ごとに描き直していた。`useMediaQuery("(min-width: 768px)")` で見える側だけ描く。Marquee の根に `contain: layout paint style`、流れる層に `backface-visibility: hidden`（兄弟の描き直し・配置替えの影響を受けにくくする保険）。
+- 試験: `frontend/e2e/home-marquee-mobile.spec.ts`（計測の値は test-results/home-marquee-mobile-*.json。`MARQUEE_BROWSER=webkit` で WebKit も測れる）。
+
 ## 2026-11-24 ニュースの画面: 指でずらしてチャンネル・まとめを切り替え、流れる文字をなめらかに、上の部分をすっきり
 - 利用者「CH の上で左右にフリックすると CH が変わるように」「NEWS の右から左に流れるやつはスムーズに」「今週のまとめの上で左右にフリックすると今朝のまとめ」「取り直すボタンがある行から今週のまとめまでの表示がやぼったい」。
 - 指でずらす部品 `components/useSwipe.ts`: 最初の 8px で横か縦かを決め（縦はページのスクロールに任せる）、指に付いて動き、離した位置（幅の 25%）か速さ（0.45px/ms）で前後へ。端は 0.25 倍に重くして止める。画面の左右 20px は始点にしない（メニューを引く操作 `useNavSwipe` と同じ。`data-swipe-surface` の中はこちらを優先し、端だけ今まで通りメニュー）。transform と opacity だけ・ease-out・reduced-motion は 80ms。ON AIR（放送局）と新着・アーカイブの一覧（全チャンネル → CH 01 → …）に、まとめの 2 枚は狭い幅で 1 枚幅のカルーセル（点 2 つ）。デザインごとのホームには「いまのチャンネル」の切り替えが無いので付けていない（チャンネルのナビは一覧への入口）。

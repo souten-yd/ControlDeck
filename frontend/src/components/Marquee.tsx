@@ -98,7 +98,7 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
   return (
     <span ref={outer} data-marquee={run ? "run" : "fit"}
       className={`block overflow-hidden whitespace-nowrap ${reduced ? "text-ellipsis" : ""}`}>
-      <span ref={inner} data-inner className="inline-block will-change-transform">{node}</span>
+      <span ref={inner} data-inner className="inline-block will-change-transform [backface-visibility:hidden]">{node}</span>
     </span>
   );
 }
@@ -153,7 +153,7 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
   const touchToggle = useRef(false);
   if (!cur) return null;
   return (
-    <div ref={root} className={`relative overflow-hidden ${className}`} data-testid="marquee" data-count={items.length}
+    <div ref={root} className={`relative overflow-hidden [contain:layout_paint_style] ${className}`} data-testid="marquee" data-count={items.length}
       onPointerEnter={(e) => { if (e.pointerType === "mouse") setPaused(true); }}
       onPointerLeave={(e) => { if (e.pointerType === "mouse") setPaused(false); }}
       onPointerDown={(e) => { if (e.pointerType !== "mouse") { touchToggle.current = !touchToggle.current; setPaused(touchToggle.current); } }}>
