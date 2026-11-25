@@ -230,3 +230,14 @@ def test_memory_limit_kills_the_browser_and_cleans_up(lab):
     out = asyncio.run(browser.render(lab["url"] + "/", policy=lab["policy"], timeout_s=20, max_rss_mb=1))
     assert out["status"] in ("too_large", "http_error", "timeout") and "メモリ" in (out["error"] or "メモリ") or out["status"] != "success"
     assert out["status"] != "success"
+
+
+def test_browser_does_not_hide_automation():
+    """目的: 自動操作であることをサイトから隠さない（--enable-automation を外さない・UA を詐称しない・AutomationControlled を消さない）。
+    根拠: PLAN-web-collector §7「ブラウザ偽装を追加しない」。2026-11-26 の司令塔のレビューで ignore_default_args に --enable-automation が入っていたのを直した。"""
+    import inspect
+
+    from app.web_collector import browser
+
+    src = inspect.getsource(browser)
+    assert '"--enable-automation"' not in src and "AutomationControlled" not in src and "user_agent=" not in src

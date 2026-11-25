@@ -367,7 +367,7 @@ async def session(*, policy: egress.Policy | None = None, timeout_s: float = SES
                            "bypass": "<-loopback>"},
                     service_workers="block", accept_downloads=False, bypass_csp=False, ignore_https_errors=False,
                     java_script_enabled=True, permissions=[], locale="ja-JP", chromium_sandbox=True,
-                    ignore_default_args=["--enable-automation", "--hide-scrollbars"])
+                    ignore_default_args=["--hide-scrollbars"])
             except Exception as exc:  # noqa: BLE001
                 raise BrowserError(f"Chrome を起動できません: {type(exc).__name__}: {exc}"[:300]) from exc
             sess = Session(page=None, context=context, proxy=proxy, started=started, profile_dir=profile)
