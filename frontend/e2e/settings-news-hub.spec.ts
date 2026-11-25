@@ -32,6 +32,8 @@ for (const width of [1280, 320]) {
     let status = { ...empty } as Record<string, unknown>;
     let paired = "";
     let secrets = 0;
+    let foundHubs: Record<string, string>[] = [];
+    await page.route(/\/api\/v1\/news\/hub\/discover$/, (route) => route.fulfill({ json: { found: foundHubs, tried: ["http://127.0.0.1:8787", "255.255.255.255:8788（UDP）"] } }));
     await page.route(/\/api\/v1\/news\/settings$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: settings }) : route.continue());
     await page.route(/\/api\/v1\/news\/hub$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: status }) : route.fulfill({ json: (status = { ...empty }) }));
     await page.route(/\/api\/v1\/news\/hub\/pair$/, (route) => {
@@ -50,6 +52,15 @@ for (const width of [1280, 320]) {
     const card = page.getByRole("region", { name: "QNAP ニュースハブとつなぐ" });
     await expect(card.getByTestId("hub-effective")).toContainText("この PC が自分で集めています");      // 既定はローカル
     await expect(card.getByRole("radio", { name: "ローカル" })).toBeChecked();
+    // 「探す」: 見つけたハブを一覧（名前・版・URL・指紋）で出し、選ぶと URL が入る（つなぐのは番号と指紋の見比べのまま）
+    await card.getByRole("button", { name: "探す" }).click();
+    await expect(card.getByTestId("hub-discover-none")).toContainText("試した場所: http://127.0.0.1:8787、255.255.255.255:8788（UDP）");
+    foundHubs = [{ name: "QNAP News Hub", version: "0.1.1", url: "http://192.0.2.20:8787", fingerprint: HUB_FP, from: "192.0.2.20" }];
+    await card.getByRole("button", { name: "探す" }).click();
+    await expect(card.getByTestId("hub-discover-list")).toContainText(HUB_FP);
+    await card.getByTestId("hub-discover-list").getByRole("button").first().click();
+    await expect(card.getByLabel("ハブの URL")).toHaveValue("http://192.0.2.20:8787");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
     await card.getByLabel("ハブの URL").fill("http://nas.local:8787");
     await card.getByLabel("つなぐ番号").fill("12ab34");        // 数字以外は入らない
     await expect(card.getByLabel("つなぐ番号")).toHaveValue("1234");

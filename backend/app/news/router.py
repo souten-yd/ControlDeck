@@ -16,7 +16,7 @@ from app.audit import service as audit
 from app.database import get_db
 from app.models import User
 from app.news import channels as channels_mod
-from app.news import hub_jobs, hub_link, hub_sync
+from app.news import hub_discovery, hub_jobs, hub_link, hub_sync
 from app.news import feedgen, fetchlog, probe, sourcemgr, cpu_llm, digest, home, imagegen, llm, prefs, prep, presets, profile, rag, reader, service, sources, store
 from app.news import settings as news_settings
 from app.news.db import NewsItem
@@ -567,6 +567,13 @@ def hub_pair(body: HubPairBody, request: Request, user: User = HUB_MANAGE, db=De
         raise _hub_error(exc) from exc
     audit.record(db, "news.hub_pair", user=user, request=request, resource_type="news_hub", metadata={"url": hub_link.load()["url"]})
     return _hub_status()
+
+
+@router.post("/hub/discover")
+def hub_discover(user: User = HUB_MANAGE):
+    """LAN でハブを探す（127.0.0.1:8787 の確認と UDP の発見の問い。約 1.5 秒）。見つけた URL は入力の候補にするだけで、つなぐには番号と指紋の見比べが要る。
+    endpoint を def にして threadpool で待つ（event loop を止めない）。"""
+    return hub_discovery.discover()
 
 
 @router.post("/hub/confirm")

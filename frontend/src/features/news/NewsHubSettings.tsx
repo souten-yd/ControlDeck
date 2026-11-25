@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Toggle } from "../models/formControls";
 import {
-  useConfirmHub, useDisconnectHub, useHubJobsNow, useHubSyncNow, useNewsChannels, useNewsHub, useNewsSettings, usePairHub, useSaveNewsSettings, useSendHubSecret,
-  type NewsHubSettings, type NewsHubSource,
+  useConfirmHub, useDisconnectHub, useDiscoverHub, useHubJobsNow, useHubSyncNow, useNewsChannels, useNewsHub, useNewsSettings, usePairHub, useSaveNewsSettings, useSendHubSecret,
+  type HubFound, type NewsHubSettings, type NewsHubSource,
 } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
 import { Card, field, ghost, primary } from "./settingsUi";
@@ -35,6 +35,8 @@ export function NewsHubCard() {
   const pair = usePairHub();
   const confirm = useConfirmHub();
   const disconnect = useDisconnectHub();
+  const discover = useDiscoverHub();
+  const [found, setFound] = useState<{ found: HubFound[]; tried: string[] } | null>(null);
   const sendSecret = useSendHubSecret();
   const syncNow = useHubSyncNow();
   const jobsNow = useHubJobsNow();
@@ -75,8 +77,28 @@ export function NewsHubCard() {
           onSubmit={(e) => { e.preventDefault(); pair.mutate({ url, code, name: "ControlDeck" }, { onSuccess: () => { setCode(""); toast("つなぎました。指紋を見比べてください", "success"); }, onError: fail }); }}>
           <p className="text-xs font-semibold">ハブとつなぐ</p>
           <p className="text-[11px] text-zinc-500">ハブの画面の「ControlDeck とつなぐ」で番号（6 桁・10 分有効）を出し、ハブの URL と一緒に入れてください。</p>
-          <label className={label}>ハブの URL
+          <label className={label}>ハブの URL（ポートを省くと 8787 になります）
             <input aria-label="ハブの URL" inputMode="url" autoComplete="off" placeholder="http://nas.local:8787" value={url} onChange={(e) => setUrl(e.target.value)} className={`${field} mt-1 w-full`} /></label>
+          <div className="space-y-2" data-testid="hub-discover">
+            <button type="button" className={ghost} disabled={discover.isPending} onClick={() => discover.mutate(undefined, { onSuccess: setFound, onError: fail })}>{discover.isPending ? "探しています…" : "探す"}</button>
+            <span className="ml-2 text-[11px] text-zinc-500">この PC と、同じネットワーク（LAN）のハブを探します。見つけても、つなぐには番号と指紋の見比べが要ります。</span>
+            {found && found.found.length === 0 && (
+              <p className="text-[11px] text-zinc-600 dark:text-zinc-400" role="status" data-testid="hub-discover-none">見つかりませんでした。ハブが LAN に出ているか（待ち受けが 0.0.0.0 か）・発見の応答が入か・ファイアウォールが UDP 8788 を止めていないかを確かめ、ハブの「ControlDeck とつなぐ」に出る URL を入れてください。試した場所: {found.tried.join("、")}</p>
+            )}
+            {found && found.found.length > 0 && (
+              <ul className="space-y-1.5" data-testid="hub-discover-list">
+                {found.found.map((h) => (
+                  <li key={h.url}>
+                    <button type="button" className="block w-full rounded-xl border border-zinc-200 p-2 text-left text-xs hover:border-accent-600 dark:border-zinc-700" onClick={() => setUrl(h.url)}>
+                      <span className="block font-semibold">{h.name} <span className="font-normal text-zinc-500">{h.version && `v${h.version}`}</span></span>
+                      <span className="block break-all font-mono text-zinc-600 dark:text-zinc-400">{h.url}</span>
+                      <span className="block break-all font-mono tabular-nums text-zinc-500">{h.fingerprint ? `指紋 ${h.fingerprint}` : "指紋はつなぐときに出ます"}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <label className={label}>つなぐ番号（6 桁）
             <input aria-label="つなぐ番号" inputMode="numeric" autoComplete="off" maxLength={6} placeholder="000000" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} className={`${field} mt-1 w-40 tabular-nums`} /></label>
           <button type="submit" disabled={pair.isPending || !url.trim() || code.length !== 6} className={primary}>つなぐ</button>

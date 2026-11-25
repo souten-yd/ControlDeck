@@ -5,6 +5,16 @@
 - 原因: `backend/app/news/prep.py`・`gist.py` が `extract_topics(*語)` と LLM の語を（題・概要・追加の語の）引数に展開し、3 つ目の語が 1 文字ずつに分かれていた。同じコードを移した QnapNewsHub で、ホットトピックの上位 10 が「n・s・e・t・r…」になって見つかった（利用者のスクリーンショット）。
 - 直し: `extract_topics(" ".join(語))`。保存済みの崩れは、ニュースの DB を開くときに 1 文字の語を外す（`db._repair_split_topics`・何度流しても同じ）。
 - 試験: `test_prep_topics_are_not_split_into_letters`・`test_split_topics_already_saved_are_repaired_on_open`。
+## 2026-11-25 ニュースハブを LAN で自動で見つける「探す」ボタン
+
+利用者がハブの URL に `http://192.168.x.x`（ポートなし・別の機械）を入れて「ハブにつながりません（ConnectError）」になった。「公開されている場合自動でアドレスを検知できないか？」
+- **探す**（設定 → ニュース → ハブとつなぐ。`backend/app/news/hub_discovery.py`・`POST /news/hub/discover`・`NewsHubSettings.tsx`）: ① `http://127.0.0.1:8787/api/v1/health` を試す ② UDP の発見の問い `{"q":"qnapnewshub-discover","v":1}` を各インターフェースのブロードキャスト（と 255.255.255.255）の UDP 8788 へ 1 回送り、1.5 秒の答えを集める ③ 見つけたハブを名前・版・URL・指紋で一覧し、選ぶと URL が入る。
+- **答えを信じすぎない**: 答えの URL は、その答えが来た送り元の IP と同じホストのものだけ採る（なりすまし・SSRF の誘導を防ぐ）。形（魔法の文字列・版・型・長さ・指紋の形・2 KiB 以内）が違う答えは捨てる。32 件まで。
+- **発見は情報だけ**: つなぐのは従来どおり番号（6 桁）と指紋の見比べ。発見はトークン・鍵・状態に触れない（`hub.json` は書かない）。
+- **ポートの補い**: `hub_link.normalize_url` は、URL にポートが無ければ 8787 を補う（http・https とも。明示はそのまま。IPv6 も）。つながらないときの知らせに「試したアドレス」と探すボタンの案内を出す。
+- ハブ側（QnapNewsHub の feat/lan-discovery。`discovery.py`）: LAN に出しているときだけ UDP 8788 で答える（秘密なし・1 秒あたりの上限つき）。設定で切・ポート変更、「つなぐ」の画面に LAN の URL を表示。
+- **確かめたこと**: `backend/tests/test_news_hub_discovery.py`（ポートの補い・答えの検査〔送り元と URL の一致・形〕・UDP の往復・権限・本物のハブを 127.0.0.2 で起こして UDP で見つける往復〔発見つきのハブの venv が無ければ skip〕）。E2E `settings-news-hub.spec.ts`（探す → 一覧 → 選ぶと URL・見つからないとき試した場所・320・1280）。
+- **確かめていないこと**: 本物の LAN（複数のインターフェース・VLAN・QNAP の実機）でのブロードキャストの到達・QTS のファイアウォール・ハブ側の発見の応答が入った Release（ハブの main に載るまで、本番のハブは答えない。そのときは URL を手で入れる）。
 
 ## 2026-11-25 News を QNAP ニュースハブとつなぐ（v0.3 の ControlDeck 側・案 C の最初の接続）
 

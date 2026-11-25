@@ -35,6 +35,7 @@ logger = logging.getLogger("control_deck.news.hub")
 
 INFO = b"qnapnewshub-link-v1"
 API = "/api/v1"
+DEFAULT_PORT = 8787      # ハブの既定のポート（URL に無いとき補う）
 CONNECT_TIMEOUT, READ_TIMEOUT = 5.0, 30.0
 NAME_DEFAULT = "ControlDeck"
 SECRET_NAME = "openrouter"
@@ -153,11 +154,18 @@ def public_view(state: dict | None = None) -> dict:
 # ---- ハブへの呼び出し ----
 
 def normalize_url(value: object) -> str:
-    """ハブの URL（http か https・利用者情報・クエリなし）。末尾の / は除く。"""
+    """ハブの URL（http か https・利用者情報・クエリなし）。末尾の / は除く。**ポートが無ければ 8787 を補う**（http・https とも。明示があればそのまま）。"""
     text = str(value or "").strip()
-    parts = urlsplit(text)
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        raise HubError("ハブの URL の形が正しくありません（ポートは 1〜65535 の数字です）") from None
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
         raise HubError("ハブの URL は http:// か https:// で始まる形で入れてください（利用者名・パスワード・クエリは入れません）")
+    if port is None:
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        text = parts._replace(netloc=f"{host}:{DEFAULT_PORT}").geturl()
     return text.rstrip("/")
 
 
@@ -189,9 +197,9 @@ def call(method: str, path: str, *, url: str | None = None, token: str | None = 
         with _client() as client:
             response = client.request(method, f"{url}{API}{path}", headers=head, params=params, json=json_body, content=content)
     except httpx.TimeoutException:
-        raise HubError("ハブが時間内に答えませんでした") from None
+        raise HubError(f"ハブが時間内に答えませんでした（試したアドレス: {url}）") from None
     except httpx.HTTPError as exc:
-        raise HubError(f"ハブにつながりません（{type(exc).__name__}）") from None
+        raise HubError(f"ハブにつながりません（{type(exc).__name__}。試したアドレス: {url}。ポートは通常 {DEFAULT_PORT}。設定の「探す」で LAN から探せます）") from None
     if 300 <= response.status_code < 400:
         raise HubError("ハブがリダイレクトを返しました（URL を確かめてください。辿りません）", response.status_code)
     if response.status_code in (401, 403) and token:

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 249 ファイル、2463 テスト（目的の未記入 93 ファイル）
+- backend: 250 ファイル、2473 テスト（目的の未記入 93 ファイル）
 - E2E: 138 spec、304 テスト
 
 ## backend（backend/tests）
@@ -2109,6 +2109,21 @@
 - `test_cpu_prep_reports_a_start_failure_without_marking_items` — 目的: llama-server を起動できなかった・未導入のときは、理由を返し、記事の試行回数を進めないこと。
 - `test_settings_default_is_cpu_and_cpu_is_prep_only` — 目的: 下ごしらえの既定は CPU の Gemma。知らない cpu: は断り、まとめ・一言要約には CPU を選べず、今までのモデルは選べること。
 - `test_feature_status_install_and_uninstall` — 目的: 機能「ニュースの下ごしらえ（CPU の LLM）」: 未導入 → ファイルがあれば導入済み（置いてあるものは導入済みとみなす）→ アンインストールでファイルだけ消える。
+
+### backend/tests/test_news_hub_discovery.py
+
+目的: 目的: ControlDeck の設定「ハブを探す」（app/news/hub_discovery.py）と、ハブの URL のポート補いの試験。 根拠: 2026-11-25 利用者「公開されている場合自動でアドレスを検知できないか？」（URL にポートを付けず「ハブにつながりません（ConnectError）」になった）・ QnapNewsHub の docs/DESIGN.md 3.5。守ること: - URL にポートが無ければ 8787 を補う（http・https とも）。明示があればそのまま。つながらないときの知らせに試したアドレスを出す。 - 発見の答えは、送り元の IP と同じホストの URL だけ採る（なりすまし・SSRF の誘導を防ぐ）。形（魔法の文字列・版・型・長さ・指紋の形・大きさ）が違う答えは捨てる。 - 発見は情報を受け取るだけ（つなぐ状態・トークンに触れない）。管理権限が要る。 - 本物のハブ（QnapNewsHub に discovery.py がある版の venv。無ければ skip）を一時に起こし、UDP で見つける往復を通す。外へは通信しない（127.0.0.x だけ）。
+
+- `test_default_port_is_added_only_when_missing`
+- `test_bad_urls_are_still_refused`
+- `test_connect_error_message_names_the_address_tried`
+- `test_parse_reply_accepts_matching_source_only`
+- `test_parse_reply_drops_malformed`
+- `test_parse_reply_rejects_bad_source`
+- `test_discover_sends_one_query_and_collects_checked_replies`
+- `test_discover_does_not_touch_link_state`
+- `test_discover_needs_permission`
+- `test_find_a_real_hub_over_udp` — 本物のハブ（発見の応答つきの版）を 127.0.0.2 で起こし、UDP の問いで見つけて、health が答えることまで確かめる。
 
 ### backend/tests/test_news_hub_link.py
 
