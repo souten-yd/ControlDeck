@@ -215,6 +215,19 @@ def test_excerpt_puts_relevant_paragraphs_first_and_links_prefer_same_site():
     assert len(picked) == rt.MAX_LINKS and picked[0]["url"] == "https://site.test/0" and all("self" not in l["url"] for l in picked)
 
 
+def test_page_links_prioritize_relevant_documentation_within_site():
+    links = [{"url": f"https://docs.test/nav/{i}", "text": f"Navigation {i}"} for i in range(40)]
+    links += [
+        {"url": "https://docs.test/api", "text": "API authentication token"},
+        {"url": "https://elsewhere.test/api", "text": "API authentication token"},
+    ]
+    picked = rt.page_links(links, "https://docs.test/start", "authentication token")
+    assert len(picked) == rt.MAX_LINKS
+    assert picked[0]["url"] == "https://docs.test/api"
+    assert all("docs.test" in l["url"] for l in picked)
+    assert rt.page_links(links, "https://docs.test/start")[0]["url"] == "https://docs.test/nav/0"
+
+
 def _pdf(text: str) -> bytes:
     stream = f"BT /F1 12 Tf 20 100 Td ({text}) Tj ET".encode()
     objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
