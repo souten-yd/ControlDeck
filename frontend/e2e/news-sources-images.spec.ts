@@ -127,7 +127,7 @@ test("ニュース: 設定でホームに出す記事の数を変えると表示
   await page.goto("/");
   const card = page.getByRole("region", { name: "ニュース" });
   await expect(card.getByTestId("home-rows").locator("li")).toHaveCount(2);              // 3 件 = 1 位 + 2 行
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=display");
   const input = page.getByLabel("ホームに出す記事の数");
   await input.fill("7");
   await expect.poll(() => saved.length).toBeGreaterThan(0);

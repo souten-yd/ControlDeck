@@ -25,7 +25,7 @@ for (const width of [1280, 320]) {
     await establishSession(page, context);
     let body = settings(cpu);
     await page.route(/\/api\/v1\/news\/settings$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: body }) : route.continue());
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=llm");
     const select = page.getByLabel("下ごしらえのモデル");
     await expect(select).toHaveValue("cpu:gemma-4-e2b");
     await expect(select.locator("option:checked")).toContainText("CPU（Gemma 4 E2B、GPU を使わない・約 4GB の RAM・1 件約 7 秒）");

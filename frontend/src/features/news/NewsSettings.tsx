@@ -1,11 +1,13 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Toggle } from "../models/formControls";
+import { ConfirmDialog } from "../../components/ui";
 import { DEFAULT_PREFS, LEGACY_DESIGNS, useNewsChannels, useNewsPrefs, useSaveChannels, useSavePrefs, type ChannelsConfig, type NewsChannel, type NewsDesign, type NewsDisplay, type NewsPrefs, type NewsTaste } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
 import { NewsSourcesSettings } from "./NewsSourcesSettings";
 import { NewsRuntimeCards } from "./NewsRuntimeSettings";
 import { NewsHubCard } from "./NewsHubSettings";
-import { Card, field, ghost, primary } from "./settingsUi";
+import { Card, DirtyContext, DirtyReporter, field, ghost, primary } from "./settingsUi";
 
 /** 語の入力（Enter か読点・カンマで追加、× で外す）。 */
 export function TermsInput({ label, value, onChange, placeholder, disabled }: { label: string; value: string[]; onChange: (v: string[]) => void; placeholder?: string; disabled?: boolean }) {
@@ -95,6 +97,7 @@ function ChannelsCard() {
   const commit = () => save.mutate(draft, { onSuccess: () => toast("チャンネルを保存しました", "success"), onError: (e) => toast(e instanceof Error ? e.message : "保存できませんでした", "error") });
   return (
     <Card id="news-channels" title="チャンネル（検索テーマ）" hint={`チャンネルの語で、Google ニュースの検索・Hacker News・フォーラム・Reddit（キーがあれば）を検索して取ります。既存のソースの記事も、語が合えばそのチャンネルに入ります。上から CH 01・CH 02…です。${canEdit ? "" : "変更には設定の管理権限が要ります。"}`}>
+      <DirtyReporter id="channels" dirty={dirty} />
       <ul className="space-y-3">
         {draft.channels.map((c, i) => <ChannelEditor key={c.id || `new-${i}`} channel={c} index={i} total={draft.channels.length} kinds={data.kinds} palette={data.limits.palette} disabled={!canEdit}
           onChange={(next) => update(i, next)} onMove={(d) => move(i, d)} onRemove={() => setDraft({ ...draft, channels: draft.channels.filter((_, j) => j !== i) })} />)}
@@ -219,6 +222,7 @@ function ArchiveCard() {
     { onSuccess: () => toast("保存しました", "success"), onError: (e) => toast(e instanceof Error ? e.message : "保存できませんでした", "error") });
   return (
     <Card id="news-archive" title="アーカイブ" hint="古い記事は消えずに残ります。上限を超えたときだけ、古いものから消します（☆ 保存した記事は消しません）。">
+      <DirtyReporter id="archive" dirty={keep !== String(data.archive_keep)} />
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs text-zinc-500">残す件数（1,000〜200,000）
           <input type="number" aria-label="残す件数" min={1000} max={200000} step={1000} value={keep} disabled={!canEdit} onChange={(e) => setKeep(e.target.value)} className={`${field} mt-1 w-full`} /></label>
@@ -233,16 +237,46 @@ function ArchiveCard() {
   );
 }
 
-/** 設定 → ニュース。チャンネル・ソース・更新・LLM・RAG・表示・好み・アーカイブ。 */
+const TABS = [["basic", "基本"], ["sources", "取得先"], ["llm", "LLM"], ["hub", "ニュースハブ"], ["image", "画像"], ["display", "表示"], ["store", "蓄積"]] as const;
+type NewsTab = typeof TABS[number][0];
+
+/** 設定 → ニュース。節ごとのタブで 1 つだけ出す（縦に長くしない）。タブは URL の ?tab= に残す。
+ *  未保存の変更があるタブから移るときは、画面の中の確認を出す（入力を黙って失わない）。 */
 export function NewsSettings() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get("tab");
+  const tab: NewsTab = TABS.find(([id]) => id === requested)?.[0] ?? "basic";
+  const [dirtyIds, setDirtyIds] = useState<Record<string, boolean>>({});
+  const [pending, setPending] = useState<NewsTab | null>(null);
+  const report = useCallback((id: string, dirty: boolean) => setDirtyIds((prev) => prev[id] === dirty || (!dirty && !(id in prev)) ? prev : { ...prev, [id]: dirty }), []);
+  const dirty = Object.values(dirtyIds).some(Boolean);
+  const go = (id: NewsTab) => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (id === "basic") next.delete("tab"); else next.set("tab", id);
+    return next;
+  });
+  const setTab = (id: NewsTab) => { if (id === tab) return; if (dirty) setPending(id); else go(id); };
   return (
-    <>
-      <ChannelsCard />
-      <NewsSourcesSettings />
-      <NewsRuntimeCards />
-      <NewsHubCard />
-      <PrefsCards />
-      <ArchiveCard />
-    </>
+    <DirtyContext.Provider value={report}>
+      <div role="tablist" aria-label="ニュースの設定" data-news-tabs className="-mx-4 flex gap-1.5 overflow-x-auto overscroll-x-contain px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:px-0">
+        {TABS.map(([id, name]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+            className={`min-h-11 shrink-0 whitespace-nowrap rounded-full border px-3.5 text-sm ${tab === id
+              ? "border-accent-500/50 bg-accent-50 font-medium text-accent-700 dark:border-accent-500/40 dark:bg-accent-600/15 dark:text-accent-300"
+              : "border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800/70"}`}>
+            {name}{tab === id && dirty && <span data-testid="tab-dirty" role="img" aria-label="未保存" className="ml-1.5 inline-block h-2 w-2 rounded-full bg-amber-500 align-middle" />}
+          </button>
+        ))}
+      </div>
+      {tab === "basic" && <><ChannelsCard /><NewsRuntimeCards part="update" /></>}
+      {tab === "sources" && <NewsSourcesSettings />}
+      {tab === "llm" && <NewsRuntimeCards part="llm" />}
+      {tab === "hub" && <NewsHubCard />}
+      {tab === "image" && <NewsRuntimeCards part="imagegen" />}
+      {tab === "display" && <PrefsCards />}
+      {tab === "store" && <><NewsRuntimeCards part="rag" /><ArchiveCard /></>}
+      {pending && <ConfirmDialog title="保存していない変更があります" message="このまま移ると、入力した内容は消えます。戻って保存しますか？" confirmLabel="保存せずに移る" danger={false}
+        onConfirm={() => { const to = pending; setPending(null); go(to); }} onClose={() => setPending(null)} />}
+    </DirtyContext.Provider>
   );
 }

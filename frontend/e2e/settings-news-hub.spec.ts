@@ -48,7 +48,7 @@ for (const width of [1280, 320]) {
       return route.fulfill({ json: status });
     });
     await page.route(/\/api\/v1\/news\/hub\/secret$/, (route) => { secrets += 1; status = { ...status, secret: { sent_at: "2026-11-25T01:03:00Z", error: "" } }; return route.fulfill({ json: status }); });
-    await page.goto("/settings/news");
+    await page.goto("/settings/news?tab=hub");
     const card = page.getByRole("region", { name: "QNAP ニュースハブとつなぐ" });
     await expect(card.getByTestId("hub-effective")).toContainText("この PC が自分で集めています");      // 既定はローカル
     await expect(card.getByRole("radio", { name: "ローカル" })).toBeChecked();
@@ -76,12 +76,14 @@ for (const width of [1280, 320]) {
     await page.screenshot({ path: `test-results/settings-news-hub-fingerprint-${width}.png` });
     await card.getByRole("button", { name: "同じ（使い始める）" }).click();
     await expect(card.getByTestId("hub-linked")).toContainText("つながっています");
+    await card.getByTestId("fold-news-hub-diag").locator("summary").click();      // 診断は畳んである
     await expect(card.getByTestId("hub-diag-cursor")).toHaveText("12 / 12");
     await expect(card.getByTestId("hub-diag-jobs")).toContainText("成功 3・失敗 1");
     await card.getByTestId("hub-send-secret").click();
     await expect(card.getByTestId("hub-secret-note")).toContainText("最後に渡した時刻");
     expect(secrets).toBe(1);
     expect(await page.content()).not.toContain("sk-or");       // 鍵の値は画面に出ない
+    await card.getByTestId("fold-news-hub-detail").locator("summary").click();      // 詳しい設定は畳んである
     await card.getByRole("checkbox", { name: /ハブの仕事を借りて処理する/ }).check();
     await expect(card.getByTestId("hub-jobs-note")).toContainText("GPU を使います");
     await card.getByRole("button", { name: "つなぎを切る" }).click();
@@ -104,7 +106,7 @@ test("ニュースハブ: 同期の失敗が診断に出る・違う指紋は破
   await page.route(/\/api\/v1\/news\/settings$/, (route) => route.request().method() === "GET" ? route.fulfill({ json: settings }) : route.continue());
   await page.route(/\/api\/v1\/news\/hub$/, (route) => route.fulfill({ json: status }));
   await page.route(/\/api\/v1\/news\/hub\/confirm$/, (route) => { denied = route.request().postData() ?? ""; status = { ...empty }; return route.fulfill({ json: status }); });
-  await page.goto("/settings/news");
+  await page.goto("/settings/news?tab=hub");
   const card = page.getByRole("region", { name: "QNAP ニュースハブとつなぐ" });
   await card.getByRole("button", { name: "違う（破棄する）" }).click();
   await expect(card.getByTestId("hub-pair-form")).toBeVisible();
@@ -112,5 +114,6 @@ test("ニュースハブ: 同期の失敗が診断に出る・違う指紋は破
   status = { ...failing, verified: true, sync: { ...empty.sync, last_error: "ハブが認証を断りました（ハブの画面で取り消された可能性があります）。つなぎ直してください", failures: 3, reachable: false } };
   await page.reload();
   await expect(card.getByTestId("hub-diag-error")).toContainText("認証を断りました");
+  await card.getByTestId("fold-news-hub-diag").locator("summary").click();
   await expect(card.getByTestId("hub-diag-state")).toContainText("つながっています");
 });
