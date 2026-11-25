@@ -12,7 +12,7 @@
  *   key は項目の同一性（項目が増減しても表示中の項目を保つ）。activeKey/onChange は、表示中の項目に合わせて
  *   札・「1/3」・閉じる等を外に出したいときだけ（外側で表示中の項目を知る）。固定したい札・× は Marquee の外に置く。
  *   項目の中身が表示中に変わるときは node を変える（key は同じ）。 */
-import { countRender, marqueeCss } from "../lib/debugFlags";
+import { countRender, marqueeCss, marqueeDebug } from "../lib/debugFlags";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface MarqueeItem { key: string; node: ReactNode }
@@ -43,9 +43,9 @@ function cssAnimation(el: HTMLElement, keyframes: string, durationMs: number, on
 }
 
 /** 1 項目の層。横に流す・見せる時間を数えるのは Web Animations で行い（止める・再開が 1 か所で済む）、終わったら onDone。 */
-function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }: {
+function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone, onStat }: {
   node: ReactNode; multi: boolean; speed: number; pauseMs: number; holdMs: number;
-  reduced: boolean; paused: boolean; onDone: () => void;
+  reduced: boolean; paused: boolean; onDone: () => void; onStat?: (line: string) => void;
 }) {
   const outer = useRef<HTMLSpanElement>(null);
   const inner = useRef<HTMLSpanElement>(null);
@@ -57,13 +57,44 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
   const [dist, setDist] = useState(0);
   // 作り直しても位置（px）を保つための持ち越し。データの読み直しで dist・multi などが変わっても、流れが最初へ戻らない。
   const carry = useRef<{ x: number; hold: number }>({ x: 0, hold: 0 });
+  // 1 項目の見せる時間の下限。mount からの経過がこれに満たないうちは onfinish が来ても次へ進まない（iPhone で一瞬でめくれる対策）
+  const mountAt = useRef(performance.now());
+  const minShow = useRef(holdMs);
+  const timer = useRef<number | null>(null);
+  const stat = useRef({ dist: 0, total: 0, rebuilds: 0, finishes: 0, early: 0, end: -1 });
+  const report = () => {
+    if (!onStat) return;
+    const t = stat.current, r = (n: number) => Math.round(n);
+    onStat(`d=${r(t.dist)} total=${r(t.total)} start=${r(mountAt.current)} end=${t.end < 0 ? "-" : r(t.end)} rebuild=${t.rebuilds} fin=${t.finishes} early=${t.early}`);
+  };
+  const finish = () => {
+    stat.current.finishes++;
+    if (timer.current != null) return;                        // すでに残りを待っている
+    const wait = minShow.current - (performance.now() - mountAt.current);
+    if (wait > 0 || pausedRef.current) {
+      stat.current.early++;
+      report();
+      const tick = (ms: number) => { timer.current = window.setTimeout(() => {
+        timer.current = null;
+        const w = minShow.current - (performance.now() - mountAt.current);
+        if (w > 0 || pausedRef.current) { tick(Math.max(w, 200)); return; }
+        stat.current.end = performance.now(); report(); done.current();
+      }, ms); };
+      tick(Math.max(wait, 200));
+      return;
+    }
+    stat.current.end = performance.now(); report(); done.current();
+  };
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  useEffect(() => () => { if (timer.current != null) window.clearTimeout(timer.current); }, []);
   const meta = useRef<{ pauseMs: number; move: number; dist: number; speed: number } | null>(null);
 
   useEffect(() => {
     const o = outer.current, i = inner.current;
     if (!o || !i) return;
-    // 1px 以下の揺れ（小数の丸め）では測り直さない（アニメを付け直さない）
-    const measure = () => setDist((prev) => { const next = Math.max(0, Math.ceil(i.scrollWidth - o.clientWidth)); return next !== 0 && prev !== 0 && Math.abs(next - prev) <= 1 ? prev : next; });
+    // 5%（最低 4px）未満の揺れでは測り直さない（アニメを付け直さない。作り直すと位置が飛ぶ）
+    const measure = () => setDist((prev) => { const next = Math.max(0, Math.ceil(i.scrollWidth - o.clientWidth)); return next !== 0 && prev !== 0 && Math.abs(next - prev) <= Math.max(4, prev * 0.05) ? prev : next; });
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(o); ro.observe(i);
@@ -92,22 +123,32 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
         { transform: `translate3d(-${dist}px,0,0)`, offset: 1 },
       ], { duration: total, iterations: multi ? 1 : Infinity, easing: "linear" });
       const x = Math.min(carry.current.x, dist);
-      if (x > 0) a.currentTime = pauseMs + (x / speed) * 1000;          // 前の位置から続ける
+      if (x > 0) a.currentTime = Math.min(pauseMs + (x / speed) * 1000, total - 1);   // 前の位置から続ける（total を超えない）
+      minShow.current = Math.max(total, holdMs);
+      stat.current.dist = dist; stat.current.total = total;
       meta.current = { pauseMs, move, dist, speed };
     } else if (multi) {
       if (marqueeCss()) { css = cssAnimation(i, "@keyframes NAME{from{opacity:1}to{opacity:1}}", holdMs, true); a = css.anim; }
       else a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: holdMs });   // 見せる時間を数えるだけ
       if (carry.current.hold > 0) a.currentTime = Math.min(carry.current.hold, holdMs - 1);
+      minShow.current = holdMs;
+      stat.current.dist = 0; stat.current.total = holdMs;
       meta.current = null;
     }
     if (!a) return;
-    if (multi) a.onfinish = () => done.current();
+    stat.current.rebuilds++; report();
+    if (multi) a.onfinish = () => finishRef.current();
     if (pausedRef.current) a.pause();
     anim.current = a;
     return () => {
       // 作り直す前に、いまの位置を覚える
       const t = Number(a?.currentTime ?? 0), m = meta.current;
-      if (m) { const rel = t % (m.pauseMs * 2 + m.move); carry.current = { x: Math.min(m.dist, Math.max(0, ((rel - m.pauseMs) / m.move) * m.dist)), hold: 0 }; }
+      if (m) {
+        // 終わり際（最後の pauseMs の中）・最初の止まりの中なら頭から流し直す
+        const total = m.pauseMs * 2 + m.move, rel = t % total;
+        const x = rel >= m.pauseMs + m.move ? 0 : Math.min(m.dist, Math.max(0, ((rel - m.pauseMs) / m.move) * m.dist));
+        carry.current = { x, hold: 0 };
+      }
       else carry.current = { x: 0, hold: t };
       a?.cancel(); css?.dispose(); anim.current = null;
     };
@@ -115,12 +156,12 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
 
   useEffect(() => { if (paused) anim.current?.pause(); else anim.current?.play(); }, [paused]);
 
-  return (
+  return (<>
     <span ref={outer} data-marquee={run ? "run" : "fit"}
       className={`block overflow-hidden whitespace-nowrap ${reduced ? "text-ellipsis" : ""}`}>
       <span ref={inner} data-inner className="inline-block will-change-transform [backface-visibility:hidden]">{node}</span>
     </span>
-  );
+  </>);
 }
 
 function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, pauseMs = 1000, holdMs = 4000, flipMs = 350 }: {
@@ -135,6 +176,8 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
   const cur = items[idx];
   const [leaving, setLeaving] = useState<{ node: ReactNode; x: number } | null>(null);
   const [paused, setPaused] = useState(false);
+  const [stats, setStats] = useState<[string, string][]>([]);
+  const dbg = marqueeDebug();
   const root = useRef<HTMLDivElement>(null);
   const enter = useRef<HTMLDivElement>(null);
   const flipped = useRef(false);
@@ -180,8 +223,14 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
       onPointerDown={(e) => { if (e.pointerType !== "mouse") { touchToggle.current = !touchToggle.current; setPaused(touchToggle.current); } }}>
       <div ref={enter} data-enter>
         <Slide key={cur.key} node={cur.node} multi={items.length > 1} speed={speed} pauseMs={pauseMs}
-          holdMs={holdMs} reduced={reduced} paused={paused} onDone={next} />
+          holdMs={holdMs} reduced={reduced} paused={paused} onDone={next}
+          onStat={dbg ? (line) => { const k = cur.key; setStats((p) => [...p.filter((x) => x[0] !== k), [k, line] as [string, string]].slice(-4)); } : undefined} />
       </div>
+      {dbg && (
+        <div data-testid="marquee-debug" className="pointer-events-none whitespace-pre-wrap break-all font-mono text-[9px] leading-tight opacity-70">
+          {stats.map(([k, l]) => `${k.slice(0, 12)} ${l}`).join("\n")}
+        </div>
+      )}
       {leaving && (
         <div className="pointer-events-none absolute inset-0 whitespace-nowrap will-change-transform" ref={leaveRef}>
           <span className="inline-block" style={{ transform: `translate3d(${leaving.x}px,0,0)` }}>{leaving.node}</span>
