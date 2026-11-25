@@ -12,7 +12,7 @@
  *   key は項目の同一性（項目が増減しても表示中の項目を保つ）。activeKey/onChange は、表示中の項目に合わせて
  *   札・「1/3」・閉じる等を外に出したいときだけ（外側で表示中の項目を知る）。固定したい札・× は Marquee の外に置く。
  *   項目の中身が表示中に変わるときは node を変える（key は同じ）。 */
-import { marqueeCss } from "../lib/debugFlags";
+import { countRender, marqueeCss } from "../lib/debugFlags";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface MarqueeItem { key: string; node: ReactNode }
@@ -127,6 +127,7 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
   items: MarqueeItem[]; activeKey?: string; onChange?: (key: string) => void; className?: string;
   speed?: number; pauseMs?: number; holdMs?: number; flipMs?: number;
 }) {
+  useEffect(() => countRender("Marquee"));
   const reduced = useReducedMotion();
   const [curKey, setCurKey] = useState<string | undefined>(activeKey);
   const found = items.findIndex((x) => x.key === curKey);
@@ -190,5 +191,14 @@ function MarqueeBase({ items, activeKey, onChange, className = "", speed = 50, p
   );
 }
 
-/** 親が描き直しても、items・props が同じなら描き直さない（流れの animation を付け直さない）。 */
-export const Marquee = memo(MarqueeBase);
+type MarqueeProps = Parameters<typeof MarqueeBase>[0];
+/** 中身で比べる: 親が items の配列を作り直しても、各項目の key と node が同じ（文字なら同じ文字）なら描き直さない。 */
+function sameProps(a: MarqueeProps, b: MarqueeProps): boolean {
+  if (a.activeKey !== b.activeKey || a.onChange !== b.onChange || a.className !== b.className || a.speed !== b.speed
+    || a.pauseMs !== b.pauseMs || a.holdMs !== b.holdMs || a.flipMs !== b.flipMs) return false;
+  if (a.items === b.items) return true;
+  return a.items.length === b.items.length && a.items.every((x, i) => x.key === b.items[i].key && x.node === b.items[i].node);
+}
+
+/** 親が描き直しても、items・props の中身が同じなら描き直さない（流れの animation を付け直さない）。 */
+export const Marquee = memo(MarqueeBase, sameProps);

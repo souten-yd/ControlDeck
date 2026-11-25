@@ -1,10 +1,11 @@
-import { memo, useMemo, type CSSProperties } from "react";
+import { memo, useEffect, useMemo, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   DEFAULT_PREFS, KIND_STYLE, LEGACY_DESIGNS, relativeTime, useDigests, useNewsAction, useNewsChannels, useNewsItems, useNewsPrefs, useNewsSettings,
   type Digest, type NewsItem,
 } from "../../api/news";
 import { Marquee } from "../../components/Marquee";
+import { countRender } from "../../lib/debugFlags";
 import { Skeleton } from "../../components/ui";
 import { Media } from "./NewsCard";
 import { ArticleLink } from "./ArticleLink";
@@ -58,6 +59,29 @@ export function digestLead(digest: Digest | null | undefined, day = today()): st
 
 const hostOf = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
 
+/** テロップだけの部品。自分でニュース・まとめを読み、流す文字が変わったときだけ Marquee へ新しい項目を渡す。
+ *  ホームの 3 秒ごとの更新・カードの他の部分（記事の行・画像）の描き直しとは切り離してある（カードは中の部品を描き直さない）。
+ *  データの取り直しはニュースの設定の間隔（既定 15 分）・ニュースの操作のときだけ。3 秒ごとには取らない。 */
+const NewsTelop = memo(function NewsTelop() {
+  useEffect(() => countRender("NewsTelop"));
+  // 取り直しの間隔はカード本体が持つ（同じ query を見る）。ここでは取り直しの時計を持たない
+  const items = useNewsItems({ view: "recommended", kinds: "", q: "", date: "", topic: "", source: "" }).data?.pages[0]?.items;
+  const digests = useDigests().data;
+  const summary = useMemo(() => digestSummary([digests?.latest.daily, ...(digests?.digests ?? [])]), [digests]);
+  // テロップに流す項目の配列（共通の Marquee 部品へつなぐ形）: まとめの各行、無ければ新しい見出しの上位数件
+  // 依存は読み直しで毎回新しくなる配列ではなく「文字」（同じ文字なら同じ配列を返し、Marquee の項目を作り直さない）
+  const text = summary ? summary.lines.join("\n") : (items ?? []).filter((i) => !i.state.hide).slice(0, 5).map((i) => i.title).join("\n");
+  const telopItems = useMemo(() => (text ? text.split("\n") : []).map((t, n) => ({ key: `${n}:${t}`, node: t })), [text]);
+  if (telopItems.length === 0) return null;
+  return (
+    <div className="nw-ticker nwh-telop" data-testid="home-telop" role="group" aria-label="テロップ">
+      <span className="nw-ticker-label">NEWS</span>
+      {/* 流す項目は配列。複数なら 1 件ずつ流して縦にめくり、1 件ならそれを流し続ける（共通の Marquee）。ニュースの「動きを減らす」は CSS（data-reduce）で流れを止めて省略表示にする */}
+      <Marquee className="min-w-0 flex-1 text-[.85rem]" items={telopItems} />
+    </div>
+  );
+});
+
 /** ホームの小さなニュースのカード: 今朝のまとめ・おすすめの 1 位（画像つき）・残りの見出し。見た目はニュースのページの表示のデザインに合わせる。 */
 function NewsHomeCardBase() {
   const feedMinutes = useNewsSettings().data?.settings.feed_refresh_minutes ?? 0;      // 設定「ホームのフィードの更新の間隔」
@@ -71,11 +95,6 @@ function NewsHomeCardBase() {
   const items = all.slice(0, shown);
   const design = LEGACY_DESIGNS[prefs.display.design] ?? prefs.display.design;
   const summary = useMemo(() => digestSummary([digests?.latest.daily, ...(digests?.digests ?? [])]), [digests]);
-  // テロップに流す項目の配列（共通の Marquee 部品へつなぐ形）: まとめの各行、無ければ新しい見出しの上位数件
-  // 依存は読み直しで毎回新しくなる配列ではなく「文字」（同じ文字なら同じ配列を返し、Marquee の項目を作り直さない）
-  const telopText = summary ? summary.lines.join("\n") : all.slice(0, 5).map((i) => i.title).join("\n");
-  const telop = useMemo(() => (telopText ? telopText.split("\n") : []), [telopText]);
-  const telopItems = useMemo(() => telop.map((text, n) => ({ key: `${n}:${text}`, node: text })), [telop]);
   if (isError) return null;
 
   const channelOf = (item: NewsItem) => {
@@ -103,13 +122,7 @@ function NewsHomeCardBase() {
         <h2 id="home-news" className="nw-head nwh-title">ニュース</h2>
         <Link to="/news" className="nwh-open">ニュースを開く</Link>
       </div>
-      {telop.length > 0 && (
-        <div className="nw-ticker nwh-telop" data-testid="home-telop" role="group" aria-label="テロップ">
-          <span className="nw-ticker-label">NEWS</span>
-          {/* 流す項目は配列。複数なら 1 件ずつ流して縦にめくり、1 件ならそれを流し続ける（共通の Marquee）。ニュースの「動きを減らす」は CSS（data-reduce）で流れを止めて省略表示にする */}
-          <Marquee className="min-w-0 flex-1 text-[.85rem]" items={telopItems} />
-        </div>
-      )}
+      <NewsTelop />
       {summary && (
         <Link to="/news" className="nwh-digest" data-testid="home-digest" aria-label={`${summary.label}: ${summary.lines.join(" ")}`}>
           <span className="nw-badge">{summary.label}</span>

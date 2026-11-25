@@ -25,3 +25,11 @@ export const liveOff = (): boolean => read(KEYS.live) === ACTIVE.live;
 /** refetchInterval に使う。live=off なら止める（false）。 */
 export const liveInterval = <T,>(ms: T): T | false => (liveOff() ? false : ms);
 export function clearDebugFlags(): void { for (const f of Object.keys(KEYS) as Flag[]) write(KEYS[f], null); }
+
+/** 描き直しの回数を数える（E2E・実機の計測用）。window.__renders[名前] に足すだけで、見た目・動きは変えない。
+ *  部品の本体の中で useEffect(() => countRender("名前")) と使う（依存なし＝描き直しのたびに 1 回）。 */
+export function countRender(name: string): void {
+  const w = window as unknown as { __renders?: Record<string, number> };
+  const r = (w.__renders ??= {});
+  r[name] = (r[name] ?? 0) + 1;
+}

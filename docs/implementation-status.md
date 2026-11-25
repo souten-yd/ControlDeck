@@ -1,5 +1,16 @@
 # 実装状況
 
+## 2026-11-25 ホームのテロップを 3 秒ごとの更新から切り離す（本命の直し）
+- 利用者「CSS をつけても同じく 3 秒ごとぐらいに更新されている。画面の更新は 60fps にして、データは波形は 3 秒ごと、ニュースは更新のときに」。
+- 部品の木を分けた: `Dashboard.tsx` の殻（`DashboardPage`）は 3 秒のメトリクスを購読しない。購読は `HomeMetrics`（数字・グラフ・電力）だけ。失敗したアプリ・実行中のアプリは自分の query を持つ別部品。テロップ（`NewsTelop`・`HomeNoticeLine`・`Marquee`）は親から props を受けず、自分で読む。
+- `NewsTelop`（`NewsHomeCard.tsx` の中）: 流す文字が変わったときだけ Marquee の項目を作り直す。取り直しの時計を持たない（ニュースは設定の間隔〔既定 15 分〕・操作のときだけ。3 秒では取らない。通知の一行は 15 秒の確認で、中身が変わったときだけ描き直す）。「ニュースの更新の時刻を見る軽い確認」用の API はまだ無いので足していない（今の間隔で十分と判断。足すなら backend に最終更新の時刻を返す口が要る）。
+- `Marquee` の memo を中身比べに（items の配列が作り直されても、key と node が同じなら描き直さない）。`HomeNoticeLine` の項目は useMemo。
+- グラフは `Sparkline`（SVG の polygon/polyline）を React で描き直すまま。ただし描き直すのは `HomeMetrics` の中だけ。canvas・path の直接更新は、WebKit で効果が測れてから（Chromium では差が出ない）。
+- 動きの作り: 既定は Web Animations の translate3d（transform だけ・will-change）のまま。`?marquee=css` は切り分け用に残す。根拠: WebKit は transform のアニメを CSS・WAAPI のどちらでも同じ仕組み（Core Animation へ渡す合成）で動かし、主スレッドが詰まっても進む。ただし合成に乗らない条件がある（WAAPI の 1ms の遅れ・CSS の linear() / steps() の easing・合成に乗らないアニメが 1 つあると毎フレーム更新が起きる、など WebKit Bugzilla 236080・312407・323436）。このテロップは easing が linear キーワード・transform だけなので条件を踏まない。一方、位置の持ち越し・一時停止・終了の通知は JS から制御するので WAAPI の方が単純。CSS を既定にする根拠は今は無い。
+- 副産物の直し: `stores/index.ts` の `can` は同じ関数のままで、`useAuth((s) => s.can)` の部品は権限が入っても描き直されなかった（親の 3 秒の描き直しで隠れていた。殻を切り離すと LLM カードが出なくなり E2E `home-compact` が見つけた）。`setUser` で `can` を新しい関数にして、権限が決まったら描き直されるようにした。
+- 計測用: `lib/debugFlags.ts` の `countRender(名前)`（window.__renders に足すだけ）。E2E `home-marquee-decouple.spec.ts`: 390×844・CPU 4 倍遅く・15 秒で、テロップ・通知・殻の描き直し 0・テロップ/通知/ニュースカードの DOM の変化 0・animation の付け直し 0。メトリクスの部品は描き直される（計測が効いている証拠）。
+- 前後（15 秒・メトリクス 5 回）: ホームの殻 `DashboardPage` の描き直し 5 → 0。Marquee・NewsTelop・HomeNoticeLine は前も後も 0（#630 の memo で既に守れていた）。テロップの DOM 変化は前後 0・メトリクス部の DOM 変化は 50 → 50（数字とグラフ）。つまり Chromium では前から乱れの原因は見えず、今回の直しは殻の描き直しを無くした分（レイアウト・style の再計算の巻き込みの減少）。WebKit は Playwright の system ライブラリ不足で起動できず未確認。実機で効かなければ `?live=off` と `?marquee=css` の組合せで切り分ける。
+
 ## 2026-11-25 設定 → ニュースを節ごとのタブに分けて縦を短くした（見た目と並びだけ）
 
 利用者「設定が複雑化して、めちゃ縦に長い」（スマホの撮影: 設定 → ニュース → ニュースハブ）。機能・保存の API・保存の中身は変えていない。

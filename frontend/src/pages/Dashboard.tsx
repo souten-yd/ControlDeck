@@ -11,7 +11,7 @@ import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
 import { LlmHomeCard } from "../features/models/LlmHomeCard";
-import { liveInterval } from "../lib/debugFlags";
+import { countRender, liveInterval } from "../lib/debugFlags";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { NewsHomeCard } from "../features/news/NewsHomeCard";
 import { HomeNoticeLine } from "../features/alerts/HomeNoticeLine";
@@ -30,7 +30,9 @@ interface HistoryResponse {
   samples: HistorySample[];
 }
 
-export default function DashboardPage() {
+/** 3 秒ごとに届くメトリクス（数字・グラフ・電力）を読む部品。ホームの他の部分（テロップ・通知・アプリ）はこの更新で描き直されない。 */
+function HomeMetrics() {
+  useEffect(() => countRender("HomeMetrics"));
   // 3 秒ごとの更新で、見えていない側（モバイルでは PC 用の 4 枚）の SVG まで描き直さない。幅は CSS（md=768px）と同じ
   const wide = useMediaQuery("(min-width: 768px)");
   const latest = useMetrics((s) => s.latest);
@@ -88,14 +90,9 @@ export default function DashboardPage() {
       : null;
 
   const running = apps?.filter((a) => a.runtime.status === "RUNNING") ?? [];
-  const failed = apps?.filter((a) => a.runtime.status === "FAILED") ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-2.5 p-3 md:space-y-4 md:p-6">
-      {/* 題名は殻の上の行（☰ の右）に出る。ページの中には場所を取らない。 */}
-      <PageHeader title="Home" className="mb-0" />
-      <HomeNoticeLine />
-      <PendingApprovals />
+    <>
       {/* サマリーメトリクス */}
       <section aria-label="システムサマリー">
         {/* モバイル（768px 未満）: CPU+RAM、GPU+VRAM を 1 枚に 2 本の線で出し、横 1 段にする（利用者 2026-11-23） */}
@@ -192,83 +189,107 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
-
       {/* PSU 総出力 + 起動中/今日/今月の電気代 */}
       {m && <PowerCard power={m.power} />}
+    </>
+  );
+}
+
+function FailedApps() {
+  const { data: apps } = useApps();
+  const failed = apps?.filter((a) => a.runtime.status === "FAILED") ?? [];
+  if (failed.length === 0) return null;
+  return (
+      <section className="rounded-2xl border border-red-200 bg-red-50/60 p-4 dark:border-red-900 dark:bg-red-950/30">
+        <h2 className="mb-2 text-sm font-semibold text-red-700 dark:text-red-400">
+          失敗したアプリ
+        </h2>
+        <ul className="space-y-1">
+          {failed.map((a) => (
+            <li key={a.id}>
+              <Link
+                to={`/logs?app=${a.id}&stream=stderr`}
+                className="text-sm text-red-700 underline-offset-2 hover:underline dark:text-red-400"
+              >
+                {a.name} — ログを確認
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
+  );
+}
+
+function RunningApps() {
+  const { data: apps } = useApps();
+  const running = apps?.filter((a) => a.runtime.status === "RUNNING") ?? [];
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-zinc-500">実行中のアプリ</h2>
+        <Link
+          to="/apps"
+          className="text-xs font-medium text-accent-600 hover:underline dark:text-accent-400"
+        >
+          すべて表示
+        </Link>
+      </div>
+      {running.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-400 dark:border-zinc-700">
+          実行中のアプリはありません
+        </p>
+      ) : (
+        <ul className="divide-y divide-zinc-100 overflow-hidden rounded-2xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+          {running.slice(0, 5).map((a) => (
+            <li key={a.id} className="flex items-center gap-3 bg-white px-4 py-3 dark:bg-zinc-900">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-sm font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {a.name[0]}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{a.name}</p>
+                <p className="num text-xs text-zinc-400">
+                  {formatUptime(a.runtime.uptime_seconds)}
+                  {a.runtime.cpu_percent != null && ` · CPU ${a.runtime.cpu_percent.toFixed(0)}%`}
+                </p>
+              </div>
+              <StatusBadge status={a.runtime.status} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** ホームの殻。3 秒ごとのメトリクスは HomeMetrics だけが読む（ここは購読しないので 3 秒では描き直されない）。 */
+export default function DashboardPage() {
+  useEffect(() => countRender("DashboardPage"));
+  const can = useAuth((s) => s.can);
+  return (
+    <div className="mx-auto max-w-5xl space-y-2.5 p-3 md:space-y-4 md:p-6">
+      {/* 題名は殻の上の行（☰ の右）に出る。ページの中には場所を取らない。 */}
+      <PageHeader title="Home" className="mb-0" />
+      <HomeNoticeLine />
+      <PendingApprovals />
+      <HomeMetrics />
 
       {/* アクティブアラート */}
       <ActiveAlerts />
 
       {/* 異常アプリ */}
-      {failed.length > 0 && (
-        <section className="rounded-2xl border border-red-200 bg-red-50/60 p-4 dark:border-red-900 dark:bg-red-950/30">
-          <h2 className="mb-2 text-sm font-semibold text-red-700 dark:text-red-400">
-            失敗したアプリ
-          </h2>
-          <ul className="space-y-1">
-            {failed.map((a) => (
-              <li key={a.id}>
-                <Link
-                  to={`/logs?app=${a.id}&stream=stderr`}
-                  className="text-sm text-red-700 underline-offset-2 hover:underline dark:text-red-400"
-                >
-                  {a.name} — ログを確認
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <FailedApps />
 
-
-      {/* Add-on ツール（MCP）の利用状況。MediaForge や SonicForge は agent から
-          呼ばれると GPU も時間も使うが、呼び出しは agent の中で完結するので、
-          Home からは何も起きていないように見えていた。一度も呼ばれていなければ
-          widget 側で出さない。 */}
+      {/* Add-on ツール（MCP）の利用状況。呼ばれていなければ widget 側で出さない。 */}
       {can("workflows.run") && <AgentToolWidget />}
 
-      {/* LLM の利用状況（ローカル + OpenRouter）。Models 画面へ行かなくても、
-          いま動いているもの・速さ・使った額が分かるようにする。どちらも無ければ出さない。 */}
+      {/* LLM の利用状況（ローカル + OpenRouter）。どちらも無ければ出さない。 */}
       <LlmHomeCard />
 
       {/* ニュース（おすすめの上位 5 件）。専門のページは /news */}
       <NewsHomeCard />
 
       {/* 実行中アプリ */}
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-500">実行中のアプリ</h2>
-          <Link
-            to="/apps"
-            className="text-xs font-medium text-accent-600 hover:underline dark:text-accent-400"
-          >
-            すべて表示
-          </Link>
-        </div>
-        {running.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-400 dark:border-zinc-700">
-            実行中のアプリはありません
-          </p>
-        ) : (
-          <ul className="divide-y divide-zinc-100 overflow-hidden rounded-2xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
-            {running.slice(0, 5).map((a) => (
-              <li key={a.id} className="flex items-center gap-3 bg-white px-4 py-3 dark:bg-zinc-900">
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-100 text-sm font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                  {a.name[0]}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{a.name}</p>
-                  <p className="num text-xs text-zinc-400">
-                    {formatUptime(a.runtime.uptime_seconds)}
-                    {a.runtime.cpu_percent != null && ` · CPU ${a.runtime.cpu_percent.toFixed(0)}%`}
-                  </p>
-                </div>
-                <StatusBadge status={a.runtime.status} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <RunningApps />
     </div>
   );
 }
