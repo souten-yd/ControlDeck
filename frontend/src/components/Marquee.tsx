@@ -81,11 +81,11 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone, o
   const mountAt = useRef(performance.now());
   const minShow = useRef(holdMs);
   const timer = useRef<number | null>(null);
-  const stat = useRef({ dist: 0, total: 0, rebuilds: 0, finishes: 0, early: 0, end: -1 });
+  const stat = useRef({ dist: 0, total: 0, rebuilds: 0, finishes: 0, early: 0, end: -1, iw: 0, ow: 0 });
   const report = () => {
     if (!onStat) return;
     const t = stat.current, r = (n: number) => Math.round(n);
-    onStat(`d=${r(t.dist)} total=${r(t.total)} start=${r(mountAt.current)} end=${t.end < 0 ? "-" : r(t.end)} rebuild=${t.rebuilds} fin=${t.finishes} early=${t.early}`);
+    onStat(`d=${r(t.dist)} iw=${r(t.iw)} ow=${r(t.ow)} total=${r(t.total)} start=${r(mountAt.current)} end=${t.end < 0 ? "-" : r(t.end)} rebuild=${t.rebuilds} fin=${t.finishes} early=${t.early}`);
   };
   const finish = () => {
     stat.current.finishes++;
@@ -114,11 +114,22 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone, o
     const o = outer.current, i = inner.current;
     if (!o || !i) return;
     // 5%（最低 4px）未満の揺れでは測り直さない（アニメを付け直さない。作り直すと位置が飛ぶ）
-    const measure = () => setDist((prev) => { const next = Math.max(0, Math.ceil(i.scrollWidth - o.clientWidth)); return next !== 0 && prev !== 0 && Math.abs(next - prev) <= Math.max(4, prev * 0.05) ? prev : next; });
+    // 文字の幅は scrollWidth と描いた幅の大きいほう、見える幅は自分・テロップの枠の小さいほう（WebKit で片方だけ違っても、はみ出しを見落とさない）
+    const measure = () => setDist((prev) => {
+      const box = o.closest<HTMLElement>("[data-testid=marquee]");
+      const iw = Math.max(i.scrollWidth, i.getBoundingClientRect().width);
+      const ow = Math.min(o.clientWidth || Infinity, o.getBoundingClientRect().width || Infinity, box?.getBoundingClientRect().width || Infinity);
+      stat.current.iw = iw; stat.current.ow = Number.isFinite(ow) ? ow : 0;
+      const next = Number.isFinite(ow) ? Math.max(0, Math.ceil(iw - ow)) : 0;
+      return next !== 0 && prev !== 0 && Math.abs(next - prev) <= Math.max(4, prev * 0.05) ? prev : next; });
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(o); ro.observe(i);
-    return () => ro.disconnect();
+    const box = o.closest<HTMLElement>("[data-testid=marquee]");
+    if (box) ro.observe(box);
+    let alive = true;
+    document.fonts?.ready.then(() => { if (alive) measure(); });   // 字体が後から読み込まれて幅が変わる（ResizeObserver が拾わない形もある）
+    return () => { alive = false; ro.disconnect(); };
   }, []);
 
   const run = dist > 2 && !reduced;
