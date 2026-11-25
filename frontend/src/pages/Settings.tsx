@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMeta } from "../api/hooks";
+import { clearDebugFlags, liveOff, marqueeCss } from "../lib/debugFlags";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ReactNode, SVGProps } from "react";
 import { api } from "../api/client";
@@ -232,7 +233,7 @@ function SettingsSectionBody({ id }: { id: SectionId }) {
   const can = useAuth((s) => s.can);
   switch (id) {
     case "account": return <><AccountSection /><SessionsSection /></>;
-    case "appearance": return <><AppearanceSection /><HomeHistorySettings /><CpuFanSettings /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
+    case "appearance": return <><AppearanceSection /><HomeHistorySettings /><DebugFlagsSettings /><CpuFanSettings /><MobileNavigationSettings /><NavigationVisibilitySettings /></>;
     case "news": return <NewsSettings />;
     case "experience": return <ExperienceSettings />;
     case "features": return <FeaturesSection />;
@@ -269,6 +270,24 @@ function AccountSection() {
 }
 
 /** Home のグラフの履歴の長さ。Home 側には選択の行を置かない（利用者の依頼 2026-11-23）。 */
+/** 実機でテロップのカクつきを切り分ける目印（URL の ?marquee=css / ?live=off）。付いていれば見せて、ここから解除できる。 */
+function DebugFlagsSettings() {
+  const [, bump] = useState(0);
+  const on = [marqueeCss() && "テロップを CSS の @keyframes で動かす（?marquee=css）", liveOff() && "ホームの取り直しとメトリクスの描き直しを止める（?live=off）"].filter(Boolean) as string[];
+  return (
+    <section className={card} data-testid="debug-flags">
+      <h3 className="mb-1 text-sm font-semibold">切り分け用の目印</h3>
+      <p className="mb-2 text-xs text-zinc-400">
+        {on.length ? "いま付いています: " + on.join(" / ") : "付いていません。URL の末尾に ?marquee=css（テロップを CSS で動かす）や ?live=off（ホームの定期の更新を止める）を付けて開くと、この端末に覚えます。"}
+      </p>
+      {on.length > 0 && (
+        <button type="button" className="min-h-11 rounded-xl border border-zinc-300 px-4 text-sm dark:border-zinc-700"
+          onClick={() => { clearDebugFlags(); bump((n) => n + 1); }}>解除する（再読み込みで元に戻る）</button>
+      )}
+    </section>
+  );
+}
+
 function HomeHistorySettings() {
   const [minutes, setMinutes] = useState(readHistoryMinutes);
   const preset = HISTORY_RANGES.some(([m]) => m === minutes) ? String(minutes) : "custom";

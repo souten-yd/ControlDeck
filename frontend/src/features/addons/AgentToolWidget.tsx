@@ -12,6 +12,7 @@
  * 画面の中で言葉が混ざる。
  */
 import { useQuery } from "@tanstack/react-query";
+import { liveInterval } from "../../lib/debugFlags";
 import {
   listAgentToolJobs,
   splitAgentToolKind,
@@ -46,7 +47,7 @@ export function AgentToolWidget({ compact = false }: { compact?: boolean }) {
     queryFn: () => listAgentToolJobs(20),
     // 動いている間だけ短くする。止まっていれば無駄に叩かない。
     refetchInterval: (q) =>
-      (q.state.data ?? []).some((job) => RUNNING.has(job.status)) ? 2000 : 15000,
+      liveInterval((q.state.data ?? []).some((job) => RUNNING.has(job.status)) ? 2000 : 15000),
   });
 
   const running = (data ?? []).filter((job) => RUNNING.has(job.status));
