@@ -72,7 +72,7 @@ test("ResizeObserver が繰り返し発火し、onfinish が早く来ても、�
   for (const g of gaps) expect(g, "項目の見せる時間").toBeGreaterThanOrEqual(3800);
   expect(flips[0]).toBeGreaterThanOrEqual(3800);
   const dbg = await page.getByTestId("marquee-debug").first().textContent();
-  expect(dbg).toMatch(/d=\d+ total=\d+ start=\d+ end=\S+ rebuild=\d+ fin=\d+ early=\d+/);
+  expect(dbg).toMatch(/d=\d+ iw=\d+ ow=\d+ total=\d+ start=\d+ end=\S+ rebuild=\d+ fin=\d+ early=\d+/);
   await page.goto("/settings/appearance");
   await expect(page.getByTestId("debug-flags")).toContainText("?marquee=debug");
   for (const scheme of ["light", "dark"] as const) {
@@ -101,7 +101,7 @@ test("収まる項目は読む時間（全角 30 文字で 8 秒）見せ、デ�
   const line = "あ".repeat(30);   // 2 秒 + 30 × 0.2 秒 = 8 秒
   await mock(page, `## 今日の 3 行\n- ${line}[1]\n- ${"い".repeat(30)}[1]`);
   await page.goto("/?marquee=debug");
-  const dbg = page.getByTestId("marquee-debug").filter({ hasText: "d=0 total=8000" });
+  const dbg = page.getByTestId("marquee-debug").filter({ hasText: /d=0 iw=\d+ ow=\d+ total=8000/ });
   await expect(dbg).toHaveCount(1);
   expect(await dbg.evaluate((el) => !el.closest("[data-testid=home-telop]"))).toBe(true);
   await page.goto("/settings/appearance");
