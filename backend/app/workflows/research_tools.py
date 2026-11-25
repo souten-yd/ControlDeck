@@ -571,9 +571,13 @@ def widen_queries(query: str) -> list[str]:
 
 
 def _norm_url(url: str) -> str:
+    """URL の重複判定用。未知のクエリは別資料を指す可能性があるので保持する。
+
+    URL 自体は変更せず、従来どおりフラグメントは比較に含めない。
+    """
     parts = urlsplit(url)
     host = parts.netloc.lower().removeprefix("www.")
-    return f"{host}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query and "id=" in parts.query else "")
+    return f"{host}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query else "")
 
 
 def _merge(groups: list[list[dict]], limit: int) -> list[dict]:
