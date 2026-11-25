@@ -986,7 +986,7 @@ async def read_page(url: str, focus: str = "", max_chars: int = 6000, *, ranker=
                 "links": page_links(special["links"], url, focus), "total_chars": len(special["text"]), "truncated": truncated}
     from app.web_collector import fetch
 
-    page = await fetch.collect(url, limit_chars=400_000)
+    page = await fetch.collect(url, limit_chars=400_000, render="auto")
     if page["status"] == "success" and _CHALLENGE.search(f"{page.get('title', '')}\n{page['markdown'][:300]}") and len(page["markdown"]) < 1500:
         page = {**page, "status": "captcha", "error": "ロボット確認のページ（回避しません）"}
     if page["status"] == "success" and len(page["markdown"].strip()) < 80:

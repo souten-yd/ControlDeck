@@ -1807,7 +1807,7 @@ async def node_scrape(config: dict, ctx: dict) -> dict:
     if not url.startswith(("http://", "https://")):
         raise NodeError(f"不正な URL: {url}")
     timeout = min(float(config.get("timeout", 30)), 120)
-    page = await fetch.collect(url, timeout=timeout, keep_html=True)
+    page = await fetch.collect(url, timeout=timeout, keep_html=True, render="auto")
     if page["status"] not in ("success", "empty"):
         raise NodeError(f"取得失敗（{page['status']}）: {page['error'] or page['http_status']}")
 
@@ -2323,36 +2323,28 @@ async def node_db_query(config: dict, ctx: dict) -> dict:
 
 
 async def node_browser(config: dict, ctx: dict) -> dict:
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        raise NodeError("Playwright が未インストールです。本体の環境に playwright を入れ、設定 → 機能と拡張 → Playwright のブラウザ（画面の試験・画面確認係・録画）から導入してください")
+    """ブラウザ操作。Web 収集の共通のブラウザ（この PC の Chrome・使い捨てのプロファイル・全通信を検査する中継）で開く。
+    以前は Playwright を直接起動し、接続先の制限が無かった（docs/PLAN-web-collector.md W2）。"""
+    from app.security.offline import ExternalResearchBlocked
+    from app.web_collector import browser as web_browser
+    from app.web_collector import egress
+
     url = render_template(str(config.get("url", "")), ctx)
     if not url.startswith(("http://", "https://")):
         raise NodeError(f"不正な URL: {url}")
     action = config.get("action", "content")
     selector = str(config.get("selector", "")).strip()
-    timeout = min(float(config.get("timeout", 60)), 180) * 1000
-    from urllib.parse import urlsplit
-
-    from app.web_collector import browser as web_browser
-    from app.web_collector import egress
-
-    parts = urlsplit(url)
+    timeout = min(float(config.get("timeout", 60)), 180)
     try:
-        await egress.resolve_public(parts.hostname or "", parts.port or (443 if parts.scheme == "https" else 80))
-    except egress.EgressRejected as e:
-        raise NodeError(f"ブラウザで開けない URL です: {e}")
-    try:
-        # 本体の Python の playwright 専用の置き場（E2E・MCP の置き場とは別。playwright が版の違うブラウザを消し合わない）
-        from app.features import playwright_browsers
-
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(playwright_browsers.python_browsers_path())
-        async with async_playwright() as p:
-            # この PC の Chrome を一時プロファイルで（Playwright の既定は別の Chromium を要し、入っていなかった）
-            browser = await web_browser.launch(p)
-            page = await (await browser.new_context(service_workers="block")).new_page()
-            await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        # 画面写真のときだけ画像を取る。それ以外は画像・動画・フォントを取らない
+        async with web_browser.session(timeout_s=timeout + 10, block_resources=action != "screenshot") as sess:
+            page = sess.page
+            try:
+                await page.goto(url, timeout=int(timeout * 1000), wait_until="domcontentloaded")
+            except Exception as e:  # noqa: BLE001
+                if sess.proxy.rejected:
+                    raise NodeError(f"ブラウザで開けない URL です: {sess.proxy.rejected[0].reason}")
+                raise
             output: dict = {"url": url, "title": await page.title()}
             if action == "screenshot":
                 from app.files.service import resolve
@@ -2366,8 +2358,13 @@ async def node_browser(config: dict, ctx: dict) -> dict:
                 output["text"] = (await el.inner_text()) if el else ""
             else:
                 output["content"] = (await page.content())[:20000]
-            await browser.close()
             return output
+    except NodeError:
+        raise
+    except (egress.EgressRejected, ExternalResearchBlocked) as e:
+        raise NodeError(f"ブラウザで開けない URL です: {e}")
+    except web_browser.BrowserError as e:
+        raise NodeError(str(e))
     except Exception as e:
         raise NodeError(f"ブラウザ操作失敗: {type(e).__name__}: {e}")
 

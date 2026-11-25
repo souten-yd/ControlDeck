@@ -1,5 +1,13 @@
 # 実装状況
 
+
+## 2026-11-26 検索基盤の強化 W2（安全な JavaScript レンダリング）
+
+- 静的 HTTP → 初期 JSON → この PC の Chrome（使い捨てプロファイル・全通信を検査つきの中継へ・プロキシ以外は遮断）の自動の切り替え（`fetch.collect(render="auto")`）。`read_page`・Deep Research の `_page_text`・`web.scrape`・`web.browser` が共通。機能「Web 収集のブラウザ」が有効なときだけ。
+- 止める条件（403/429・CAPTCHA・ログイン・robots 拒否）は回避せず status と理由を返す。依存追加・ブラウザの導入なし。
+- 試験: 実 Chrome で内部（127.0.0.2）へ iframe・Worker・fetch・WebSocket・IPv6・rebinding・リダイレクトが届かない、判定の見本 15 件、自動の切り替え。実測は `~/ControlDeck-評価/2026-11-26-検索基盤W2のブラウザ描画.md`（SPA 3 件で本文取得、1 回 2〜3 秒・約 1 GB、OpenAlex は 403 で停止）。
+- 詳細・次の手は `HANDOFF-web-collector.md` §2b。未マージ（セキュリティの最終レビュー待ち）。
+
 ## 2026-11-26 テロップ: はみ出しの測り方を頑丈に（iPhone で長い見出しも d=0 と測られる疑い）
 - 利用者「たまたまはみ出ていない分だったのでは」。写しの 2 件（d=0）が本当に収まる見出しだったかは区別できない。
 - `Marquee.tsx` の測り方: 文字の幅は scrollWidth と描いた幅の大きいほう、見える幅は自分・テロップの枠の clientWidth・描いた幅の小さいほう。テロップの枠も ResizeObserver で見る。字体の読み込み後（document.fonts.ready）にも測り直す。

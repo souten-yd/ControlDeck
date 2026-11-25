@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 250 ファイル、2475 テスト（目的の未記入 93 ファイル）
-- E2E: 141 spec、308 テスト
+- backend: 253 ファイル、2502 テスト（目的の未記入 93 ファイル）
+- E2E: 142 spec、310 テスト
 
 ## backend（backend/tests）
 
@@ -1441,6 +1441,30 @@
 目的: **未記入**
 
 - `test_cancelled_stream_joins_update_and_disconnect_waiters`
+
+### backend/tests/test_js_detect.py
+
+目的: JavaScript が要るページの判定（W2）。固定の HTML の見本 15 件（tests/fixtures/js_pages）で評価する。 目的: - 要るページ（空の根・noscript の案内・script だけ）は needs_js、本文がある（SSR 済み・短い通知・分析タグ付き）ページは要らないと判定すること。 誤って「要る」にするとブラウザを無駄に起こし、誤って「要らない」にすると本文が空のまま返る。見本の全件で期待どおりであること。 - 初期 JSON（__NEXT_DATA__・window.__NUXT__・ld+json）に本文があれば、ブラウザを使わずそこから取ること。 本文が既に十分あるページでは JSON を足さないこと。 根拠: docs/PLAN-web-collector.md §7 W2、HANDOFF「W2 で最初にやること」（OpenAlex は「needs JavaScript」の案内 254 字だけ）。通信なし。
+
+- `test_each_sample_is_classified_as_expected`
+- `test_accuracy_over_all_samples_is_perfect` — 見本全体の正答率（要る / 静的 / JSON）。1 件でも外れたら基準を見直す。
+- `test_html_inside_json_is_reduced_to_text`
+- `test_broken_or_huge_json_is_ignored`
+
+### backend/tests/test_js_render.py
+
+目的: W2: 静的 → 初期 JSON → ブラウザの自動の切り替え（fetch.collect の render="auto"）と robots.txt の確認。 目的: - JS が要るページは、機能「Web 収集のブラウザ」が有効なときだけブラウザで取る（実 Chrome。ローカルの試験サーバー）。無効なら警告つきの静的の結果。 - 初期 JSON に本文があればブラウザを起こさず取る。静的で足りるページではブラウザを起こさない。 - robots.txt が禁じたページ・403・ログイン・CAPTCHA は止まり、状態と理由を返す（別の経路で取り直さない）。 - robots.txt の解釈（Allow/Disallow の最長一致・ワイルドカード・5xx は拒否扱い）。 根拠: docs/PLAN-web-collector.md §7 W2、§6。外へは出ない。
+
+- `test_js_page_is_rendered_by_the_browser_when_the_feature_is_enabled`
+- `test_without_the_feature_the_static_result_is_returned_with_a_warning`
+- `test_initial_json_is_used_without_starting_the_browser`
+- `test_static_sufficient_page_never_starts_the_browser`
+- `test_render_never_is_the_default_for_other_callers`
+- `test_robots_denied_page_is_not_opened_in_the_browser`
+- `test_login_page_stops_with_a_reason`
+- `test_read_page_uses_the_browser_for_js_pages`
+- `test_robots_rules_longest_match_wildcards_and_failures`
+- `test_robots_5xx_means_not_allowed_and_4xx_means_allowed`
 
 ### backend/tests/test_knowledge_documents.py
 
@@ -2944,10 +2968,13 @@
 - `test_page_date_is_checked_against_the_requested_period`
 - `test_sites_are_normalized_and_queries_widen_while_keeping_the_site`
 - `test_search_limit_is_clamped_and_multiple_sites_are_merged`
+- `test_search_merge_keeps_distinct_query_urls`
+- `test_search_merge_drops_tracking_params_and_ignores_param_order` — 目的: 追跡用の引数（utm_*・fbclid）だけ違う URL・引数の順番だけ違う URL は同じ記事として 1 つにまとめる。
 - `test_reddit_search_and_thread_comments`
 - `test_reddit_falls_back_to_rss_then_searxng`
 - `test_github_and_hacker_news_entrances`
 - `test_excerpt_puts_relevant_paragraphs_first_and_links_prefer_same_site`
+- `test_page_links_prioritize_relevant_documentation_within_site`
 - `test_read_page_reads_html_with_links_and_pdf`
 - `test_internal_addresses_and_confidential_conversations_never_connect`
 - `test_tools_register_sources_and_wrap_text_as_material`
@@ -3498,6 +3525,21 @@
 - `test_the_health_check_does_not_share_the_default_executor` — 共有プールが埋まっても確認は動く。
 - `test_a_slow_check_does_not_kill_the_process` — 確認が返らないだけで落とさない。この loop が動けている＝生きている。
 - `test_an_unhealthy_answer_still_stops_the_ping` — 本当に駄目なときは従来どおり黙り、systemd の再起動へ委ねる。
+
+### backend/tests/test_web_browser.py
+
+目的: Web 収集エンジン W2（ブラウザの安全）。 目的: - Chrome の全通信が中継（egress の検査）を通り、内部のアドレスへ**届かない**こと。 iframe・Worker・fetch・WebSocket・リダイレクト・IP リテラル・IPv6・DNS rebinding（内部が混ざる DNS）を実 Chrome で確かめる。 「内部」の代わりに 127.0.0.2（ローカルの試験サーバー。中継の外にあり、許可した公開の試験サーバー 127.0.0.1 とは別）を使い、 そこに**1 件も接続が来ない**ことを見る。公開の側（127.0.0.1）には届く（中継が動いている対照）。 - 中継そのもの（CONNECT・http 絶対 URI・認証・上限）が、既定の方針で内部（127.0.0.1・プライベート・リンクローカル・IPv6）を 403 で断ること。 - 使い捨てのプロファイル・Chrome のプロセスが残らないこと・秘密の会話では起動しないこと。 根拠: docs/research-web-collector.md §4、docs/PLAN-web-collector.md §7 W2。外へは出ない（相手はローカルの試験サーバーだけ）。
+
+- `test_browser_never_reaches_internal_targets_from_iframe_worker_fetch_websocket_ipv6_and_rebinding`
+- `test_redirect_to_an_internal_host_is_stopped`
+- `test_stop_conditions_are_reported_not_bypassed`
+- `test_profile_is_disposable_and_no_chrome_process_is_left`
+- `test_confidential_conversation_never_starts_a_browser`
+- `test_relay_refuses_internal_targets_with_the_default_policy`
+- `test_relay_requires_authentication_and_refuses_plain_http_to_internal`
+- `test_relay_stops_when_the_size_limit_is_exceeded`
+- `test_loopback_is_not_bypassed_by_the_browser` — Chrome は既定でループバックを中継しない。`<-loopback>` で中継に通っているか（許可の無い 127.0.0.1 は断られる）。
+- `test_memory_limit_kills_the_browser_and_cleans_up`
 
 ### backend/tests/test_web_collector.py
 
@@ -4178,6 +4220,13 @@
 目的: 切り分け用の目印（?marquee=css・?live=off）の E2E。下は計測の spec と同じモックを使う。 元の説明: ホームのテロップを「実機のモバイルに近い条件」（390x844・DPR 3・タッチ・CPU を遅く）で 15 秒測る。API・WebSocket はモック。 目的: 3 秒ごとのメトリクス更新と重なっても、①テロップの DOM が 1 件も作り直されない（mutation 0・animate の付け直し 0） ②長いコマ（> 33ms）の数と最大が小さい ③transform が流れの途中で巻き戻らない。結果は test-results/home-marquee-mobile-*.json。 根拠: 2026-11-25 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。 */
 
 - 目印なしは WAAPI のまま。?marquee=css で CSS の animation になり、?live=off で 3 秒ごとの更新が止まり、設定から解除できる
+
+### frontend/e2e/home-marquee-flip.spec.ts
+
+目的: iPhone で「すごい速さでテロップが変わる」不具合の再発防止。ResizeObserver が何度も発火し、Animation の onfinish が早く来る（模擬）条件でも、 1 項目は「流し終わるまでの時間か holdMs の長いほう」より早くめくれない。?marquee=debug の表示も確かめる。 根拠: 2026-11-26 利用者「iPhone でテロップが変わるのがすごい速さ」（?marquee=css・?live=off でも同じ）。 */
+
+- ResizeObserver が繰り返し発火し、onfinish が早く来ても、項目は下限より早くめくれない
+- 収まる項目は読む時間（全角 30 文字で 8 秒）見せ、デバッグの表示はテロップを隠さない
 
 ### frontend/e2e/home-marquee-mobile.spec.ts
 

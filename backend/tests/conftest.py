@@ -86,3 +86,15 @@ def _fresh_feature_cache():
     registry.invalidate_feature_cache()
     yield
     registry.invalidate_feature_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_auto_browser():
+    """静的で足りないページの「自動のブラウザ」を試験では起こさない（Chrome を勝手に起動しない）。
+    使う試験（test_web_browser.py・test_js_render.py）は monkeypatch で明示的に有効にする。"""
+    from app.web_collector import browser
+
+    original = browser.is_enabled
+    browser.is_enabled = lambda: False
+    yield
+    browser.is_enabled = original

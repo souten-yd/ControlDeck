@@ -214,7 +214,7 @@ async def _page_text(url: str, limit_chars: int = 3500) -> str:
     BeautifulSoup で 1 行に連結していた。docs/PLAN-web-collector.md W1。"""
     from app.web_collector import fetch
 
-    page = await fetch.collect(url, limit_chars=max(limit_chars, 1))
+    page = await fetch.collect(url, limit_chars=max(limit_chars, 1), render="auto")
     return page["markdown"][:limit_chars] if page["status"] == "success" else ""
 
 
