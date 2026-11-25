@@ -4,11 +4,11 @@
  * 解決されたら消して次に優先度の高い内容を。重要度によって インフォメーション・アテンション・ワーニング・エラーの
  * 題名をつけて、色も変えて」。元は backend の /home-notices（警報・失敗したアプリ・更新の失敗・承認待ち）。
  * 色だけに頼らない: 札の文字（エラー・警告・注意・情報）と形の違うアイコンを必ず付ける。何も無ければ行ごと出さない。 */
-import { memo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
-import { liveInterval } from "../../lib/debugFlags";
+import { countRender, liveInterval } from "../../lib/debugFlags";
 import { Marquee } from "../../components/Marquee";
 
 export type NoticeLevel = "error" | "warning" | "attention" | "info";
@@ -47,6 +47,7 @@ function LevelIcon({ level }: { level: NoticeLevel }) {
 }
 
 function HomeNoticeLineBase() {
+  useEffect(() => countRender("HomeNoticeLine"));
   const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ["home-notices"],
@@ -59,18 +60,18 @@ function HomeNoticeLineBase() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["home-notices"] }),
   });
   const [key, setKey] = useState<string>();
-  const list = data?.items ?? [];
+  const list = useMemo(() => data?.items ?? [], [data]);
   const idx = Math.max(0, list.findIndex((n) => n.key === key));
   const top = list[idx];
-  if (!top) return null;
-  const style = LEVELS[top.level];
-  const items = list.map((n) => ({
+  const items = useMemo(() => list.map((n) => ({
     key: n.key,
     node: <>
       <span className="font-medium">{n.title}</span>
       {n.message && n.message !== n.title && <span className="opacity-80"> — {n.message}</span>}
     </>,
-  }));
+  })), [list]);
+  if (!top) return null;
+  const style = LEVELS[top.level];
   return (
     <div role={top.level === "error" ? "alert" : "status"} data-testid="home-notice" data-level={top.level}
       className={`flex min-w-0 items-center gap-1 rounded-xl border pl-2 text-xs ${style.row}`}>

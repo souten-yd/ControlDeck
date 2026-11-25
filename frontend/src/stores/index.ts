@@ -10,7 +10,9 @@ interface AuthState {
 
 export const useAuth = create<AuthState>((set, get) => ({
   user: null,
-  setUser: (user) => set({ user }),
+  // can は user が変わるたびに新しい関数にする。useAuth((s) => s.can) の部品が、利用者が決まった（権限が入った）ときに描き直される。
+  // 同じ関数のままだと、親が描き直されない限り権限が入っても気づかない（ホームの殻を 3 秒の更新から切り離して見つかった）
+  setUser: (user) => set({ user, can: (perm) => user?.permissions.includes(perm) ?? false }),
   can: (perm) => get().user?.permissions.includes(perm) ?? false,
 }));
 

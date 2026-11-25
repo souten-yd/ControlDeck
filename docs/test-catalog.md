@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 250 ファイル、2473 テスト（目的の未記入 93 ファイル）
-- E2E: 138 spec、304 テスト
+- backend: 250 ファイル、2475 テスト（目的の未記入 93 ファイル）
+- E2E: 141 spec、308 テスト
 
 ## backend（backend/tests）
 
@@ -2270,6 +2270,8 @@
 - `test_digest_rejects_english_and_retries_once` — 目的: まとめが日本語で書かれていなければ、1 回だけ理由を伝えて書き直させ、それでも英語なら見出しの一覧に落とすこと。
 - `test_news_llm_retries_when_busy_and_not_when_over_budget` — 目的: 混み合い（429・temporarily rate-limited）で断られたら待ってやり直し、上限額や許可の失敗はやり直さないこと。
 - `test_digest_shows_headlines_while_the_llm_is_working` — 目的: まとめを作っている間も、先に見出しの一覧（作成中の印つき）が見られ、LLM ができたら置き換わること。
+- `test_prep_topics_are_not_split_into_letters` — 目的: LLM の返した話題の語が 1 文字ずつに分かれて保存されないこと。
+- `test_split_topics_already_saved_are_repaired_on_open` — 目的: すでに崩れて保存された 1 文字の語を、DB を開くときに外す（何度流しても同じ）。根拠: 上と同じ不具合の残り。
 
 ### backend/tests/test_news_reader.py
 
@@ -4165,6 +4167,24 @@
 - home cpu fan, colors, capacity (${width}px, ${scheme})
 - home without a readable CPU fan shows nothing for it (390px)
 
+### frontend/e2e/home-marquee-decouple.spec.ts
+
+目的: ホームの 3 秒ごとの更新（メトリクス）があっても、テロップ・通知の一行の部品は描き直されない。API・WebSocket はモック。 目的: モバイル（390x844・CPU 4 倍遅く）で 15 秒の間、①テロップ・通知・ホームの殻の React の描き直しが 0 回 ②テロップの DOM が変わらない ③流れの animation を付け直さない ④いっぽうメトリクスの部品は 3 秒ごとに描き直される（計測が効いている証拠）。 根拠: 2026-11-25 利用者「3 秒ごとぐらいに更新されている。画面の更新は 60fps、データの取得は波形は 3 秒ごと、ニュースは更新のときに」。 数え方: 部品の本体で countRender（window.__renders）、DOM は MutationObserver。結果は test-results/home-marquee-decouple.json。 */
+
+- 3 秒ごとの更新があってもテロップ・通知の部品は描き直されない（モバイル・CPU 4 倍遅く・15 秒）
+
+### frontend/e2e/home-marquee-flags.spec.ts
+
+目的: 切り分け用の目印（?marquee=css・?live=off）の E2E。下は計測の spec と同じモックを使う。 元の説明: ホームのテロップを「実機のモバイルに近い条件」（390x844・DPR 3・タッチ・CPU を遅く）で 15 秒測る。API・WebSocket はモック。 目的: 3 秒ごとのメトリクス更新と重なっても、①テロップの DOM が 1 件も作り直されない（mutation 0・animate の付け直し 0） ②長いコマ（> 33ms）の数と最大が小さい ③transform が流れの途中で巻き戻らない。結果は test-results/home-marquee-mobile-*.json。 根拠: 2026-11-25 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。 */
+
+- 目印なしは WAAPI のまま。?marquee=css で CSS の animation になり、?live=off で 3 秒ごとの更新が止まり、設定から解除できる
+
+### frontend/e2e/home-marquee-mobile.spec.ts
+
+目的: ホームのテロップを「実機のモバイルに近い条件」（390x844・DPR 3・タッチ・CPU を遅く）で 15 秒測る。API・WebSocket はモック。 目的: 3 秒ごとのメトリクス更新と重なっても、①テロップの DOM が 1 件も作り直されない（mutation 0・animate の付け直し 0） ②長いコマ（> 33ms）の数と最大が小さい ③transform が流れの途中で巻き戻らない。結果は test-results/home-marquee-mobile-*.json。 根拠: 2026-11-25 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。 */
+
+- ホームのテロップはモバイル条件（CPU ${rate} 倍遅く${multi ? 
+
 ### frontend/e2e/home-marquee-smooth.spec.ts
 
 目的: ホームの流れる文字（ニュースのテロップ・通知の 1 行）が、3 秒ごとのメトリクス更新の間も滑らかに流れ続ける。API・WebSocket はモック。 目的: ①10 秒の間 rAF で transform の X を毎フレーム集め、流れている間は巻き戻らない ②3 秒ごとの境目で 50ms 以上の止まりが無い ③1 秒あたりのフレームが 50 以上（headless の目安）。計測の値は test-results/home-marquee-smooth.json に残す。 根拠: 2026-11-24 利用者「ホーム画面が更新が 3 秒ごとになっている気がする。ニュースの右から左に移動する文字は 60fps くらい滑らかに。 ブラウザ側で一度情報を受信したらスムーズに動かせないか」。 */
@@ -4335,6 +4355,7 @@
 目的: ニュースの専門ページ（/news）: 放送局のデザイン・チャンネル・設定。API は page.route で差し替える（外へ通信せず、本物の記事にも依存しない）。 画像はテストの中で作る SVG の data URI（外部の画像の URL は使わない）。 守ること: ON AIR・チャンネルの切り替え・テロップ・NOW/TODAY/THIS WEEK・チャンネルの区画・数字が出る／チャンネルを押すと ON AIR が変わる／ 設定でデザインを変えると見た目が変わる／チャンネルを足せる／携帯（390・320px）で 1 列・横にあふれない／ 新着・アーカイブ・検索・👍・隠すは 1 段目のまま使える。撮影は test-results/ に残す。 根拠: 2026-11-23 利用者「OZY のようなページのデザインを参考に。設定で検索テーマや表示のデザインなど、ニュースを便利に使うための設定を詳細にできるように」。 */ 画面の中で縦に動く領域（アプリの殻）の全体が写るよう、撮影の間だけ viewport を伸ばす（fullPage は殻の内側までは写さない）。 */
 
 - ニュース（放送局）: ON AIR・テロップ・区画・数字・チャンネルの切り替え（${width}px）
+- ニュース設定: 未保存で別のタブへ移ると確認が出て、戻ると入力が残っている
 - ニュース: 設定でデザイン・表示を変えると見た目が変わり、チャンネルを足せる
 - ニュース: 5 つのデザインを順に選ぶ（並び・特徴の要素・保存・撮影）
 - ニュース: ダークでも 5 つのデザインが読める（背景と文字が違う色）
