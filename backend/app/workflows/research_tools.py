@@ -29,7 +29,7 @@ import logging
 import math
 import re
 import time
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit
 
 from app.security.offline import ExternalResearchBlocked, ensure_external_allowed
 from app.web_collector import egress
@@ -577,7 +577,12 @@ def _norm_url(url: str) -> str:
     """
     parts = urlsplit(url)
     host = parts.netloc.lower().removeprefix("www.")
-    return f"{host}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query else "")
+    # 追跡用の引数（utm_*・fbclid など）だけ違う URL は同じ記事。残りの引数は順番をそろえて比べる
+    keep = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING.match(k))
+    return f"{host}{parts.path.rstrip('/')}" + (f"?{urlencode(keep)}" if keep else "")
+
+
+_TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_ga|_gl|ref_src|spm)$", re.I)
 
 
 def _merge(groups: list[list[dict]], limit: int) -> list[dict]:

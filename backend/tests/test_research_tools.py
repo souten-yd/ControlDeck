@@ -115,6 +115,19 @@ def test_search_merge_keeps_distinct_query_urls():
     assert [r["url"] for r in found["results"]] == [u for i, u in enumerate(urls) if i != 2]
 
 
+def test_search_merge_drops_tracking_params_and_ignores_param_order():
+    """目的: 追跡用の引数（utm_*・fbclid）だけ違う URL・引数の順番だけ違う URL は同じ記事として 1 つにまとめる。
+    根拠: 2026-11-26 PR #634 でクエリを全部残すようにしたとき、ニュースの共有リンク（utm つき）が同じ記事の重複として残る。"""
+    urls = ["https://example.test/a?p=1&utm_source=x", "https://example.test/a?p=1&fbclid=z", "https://example.test/a?utm_medium=m&p=1",
+            "https://example.test/s?b=2&a=1", "https://example.test/s?a=1&b=2", "https://example.test/b?utm_source=x", "https://example.test/b"]
+
+    async def searx(query, limit, time_range, pageno):
+        return [{"title": u, "url": u, "snippet": ""} for u in urls]
+
+    found = run(rt.search_web("test", limit=10, searx=searx))
+    assert [r["url"] for r in found["results"]] == [urls[0], urls[3], urls[5]]
+
+
 def test_reddit_search_and_thread_comments(monkeypatch):
     posts = {"data": {"children": [{"data": {"title": "Qwen の量子化", "permalink": "/r/LocalLLaMA/comments/abc/q/", "score": 120,
                                               "num_comments": 80, "subreddit": "LocalLLaMA", "created_utc": 1795000000, "selftext": "Q4 は十分"}}]}}
