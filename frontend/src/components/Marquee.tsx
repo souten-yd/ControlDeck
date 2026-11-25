@@ -12,6 +12,7 @@
  *   key は項目の同一性（項目が増減しても表示中の項目を保つ）。activeKey/onChange は、表示中の項目に合わせて
  *   札・「1/3」・閉じる等を外に出したいときだけ（外側で表示中の項目を知る）。固定したい札・× は Marquee の外に置く。
  *   項目の中身が表示中に変わるときは node を変える（key は同じ）。 */
+import { marqueeCss } from "../lib/debugFlags";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface MarqueeItem { key: string; node: ReactNode }
@@ -27,6 +28,18 @@ function useReducedMotion(): boolean {
     return () => mq.removeEventListener("change", on);
   }, []);
   return reduced;
+}
+
+let cssSeq = 0;
+/** ?marquee=css 用: @keyframes の <style> を足し、要素にインラインで当てて、その CSSAnimation を返す（止める・位置の持ち越しは WAAPI と同じ道）。 */
+function cssAnimation(el: HTMLElement, keyframes: string, durationMs: number, once: boolean) {
+  const name = `mqcss${++cssSeq}`;
+  const style = document.createElement("style");
+  style.textContent = keyframes.replace("NAME", name);
+  document.head.appendChild(style);
+  el.style.animation = `${name} ${durationMs}ms linear ${once ? "1" : "infinite"}`;
+  const anim = el.getAnimations().find((x) => (x as { animationName?: string }).animationName === name) ?? el.animate([], { duration: durationMs });
+  return { anim, dispose: () => { el.style.animation = ""; style.remove(); } };
 }
 
 /** 1 項目の層。横に流す・見せる時間を数えるのは Web Animations で行い（止める・再開が 1 か所で済む）、終わったら onDone。 */
@@ -62,11 +75,17 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
     const i = inner.current;
     if (!i || typeof i.animate !== "function") return;
     let a: Animation | null = null;
+    let css: { anim: Animation; dispose: () => void } | null = null;
     if (run) {
       const move = (dist / speed) * 1000;
       const total = pauseMs * 2 + move;
       // transform（translate3d）だけで動かす。速さは px/秒で一定（距離 ÷ speed）
-      a = i.animate([
+      if (marqueeCss()) {
+        // 切り分け用（?marquee=css）: 同じ動きを CSS の @keyframes（transform だけ）で動かす
+        const p1 = (pauseMs / total) * 100, p2 = ((pauseMs + move) / total) * 100;
+        css = cssAnimation(i, `@keyframes NAME{0%,${p1}%{transform:translate3d(0,0,0)}${p2}%,100%{transform:translate3d(-${dist}px,0,0)}}`, total, multi);
+        a = css.anim;
+      } else a = i.animate([
         { transform: "translate3d(0,0,0)", offset: 0 },
         { transform: "translate3d(0,0,0)", offset: pauseMs / total },
         { transform: `translate3d(-${dist}px,0,0)`, offset: (pauseMs + move) / total },
@@ -76,7 +95,8 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
       if (x > 0) a.currentTime = pauseMs + (x / speed) * 1000;          // 前の位置から続ける
       meta.current = { pauseMs, move, dist, speed };
     } else if (multi) {
-      a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: holdMs });   // 見せる時間を数えるだけ
+      if (marqueeCss()) { css = cssAnimation(i, "@keyframes NAME{from{opacity:1}to{opacity:1}}", holdMs, true); a = css.anim; }
+      else a = i.animate([{ opacity: 1 }, { opacity: 1 }], { duration: holdMs });   // 見せる時間を数えるだけ
       if (carry.current.hold > 0) a.currentTime = Math.min(carry.current.hold, holdMs - 1);
       meta.current = null;
     }
@@ -89,7 +109,7 @@ function Slide({ node, multi, speed, pauseMs, holdMs, reduced, paused, onDone }:
       const t = Number(a?.currentTime ?? 0), m = meta.current;
       if (m) { const rel = t % (m.pauseMs * 2 + m.move); carry.current = { x: Math.min(m.dist, Math.max(0, ((rel - m.pauseMs) / m.move) * m.dist)), hold: 0 }; }
       else carry.current = { x: 0, hold: t };
-      a?.cancel(); anim.current = null;
+      a?.cancel(); css?.dispose(); anim.current = null;
     };
   }, [run, dist, speed, pauseMs, holdMs, multi]);
 

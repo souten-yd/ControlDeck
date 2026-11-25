@@ -11,6 +11,7 @@ import { PageHeader } from "../components/PageHeader";
 import { AgentToolWidget } from "../features/addons/AgentToolWidget";
 import { PendingApprovals } from "../features/approvals/PendingApprovals";
 import { LlmHomeCard } from "../features/models/LlmHomeCard";
+import { liveInterval } from "../lib/debugFlags";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { NewsHomeCard } from "../features/news/NewsHomeCard";
 import { HomeNoticeLine } from "../features/alerts/HomeNoticeLine";
@@ -359,7 +360,7 @@ function ActiveAlerts() {
   const { data: alerts } = useQuery({
     queryKey: ["alert-events", "active"],
     queryFn: () => api<AlertEvent[]>("/alert-events?active_only=true&limit=10"),
-    refetchInterval: 15_000,
+    refetchInterval: () => liveInterval(15_000),
   });
   const dismiss = useMutation({
     mutationFn: (eventId?: number) =>

@@ -7,6 +7,7 @@
  * 外部側は settings.manage の利用者だけ。 */
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { liveInterval } from "../../lib/debugFlags";
 import { getLlamaCapacity, type EndpointCapacity, type FailedInstance, type LastLocal, type LlmPower } from "../../api/models";
 import {
   CLOUD_QUERY_KEY, getCloudAccount, getCloudState, getCloudSummary, type CloudSummary,
@@ -209,7 +210,7 @@ export function LlmHomeCard() {
   // Models 画面の CapacityWidget と同じキーなので、取得は 1 回で済む。
   const { data: capacity } = useQuery({
     queryKey: ["llama-capacity"], queryFn: getLlamaCapacity, enabled: canLocal,
-    refetchInterval: (q) => (q.state.data?.endpoints.length ? 3000 : 20000),
+    refetchInterval: (q) => liveInterval(q.state.data?.endpoints.length ? 3000 : 20000),
   });
   const { data: cloudState } = useQuery({
     queryKey: CLOUD_QUERY_KEY, queryFn: getCloudState, enabled: canCloud, staleTime: 60_000,
@@ -219,7 +220,7 @@ export function LlmHomeCard() {
   const summary = useQuery({
     queryKey: ["cloud-summary"], queryFn: getCloudSummary, enabled: hasCloud,
     // 実行中だけ短い間隔で追う。
-    refetchInterval: (q) => (q.state.data?.running.length ? 3000 : 15000),
+    refetchInterval: (q) => liveInterval(q.state.data?.running.length ? 3000 : 15000),
   });
   // 残高は OpenRouter へ問い合わせるので、頻繁には取りに行かない。
   const account = useQuery({

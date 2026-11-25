@@ -6,6 +6,7 @@
  * - 通知からは `/?approvals=1` で直接開く
  * 中身は差分ではなく、平易な要約と「なぜ承認が要るか」。承認すると ControlDeck が PR を
  * マージする（依頼の後に PR が変わっていればマージしない）。管理者にだけ見える。 */
+import { liveInterval } from "../../lib/debugFlags";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -27,7 +28,7 @@ function useApprovals() {
     queryKey,
     queryFn: () => api<{ approvals: Approval[] }>("/system/approvals"),
     enabled: canManage,
-    refetchInterval: 30_000,
+    refetchInterval: () => liveInterval(30_000),
     refetchOnWindowFocus: true,
   });
   return { canManage, items: data?.approvals ?? [] };

@@ -8,6 +8,7 @@ import {
   retryDelayMs,
   watchForReturn,
 } from "../lib/liveConnection";
+import { liveOff } from "../lib/debugFlags";
 import { useMetrics } from "../stores";
 import type { MetricsSnapshot } from "../types";
 
@@ -61,7 +62,8 @@ export function useMetricsStream(enabled: boolean) {
           const snapshot = JSON.parse(event.data) as MetricsSnapshot & { stale?: boolean };
           // stale は server の heartbeat。回線を暖めるだけで新しい値ではないので、
           // 履歴に同じ点を積まない。受け取った事実（lastMessageAt）だけを使う。
-          if (!snapshot.stale) push(snapshot);
+          // live=off（切り分け用）: 最初の 1 点だけ受け取り、あとは描き直しを起こさない
+          if (!snapshot.stale && (!liveOff() || useMetrics.getState().latest == null)) push(snapshot);
         } catch {
           /* 壊れた message は捨てる */
         }

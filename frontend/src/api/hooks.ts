@@ -4,6 +4,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "./client";
+import { liveInterval } from "../lib/debugFlags";
 import type { HostInfo, ManagedApp, Meta, MetricsSnapshot, UserInfo } from "../types";
 import { useToasts } from "../stores";
 
@@ -30,7 +31,7 @@ export function useApps() {
     queryFn: () => api<ManagedApp[]>("/apps"),
     // systemd/プロセスツリー/待受ポートを走査するため、常時の再取得は抑える。
     // 操作時はuseAppActionが楽観更新し、完了後に明示invalidateする。
-    refetchInterval: 15_000,
+    refetchInterval: () => liveInterval(15_000),
     refetchIntervalInBackground: false,
   });
 }

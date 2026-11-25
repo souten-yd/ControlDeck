@@ -8,6 +8,7 @@ import { memo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
+import { liveInterval } from "../../lib/debugFlags";
 import { Marquee } from "../../components/Marquee";
 
 export type NoticeLevel = "error" | "warning" | "attention" | "info";
@@ -50,7 +51,7 @@ function HomeNoticeLineBase() {
   const { data } = useQuery({
     queryKey: ["home-notices"],
     queryFn: () => api<{ items: HomeNotice[]; total: number }>("/home-notices"),
-    refetchInterval: 15_000,
+    refetchInterval: () => liveInterval(15_000),
     refetchOnWindowFocus: true,
   });
   const dismiss = useMutation({

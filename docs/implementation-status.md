@@ -105,6 +105,7 @@
 ## 2026-11-25 ホームのテロップ: モバイルの条件で測り、余計な描き直しを減らす
 - 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。390x844・DPR 3・タッチ・CPU 1/4/6 倍遅くの Chromium で 15 秒測ったが、現行コードでもテロップは 60fps・長いコマ 0・やり直し 0・DOM の変化 0（合成器で動いている: トレースの compositeFailed=0）。Chromium では再現せず。WebKit（iOS）は Playwright の webkit に system ライブラリが無く起動できないため未確認。
 - 実際にあった無駄: モバイルでも PC 用の 4 枚（非表示）の SVG スパークラインを 3 秒ごとに描き直していた。`useMediaQuery("(min-width: 768px)")` で見える側だけ描く。Marquee の根に `contain: layout paint style`、流れる層に `backface-visibility: hidden`（兄弟の描き直し・配置替えの影響を受けにくくする保険）。
+- 実機の切り分け用の目印（既定は変えない）: `?marquee=css` でテロップを CSS の @keyframes で動かす・`?live=off` でホームの定期の取り直し（LlmHomeCard・アプリ・通知・承認待ち）とメトリクスの描き直し（最初の 1 点だけ受ける）を止める。端末（localStorage）に覚え、設定 → 表示「切り分け用の目印」に出して解除できる（`lib/debugFlags.ts`・試験 `home-marquee-flags.spec.ts`）。
 - 試験: `frontend/e2e/home-marquee-mobile.spec.ts`（計測の値は test-results/home-marquee-mobile-*.json。`MARQUEE_BROWSER=webkit` で WebKit も測れる）。
 
 ## 2026-11-24 ニュースの画面: 指でずらしてチャンネル・まとめを切り替え、流れる文字をなめらかに、上の部分をすっきり
