@@ -8,6 +8,7 @@
 - **詳しい設定は畳む**: ニュースハブの「受け取る範囲・機能の入切・仕事を借りる」と「診断」を `Fold`（`settingsUi.tsx`。`<details>`・既定は閉じる・開閉は localStorage `controldeck.fold.*` に端末ごとに覚える）に入れた。同期の失敗は畳んだ外に出し続ける。
 - **説明を短く**: `Card` の説明は先頭の 1 文だけ出し、残りは「？」を押したときだけ出す（全カード共通）。
 - **縦の長さ（設定 → ニュース → ニュースハブのカード。つないで確認済み・仕事を借りる入・実画面の撮影で計測）**: 390px 2149 → 785px、320px 2571 → 867px、1280px 1482 → 575px（前はこのカードの上にチャンネル・ソース・更新・LLM・画像・RAG のカードが続いていたため、ニュース全体はさらに長かった）。ライト・ダークとも同じ高さ。
+- **未保存の保護**: 未保存の変更があるタブから移るときは、画面の中の確認（`ConfirmDialog`:「保存せずに移る」／キャンセル＝戻って保存）を出し、そのタブの札に点（`tab-dirty`）を付ける。カードが `DirtyReporter` で未保存を知らせ、`NewsSettings` が束ねる。E2E「未保存で別のタブへ移ると確認が出て、戻ると入力が残っている」を追加。
 - **試験**: 新しい作りに合わせ、E2E の入口を `?tab=` かタブ操作に直した（`news.spec.ts`・`settings-news-hub.spec.ts`・`settings-news-cpu-llm.spec.ts`・`settings-news-imagegen-tiers.spec.ts`・`news-prep.spec.ts`・`news-sources-manage.spec.ts`・`news-sources-images.spec.ts`）。確かめる内容は同じ。
 
 ## 2026-11-25 ニュースの話題の語が 1 文字ずつに分かれて保存されていた（直し）

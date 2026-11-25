@@ -98,6 +98,29 @@ for (const [width, height] of [[1280, 900], [390, 844], [320, 700]] as const) {
   });
 }
 
+test("ニュース設定: 未保存で別のタブへ移ると確認が出て、戻ると入力が残っている", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockNews(page);
+  await establishSession(page, context);
+  await page.goto("/settings/news");
+  const name = page.getByLabel("CH 1 の名前");
+  await name.fill("書き換えた名前");
+  await expect(page.getByTestId("tab-dirty")).toBeVisible();                 // 札に未保存の印
+  await page.getByRole("tab", { name: "LLM" }).click();
+  const dialog = page.getByRole("alertdialog", { name: "保存していない変更があります" });
+  await expect(dialog).toBeVisible();                                          // window.confirm ではなく画面の中の確認
+  await dialog.getByRole("button", { name: "キャンセル" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "基本" })).toHaveAttribute("aria-selected", "true");
+  await expect(name).toHaveValue("書き換えた名前");                            // 戻ると入力が残っている
+  await page.getByRole("tab", { name: "LLM" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "保存せずに移る" }).click();
+  await expect(page.getByRole("tab", { name: "LLM" })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/tab=llm/);
+  await expect(page.getByTestId("tab-dirty")).toHaveCount(0);                  // 移ったあとは印が消える
+});
+
 test("ニュース: 設定でデザイン・表示を変えると見た目が変わり、チャンネルを足せる", async ({ page, context }) => {
   test.skip(!hasSession(), "ログイン情報がありません");
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -136,6 +159,7 @@ test("ニュース: 設定でデザイン・表示を変えると見た目が変
 
   // デザインを経済紙に: 設定は保存され、ニュースの見た目（背景色）が変わる
   await page.getByRole("tab", { name: "表示" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "保存せずに移る" }).click();      // 並べ替えは未保存
   await page.getByRole("radio", { name: /経済紙/ }).click();
   await expect.poll(() => saved.prefs.length).toBeGreaterThan(0);
   expect((saved.prefs.at(-1)!.display as { design: string }).design).toBe("finance");

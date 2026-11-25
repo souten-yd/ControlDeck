@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Toggle } from "../models/formControls";
 import { useLlmOptions, useNewsChannels, useNewsSettings, useRunDigest, useSaveChannels, useSaveNewsSettings, type LlmOptions, type NewsRuntimeSettings } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
-import { Card, field, ghost, primary } from "./settingsUi";
+import { Card, DirtyReporter, field, ghost, primary } from "./settingsUi";
 import { sizeText, timeText } from "./ImagegenTiers";
 
 const label = "block text-xs text-zinc-500";
@@ -81,6 +81,7 @@ export function NewsRuntimeCards({ part }: { part: RuntimePart }) {
   const prepCpu = (draft.llm.prep_model ?? "").startsWith("cpu:");
   return (
     <>
+      <DirtyReporter id={`runtime-${part}`} dirty={dirty} />
       {part === "update" && <Card id="news-update" title="更新のタイミング" hint={`ニュースのページの取得・ホームのフィード・日刊と週刊のまとめを、別々に決めます。時刻はサーバーの地域の時刻です。${canEdit ? "" : "変更には設定の管理権限が要ります。"}`}>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className={label}>ニュースのページの取得の間隔（分。15〜360）

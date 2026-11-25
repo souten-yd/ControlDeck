@@ -5,7 +5,7 @@ import {
   type HubFound, type NewsHubSettings, type NewsHubSource,
 } from "../../api/news";
 import { useAuth, useToasts } from "../../stores";
-import { Card, Fold, field, ghost, primary } from "./settingsUi";
+import { Card, DirtyReporter, Fold, field, ghost, primary } from "./settingsUi";
 
 const label = "block text-xs text-zinc-500";
 const SOURCES: { id: NewsHubSource; name: string; note: string }[] = [
@@ -57,6 +57,7 @@ export function NewsHubCard() {
   const effective = st.effective_source === "hub" ? "ハブから受け取っています" : "この PC が自分で集めています";
   return (
     <Card id="news-hub" title="QNAP ニュースハブとつなぐ" hint="QNAP の NAS で動くニュースハブ（記事の正本）とつなぎ、記事・物・イベントの差分を受け取ります。ハブの NAS が動いていれば、この PC の電源が切れていてもハブは集め続けます。この画面の設定は、ハブ側の設定とは別です。">
+      <DirtyReporter id="hub" dirty={dirty} />
       <div className="space-y-2" data-testid="hub-source">
         <span className={label}>データの出どころ</span>
         <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="データの出どころ">

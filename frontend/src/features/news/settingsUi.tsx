@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 /** 設定 → ニュースの共通の見た目（カード・入力・ボタン）。 */
 export const card = "rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5";
@@ -48,4 +48,15 @@ export function Fold({ id, title, children }: { id: string; title: string; child
       <div className="space-y-3 border-t border-zinc-200 p-3 dark:border-zinc-700">{children}</div>
     </details>
   );
+}
+
+/** 未保存の変更を持つカードが、タブの切り替え（NewsSettings）へ知らせるための口。 */
+export const DirtyContext = createContext<(id: string, dirty: boolean) => void>(() => {});
+
+/** カードの中に置く。dirty の間だけ「未保存」を知らせ、外れる（タブを離れる）ときに下ろす。 */
+export function DirtyReporter({ id, dirty }: { id: string; dirty: boolean }) {
+  const report = useContext(DirtyContext);
+  useEffect(() => { report(id, dirty); }, [id, dirty, report]);
+  useEffect(() => () => report(id, false), [id, report]);
+  return null;
 }
