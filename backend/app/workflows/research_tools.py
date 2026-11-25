@@ -29,7 +29,7 @@ import logging
 import math
 import re
 import time
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit
 
 from app.security.offline import ExternalResearchBlocked, ensure_external_allowed
 from app.web_collector import egress
@@ -571,9 +571,18 @@ def widen_queries(query: str) -> list[str]:
 
 
 def _norm_url(url: str) -> str:
+    """URL の重複判定用。未知のクエリは別資料を指す可能性があるので保持する。
+
+    URL 自体は変更せず、従来どおりフラグメントは比較に含めない。
+    """
     parts = urlsplit(url)
     host = parts.netloc.lower().removeprefix("www.")
-    return f"{host}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query and "id=" in parts.query else "")
+    # 追跡用の引数（utm_*・fbclid など）だけ違う URL は同じ記事。残りの引数は順番をそろえて比べる
+    keep = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING.match(k))
+    return f"{host}{parts.path.rstrip('/')}" + (f"?{urlencode(keep)}" if keep else "")
+
+
+_TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_ga|_gl|ref_src|spm)$", re.I)
 
 
 def _merge(groups: list[list[dict]], limit: int) -> list[dict]:
@@ -780,8 +789,11 @@ async def select_excerpt(text: str, focus: str, max_chars: int, *, ranker=rerank
     return "\n\n".join(parts), True
 
 
-def page_links(links: list[dict], page_url: str) -> list[dict]:
-    """ページ内のリンク（文字と URL）。同じサイトを先に、重複と自分自身を除き、最大 MAX_LINKS。"""
+def page_links(links: list[dict], page_url: str, focus: str = "") -> list[dict]:
+    """同じサイトを先に、各グループでは focus に近いリンクを優先する。
+
+    通信はしない。focus が無い場合は従来の順序を保つ。
+    """
     host = urlsplit(page_url).netloc.lower().removeprefix("www.")
     seen, own, other = {_norm_url(page_url)}, [], []
     for link in links:
@@ -793,6 +805,10 @@ def page_links(links: list[dict], page_url: str) -> list[dict]:
             continue
         seen.add(_norm_url(url))
         (own if urlsplit(url).netloc.lower().removeprefix("www.") == host else other).append({"text": text, "url": url})
+    if focus.strip():
+        for group in (own, other):
+            scores = lexical_scores([link["text"] for link in group], focus)
+            group[:] = [group[i] for i in sorted(range(len(group)), key=lambda i: -scores[i])]
     return (own + other)[:MAX_LINKS]
 
 
@@ -967,7 +983,7 @@ async def read_page(url: str, focus: str = "", max_chars: int = 6000, *, ranker=
     if special is not None:
         text, truncated = await select_excerpt(special["text"], focus, max_chars, ranker=ranker)
         return {"ok": True, "url": url, "title": special["title"], "date": special["date"], "text": text,
-                "links": page_links(special["links"], url), "total_chars": len(special["text"]), "truncated": truncated}
+                "links": page_links(special["links"], url, focus), "total_chars": len(special["text"]), "truncated": truncated}
     from app.web_collector import fetch
 
     page = await fetch.collect(url, limit_chars=400_000)
@@ -981,7 +997,7 @@ async def read_page(url: str, focus: str = "", max_chars: int = 6000, *, ranker=
     biblio = page.get("biblio") or {}
     date = (page.get("metadata") or {}).get("date") or next(iter(biblio.get("発行日") or biblio.get("日付") or biblio.get("公開日時") or []), "")
     return {"ok": True, "url": page.get("final_url") or url, "title": page.get("title") or (biblio.get("題名") or [""])[0],
-            "date": str(date)[:25], "text": text, "links": page_links(page.get("links") or [], page.get("final_url") or url),
+            "date": str(date)[:25], "text": text, "links": page_links(page.get("links") or [], page.get("final_url") or url, focus),
             "total_chars": len(page["markdown"]), "truncated": truncated}
 
 

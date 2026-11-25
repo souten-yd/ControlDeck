@@ -95,6 +95,39 @@ def test_search_limit_is_clamped_and_multiple_sites_are_merged():
     assert {r["url"].split("/")[2] for r in found["results"][:2]} == {"a.test", "b.test"}   # 交互に並ぶ
 
 
+def test_search_merge_keeps_distinct_query_urls():
+    # 2026-11-26: id= 以外のクエリを捨てると、別の記事・資料・ページを
+    # 同一と誤判定し、検索結果と観点別調査の根拠を失う。
+    urls = [
+        "https://example.test/article?p=1",
+        "https://example.test/article?p=2",
+        "https://example.test/article?p=1#section",
+        "https://example.test/search?q=alpha",
+        "https://example.test/search?q=beta",
+        "https://example.test/article?id=1",
+        "https://example.test/article?id=2",
+        "https://example.test/article",
+    ]
+    async def searx(query, limit, time_range, pageno):
+        return [{"title": u, "url": u, "snippet": ""} for u in urls]
+
+    found = run(rt.search_web("test", limit=10, searx=searx))
+    assert [r["url"] for r in found["results"]] == [u for i, u in enumerate(urls) if i != 2]
+
+
+def test_search_merge_drops_tracking_params_and_ignores_param_order():
+    """目的: 追跡用の引数（utm_*・fbclid）だけ違う URL・引数の順番だけ違う URL は同じ記事として 1 つにまとめる。
+    根拠: 2026-11-26 PR #634 でクエリを全部残すようにしたとき、ニュースの共有リンク（utm つき）が同じ記事の重複として残る。"""
+    urls = ["https://example.test/a?p=1&utm_source=x", "https://example.test/a?p=1&fbclid=z", "https://example.test/a?utm_medium=m&p=1",
+            "https://example.test/s?b=2&a=1", "https://example.test/s?a=1&b=2", "https://example.test/b?utm_source=x", "https://example.test/b"]
+
+    async def searx(query, limit, time_range, pageno):
+        return [{"title": u, "url": u, "snippet": ""} for u in urls]
+
+    found = run(rt.search_web("test", limit=10, searx=searx))
+    assert [r["url"] for r in found["results"]] == [urls[0], urls[3], urls[5]]
+
+
 def test_reddit_search_and_thread_comments(monkeypatch):
     posts = {"data": {"children": [{"data": {"title": "Qwen の量子化", "permalink": "/r/LocalLLaMA/comments/abc/q/", "score": 120,
                                               "num_comments": 80, "subreddit": "LocalLLaMA", "created_utc": 1795000000, "selftext": "Q4 は十分"}}]}}
@@ -193,6 +226,19 @@ def test_excerpt_puts_relevant_paragraphs_first_and_links_prefer_same_site():
             [{"url": f"https://site.test/{i}", "text": f"内{i}"} for i in range(25)] + [{"url": "https://site.test/self", "text": "自分"}]
     picked = rt.page_links(links, "https://site.test/self")
     assert len(picked) == rt.MAX_LINKS and picked[0]["url"] == "https://site.test/0" and all("self" not in l["url"] for l in picked)
+
+
+def test_page_links_prioritize_relevant_documentation_within_site():
+    links = [{"url": f"https://docs.test/nav/{i}", "text": f"Navigation {i}"} for i in range(40)]
+    links += [
+        {"url": "https://docs.test/api", "text": "API authentication token"},
+        {"url": "https://elsewhere.test/api", "text": "API authentication token"},
+    ]
+    picked = rt.page_links(links, "https://docs.test/start", "authentication token")
+    assert len(picked) == rt.MAX_LINKS
+    assert picked[0]["url"] == "https://docs.test/api"
+    assert all("docs.test" in l["url"] for l in picked)
+    assert rt.page_links(links, "https://docs.test/start")[0]["url"] == "https://docs.test/nav/0"
 
 
 def _pdf(text: str) -> bytes:
