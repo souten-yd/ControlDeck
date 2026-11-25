@@ -72,3 +72,32 @@ backend/app/web_collector/
 - Web の本文は LLM への指示ではなく、引用する外部の資料として扱う（既存の `strip_instruction`・前置き）。
 - ブラウザは利用者の Cookie・ログインを共有しない。内部の API は ControlDeck の認証と権限を必須にする。
 - 新しい依存は機能と拡張から導入する（本体の venv へ勝手に入れない）。外部からの取得（pip・npm・モデル）は利用者の操作か了承で行う。
+
+## 7. 2026-11-26: 10 OSS の比較からの強化計画
+
+利用者提示の10件の公式リポジトリを確認。スター数や宣伝上の速度は採否の根拠にしない。既存 W1/W2/W3 を置き換えず、不足機能を段階的に埋める。比較は機能・公開資料によるもので実測比較は未実施。
+
+| 参考 | 取り入れる機能・判断 |
+|---|---|
+| [Firecrawl](https://github.com/firecrawl/firecrawl) (AGPL-3.0) | scrape/map/crawl の役割分離、取得結果の統一スキーマ。直接導入・コードコピーなし。 |
+| [Crawl4AI](https://github.com/unclecode/crawl4ai) (Apache-2.0) | 関連リンク・本文の選別、動的ページ取得、構造化抽出の設計。外部通信を任せない。 |
+| [Browser Use](https://github.com/browser-use/browser-use) (MIT) | ブラウザ操作は別の明示操作機能の候補。検索でのログイン・クリック・フォーム操作・自律実行を追加しない。 |
+| [Crawlee](https://github.com/apify/crawlee) | 永続キュー、停止・再開、ドメイン別制限、リトライ設計。既存 SQLite/Jobs を活用。 |
+| [Scrapy](https://github.com/scrapy/scrapy) (BSD-3-Clause) | スケジューラ・フィルタ・パイプライン、負荷制御。既存 Protego と共通取得層を維持。 |
+| [MarkItDown](https://github.com/microsoft/markitdown) (MIT) | Office 等の文書変換。取得済みの文書のみを扱う隔離ワーカーとして任意導入を評価。PDFは既存 pypdf と比較。画像OCR/音声/LLMは別評価。 |
+| [Scrapling](https://github.com/D4Vinci/Scrapling) | CSS/XPath と適応抽出の品質を固定 HTML で評価。独自 fetcher・ステルス機能は採用しない。 |
+| [scrcpy](https://github.com/Genymobile/scrcpy) | Android 遠隔操作は Web 検索の対象外。 |
+| [AutoScraper](https://github.com/alirezamika/autoscraper) | 特定サイトの繰り返し要素抽出を固定 HTML で評価。 |
+| [curl-impersonate](https://github.com/lwthiker/curl-impersonate) | 現行の guarded egress を維持し、ブラウザ偽装・アクセス制限回避は導入しない。 |
+
+### 実装順序・受入基準（Codex/Claude 共通）
+
+- W1a（今回のドラフトPR）: URL の異なるクエリを誤って重複扱いしない。read_page の focus で関連リンクを同一サイト内優先順位に反映。通信経路・返却スキーマ・UI・依存は不変。テストは既存 test_research_tools.py を拡張。未検証のためマージ不可。
+- W2: 既存システム Chrome のみ。静的 HTTP を先に使い、JS が必要かの判定を別テストで評価。ブラウザを有効にする前に、全通信の検査済み IP 固定・プロキシ以外の通信遮断を実機で確認。iframe/worker/WebSocket/リダイレクト・IPv6・内部 IP・DNS rebinding・秘密会話で回帰試験。403/429/CAPTCHA/login/robots拒否は停止し別経路で回避しない。ユーザーの Cookie やログイン状態は使わない。起動時の自動インストール禁止。
+- W3: ユーザーが指定した公開サイトだけを対象とし、まず map（sitemap/索引/RSS/リンク）と crawl（本文取得）を区別。安全な XML 解析、同一ホスト既定、深さ/件数/時間/容量制限、URL と本文 hash、ページ単位の状態、SQLite永続キュー、既存 Jobs の停止/再開/取消。robots.txt/Crawl-delay/Retry-After を守る。まず §5 の上限を採用し、設定を増やすのは実測後。独立サービスを増やさない。既存ニュースの限定巡回を壊さない。
+- W4: MarkItDown と Scrapling/AutoScraper のパーサーだけを検証用 fixture で比較する。導入を決めた場合も機能と拡張、専用 venv、上限付き worker、取得済み bytes/HTML だけを渡し、外部 URL や任意パスを解決させない。Office ZIP 展開制限、外部参照・マクロ・ネットワーク無効。出典 URL、見出し、表、段落の位置を保持。既存の標準抽出を劣化させない。
+- W5: 共通の収集結果を既存 Knowledge、ニュース、論文、特許、GitHub に再利用。取得日/公開日/更新日を区別し、ETag/Last-Modified/本文 hash による差分更新、既存権限を保ったキャッシュ。保存はユーザーの明示操作または既に設定された収集に限り、秘密会話を共有キャッシュに入れない。検索エンジン結果の融合・多言語クエリ・観点間の根拠再利用・主張と出典の対応は実測で評価してから変更。
+- 評価: 固定の日本語・英語の技術文書、記事、フォーラム、GitHub、PDF、動的ページ、同一サイトの sitemap、拒否・タイムアウト fixture。Recall@10、nDCG@10、抽出成功率、見出し/表の保持、引用根拠の正確性、p50/p95 時間、RAM/CPU/GPU、外部通信回数、取得バイト数を現行版と比較。実機の記録は AGENTS.md に従い ~/ControlDeck-評価/ へ。速度/品質の数値は測定前に断定しない。
+
+各段階は既存 main の runtime・docs・manifest・テストを再確認し、対象ファイルと禁止事項を PR に記載。PRレビュー、ローカルテスト、必要な実機評価後にマージ。リリースはマイルストーン単位。新しい mutation/execution/autonomous 機能、UI既定の変更、raw source配信、起動時 npm build はこの計画の対象外。
+
