@@ -9,7 +9,7 @@
 |---|---|---|
 | 調査・計画・引き継ぎ資料 | ☑ | W1 の PR に同梱 |
 | W1 共通の取得・抽出・SSRF・機能と拡張・JPO | ☑ v0.108 で本番に適用・評価済み | #504 |
-| W2 ブラウザ（中継プロキシ） | ☐（ブラウザはこの PC の Chrome を使うと決定） | — |
+| W2 ブラウザ（中継プロキシ） | ☑ 実装・試験済み（2026-11-26、ブランチ feat/web-collector-w2。マージ・本番評価は司令塔のレビュー後） | — |
 | W3 巡回 | ☐ | — |
 | P1 Patent の調査 | ☐ | — |
 | AI アシスタントのサイト指定の調査・依頼の理解・日付の確認（`research_tools.py`・`research_intent.py`・`research_time.py`） | ☑ 2026-11-22（実機評価済み・Reddit は取得制限あり） | — |
@@ -26,7 +26,20 @@
   検索と収集の中に「公開データの取得先」の入口（`SourceKeysSheet`）。
 - JPO: `sources.py::jpo`（トークン取得の URL は `https://ip-data.jpo.go.jp/` に限る、password → refresh_token、`app_progress/{10桁}`）。**応答の JSON の形は未確認**（題名・出願人は `_first_key` で名前を探して拾う）。登録後に実際の応答で確かめて直す。
 
-### W2 で最初にやること（W1 の本番評価から）
+## 2b. W2 で作ったもの（2026-11-26）
+
+- `browser.py`: `RelayProxy`（ループバック・利用者名とパスワード付きの HTTP プロキシ。CONNECT と http 絶対 URI を `egress.open_guarded` で中継、拒否は 403 と記録、転送量・同時接続の上限）と
+  `session()`（この PC の Chrome を Playwright の `launch_persistent_context` で。使い捨てのプロファイル、`--proxy-server`＋`--proxy-bypass-list=<-loopback>`＋`--host-resolver-rules=MAP * ~NOTFOUND`、WebRTC 無効・QUIC 無効・Service Worker block、
+  画像・動画・フォント遮断、時間・RSS・転送量の上限と監視、終了時に Chrome を必ず kill して一時プロファイルを消す、同時 1）。`render(url)` は status（success / blocked / captcha / login_required / security_rejected / timeout …）・html・stats を返す。
+- `js_detect.py`: JS が要るかの判定（本文の短さ・noscript・SPA の空の根・script の大きさ・初期 JSON）。初期 JSON に本文があれば `fetch_method="data_api"` でブラウザなしに取る。見本 15 件（`tests/fixtures/js_pages`）で評価。
+- `robots.py`: ブラウザへ進む前の robots.txt 確認（最長一致・`*`/`$`・4xx は可・5xx/失敗は拒否）。巡回（W3）で Protego に替えてよい。
+- `fetch.collect(render="auto")`: 静的 → 初期 JSON → ブラウザ。呼び出し元は `read_page`・`_page_text`・`web.scrape`（既定の "never" の他の呼び出しは不変）。機能「Web 収集のブラウザ」が無効なら警告つきの静的の結果。`web.browser` ノードも同じ `session()`（以前は接続先の制限なし）。
+- 止める条件: 静的の 401/403/429・ブラウザの 403/429・CAPTCHA・ログイン（password 入力）・robots 拒否は、その status と理由を返して止まる。別経路で取り直さない。UA は詐称しない。
+- 試験: `test_web_browser.py`（実 Chrome。127.0.0.2 の「内部」サーバーへ iframe・Worker・fetch・WebSocket・IPv6・rebinding・リダイレクトが 1 件も届かない／中継が内部を 403／認証／上限）、`test_js_detect.py`、`test_js_render.py`。conftest の autouse で試験は自動のブラウザを起こさない。
+- 実測: `~/ControlDeck-評価/2026-11-26-検索基盤W2のブラウザ描画.md`。OpenAlex の本文ページは HTTP 403（「API を使って」）。**OpenAlex は公開 API（data_api）で取る**。
+- 未了・次: 公開データ API の直接利用（GitHub README・Wikipedia REST・OpenAlex API）、W3 巡回、メモリ上限の kill の実機確認（試験は上限を極端に小さくして確認）。
+
+### W2 で最初にやること（W1 の本番評価から。2b で実装済み）
 
 - JavaScript が無いと本文が出ないページ（例: openalex.org は「needs JavaScript」の案内だけ、254 字）を判定してブラウザへ切り替える。判定の材料: 本文の短さ・`noscript` の案内・SPA の根要素（`#root`/`#app`/`#__next`）・初期 JSON（`__NEXT_DATA__` など）。
 - 公開データ API の直接利用（data_api）: GitHub の README は Trafilatura が見出しを拾えない → `api.github.com/repos/{owner}/{repo}/readme`（raw）を使う。同じ考えで Wikipedia は REST API（`/api/rest_v1/page/html/`）も候補。
@@ -113,3 +126,4 @@
   - **Stack Exchange**: `api.stackexchange.com/2.3/search/advanced`（キーなし 1 日 300、キー（stackapps.com）で 10,000）。回答は `/questions/{id}/answers?filter=withbody&sort=votes`。stackoverflow・superuser・serverfault・askubuntu・mathoverflow.net・`*.stackexchange.com` を site 名に直す。
   - **XDA（xdaforums.com、XenForo）**: 外から使える検索の API は無い。SearXNG の `site:` と read_page（HTML）で扱う（入口は作らない）。
   - 実装: `workflows/research_keys.py`（キー・フォーラム一覧）、`research_tools.py`（`_reddit_oauth`・`discourse_search`・`stackexchange_search` ほか）、`settings_keys.py`（群 research・test）。通信は全部 `guarded_client`＋`ensure_external_allowed`。認証のヘッダーは別のホストへのリダイレクトに付けない。実際の Reddit・各フォーラムへは繋いでいない（テストはモック）。
+- 2026-11-26: W2 実装（上記 2b）。依存の追加なし・playwright install なし。マージ前に司令塔がセキュリティの最終レビュー。

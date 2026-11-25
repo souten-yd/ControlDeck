@@ -146,8 +146,11 @@ def _pdf_text(content: bytes, limit_chars: int) -> str:
 
 async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S, max_bytes: int = MAX_BYTES,
                   policy: egress.Policy | None = None, limit_chars: int = 2_000_000,
-                  keep_html: bool = False) -> dict:
-    """公開の URL を 1 つ取得して本文を取り出す。"""
+                  keep_html: bool = False, render: str = "never") -> dict:
+    """公開の URL を 1 つ取得して本文を取り出す。
+
+    render: "never"（静的な HTTP だけ）/ "auto"（静的で足りず、JavaScript が要ると判定したら、機能「Web 収集のブラウザ」が
+    有効なときだけブラウザへ。初期 JSON に本文があればブラウザを使わずそこから取る）。"""
     policy = policy or egress.DEFAULT_POLICY
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -219,6 +222,49 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                  language=result.get("metadata", {}).get("language", ""), links=result.get("links", []),
                  metadata=result.get("metadata", {}), biblio=biblio(html), warnings=result.get("warnings", []),
                  extractor=result.get("extractor", ""))
+    if render == "auto" and page["status"] in ("success", "empty"):
+        page = await _maybe_render(page, html, mode, policy, timeout, limit_chars)
     if keep_html:
-        page["html"] = html
+        page["html"] = page.pop("_rendered_html", None) or html
+    page.pop("_rendered_html", None)
     return page
+
+
+async def _maybe_render(page: dict, html: str, mode: str, policy: egress.Policy, timeout: float, limit_chars: int) -> dict:
+    """静的な取得で足りないときの段階: 初期 JSON → ブラウザ。止める条件（robots 拒否・403/429・CAPTCHA・ログイン）は回避せず、
+    その状態を返す。ブラウザを起動できないなど環境の問題は、静的な結果に警告を足して返す（失敗にしない）。"""
+    from app.web_collector import browser, js_detect, robots
+
+    verdict = js_detect.assess(html, page["markdown"])
+    page["js_check"] = verdict.as_dict()
+    if verdict.json_text:
+        text = (page["markdown"].strip() + "\n\n" + verdict.json_text).strip()
+        return {**page, "status": "success", "markdown": text[:limit_chars], "fetch_method": "data_api",
+                "warnings": [*page["warnings"], f"初期 JSON（{verdict.json_source}）から本文を取りました（ブラウザは使っていません）"]}
+    if not verdict.needs_js:
+        return page
+    if not await asyncio.to_thread(browser.is_enabled):
+        return {**page, "warnings": [*page["warnings"], "JavaScript が要るページですが、機能「Web 収集のブラウザ」が使えません"]}
+    target = page["final_url"]
+    ok, reason = await robots.check(target, policy=policy)
+    if not ok:
+        return {**page, "status": "robots_denied", "error": reason}
+    try:
+        out = await browser.render(target, policy=policy, timeout_s=min(timeout, 30))
+    except ExternalResearchBlocked as exc:
+        return {**page, "status": "security_rejected", "error": str(exc)}
+    except browser.BrowserError as exc:
+        return {**page, "warnings": [*page["warnings"], f"ブラウザを使えませんでした: {exc}"]}
+    stats = out.get("stats") or {}
+    if out["status"] in ("blocked", "captcha", "login_required", "security_rejected"):
+        return {**page, "status": out["status"], "error": out["error"], "browser": stats}
+    if out["status"] != "success":
+        return {**page, "warnings": [*page["warnings"], f"ブラウザでも取れませんでした（{out['status']}: {out['error']}）"], "browser": stats}
+    result = await extract.extract(out["html"], out["final_url"], mode)
+    if len(result["markdown"].strip()) <= len(page["markdown"].strip()):
+        return {**page, "warnings": [*page["warnings"], "ブラウザで開いても本文は増えませんでした"], "browser": stats}
+    return {**page, "status": "success", "fetch_method": "browser", "markdown": result["markdown"][:limit_chars],
+            "title": result.get("title") or page["title"], "links": result.get("links", []) or page["links"],
+            "metadata": result.get("metadata", {}) or page["metadata"], "extractor": result.get("extractor", ""),
+            "warnings": [*page["warnings"], *(out.get("warnings") or []), "ブラウザで描画して取りました"],
+            "browser": stats, "_rendered_html": out["html"]}

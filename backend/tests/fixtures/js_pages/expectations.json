@@ -1,0 +1,58 @@
+{
+ "openalex_noscript.html": {
+  "expect": "needs",
+  "text": "needs JavaScript"
+ },
+ "react_empty_root.html": {
+  "expect": "needs",
+  "text": ""
+ },
+ "angular_app_root.html": {
+  "expect": "needs",
+  "text": ""
+ },
+ "vue_app_shell.html": {
+  "expect": "needs",
+  "text": ""
+ },
+ "ja_noscript.html": {
+  "expect": "needs",
+  "text": "JavaScript を有効にしてください"
+ },
+ "script_only_blob.html": {
+  "expect": "needs",
+  "text": ""
+ },
+ "nuxt_empty.html": {
+  "expect": "needs",
+  "text": ""
+ },
+ "ssr_article_with_scripts.html": {
+  "expect": "static",
+  "text": "The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully."
+ },
+ "plain_short_note.html": {
+  "expect": "static",
+  "text": "Meeting moved to Friday. Bring the report."
+ },
+ "short_with_analytics.html": {
+  "expect": "static",
+  "text": "本日は休業日です。ご不便をおかけしますが、明日以降の営業にご協力ください。営業時間は午前九時から午後五時までです。電話でのお問い合わせもお待ちしております。担当者が順次対応いたします。"
+ },
+ "ssr_next_full.html": {
+  "expect": "static",
+  "text": "The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully. The quick brown fox jumps over the lazy dog while researchers measure results carefully."
+ },
+ "next_data_shell.html": {
+  "expect": "json",
+  "text": ""
+ },
+ "nuxt_state_shell.html": {
+  "expect": "json",
+  "text": ""
+ },
+ "ldjson_article_shell.html": {
+  "expect": "json",
+  "text": ""
+ }
+}
