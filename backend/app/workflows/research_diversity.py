@@ -9,14 +9,14 @@ def diversify(ranked: list[dict], key: Callable[[str], str], *,
               aspects: Mapping[str, Mapping[str, float]],
               verified_primary: frozenset[str] = frozenset(),
               limit: int = 10, min_relevance: float = 0.6,
-              weight: float = 0.45) -> list[dict]:
+              weight: float = 0.45, quality_weight: float = 0.6) -> list[dict]:
     """Use caller-validated aspect relevance and primary identities, not page claims.
 
     The scores must come from an independently evaluated ranker, not gold labels.
     With no useful scores the RRF order remains unchanged. At most one verified
     relevant primary is protected; remaining coverage is a soft bonus, not a quota.
     """
-    if not 1 <= limit <= 200 or not 0 <= weight <= 1 or not 0 < min_relevance <= 1:
+    if not 1 <= limit <= 200 or not 0 <= weight <= 1 or not 0 <= quality_weight <= 1 or not 0 < min_relevance <= 1:
         raise ValueError("invalid bounds")
     if len(aspects) > 16 or len(verified_primary) > 200:
         raise ValueError("too many aspects or primary identities")
@@ -36,7 +36,7 @@ def diversify(ranked: list[dict], key: Callable[[str], str], *,
             if isinstance(score, bool) or not isinstance(score, (float, int)) or not math.isfinite(score) or not 0 <= score <= 1:
                 raise ValueError("invalid relevance score")
         scores[aspect] = {identity: float(values.get(identity, 0)) for identity in ids}
-    if not ids or not scores or weight == 0:
+    if not ids or not scores or (weight == 0 and quality_weight == 0):
         return [pool[i] for i in ids[:limit]]
     rank = {identity: i + 1 for i, identity in enumerate(ids)}
     relevance = {identity: max(v[identity] for v in scores.values()) for identity in ids}
@@ -57,7 +57,8 @@ def diversify(ranked: list[dict], key: Callable[[str], str], *,
             add(min(primary, key=lambda i: rank[i]))
     while len(chosen) < min(limit, len(ids)):
         def score(i):
-            base = 1 / rank[i]
+            quality = relevance[i] if relevance[i] >= min_relevance else 0.0
+            base = (1 - quality_weight) / rank[i] + quality_weight * quality
             novelty = max((v[i] * (1 - coverage[a]) for a, v in scores.items()
                            if v[i] >= min_relevance), default=0.0)
             return (1 - weight) * base + weight * novelty
