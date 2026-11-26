@@ -949,11 +949,17 @@ def reviewer_model_for(box: Sandbox, work_model: str) -> str | None:
     """レビュー役のモデル。作業のモデルと違うものにする（同じモデルは同じ見落としをする）。
 
     作業がローカルなら、順番の中の最初の外部（キーが無い・箱で allow_zen が off なら無い）。
-    作業が外部ならローカル。外部が使えなければ None（設定は変えず、ローカルのまま）。
+    作業が外部なら、順番の中で作業と別の外部を先に選び、無ければローカル。
+    ローカル LLM は利用者の会話と 1 枚の GPU を取り合うので、レビュー役が 1 手 2 分以上かかって
+    箱の作業全体が止まって見えた（2026-11-26 実測 544 手）。外部が使えなければ None。
     """
     work = normalize_model(work_model)
+    chain = model_chain(box)
     if "/" not in work or work.startswith("controldeck/"):
-        return next((m for m in model_chain(box) if not m.startswith("controldeck/")), None)
+        return next((m for m in chain if not m.startswith("controldeck/")), None)
+    other = next((m for m in chain if not m.startswith("controldeck/") and m != work), None)
+    if other:
+        return other
     return LOCAL_MODEL if "llm" in box.capabilities else None
 
 

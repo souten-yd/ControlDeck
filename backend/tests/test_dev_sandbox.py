@@ -604,8 +604,12 @@ def test_reviewer_model_differs_from_the_work_model(repo, monkeypatch):
     assert sandbox.reviewer_model_for(box, "auto") == "opencode-go/glm-5.3"
     assert sandbox.reviewer_model_for(box, "local") == "opencode-go/glm-5.3"
     assert sandbox.reviewer_model_for(box, "controldeck/auto") == "opencode-go/glm-5.3"
-    assert sandbox.reviewer_model_for(box, "opencode-go/glm-5.3") == "controldeck/auto"
-    assert sandbox.reviewer_model_for(box, "opencode/hy4-flash-free") == "controldeck/auto"
+    # 作業が外部なら別の外部を先に（ローカルは利用者の会話と GPU を取り合い、1 手 2 分以上かかった）
+    assert sandbox.reviewer_model_for(box, "opencode-go/glm-5.3") == "opencode/hy4-flash-free"
+    assert sandbox.reviewer_model_for(box, "opencode/hy4-flash-free") == "opencode-go/glm-5.3"
+    box.meta["model_chain"] = ["opencode-go/glm-5.3", "controldeck/auto"]
+    assert sandbox.reviewer_model_for(box, "opencode-go/glm-5.3") == "controldeck/auto", "別の外部が無ければローカル"
+    box.meta.pop("model_chain")
 
 
 def test_reviewer_stays_local_when_no_external_is_allowed(repo, monkeypatch):
@@ -631,7 +635,7 @@ def test_opencode_config_gives_the_reviewer_another_model_and_ships_the_developm
     assert skill.is_file()
     assert str(skill.parent) in config["skills"]
     external = json.loads(sandbox.opencode_config(box, model="opencode-go/glm-5.3", work_model="opencode-go/glm-5.3").read_text())
-    assert external["agents"]["reviewer"]["model"] == "controldeck/auto"
+    assert external["agents"]["reviewer"]["model"] == "opencode/hy4-flash-free", "作業が外部なら別の外部を先に"
 
 
 def test_box_keeps_npm_and_pip_offline(repo, monkeypatch):
