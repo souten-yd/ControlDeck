@@ -146,7 +146,7 @@ def _pdf_text(content: bytes, limit_chars: int) -> str:
 
 async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S, max_bytes: int = MAX_BYTES,
                   policy: egress.Policy | None = None, limit_chars: int = 2_000_000,
-                  keep_html: bool = False, render: str = "never") -> dict:
+                  keep_html: bool = False, render: str = "never", data_api: bool = True) -> dict:
     """公開の URL を 1 つ取得して本文を取り出す。
 
     render: "never"（静的な HTTP だけ）/ "auto"（静的で足りず、JavaScript が要ると判定したら、機能「Web 収集のブラウザ」が
@@ -155,6 +155,25 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return _page(url, "security_rejected", error="http(s) の公開 URL だけを取得します")
+    pre_warnings: list[str] = []
+    if data_api:
+        from app.web_collector import data_api as api
+
+        try:
+            got = await api.fetch(url, policy=policy, timeout=min(timeout, 25), limit_chars=limit_chars)
+        except ExternalResearchBlocked as exc:
+            return _page(url, "security_rejected", error=str(exc))
+        if got is not None and got["status"] == "success":
+            return _page(url, "success", fetch_method="data_api", http_status=200, content_type="application/json",
+                         title=got["title"], markdown=got["markdown"], links=got["links"], language=got["language"],
+                         metadata=got["metadata"], warnings=got["warnings"], extractor=got["extractor"],
+                         content_sha256=hashlib.sha256(got["markdown"].encode()).hexdigest(),
+                         canonical_url=url)
+        if got is not None and got["status"] != "fallback":   # 403/429・内部アドレスなどは止める（別経路で取り直さない）
+            return _page(url, "blocked" if got["status"] == "blocked" else got["status"], fetch_method="data_api",
+                         http_status=got.get("http_status", 0), error=got["error"])
+        if got is not None:
+            pre_warnings.append(f"公開 API では取れませんでした（HTML で取ります）: {got['error']}"[:300])
     current = url
     try:
         async with egress.guarded_client(timeout=timeout, policy=policy,
@@ -227,6 +246,8 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     if keep_html:
         page["html"] = page.pop("_rendered_html", None) or html
     page.pop("_rendered_html", None)
+    if pre_warnings:
+        page["warnings"] = [*pre_warnings, *page["warnings"]]
     return page
 
 

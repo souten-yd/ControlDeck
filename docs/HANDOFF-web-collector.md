@@ -40,12 +40,18 @@ W3 は Codex の #638（発見・SQLite の待ち行列）と #640（巡回の H
 - 止める条件: 静的の 401/403/429・ブラウザの 403/429・CAPTCHA・ログイン（password 入力）・robots 拒否は、その status と理由を返して止まる。別経路で取り直さない。UA は詐称しない。
 - 試験: `test_web_browser.py`（実 Chrome。127.0.0.2 の「内部」サーバーへ iframe・Worker・fetch・WebSocket・IPv6・rebinding・リダイレクトが 1 件も届かない／中継が内部を 403／認証／上限）、`test_js_detect.py`、`test_js_render.py`。conftest の autouse で試験は自動のブラウザを起こさない。
 - 実測: `~/ControlDeck-評価/2026-11-26-検索基盤W2のブラウザ描画.md`。OpenAlex の本文ページは HTTP 403（「API を使って」）。**OpenAlex は公開 API（data_api）で取る**。
-- 未了・次: 公開データ API の直接利用（GitHub README・Wikipedia REST・OpenAlex API）、W3 巡回、メモリ上限の kill の実機確認（試験は上限を極端に小さくして確認）。
+- 公開データ API の直接利用は実装済み（§2c）。未了・次: W3 巡回、メモリ上限の kill の実機確認（試験は上限を極端に小さくして確認）。
+
+## 2c. 公開データ API の直接利用（2026-11-26、ブランチ feat/web-data-api）
+
+- `data_api.py`: `match(url)`（GitHub repo/blob/issue/PR・OpenAlex works/authors。Wikipedia・arXiv は実測で得が無く HTML のまま）→ API で本文（`fetch_method="data_api"`）。`fetch.collect` の前段（`data_api=False` で無効）。`research_tools.read_github` も `github_document` を共用。
+- 守ること: egress のみ・許可リストのホスト・鍵なし・403/429 は停止して理由を返す（HTML へ戻らない）・404 などは HTML へ戻る。Wikipedia は infobox・脚注・ナビを落とす。arXiv の XML は DOCTYPE/ENTITY を含めば読まない。
+- 実測: `~/ControlDeck-評価/2026-11-26-公開データAPIの直接利用.md`。対象の追加は `match` と `*_document` を足す。GitHub 無認証は 60 回/時（実遭遇は未確認）。
 
 ### W2 で最初にやること（W1 の本番評価から。2b で実装済み）
 
 - JavaScript が無いと本文が出ないページ（例: openalex.org は「needs JavaScript」の案内だけ、254 字）を判定してブラウザへ切り替える。判定の材料: 本文の短さ・`noscript` の案内・SPA の根要素（`#root`/`#app`/`#__next`）・初期 JSON（`__NEXT_DATA__` など）。
-- 公開データ API の直接利用（data_api）: GitHub の README は Trafilatura が見出しを拾えない → `api.github.com/repos/{owner}/{repo}/readme`（raw）を使う。同じ考えで Wikipedia は REST API（`/api/rest_v1/page/html/`）も候補。
+- 公開データ API の直接利用（data_api）: GitHub の README は Trafilatura が見出しを拾えない → `api.github.com/repos/{owner}/{repo}/readme`（raw）を使う。Wikipedia の REST API は実測で本文が減ったので使わない（2026-11-26）。
 - ブラウザの安全策は `research-web-collector.md` §4（中継プロキシ・`--proxy-bypass-list=<-loopback>`・WebRTC・Service Worker の block・使い捨てのプロファイル）。`egress.open_guarded` を中継の接続に使う。
 
 ## 3. まず読むコード
