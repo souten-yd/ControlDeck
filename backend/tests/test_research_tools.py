@@ -622,3 +622,24 @@ def test_url_identity_preserves_possible_distinct_resources():
         assert rt._norm_url(a) != rt._norm_url(b)
     for invalid in ("", "javascript:alert(1)", "https://u:p@example.test/", "https://example.test:99999/", "https://[broken"):
         assert rt._norm_url(invalid) == ""
+
+
+def test_coverage_fusion_preserves_aspects_and_verified_primary():
+    """目的: RRFだけで埋もれる独立観点・一次資料を保護。未検証の自己申告を信用しない。"""
+    from app.workflows.research_fusion import coverage_fusion, reciprocal_rank_fusion
+    def row(name, **metadata):
+        return {"url":"https://example.test/" + name, **metadata}
+    groups = [
+        ("q1", "hardware", [row("popular", primary=True), row("official"), row("a")]),
+        ("q2", "hardware", [row("popular"), row("b")]),
+        ("q3", "power", [row("power"), row("popular")]),
+    ]
+    primary = frozenset({rt._norm_url(row("official")["url"])})
+    fused = reciprocal_rank_fusion([(name, rows) for name, _, rows in groups], rt._norm_url, limit=2)
+    assert fused[0] == row("popular", primary=True)
+    protected = coverage_fusion(groups, rt._norm_url, verified_primary=primary, limit=2)
+    assert [r["url"] for r in protected] == [row("official")["url"], row("power")["url"]]
+    unverified = coverage_fusion(groups, rt._norm_url, limit=1)
+    assert unverified[0]["url"] == row("popular")["url"]
+    assert coverage_fusion(groups, rt._norm_url, aspect_floor=0, limit=2) == fused
+    assert len(coverage_fusion(groups + groups, rt._norm_url, verified_primary=primary, limit=2)) == 2
