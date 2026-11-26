@@ -1,15 +1,16 @@
 /** AI Commander: AI の CLI のコンソールを 1 つの画面で何個でも開く。
  *
- * PC（768px〜）はタイル（2 列、幅が広ければ 3 列）で並べ、タイルの中に
- * 端末を埋め込む。押すと大きく開く。モバイル（〜767px）は 1 つずつ
- * （リスト → 全画面）。主操作は「＋ コンソール」1 個、アカウントの管理は
- * その他メニュー（UI ルール: 全ボタンを並べない）。 */
+ * 表示は 2 つから選ぶ（頭のアイコンの切り替え）:
+ * - 一覧: 1 行ずつ。押すと全画面で開く。
+ * - タイル: 端末を埋め込んで中身が少し見える。PC は 2〜3 列、モバイルは 1 列。
+ * 既定は PC がタイル、モバイルが一覧。選んだ形はこの端末に覚える。
+ * 主操作は「＋ コンソール」1 個、アカウントの管理はその他メニュー（UI ルール: 全ボタンを並べない）。 */
 import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { closeConsole, fetchClis, fetchConsoles, type CommanderConsole } from "../api/commander";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { ConfirmDialog, EmptyState, IconButton, Skeleton, DropdownMenu } from "../components/ui";
-import { IconDots, IconPlus } from "../components/icons";
+import { IconDots, IconListRows, IconPlus, IconTilesPreview } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ConsoleRow, ConsoleTile } from "../features/commander/ConsoleTile";
 import { NewConsoleSheet } from "../features/commander/NewConsoleSheet";
@@ -17,6 +18,37 @@ import { AccountsSheet } from "../features/commander/AccountsSheet";
 import { useToasts } from "../stores";
 
 const XtermView = lazy(() => import("../features/terminal/XtermView"));
+
+type CommanderView = "list" | "tiles";
+const VIEW_KEY = "control-deck:commander-view";
+
+function readView(): CommanderView | null {
+  try {
+    const value = localStorage.getItem(VIEW_KEY);
+    return value === "list" || value === "tiles" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 一覧とタイルの切り替え。1 個のアイコンのボタンで、押すと替わる先の形の絵を出す（文字は出さない。読み上げ名は付ける）。 */
+function ViewToggle({ value, onChange }: { value: CommanderView; onChange: (value: CommanderView) => void }) {
+  const next: CommanderView = value === "list" ? "tiles" : "list";
+  const label = next === "list" ? "一覧で表示" : "中身を見ながら表示";
+  return (
+    <button
+      type="button"
+      data-commander-view-toggle
+      data-view={value}
+      aria-label={label}
+      title={label}
+      onClick={() => onChange(next)}
+      className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-xl text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+    >
+      {next === "list" ? <IconListRows /> : <IconTilesPreview />}
+    </button>
+  );
+}
 
 export default function CommanderPage() {
   const qc = useQueryClient();
@@ -26,6 +58,17 @@ export default function CommanderPage() {
   const [accountsSheet, setAccountsSheet] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [closing, setClosing] = useState<CommanderConsole | null>(null);
+  // 選んでいなければ PC はタイル、モバイルは一覧。
+  const [chosenView, setChosenView] = useState<CommanderView | null>(readView);
+  const view: CommanderView = chosenView ?? (isDesktop ? "tiles" : "list");
+  const chooseView = (value: CommanderView) => {
+    setChosenView(value);
+    try {
+      localStorage.setItem(VIEW_KEY, value);
+    } catch {
+      // 保存できない端末（プライベートなど）は、この画面を開いている間だけ覚える
+    }
+  };
 
   const { data: consoles, isLoading } = useQuery({
     queryKey: ["commander-consoles"],
@@ -84,10 +127,15 @@ export default function CommanderPage() {
         </IconButton>
       </>} />
 
-      <p className="mb-4 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+      <p className="mb-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
         Claude Code・Codex・OpenCode などのコンソールをアカウントごとに開いて、1 つの画面で並べます。
-        {items.length > 0 && <span className="ml-1 tabular-nums">（{items.length} 個）</span>}
       </p>
+      {items.length > 0 && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">{items.length} 個</span>
+          <ViewToggle value={view} onChange={chooseView} />
+        </div>
+      )}
 
       {isLoading ? (
         <Skeleton className="h-24" />
@@ -97,8 +145,8 @@ export default function CommanderPage() {
         }>
           コンソールはありません
         </EmptyState>
-      ) : isDesktop ? (
-        <ul className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+      ) : view === "tiles" ? (
+        <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {items.map((item) => (
             <ConsoleTile
               key={item.id}
@@ -110,7 +158,7 @@ export default function CommanderPage() {
           ))}
         </ul>
       ) : (
-        <ul className="grid gap-2">
+        <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {items.map((item) => (
             <ConsoleRow
               key={item.id}

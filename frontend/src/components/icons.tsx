@@ -179,6 +179,23 @@ export const IconDots = (p: SVGProps<SVGSVGElement>) => (
     <circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
   </Icon>
 );
+/** 一覧（行）表示。点と線の 3 行。 */
+export const IconListRows = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="4.5" cy="6.5" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="4.5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="4.5" cy="17.5" r="1.2" fill="currentColor" stroke="none" />
+    <path d="M9 6.5h11M9 12h11M9 17.5h11" />
+  </Icon>
+);
+/** 中身つきのタイル表示（頭の帯と中身の線が見える 2 枚）。 */
+export const IconTilesPreview = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="3" y="4" width="8" height="16" rx="1.5" />
+    <rect x="13" y="4" width="8" height="16" rx="1.5" />
+    <path d="M3 8h8M13 8h8M5.5 11.5h3M5.5 14.5h4M15.5 11.5h3M15.5 14.5h4" />
+  </Icon>
+);
 export const IconMenu = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M4 7h16M4 12h16M4 17h16" />
