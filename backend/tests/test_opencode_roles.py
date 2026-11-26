@@ -168,7 +168,7 @@ def test_box_default_final_check_is_plan_then_the_reviewer_chain(repo, monkeypat
     planned = json.loads(sandbox.opencode_config(box, roles={"plan": "opencode/hy4-flash-free"}).read_text())
     assert planned["agents"]["reviewer"]["model"] == "opencode/hy4-flash-free"
     external = json.loads(sandbox.opencode_config(box, model="opencode-go/glm-5.3", work_model="opencode-go/glm-5.3").read_text())
-    assert external["agents"]["reviewer"]["model"] == "controldeck/auto"
+    assert external["agents"]["reviewer"]["model"] == "opencode/hy4-flash-free", "作業が外部なら別の外部を先に"
 
 
 def test_box_without_llm_cannot_choose_a_local_model(repo, monkeypatch):
