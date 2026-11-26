@@ -218,6 +218,8 @@ FEATURES: dict[str, dict] = {
         "executable": "sly-radiance",
         "route_gated": False,
         "repo": "SlyBase/vllm-sly-radiance",
+        # Radiance の派生。設定画面では独立したカードにせず、Radiance のカードの中の切り替えで出す（2026-11-27 利用者）。
+        "parent": "radiance",
         "summary": "R9700 1 枚向けに速くした vLLM（Qwen3.8-27B MXFP4・先読み DFlash2・8 本同時）。公式イメージを podman で動かす。モデルは別途用意",
     },
     "strata": {
@@ -479,6 +481,7 @@ def _gpu_runtime_status(feature_id: str, spec: dict) -> dict:
         "kind": spec["kind"],
         "category": category(feature_id),
         "route_gated": spec["route_gated"],
+        "parent": str(spec.get("parent", "")),
         "requires": spec.get("requires", ""),
         "preview": bool(spec.get("preview", False)),
         "requires_installed": True,
@@ -679,6 +682,7 @@ def status(feature_id: str) -> dict:
         "kind": spec["kind"],
         "category": category(feature_id),
         "route_gated": spec["route_gated"],
+        "parent": str(spec.get("parent", "")),
         # 依存アドオン。未導入なら UI で導入順を案内する。
         "requires": spec.get("requires", ""),
         "preview": bool(spec.get("preview", False)),

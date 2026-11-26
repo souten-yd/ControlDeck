@@ -777,6 +777,8 @@ interface AddonState {
   kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
+  /** 派生（例: Sly-Radiance → radiance）。独立したカードにせず、親のカードの中の切り替えで出す。 */
+  parent?: string;
   available: boolean; installed: boolean; managed: boolean;
   enabled: boolean; requested_enabled: boolean; version: string; health: string;
   error: string; executable: string; preview?: boolean;
@@ -1263,6 +1265,8 @@ function AddonsSection() {
       show(e instanceof Error ? e.message : "モデルを削除できませんでした", "error");
     }
   };
+  // 派生（Sly-Radiance など）を切るときは確かめる（公式イメージを消す。登録とモデルのフォルダは残す）
+  const [childOff, setChildOff] = useState<AddonState | null>(null);
   const act = async (addon: AddonState, action: "enable" | "disable" | "uninstall") => {
     try {
       const r = await api<{ requires_reload?: boolean }>(`/features/${addon.id}/${action}`, { method: "POST", json: {} });
@@ -1335,7 +1339,7 @@ function AddonsSection() {
   const rank = (a: AddonState) => (a.id === "opencode-v2" ? -1 : a.enabled ? 0 : a.installed ? 1 : 2);
   const groups: [string, string, AddonState[], string][] = FEATURE_CATEGORIES.map(([key, title, description]) => [
     title, description,
-    (addons ?? []).filter((a) => (a.category ?? "tools") === key)
+    (addons ?? []).filter((a) => (a.category ?? "tools") === key && !a.parent)
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "ja")),
     key,
   ]);
@@ -1345,6 +1349,15 @@ function AddonsSection() {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900 md:p-5">
       <h2 className="sr-only">オプション機能</h2>
+      {childOff && (
+        <ConfirmDialog
+          title={`${childOff.name} を使わないようにしますか？`}
+          message="公式イメージ（約 6.6GB）を消します。登録したモデルとモデルのフォルダ・組み立て済みの部品は残ります。もう一度入れると取得し直します。"
+          confirmLabel="使わない"
+          onConfirm={() => { const target = childOff; setChildOff(null); void act(target, "uninstall"); }}
+          onClose={() => setChildOff(null)}
+        />
+      )}
       <p className="mb-3 text-xs text-zinc-500">導入はユーザー領域へのインストールで、パスワードは不要です。</p>
       <FeatureAutoUpdate busy={busy} />
       <div className="space-y-5">
@@ -1414,6 +1427,43 @@ function AddonsSection() {
                       </div>
                       <div className="shrink-0">{primary(addon)}</div>
                     </div>
+                    {(addons ?? []).filter((child) => child.parent === addon.id).map((child) => (
+                      <div key={child.id} id={`feature-${child.id}`} data-feature-child={child.id}
+                        className="mt-2 rounded-lg bg-zinc-50 px-3 py-2 dark:bg-zinc-800/50">
+                        <div className="flex items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="flex flex-wrap items-center gap-x-2 text-xs font-semibold">
+                              {child.name}
+                              {child.version && <span className="num text-[11px] font-normal text-zinc-500">{shortVersion(child.version)}</span>}
+                            </p>
+                            <p className="line-clamp-2 text-[11px] text-zinc-500">
+                              {mine(child) ? "準備中…（公式イメージを取得しています）" : child.installed ? "使う（Models の＋で Radiance を選ぶと切り替えられます）" : child.summary}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={child.installed}
+                            aria-label={`${child.name} を使う`}
+                            disabled={busy || (!child.installed && !child.available)}
+                            onClick={() => (child.installed ? setChildOff(child) : void install(child))}
+                            className="flex min-h-11 shrink-0 items-center disabled:opacity-40"
+                          >
+                            <span className={`relative h-6 w-11 rounded-full transition ${child.installed ? "bg-accent-600" : "bg-zinc-300 dark:bg-zinc-700"}`}>
+                              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${child.installed ? "left-[22px]" : "left-0.5"}`} />
+                            </span>
+                          </button>
+                        </div>
+                        {child.installed && child.kind === "gpu-runtime" && (
+                          <details className="group mt-1">
+                            <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1 text-[11px] text-zinc-500">
+                              <IconChevronRight className="transition-transform group-open:rotate-90" /> {child.name} の詳細と操作
+                            </summary>
+                            <div className="mt-1"><GpuRuntimeDetails addon={child} release={releases?.[child.id] ?? null} /></div>
+                          </details>
+                        )}
+                      </div>
+                    ))}
                     {addon.kind === "system-packages" && !addon.installed && addon.install_command && (
                       <p className="mt-2 break-all rounded-lg bg-zinc-100 px-2 py-1.5 font-mono text-[11px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{addon.install_command}</p>
                     )}

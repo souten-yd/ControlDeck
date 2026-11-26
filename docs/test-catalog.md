@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 261 ファイル、2586 テスト（目的の未記入 93 ファイル）
-- E2E: 145 spec、317 テスト
+- backend: 261 ファイル、2587 テスト（目的の未記入 93 ファイル）
+- E2E: 145 spec、318 テスト
 
 ## backend（backend/tests）
 
@@ -3343,6 +3343,7 @@
 - `test_release_tag_conversion`
 - `test_shared_with_radiance_runtime_groups`
 - `test_a_loaded_sly_model_is_freed_for_another_runtime`
+- `test_stop_removes_a_container_left_in_removing` — 停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
 
 ### backend/tests/test_speech_engines.py
 
@@ -4710,6 +4711,7 @@
 目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（HF の取得 Job）→ 取得したフォルダがフォームへ入る、 フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、登録の本文が API の形（同時に答える数 1〜8・ 先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
 
 - Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）
+- Sly-Radiance は Radiance のカードの中のスイッチ（320px）
 
 ### frontend/e2e/speech-engines.spec.ts
 

@@ -2050,6 +2050,8 @@ function EmbedRerankPanel() {
 /** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
+  // Sly-Radiance は Radiance の派生。Radiance を選んだ中のスイッチで切り替える（導入済みなら既定は Sly）。
+  const [slyChosen, setSlyChosen] = useState<boolean | null>(null);
   const { data: strataState } = useQuery({
     queryKey: ["strata-instances"],
     queryFn: () => api<{ runtime: { installed: boolean }; instances: Array<{alias: string}> }>("/models/strata/instances"),
@@ -2060,20 +2062,39 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
       <div className="mb-3 flex flex-wrap gap-2">
-        {(["llama.cpp", "strata", "radiance", "sly-radiance", "maya-s"] as const).map((choice) => (
+        {(["llama.cpp", "strata", "radiance", "maya-s"] as const).map((choice) => (
           <button key={choice} type="button" onClick={() => setRuntime(choice)}
-            disabled={(choice === "strata" && !strataState?.runtime.installed) || (choice === "radiance" && !radianceState?.runtime.installed)
-              || (choice === "sly-radiance" && !slyState?.runtime.installed)
+            disabled={(choice === "strata" && !strataState?.runtime.installed)
+              || (choice === "radiance" && !radianceState?.runtime.installed && !slyState?.runtime.installed)
               || (choice === "maya-s" && !mayaStatus?.installed)}
             className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
             {RUNTIME_LABEL[choice]}
           </button>
         ))}
       </div>
+      {runtime === "radiance" && slyState?.runtime.installed && (() => {
+        const useSly = slyChosen ?? true;
+        return (
+          <button type="button" role="switch" aria-checked={useSly} aria-label="Sly-Radiance で登録"
+            onClick={() => setSlyChosen(!useSly)}
+            disabled={!radianceState?.runtime.installed}
+            className="mb-3 flex min-h-11 w-full items-center gap-3 rounded-xl bg-zinc-50 px-3 text-left dark:bg-zinc-800/50">
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">Sly-Radiance で登録</span>
+              <span className="block text-[11px] text-zinc-500">Radiance の派生（R9700 向けの vLLM・先読み・8 本同時）。切ると元の Radiance で登録します</span>
+            </span>
+            <span className={`relative h-6 w-11 shrink-0 rounded-full transition ${useSly ? "bg-accent-600" : "bg-zinc-300 dark:bg-zinc-700"}`}>
+              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${useSly ? "left-[22px]" : "left-0.5"}`} />
+            </span>
+          </button>
+        );
+      })()}
       {runtime === "llama.cpp"
         ? <LlamaRuntimePanel registrationOnly />
-        : runtime === "radiance" ? <RadianceRegisterPanel onDone={onClose} />
-        : runtime === "sly-radiance" ? <SlyRadianceRegisterPanel onDone={onClose} />
+        : runtime === "radiance"
+          ? (slyState?.runtime.installed && (slyChosen ?? true)) || !radianceState?.runtime.installed
+            ? <SlyRadianceRegisterPanel onDone={onClose} />
+            : <RadianceRegisterPanel onDone={onClose} />
         : runtime === "maya-s" ? <MayaRegisterPanel onDone={onClose} />
         : <StrataRegisterPanel onDone={onClose} />}
     </BottomSheet>

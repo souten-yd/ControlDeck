@@ -17,7 +17,7 @@ for (const width of [320, 1280]) {
       await route.fulfill({ json: env });
     });
     await page.route("**/api/v1/models/providers/*/models", (route) => route.fulfill({ json: [] }));
-    await page.route("**/api/v1/models/radiance/instances", (route) => route.fulfill({ json: { runtime: { installed: false }, instances: [] } }));
+    await page.route("**/api/v1/models/radiance/instances", (route) => route.fulfill({ json: { runtime: { installed: true }, instances: [] } }));
     await page.route("**/api/v1/models/sly-radiance/instances", async (route) => {
       if (route.request().method() === "POST") return route.fallback();
       await route.fulfill({ json: { runtime: { installed: true, version: "1.13.4-rocm10.1", warning: "" }, instances: [] } });
@@ -56,7 +56,15 @@ for (const width of [320, 1280]) {
     await page.goto("/models");
     await page.getByRole("button", { name: "モデル登録" }).first().click();
     const sheet = page.getByRole("dialog", { name: "モデル登録" });
-    await sheet.getByRole("button", { name: "Sly-Radiance", exact: true }).click();
+    // Sly-Radiance は Radiance の派生: 一覧に独立したボタンは無く、Radiance の中のスイッチで切り替える
+    await expect(sheet.getByRole("button", { name: "Sly-Radiance", exact: true })).toHaveCount(0);
+    await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
+    const slySwitch = sheet.getByRole("switch", { name: "Sly-Radiance で登録" });
+    await expect(slySwitch).toHaveAttribute("aria-checked", "true");
+    await slySwitch.click();
+    await expect(slySwitch).toHaveAttribute("aria-checked", "false");
+    await expect(sheet.getByLabel("Sly-Radiance目録のモデル")).toHaveCount(0);
+    await slySwitch.click();
     await sheet.getByText("目録から取る").click();
     await expect(sheet.getByLabel("Sly-Radiance目録のモデル")).toContainText("無検閲寄り");
     await expect(sheet.getByRole("option", { name: /MiniCPM-V.*未対応/ })).toHaveAttribute("disabled", "");
@@ -81,3 +89,21 @@ for (const width of [320, 1280]) {
       engine_settings: { RADIANCE_KV_GROUP_SIZE: "8" } });
   });
 }
+
+// 目的: 設定 → オプション機能で、Sly-Radiance は独立したカードにならず、Radiance のカードの中の切り替え（スイッチ）で出る。
+// 根拠: 2026-11-27 利用者「Sly-Radiance は Radiance の派生なので、Radiance の追加機能の中でトグルで切り替えられるように」。
+// 押すと導入（約 6.6GB の取得）が始まるので、ここでは押さずに位置と状態だけを見る。
+test("Sly-Radiance は Radiance のカードの中のスイッチ（320px）", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 900 });
+  await establishSession(page, context);
+  await page.goto("/settings/features");
+  const radiance = page.locator("#feature-radiance");
+  await expect(radiance).toBeVisible();
+  const child = radiance.locator("[data-feature-child=sly-radiance]");
+  await expect(child).toBeVisible();
+  await expect(child.getByRole("switch", { name: /Sly-Radiance.*を使う/ })).toHaveAttribute("aria-checked", /true|false/);
+  await expect(page.locator("#feature-sly-radiance")).toHaveCount(1);   // Radiance の中の 1 つだけ
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+  await radiance.screenshot({ path: "test-results/sly-radiance-toggle-320.png" });
+});
