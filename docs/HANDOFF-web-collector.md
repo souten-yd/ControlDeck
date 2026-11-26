@@ -14,6 +14,9 @@
 | P1 Patent の調査 | ☐ | — |
 | AI アシスタントのサイト指定の調査・依頼の理解・日付の確認（`research_tools.py`・`research_intent.py`・`research_time.py`） | ☑ 2026-11-22（実機評価済み・Reddit は取得制限あり） | — |
 
+## 1b. Codex の PR の扱い（2026-11-26）
+W3 は Codex の #638（発見・SQLite の待ち行列）と #640（巡回の HTTP 境界）を土台に仕上げる（Jobs・画面・ナレッジへの明示の登録が残り）。表の行と列（#639・#646）は、使う所（測定の取り込みなど）ができたら入れる。採否の理由は implementation-status の 2026-11-26。
+
 ## 2. W1 で作ったもの
 
 - `backend/app/web_collector/egress.py`: 解決 → 全アドレス検査 → 検査した IP に接続（httpcore の `GuardedBackend`）。`guarded_client`（リダイレクトは自動で追わない・環境のプロキシを使わない）、`open_guarded`（W2 のブラウザ中継用）。試験用に `Policy(resolver_override, allow_networks)`。

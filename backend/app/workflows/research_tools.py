@@ -571,18 +571,37 @@ def widen_queries(query: str) -> list[str]:
 
 
 def _norm_url(url: str) -> str:
-    """URL の重複判定用。未知のクエリは別資料を指す可能性があるので保持する。
+    """検索の候補の重複判定用の鍵（取得先やキャッシュの鍵には使わない）。
 
-    URL 自体は変更せず、従来どおりフラグメントは比較に含めない。
+    同じページとみなす: www の有無・http と https・末尾の / ・引数の順番・追跡用の引数（utm_* など）・節のアンカー（#section）。
+    別のページとして残す: 引数の値・既定でないポート・SPA の道筋（#/・#!）とテキストの断片（#:~:）。
+    署名・認証つきの URL（X-Amz-*・signature・token など）は引数をいじらない。不正な URL は空（重複の判定に使わない）。
+    2026-11-26: Codex #643 の安全策（不正な URL・署名・SPA・ポート）を採り、www などを別のページとして扱う所は採らない（検索の結果で同じページを重ねて読むため）。
     """
-    parts = urlsplit(url)
-    host = parts.netloc.lower().removeprefix("www.")
-    # 追跡用の引数（utm_*・fbclid など）だけ違う URL は同じ記事。残りの引数は順番をそろえて比べる
-    keep = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING.match(k))
-    return f"{host}{parts.path.rstrip('/')}" + (f"?{urlencode(keep)}" if keep else "")
+    if not isinstance(url, str) or not url or "\\" in url or any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        return ""
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None or parts.password is not None:
+            return ""
+        port = parts.port
+    except ValueError:
+        return ""
+    host = parts.hostname.lower().removeprefix("www.")
+    if port is not None and port != (443 if parts.scheme == "https" else 80):
+        host += f":{port}"
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    if any(_SIGNED_QUERY.match(k) for k, _ in pairs):
+        query = parts.query
+    else:
+        keep = sorted((k, v) for k, v in pairs if not _TRACKING.match(k))
+        query = urlencode(keep)
+    fragment = parts.fragment if parts.fragment.startswith(("/", "!", ":~:")) else ""
+    return f"{host}{parts.path.rstrip('/')}" + (f"?{query}" if query else "") + (f"#{fragment}" if fragment else "")
 
 
 _TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_ga|_gl|ref_src|spm)$", re.I)
+_SIGNED_QUERY = re.compile(r"^(?:x-amz-|x-goog-|signature$|sig$|token$|access_token$|auth$|key$|expires$|policy$|hmac$|jwt$)", re.I)
 
 
 def _merge(groups: list[list[dict]], limit: int) -> list[dict]:

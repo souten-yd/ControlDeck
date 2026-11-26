@@ -278,7 +278,8 @@ async def read_and_judge(results: list[dict], *, window, today: dt.date, focus: 
         hint = str(r.get("snippet") or "")[:60]   # 検索の要約の先頭にある日付（「2026/11/13 …」）も手がかりにする
         if not page.get("ok"):
             status, shown = rtime.judge_page("", r.get("url", ""), hint, window, today)
-            return {"result": r, "page": None, "status": "unread" if status in ("unknown", "any") else status, "date": shown}
+            # 検索結果や URL の日付は手がかりであり、本文による確認ではない。
+            return {"result": r, "page": None, "status": "mismatch" if status == "mismatch" else "unread", "date": shown}
         status, shown = rtime.judge_page(page["text"], page["url"], f"{page.get('date', '')}\n{hint}", window, today)
         return {"result": r, "page": page, "status": status, "date": shown or str(page.get("date") or "")[:10]}
 
@@ -380,7 +381,8 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
     llm_gate = asyncio.Semaphore(max(1, llm_parallel))
     read_gate = asyncio.Semaphore(READ_PARALLEL)   # 観点が並んでも、ページを読む総数は READ_PARALLEL 本
     pending = {i: list(a.queries) for i, a in enumerate(intent.aspects)}
-    seen_urls: set[str] = set()
+    # 同じページでも観点ごとに異なる focus で読む。未選択の候補は消さない。
+    seen_urls: dict[int, set[str]] = {i: set() for i in range(len(intent.aspects))}
     say("plan", "調べること: " + "・".join(a.text[:40] for a in intent.aspects))
     for n in range(1, rounds + 1):
         inv.rounds = n
@@ -399,14 +401,14 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
 
         batches = await asyncio.gather(*[search_aspect(i, qs) for i, qs in pending.items() if qs])
         fresh_by_aspect = []
-        for i, results in batches:   # 観点をまたぐ重複の除外は、並べる前に順に決める（競合させない）
-            fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls]  # noqa: SLF001
-            seen_urls.update(rt._norm_url(r["url"]) for r in fresh)  # noqa: SLF001
+        for i, results in batches:
+            fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls[i]]  # noqa: SLF001
             fresh_by_aspect.append((i, len(results), fresh))
 
         async def process_aspect(i: int, found: int, fresh: list[dict]) -> tuple[int, list[dict]]:
             chosen = await select_results(intent.aspects[i].text, intent.subjects, fresh, per_aspect + (1 if intent.sites else 0),
                                           ranker=ranker)
+            seen_urls[i].update(rt._norm_url(r["url"]) for r in chosen)  # noqa: SLF001
             say("read", f"観点{i + 1}: {found} 件から {len(chosen)} 件を読みます")
             # ページの読み取りは HTTP と reranker だけ（チャットの LLM を使わない）ので、スロット数と無関係に READ_PARALLEL 本
             judged = await read_and_judge(chosen, window=window, today=today, focus=intent.aspects[i].text,
@@ -477,7 +479,9 @@ def build_context(inv: Investigation, refs: dict[str, str], *, now: dt.datetime 
         for e in items:
             label = _STATUS_LABEL.get(e.status, "")
             date = f"{e.date} の情報" if e.date and e.status != "unknown" else ("日付不明" if e.status == "unknown" else "")
-            tag = " · ".join(x for x in (date, label if e.status in ("unread",) else "") if x)
+            if e.status == "unread" and e.date:
+                date = f"候補の日付 {e.date}（本文未確認）"
+            tag = " · ".join(x for x in (date, label if e.status == "unread" else "") if x)
             body.append(f"[{refs.get(e.url, '')}] {e.title}{'（' + tag + '）' if tag else ''}\n{e.text[:per]}\n{e.url}")
         parts.append(f"## 観点{i + 1}: {a.text}\n" + ("\n\n".join(body) if body else "（この観点に合う資料は見つかりませんでした）"))
     return "\n\n".join(parts)[:budget_chars * 2]
