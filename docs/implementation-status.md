@@ -6,6 +6,10 @@
 - 効果と処理時間（AGENTS.md「機能を取り込む条件」）: 目録 API の生成は 2,000 回平均 34.3μs/回、JSON 約 9.9KB。画面を開いたときだけ 1 回で、計算は RAM+VRAM との比較だけ。従来の 4 系列・14 量子化に比べ、目録の二重持ちを 1 か所に減らし、選べる量子化を 47 に広げた。
 - 確かめたこと: 変更した Python 8 ファイルの `py_compile`。目録単体のスタンドアロン実行（整合性・id の一意性・is_valid・NVIDIA の絞り込み・載るかの 4 段階・API の形・11 系列 47 量子化）。
 - 確かめていないこと: この箱に `.venv`（FastAPI / pydantic / pytest）が無いため `./deck.sh dev-check --base origin/main` と `./deck.sh e2e strata` は未実行。実機の Strata 0.2.22 での起動、Inkling の思考が実際に効くか（0.2.22 の公式 docs で段があることは確認、ControlDeck の渡し方は未検証）。実機では `./deck.sh dev-check --base origin/main` と `./deck.sh e2e strata` を流すこと。
+## 2026-11-26 箱の OpenCode の --run が子エージェントの結果待ちで終わらない不具合
+- 実測: M1（Strata の目録）を箱の OpenCode に作らせたところ、主の会話がレビュー役の子の結果（`background_wait`）を 18 分以上待ったまま止まった。子の最後の要求は 200 で返っており、子の完了が主へ届いていなかった。`--run` に時間切れが無く、誰も気づかなければ終わらない。
+- 直し（`maintenance/sandbox.py`）: `_run_streaming` は出力を別スレッドで読み、最後の行が `background_wait` のまま `CONTROL_DECK_SANDBOX_STALL_SECONDS`（既定 900 秒）何も出なければ止める。`run_with_chain` は同じモデル・同じ会話へ「待たずに続けて。関門は自分で行い報告して」を送る（2 回まで）。`background_wait` でない間は、出力の間が空いても止めない（長いテストを切らない）。
+- テスト: `test_dev_sandbox.py` に 2 件（止まったら同じ会話へ続ける・普通の長い間では止めない）。
 
 ## 2026-11-26 ニュース設定: まとめのモデルは LLM のタブに集約（基本のタブから見えるように）
 - 利用者「ニュースで使うモデルは LLM のところに集約。日刊・週刊のまとめもニュースの LLM の設定を使ってほしい」。調べた結果、LLM を呼ぶ所（まとめ・一言要約・下ごしらえ・リーダーの翻訳・ハブの仕事 2 つ）は既に全てニュースの LLM の設定（`llm.digest_model`・`gist_model`・`prep_model`）を見ていた。足りなかったのは、基本のタブ（更新のタイミング）からそれが分からないこと。
