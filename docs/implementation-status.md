@@ -1,5 +1,8 @@
 # 実装状況
 
+## 2026-11-27 Nexarch の AI チームの設計（調査と比較）
+- 利用者「AI チームを作りたい。情報の橋渡し、リーダーはローカル LLM もフロンティアも自由に。どういう形が使いやすいか調査検討して」。`docs/PLAN-nexarch-team.md` に調査（Claude Code agent teams・MCP Agent Mail・Agent Deck・各 CLI の subagent・Anthropic の multi-agent・ローカル LLM の失敗の論文）と推奨の形・段（T1〜T4）をまとめた。コードはまだ。
+
 ## 2026-11-27 Nexarch: 5 時間・週の上限の使用率と回復までの時間
 - 利用者「5 時間制限と週間制限の利用率とリセットまでの時間を追加して」。タイル・一覧・アカウントの管理に「5時間 82%（あと 2時間10分）・週 40%（あと 3日5時間）」を出す。80% 以上は橙、90% 以上は赤。
 - Claude Code: Nexarch が開くコンソールに `--settings` で statusline のコマンド（`app/commander/statusline.py`）を渡す。Claude Code が statusline へ渡す `rate_limits.five_hour / seven_day`（使用率・回復の時刻）と model の名前だけを `data/ai-commander/usage/claude-<アカウント>.json`（0600）へ書く。ログインの鍵は読まない。値は Claude の応答のたびに更新（契約のプランの利用者だけ。API キーでは出ない）。Nexarch で開いたコンソールの statusline はこの表示（5h 12% · 7d 40%）になる。
