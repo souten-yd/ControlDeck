@@ -910,44 +910,25 @@ def _md_links(text: str, base: str) -> list[dict]:
 
 
 async def read_github(url: str) -> dict | None:
-    """README（リポジトリの先頭）・issue/PR（コメント付き）・ファイル（blob）。それ以外は None（通常の取得へ）。"""
-    match = _GH.match(urlsplit(url).path.rstrip("/") or "/")
-    if not match:
+    """README（リポジトリの先頭）・issue/PR（コメント付き）・ファイル（blob）。変換は web_collector.data_api と共通（二重に持たない）。
+    それ以外は None（通常の取得へ）。"""
+    from app.web_collector import data_api
+
+    found = data_api.match(url)
+    if not found or found[0] != "github":
         return None
-    owner, repo, rest = match.group(1), match.group(2).removesuffix(".git"), match.group(3) or ""
-    api = f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}"
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    if rest == "" or re.match(r"^(tree/[^/]+/?)?$", rest):
-        meta = await _get_json(api, headers=headers)
-        response = await _get(f"{api}/readme", headers={**headers, "Accept": "application/vnd.github.raw+json"}, accept="text/plain")
-        if response.status_code >= 400:
-            raise RuntimeError(f"README HTTP {response.status_code}")
-        text = response.text
-        base = f"https://github.com/{owner}/{repo}/blob/{meta.get('default_branch', 'HEAD')}/"
-        head = (f"{meta.get('full_name')} — {_clean(meta.get('description'), 200)}\n★{meta.get('stargazers_count', 0)} · "
-                f"{meta.get('language') or ''} · 更新 {str(meta.get('pushed_at') or '')[:10]}\n\n")
-        return {"title": f"{owner}/{repo} README", "text": head + text, "date": str(meta.get("pushed_at") or "")[:10],
-                "links": _md_links(text, base)}
-    issue = re.match(r"^(?:issues|pull)/(\d+)$", rest)
-    if issue:
-        number = issue.group(1)
-        item, comments = await asyncio.gather(_get_json(f"{api}/issues/{number}", headers=headers),
-                                              _get_json(f"{api}/issues/{number}/comments", headers=headers,
-                                                        params={"per_page": 50}))
-        lines = [f"- ({c.get('reactions', {}).get('total_count', 0)}反応) {_clean(c.get('body'), 1200)}" for c in comments]
-        text = (f"{item.get('state')} · {item.get('comments', 0)}コメント · ラベル: "
-                f"{', '.join(l['name'] for l in item.get('labels', []))}\n\n{item.get('body') or ''}\n\n## コメント\n" + "\n".join(lines))
-        return {"title": f"{owner}/{repo}#{number} {item.get('title', '')}", "text": text,
-                "date": str(item.get("updated_at") or "")[:10], "links": _md_links(text, f"https://github.com/{owner}/{repo}/")}
-    blob = re.match(r"^blob/([^/]+)/(.+)$", rest)
-    if blob:
-        response = await _get(f"https://raw.githubusercontent.com/{quote(owner)}/{quote(repo)}/{quote(blob.group(1))}/{quote(blob.group(2))}",
-                              accept="text/plain")
-        if response.status_code >= 400:
-            raise RuntimeError(f"HTTP {response.status_code}")
-        return {"title": f"{owner}/{repo} {blob.group(2)}", "text": response.text, "date": "",
-                "links": _md_links(response.text, f"https://github.com/{owner}/{repo}/blob/{blob.group(1)}/")}
-    return None
+    part = found[1]
+
+    async def get(u: str, headers: dict, max_bytes: int):
+        response = await _get(u, headers=headers, accept=headers.get("Accept", "application/json"))
+        return data_api.Resp(response.status_code, response.content[:max_bytes], {k.lower(): v for k, v in response.headers.items()},
+                             len(response.content) > max_bytes)
+
+    try:
+        doc = await data_api.github_document(part["owner"], part["repo"], part["rest"], get)
+    except data_api.DataApiError as exc:
+        raise (HttpError(exc.http_status) if exc.http_status else RuntimeError(str(exc))) from exc
+    return {"title": doc.title, "text": doc.text, "date": doc.date, "links": doc.links}
 
 
 async def read_hn(url: str) -> dict | None:

@@ -8,6 +8,13 @@
 - 試験: `./deck.sh test` 2839 passed。未確認: Deep Research を本番で流しての前後の比較。
 
 
+## 2026-11-26 検索基盤の強化: 公開データ API の直接利用（data_api）
+
+- `web_collector/data_api.py`: `fetch.collect` の前段で URL の形から GitHub（repo・blob・issue/PR）・OpenAlex（works・authors）を判定し、公開 API で本文を取る（`fetch_method="data_api"`、`collect(data_api=False)` で無効）。
+- 通信は egress（検査済み IP・443）・許可リストのホストだけ・リダイレクト 3 段・応答の大きさに上限・鍵なし・UA は既存。403/429 は止めて理由を返し HTML へ戻らない。404・形の不一致・通信の失敗は HTML の取得へ戻る。
+- `research_tools.read_github` は同じ `data_api.github_document` を使う（変換を二重に持たない）。依存・UI の変更なし。
+- 試験 `test_web_data_api.py`（判定・変換・上限・失敗・collect との接続。外へ通信しない）。実測は `~/ControlDeck-評価/2026-11-26-公開データAPIの直接利用.md`: GitHub は README の本文 1.8〜3.4 倍・見出し約 3 倍・時間 1/3、OpenAlex は抄録・著者・被引用数を構造で。**Wikipedia の REST は本文が大きく減り（en 30,753 → 13,574 字）、arXiv は同程度だったので、どちらも API に置き換えない**（司令塔の判断）。
+
 ## 2026-11-26 検索基盤の強化 W2（安全な JavaScript レンダリング）
 
 - 静的 HTTP → 初期 JSON → この PC の Chrome（使い捨てプロファイル・全通信を検査つきの中継へ・プロキシ以外は遮断）の自動の切り替え（`fetch.collect(render="auto")`）。`read_page`・Deep Research の `_page_text`・`web.scrape`・`web.browser` が共通。機能「Web 収集のブラウザ」が有効なときだけ。

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 253 ファイル、2502 テスト（目的の未記入 93 ファイル）
+- backend: 254 ファイル、2516 テスト（目的の未記入 93 ファイル）
 - E2E: 142 spec、310 テスト
 
 ## backend（backend/tests）
@@ -3540,6 +3540,7 @@
 - `test_relay_stops_when_the_size_limit_is_exceeded`
 - `test_loopback_is_not_bypassed_by_the_browser` — Chrome は既定でループバックを中継しない。`<-loopback>` で中継に通っているか（許可の無い 127.0.0.1 は断られる）。
 - `test_memory_limit_kills_the_browser_and_cleans_up`
+- `test_browser_does_not_hide_automation` — 目的: 自動操作であることをサイトから隠さない（--enable-automation を外さない・UA を詐称しない・AutomationControlled を消さない）。
 
 ### backend/tests/test_web_collector.py
 
@@ -3558,6 +3559,24 @@
 - `test_knowledge_and_patent_url_import_use_the_body_not_the_whole_page` — ナレッジ・Patent の URL 取り込みと Workflow のページ解析（scrape_tools）も共通の安全な取得を使い、
 - `test_bibliographic_meta_tags_are_kept_for_patents_and_papers` — Google Patents・論文のページは出願人・発明者・DOI を本文ではなく meta（DC.* / citation_*）に持つ。拾って本文の先頭に置く。
 - `test_web_documents_are_split_by_headings_without_changing_the_collection` — Web から取り込む文書は見出しで分ける（2026-11-21 本番の評価で検索の当たり 19→23/26）。コレクションの設定は変えない。
+
+### backend/tests/test_web_data_api.py
+
+目的: 公開データ API の直接利用（data_api）。 目的: - URL の形で GitHub（repo・blob・issue・PR）・OpenAlex（works・authors）だけを判定し（Wikipedia・arXiv は対象外）、それ以外は対象にしないこと。 - 固定の応答の見本から本文へ変換できること（README・issue のコメントの上位と件数の上限・OpenAlex の抄録の再構成）。 - 上限（コメント件数・応答の大きさ）、失敗の扱い（403/429 は止めて理由を返し HTML へ戻らない／404 は HTML へ戻る／ 内部アドレスは止める）。 - `fetch.collect` が前段で data_api を使い（fetch_method="data_api"）、`data_api=False` や対象外の URL では使わないこと。 根拠: docs/HANDOFF-web-collector.md「W2 で最初にやること」（GitHub README の見出し・OpenAlex の 403・Wikipedia REST）。外へは通信しない。
+
+- `test_match_supported`
+- `test_match_rejects_others`
+- `test_github_repo_readme_keeps_headings_and_meta`
+- `test_github_issue_comments_are_top_and_capped`
+- `test_github_blob_binary_and_truncation`
+- `test_rate_limit_and_not_found_are_distinguished`
+- `test_wikipedia_keeps_headings_and_drops_footnotes`
+- `test_openalex_work_rebuilds_abstract`
+- `test_openalex_author_survives_works_failure_but_stops_on_429`
+- `test_arxiv_atom_and_xml_declarations`
+- `test_http_get_rejects_internal_address_and_foreign_redirect`
+- `test_collect_uses_data_api_before_html`
+- `test_collect_stops_on_blocked_and_never_falls_back`
 
 ### backend/tests/test_web_push.py
 
