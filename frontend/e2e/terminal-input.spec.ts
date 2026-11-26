@@ -77,6 +77,8 @@ test("reconnect resends the same unACKed sequence and ignores stale ACK", () => 
 });
 
 test("matches xterm newline and bracketed paste semantics", () => {
-  expect(prepareTerminalPaste("a\r\nb\nc", false)).toBe("a\rb\rc");
+  // 複数行は相手が名乗っていなくても囲む（tmux は pane の mode を外へ伝えない。79e5b98）
+  expect(prepareTerminalPaste("a\r\nb\nc", false)).toBe("\x1b[200~a\rb\rc\x1b[201~");
+  expect(prepareTerminalPaste("abc", false)).toBe("abc");
   expect(prepareTerminalPaste("a\n", true)).toBe("\x1b[200~a\r\x1b[201~");
 });
