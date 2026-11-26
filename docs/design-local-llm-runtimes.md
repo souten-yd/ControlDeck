@@ -62,3 +62,12 @@ CLIおよびエンジンの実行はモデルの手動取得・起動と分離�
 - 明示操作以外ではモデル重みを取得しない、稼働LLMを停止しない。
 - 確認項目：既存Ollama/llama.cppのテスト、Strata管理操作、旧Lucebox経路の非存在、
   本体更新のロールバック、端末/モバイルUI、権限・CSRF・監査。
+
+## Sly-Radiance（2026-11-27）
+
+- 位置づけ: Radiance（`stilldeadcode/radiance`、YAML の設定）とは別物。イメージの entrypoint が vLLM なので、登録の値を `vllm serve` の引数（配列）と `RADIANCE_*` の環境変数に組む（`sly_radiance.serve_args` / `launch_args`）。公式 README の Quickstart の形（W4A8 MXFP4・DFlash2 の先読み・R4D_HYBRID の attention・FULL_DECODE_ONLY の CUDA graph）。
+- 共通部品: `container_runtime.py`（podman・イメージ・GPU を渡す `podman run`・systemd unit・lock・health・ready・登録の検証）。Radiance と Sly-Radiance の両方がこれを使い、コンテナで GPU を占有するランタイムの集合は `CONTAINER_RUNTIMES` に 1 つ。
+- 並列: `--max-num-seqs` は 1〜8（8 × (先読み 7 + 1) = 64 の検証トークンが `RADIANCE_MXFP4_DECODE_MAX_M=128` の中）。CUDA graph のサイズは同時数 × (先読み + 1) から 8 刻みで作る。並列の枠（`parallel_slots`）は Radiance と同じく登録の値を使う。公式の実測は 1 本 約 154 tok/s、8 本同時で合計 480 tok/s（本機での実測は未）。
+- GPU の取り合い: Radiance・Strata・Maya と同時には載らない（Radiance と同じ決まり）。メモリの使用率は共通の VRAM の余裕（`vram_margin_mib`）を引いた値に抑える。
+- 画像: 起動で画像を無効にしている（`--limit-mm-per-prompt.image 0`）ので vision は使えない。
+- 未確認: 実機の起動・並列の測定・kv4・`reasoning_effort: none`・`/tokenize` の形。

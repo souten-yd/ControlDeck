@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
+
 LLAMA_FEATURE = "llama-cpp"
 STRATA_FEATURE = "strata"
 MAYA_FEATURE = "maya-s"
 RADIANCE_FEATURE = "radiance"
-FEATURE_IDS = (LLAMA_FEATURE, STRATA_FEATURE, MAYA_FEATURE, RADIANCE_FEATURE)
+SLY_RADIANCE_FEATURE = "sly-radiance"
+FEATURE_IDS = (LLAMA_FEATURE, STRATA_FEATURE, MAYA_FEATURE, RADIANCE_FEATURE, SLY_RADIANCE_FEATURE)
 
 
 class GpuRuntimeError(RuntimeError):
@@ -29,9 +32,15 @@ def _maya():
     return maya_s
 
 
-def _radiance():
-    from app.models_mgmt import radiance
-    return radiance
+def _container(feature_id: str):
+    """The module of a container runtime (Radiance, Sly-Radiance)."""
+    from app.models_mgmt import local_llm
+    return local_llm.module_for(feature_id)
+
+
+def _container_error(feature_id: str) -> type[RuntimeError]:
+    module = _container(feature_id)
+    return module.SlyRadianceError if feature_id == SLY_RADIANCE_FEATURE else module.RadianceError
 
 
 def is_gpu_runtime(feature_id: str) -> bool:
@@ -89,13 +98,13 @@ def status(feature_id: str) -> dict:
                        "running": state["running"], "built": state.get("built", False),
                        "settings": state.get("settings", {}), "warning": state["warning"]},
         }
-    if feature_id == RADIANCE_FEATURE:
-        state = _radiance().runtime_status()
+    if feature_id in CONTAINER_RUNTIMES:
+        state = _container(feature_id).runtime_status()
         return {
             "installed": state["installed"], "managed": state["installed"],
             "version": state["version"], "healthy": state["installed"],
             "error": state["error"], "available": state["available"],
-            "detail": {"runtime": "radiance", "cli_path": state["binary"], "warning": state["warning"]},
+            "detail": {"runtime": feature_id, "cli_path": state["binary"], "warning": state["warning"]},
         }
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
@@ -107,8 +116,8 @@ async def release_status(feature_id: str) -> dict:
         return {"feature_id": feature_id, **await _strata().available_update()}
     if feature_id == MAYA_FEATURE:
         return {"feature_id": feature_id, **await _maya().available_update()}
-    if feature_id == RADIANCE_FEATURE:
-        return {"feature_id": feature_id, **await _radiance().available_update()}
+    if feature_id in CONTAINER_RUNTIMES:
+        return {"feature_id": feature_id, **await _container(feature_id).available_update()}
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
@@ -126,10 +135,10 @@ async def install(feature_id: str, job: Any = None, *, options: dict | None = No
             return {"runtime": "maya-s", **await _maya().install_stream(job)}
         except _maya().MayaError as exc:
             raise GpuRuntimeError(str(exc)) from exc
-    if feature_id == RADIANCE_FEATURE:
+    if feature_id in CONTAINER_RUNTIMES:
         try:
-            return {"runtime": "radiance", **await _radiance().install_stream(job)}
-        except _radiance().RadianceError as exc:
+            return {"runtime": feature_id, **await _container(feature_id).install_stream(job)}
+        except _container_error(feature_id) as exc:
             raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
@@ -173,19 +182,19 @@ async def update(feature_id: str, job: Any = None) -> dict:
             return {"runtime": "maya-s", **await _maya().update_stream(job)}
         except _maya().MayaError as exc:
             raise GpuRuntimeError(str(exc)) from exc
-    if feature_id == RADIANCE_FEATURE:
+    if feature_id in CONTAINER_RUNTIMES:
         try:
-            return {"runtime": "radiance", **await _radiance().update_stream(job)}
-        except _radiance().RadianceError as exc:
+            return {"runtime": feature_id, **await _container(feature_id).update_stream(job)}
+        except _container_error(feature_id) as exc:
             raise GpuRuntimeError(str(exc)) from exc
     raise GpuRuntimeError(f"未知のGPUランタイムです: {feature_id}")
 
 
 def uninstall(feature_id: str) -> dict:
-    if feature_id == RADIANCE_FEATURE:
+    if feature_id in CONTAINER_RUNTIMES:
         try:
-            return _radiance().uninstall()
-        except _radiance().RadianceError as exc:
+            return _container(feature_id).uninstall()
+        except _container_error(feature_id) as exc:
             raise GpuRuntimeError(str(exc)) from exc
     if feature_id == MAYA_FEATURE:
         try:

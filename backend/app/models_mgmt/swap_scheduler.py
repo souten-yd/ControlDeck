@@ -7,7 +7,7 @@
 maya-deepseek-xs を交互に呼んだとき、中継のログで 300〜660 秒待って 503・500）。
 
 決め方（利用者の依頼 2026-11-22・同日の追加の指示）:
-  1. 載っているモデルの要求は待たずに実行する。同じモデルの並列は Radiance だけ（登録の max_num_seqs まで）。
+  1. 載っているモデルの要求は待たずに実行する。同じモデルの並列は Radiance 系（Radiance・Sly-Radiance。登録の同時に答える数まで）だけ。
      Strata・Maya-S・llama.cpp の chat は 1 本ずつ。
   2. 別のモデルが必要な要求は待ち行列へ。次を点数で比べる（どの要求も断らない・消さない）:
        点数 = (待っている数 + 最古の待ち秒 / AGING_SECONDS) ÷ 載せ替えの見込み秒
@@ -48,6 +48,8 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
 
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
+
 logger = logging.getLogger("control_deck.swap_scheduler")
 
 MIN_COST_SECONDS = 10.0
@@ -63,7 +65,7 @@ WARM_WINDOW_SECONDS = 900.0
 PREFETCH_HEADROOM_BYTES = 8 * 1024**3
 POLL_SECONDS = 1.0
 SNAPSHOT_TTL_SECONDS = 1.0
-LARGE_RUNTIMES = ("maya-s", "strata", "radiance")
+LARGE_RUNTIMES = ("maya-s", "strata", *CONTAINER_RUNTIMES)
 CLIENT_GONE = "クライアントが切断しました"
 
 
@@ -79,7 +81,7 @@ class ModelInfo:
     runtime: str = ""
     role: str = "llm"
     loaded: bool = False
-    parallel: int = 1  # 同時に実行できる本数（Radiance だけ 2 以上）
+    parallel: int = 1  # 同時に実行できる本数（Radiance 系だけ 2 以上）
     model_path: str = ""
     warm_seconds: float | None = None  # load_profiles の実測（warm / cold）
     cold_seconds: float | None = None
@@ -173,9 +175,9 @@ def default_snapshot() -> Snapshot:
                 unloaded = telemetry.recently_unloaded(key)
             except Exception:  # noqa: BLE001
                 pass
-        # 同じモデルを並列に実行するのは Radiance だけ（登録の max_num_seqs）。ほかは 1 本ずつ。
+        # 同じモデルを並列に実行するのは Radiance 系だけ（登録の max_num_seqs）。ほかは 1 本ずつ。
         parallel = 1
-        if runtime == "radiance":
+        if runtime in CONTAINER_RUNTIMES:
             try:
                 parallel = max(1, int(item.get("n_parallel") or 1))
             except (TypeError, ValueError):

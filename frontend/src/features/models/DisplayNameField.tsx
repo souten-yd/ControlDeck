@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
 
-type Runtime = "llama.cpp" | "strata" | "radiance" | "maya-s";
+type Runtime = "llama.cpp" | "strata" | "radiance" | "sly-radiance" | "maya-s";
 
 export function DisplayNameField({ runtime, alias, disabled }: { runtime: Runtime; alias: string; disabled?: boolean }) {
   const qc = useQueryClient();

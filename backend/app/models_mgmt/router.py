@@ -1785,6 +1785,165 @@ def radiance_instance_log(alias: str, user: User = Depends(require_permission("w
     return {"alias": alias, "log": radiance.log_tail(alias, 80)}
 
 
+# ---- Sly-Radiance（SlyBase/vllm-sly-radiance）: Radiance と同じ形の登録・起動・停止 ----
+
+class SlyRadianceModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(min_length=1, max_length=48)
+    model_path: str = Field(min_length=1, max_length=4096)
+    drafter_path: str = Field(default="", max_length=4096)   # 空なら先読みなし
+    port: int = Field(default=8100, ge=8081, le=65535)
+    context: int = Field(default=131072, ge=4096, le=262_144)
+    kv_cache: Literal["fp8", "kv4"] = "fp8"
+    max_num_seqs: int = Field(default=4, ge=1, le=8)
+    speculative_tokens: int = Field(default=7, ge=0, le=15)
+    gpu_memory_utilization: float = Field(default=0.98, ge=0.50, le=0.98)
+    prefill_chunk: Literal[2048, 4096, 8192] = 2048
+    prefix_cache: bool = True
+    reasoning_effort: Literal["", "none", "low", "medium", "high"] = ""
+    quantization: Literal["", "quark", "nvfp4", "paroquant"] = ""
+    engine_settings: dict[str, str] = Field(default_factory=dict, max_length=32)
+    on_demand_start: bool = True
+    idle_exclude: bool = False
+    auto_start: bool = False
+
+
+@router.get("/sly-radiance/catalog")
+def sly_radiance_catalog(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import sly_radiance_catalog
+    return sly_radiance_catalog.api_payload()
+
+
+@router.get("/sly-radiance/catalog/{entry_id}/files")
+async def sly_radiance_catalog_files(entry_id: str, user: User = Depends(require_permission("workflows.run"))):
+    """目録の 1 行の repo のファイル一覧（取得の前に見せる）。目録にある repo だけ。"""
+    from app.models_mgmt import hf, libraries, sly_radiance_catalog
+    entry = sly_radiance_catalog.get(entry_id)
+    if entry is None or not entry.supported or not entry.repo:
+        raise HTTPException(status_code=404, detail="目録にないか、未対応のモデルです")
+    try:
+        files = await hf.list_model_files(entry.repo)
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
+            "libraries": await asyncio.to_thread(libraries.list_libraries)}
+
+
+@router.get("/sly-radiance/inspect")
+def sly_radiance_inspect(path: str, user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import sly_radiance
+    try:
+        return sly_radiance.inspect_folder(path)
+    except sly_radiance.SlyRadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sly-radiance/instances")
+def sly_radiance_instances(user: User = Depends(require_permission("workflows.run"))):
+    from app.models_mgmt import sly_radiance
+    return {"runtime": sly_radiance.runtime_status(),
+            "instances": sly_radiance.list_instances() if sly_radiance.installed() else []}
+
+
+@router.post("/sly-radiance/instances", status_code=201)
+def sly_radiance_create_instance(
+    body: SlyRadianceModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import sly_radiance
+    values = body.model_dump()
+    try:
+        result = sly_radiance.save_instance(values.pop("alias"), **values)
+    except sly_radiance.SlyRadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "sly_radiance.instance_create", user=user, resource_type="model",
+                 resource_id=body.alias, request=request)
+    return result
+
+
+@router.put("/sly-radiance/instances/{alias}")
+def sly_radiance_update_instance(
+    alias: str, body: SlyRadianceModelBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import sly_radiance
+    if alias != body.alias:
+        raise HTTPException(status_code=422, detail="モデル別名は変更できません")
+    values = body.model_dump()
+    values.pop("alias")
+    try:
+        result = sly_radiance.save_instance(alias, **values, replace=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Sly-Radianceモデル設定がありません") from exc
+    except sly_radiance.SlyRadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "sly_radiance.instance_update", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return result
+
+
+@router.post("/sly-radiance/instances/{alias}/start-jobs", status_code=201)
+async def sly_radiance_start_job(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import sly_radiance
+    if alias not in {item["alias"] for item in await asyncio.to_thread(sly_radiance.list_instances)}:
+        raise HTTPException(status_code=404, detail="Sly-Radianceモデル設定がありません")
+
+    async def run(job: jobs.Job) -> dict:
+        job.set_progress("Sly-Radianceモデルを読み込んでいます（初回はカーネルの compile で約10分）", 0, 1)
+        from app.models_mgmt import provider_adapters
+        await provider_adapters.load_model("sly-radiance", alias)
+        job.set_progress("起動完了", 1, 1)
+        return {"alias": alias, "loaded": True}
+
+    job = jobs.create("model.sly_radiance.start", f"Sly-Radiance起動: {alias}", run,
+                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    audit.record(db, "sly_radiance.start", user=user, resource_type="model",
+                 resource_id=alias, request=request, metadata={"job_id": job.id})
+    return {"job_id": job.id}
+
+
+@router.post("/sly-radiance/instances/{alias}/stop")
+async def sly_radiance_stop_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import sly_radiance
+    ok, error = await asyncio.to_thread(sly_radiance.stop_instance, alias)
+    if not ok:
+        raise HTTPException(status_code=422, detail=error)
+    audit.record(db, "sly_radiance.stop", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return {"alias": alias, "loaded": False}
+
+
+@router.post("/sly-radiance/instances/{alias}/delete")
+def sly_radiance_delete_instance(
+    alias: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    from app.models_mgmt import sly_radiance
+    try:
+        result = sly_radiance.delete_instance(alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Sly-Radianceモデル設定がありません") from exc
+    except sly_radiance.SlyRadianceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "sly_radiance.instance_delete", user=user, resource_type="model",
+                 resource_id=alias, request=request)
+    return result
+
+
+@router.get("/sly-radiance/instances/{alias}/log")
+def sly_radiance_instance_log(alias: str, user: User = Depends(require_permission("workflows.edit"))):
+    from app.models_mgmt import sly_radiance
+    if alias not in {item["alias"] for item in sly_radiance.list_instances()}:
+        raise HTTPException(status_code=404, detail="Sly-Radianceモデル設定がありません")
+    return {"alias": alias, "log": sly_radiance.log_tail(alias, 80)}
+
+
 # ---- 外部のフロンティアモデル（docs/PLAN-frontier-models.md） ----
 # 秘密値と外部への送信を扱うので、見るのも変えるのも settings.manage に限る。
 

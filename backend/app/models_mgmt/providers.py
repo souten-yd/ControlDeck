@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.http_tls import shared_ssl_context
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def capabilities(kind: str, *, managed: bool, available: bool = True) -> list[st
         # Model lifecycle is administered only through the explicit, authenticated
         # feature prepare/start/stop endpoints (with GPU conflict checks).
         return generation + ["list", "health"]
-    if managed and kind in ("llama.cpp", "strata", "radiance"):
+    if managed and kind in ("llama.cpp", "strata", *CONTAINER_RUNTIMES):
         return generation + ["list", "load", "unload", "delete", "configure", "health", "start", "stop"]
     return generation + ["list"]
 
@@ -42,15 +43,15 @@ def _provider_id(kind: str, base_url: str, *, managed: bool) -> str:
     parsed = urlsplit(base_url)
     host = parsed.hostname or "unknown"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s", "radiance") else f"{kind}-{host}-{port}"
+    return kind if managed and kind in ("ollama", "llama.cpp", "strata", "maya-s", *CONTAINER_RUNTIMES) else f"{kind}-{host}-{port}"
 
 
 # ゲートウェイへ集約するローカルランタイム。個別ポートを候補から外す判定に使う。
-GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s", "radiance")
+GATEWAY_RUNTIMES = ("llama.cpp", "strata", "maya-s", *CONTAINER_RUNTIMES)
 
 
 async def _candidates() -> list[dict]:
-    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s, radiance
+    from app.models_mgmt import llama, ollama, strata, strata_gateway, maya_s, radiance, sly_radiance
 
     candidates: dict[str, dict] = {}
 
@@ -116,13 +117,14 @@ async def _candidates() -> list[dict]:
                 installed=True, experimental=True)
             candidates[_openai_base(first["base_url"])]["aliases"] = [str(i["alias"]) for i in maya_items]
 
-    # Radiance: one server per registered model; list them under one provider like Strata.
-    if radiance.installed():
-        radiance_items = await asyncio.to_thread(radiance.list_instances)
-        if radiance_items:
-            first = radiance_items[0]
-            add(first["base_url"], "radiance", "Radiance", managed=True, installed=True, experimental=True)
-            candidates[_openai_base(first["base_url"])]["aliases"] = [str(i["alias"]) for i in radiance_items]
+    # Radiance / Sly-Radiance: one server per registered model; list them under one provider like Strata.
+    for module, kind, label in ((radiance, "radiance", "Radiance"), (sly_radiance, "sly-radiance", "Sly-Radiance")):
+        if module.installed():
+            container_items = await asyncio.to_thread(module.list_instances)
+            if container_items:
+                first = container_items[0]
+                add(first["base_url"], kind, label, managed=True, installed=True, experimental=True)
+                candidates[_openai_base(first["base_url"])]["aliases"] = [str(i["alias"]) for i in container_items]
 
     for port, (kind, name) in _KNOWN_LOCAL.items():
         add(f"http://127.0.0.1:{port}", kind, name)

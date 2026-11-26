@@ -85,12 +85,7 @@ async def search_models(query: str, limit: int = 20) -> list[dict]:
     } for item in response.json()]
 
 
-async def list_repo_files(repo: str, revision: str = "main") -> list[dict]:
-    """repo 内の GGUF を量子化バリアントとして並べる。
-
-    分割GGUF は 1 グループにまとめ、合計サイズと必要な全ファイルを返す
-    （1つだけ落としても使えないため）。
-    """
+async def _repo_tree(repo: str, revision: str) -> list[dict]:
     if not re.fullmatch(r"[\w.\-]+/[\w.\-]+", repo or ""):
         raise HfError("repo は owner/name の形式で指定してください")
     try:
@@ -107,8 +102,30 @@ async def list_repo_files(repo: str, revision: str = "main") -> list[dict]:
     if response.status_code >= 400:
         raise HfError(f"ファイル一覧の取得エラー ({response.status_code})")
 
+    return response.json()
+
+
+async def list_model_files(repo: str, revision: str = "main") -> list[dict]:
+    """repo の最上位のファイル（path・size）。safetensors 形式のモデルを丸ごと取るときの一覧。
+
+    サブフォルダは返さない（取得は同名のファイルを 1 か所へ置くため、入れ子は扱わない）。
+    """
+    return [{"path": str(e["path"]), "size": int(e.get("size") or 0)}
+            for e in await _repo_tree(repo, revision)
+            if e.get("type") == "file" and "/" not in str(e.get("path") or "/")
+            and not str(e["path"]).startswith(".")]
+
+
+async def list_repo_files(repo: str, revision: str = "main") -> list[dict]:
+    """repo 内の GGUF を量子化バリアントとして並べる。
+
+    分割GGUF は 1 グループにまとめ、合計サイズと必要な全ファイルを返す
+    （1つだけ落としても使えないため）。
+    """
+    entries = await _repo_tree(repo, revision)
+
     groups: dict[str, dict] = {}
-    for entry in response.json():
+    for entry in entries:
         if entry.get("type") != "file":
             continue
         path = str(entry.get("path") or "")

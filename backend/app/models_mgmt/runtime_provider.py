@@ -663,25 +663,32 @@ class RadianceRuntimeProvider(OpenAICompatibleRuntimeProvider):
     """
 
     kind = "radiance"
+    label = "Radiance"
     # 2026-11-20 実機（Qwen3.8-27B Radiance、ControlDeck のゲートウェイ経由）で、挨拶・お礼・計算では呼ばず、
     # 「さっき調べた番組表で夜 9 時は？」では「神奈川 地上波 番組表 夜 9時」で探して答えるのを確かめた
     tools_verified = True
 
     async def _prepare(self, request: RuntimeChatRequest) -> None:
         await super()._prepare(request)
-        from app.models_mgmt import radiance
+        from app.models_mgmt import local_llm
         from urllib.parse import urlsplit
 
+        module = local_llm.module_for(self.kind)
         port = urlsplit(normalize_openai_base(request.base_url)).port
         instance = next(
-            (item for item in await asyncio.to_thread(radiance.list_instances) if item["port"] == port), None)
-        if instance is None or not await radiance.ensure_ready(str(instance["alias"])):
-            raise RuntimeProviderError("Radianceモデルが未登録・未起動、または読み込みに失敗しました")
-        counted = await radiance.prompt_room(str(instance["alias"]), request.messages)
+            (item for item in await asyncio.to_thread(module.list_instances) if item["port"] == port), None)
+        if instance is None or not await module.ensure_ready(str(instance["alias"])):
+            raise RuntimeProviderError(f"{self.label}モデルが未登録・未起動、または読み込みに失敗しました")
+        counted = await module.prompt_room(str(instance["alias"]), request.messages)
         if counted is not None and counted[0] >= counted[1]:
             raise RuntimeProviderError(
                 f"入力が長すぎます（{counted[0]}トークン）。このモデルのコンテキストは{counted[1]}トークンです。"
                 "会話を短くするか、Modelsでコンテキストを広げてください")
+        if counted is not None:
+            self._fit_output(request, counted)
+
+    def _fit_output(self, request: RuntimeChatRequest, counted: tuple[int, int]) -> None:
+        """Radiance cuts an oversized max_tokens itself; nothing to fit."""
 
     def _payload(self, request: RuntimeChatRequest, *, stream: bool) -> dict[str, Any]:
         payload = super()._payload(request, stream=stream)
@@ -689,11 +696,25 @@ class RadianceRuntimeProvider(OpenAICompatibleRuntimeProvider):
         return payload
 
 
+class SlyRadianceRuntimeProvider(RadianceRuntimeProvider):
+    """Managed Sly-Radiance (vLLM): same start-on-request, but vLLM refuses prompt + max_tokens over the
+    context (Radiance cuts it), so the output budget is fitted to what the prompt leaves."""
+
+    kind = "sly-radiance"
+    label = "Sly-Radiance"
+    tools_verified = False   # not yet measured through the gateway (unlike Radiance, 2026-11-20)
+
+    def _fit_output(self, request: RuntimeChatRequest, counted: tuple[int, int]) -> None:
+        room = counted[1] - counted[0]
+        request.max_tokens = min(int(request.max_tokens or room), room)
+
+
 _OLLAMA = OllamaRuntimeProvider()
 _LLAMA = LlamaCppRuntimeProvider()
 _STRATA = StrataRuntimeProvider()
 _MAYA = MayaRuntimeProvider()
 _RADIANCE = RadianceRuntimeProvider()
+_SLY_RADIANCE = SlyRadianceRuntimeProvider()
 _OPENAI = OpenAICompatibleRuntimeProvider()
 
 
@@ -726,6 +747,10 @@ def provider_for_base_url(base_url: str) -> LlmRuntimeProvider:
 
             if radiance.installed() and parsed.port in {int(i["port"]) for i in radiance.list_instances()}:
                 return _RADIANCE
+            from app.models_mgmt import sly_radiance
+
+            if sly_radiance.installed() and parsed.port in {int(i["port"]) for i in sly_radiance.list_instances()}:
+                return _SLY_RADIANCE
             if parsed.port in llama.endpoint_ports():
                 return _LLAMA
     except Exception:
@@ -751,7 +776,7 @@ def provider_for_request(request: RuntimeChatRequest) -> LlmRuntimeProvider:
     return provider_for_base_url(request.base_url)
 
 
-_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _MAYA, _RADIANCE, _OPENAI)
+_ALL_PROVIDERS = (_OLLAMA, _LLAMA, _STRATA, _MAYA, _RADIANCE, _SLY_RADIANCE, _OPENAI)
 
 
 def active_request_count() -> int:

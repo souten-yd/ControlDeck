@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 260 ファイル、2575 テスト（目的の未記入 93 ファイル）
-- E2E: 144 spec、316 テスト
+- backend: 261 ファイル、2587 テスト（目的の未記入 93 ファイル）
+- E2E: 145 spec、318 テスト
 
 ## backend（backend/tests）
 
@@ -3328,6 +3328,23 @@
 - `test_the_runtime_config_only_carries_enabled_skills`
 - `test_external_subpaths_exist_in_the_pinned_tree` — 取り出す場所を間違えると、導入そのものが失敗する。
 
+### backend/tests/test_sly_radiance.py
+
+目的: Sly-Radiance（vLLM 改造版）のランタイム: 登録の検証・起動の引数・目録・フォルダの読み取り・共通部品との結びつき。 目的: `vllm serve` の引数が配列で組まれ（shell 不使用）、127.0.0.1 だけに待ち受け、モデル・先読みのフォルダが read-only で渡り、先読み 0 や先読みモデル無しでは speculative を付けず、量子化の切り替え・追加の環境変数が 検証を通ったものだけ渡ること。GPU の使用率が共通の VRAM の余裕を超えないこと。他のランタイム（Radiance）と 同じ扱い（載せ替え・並列の枠・ゲートウェイ・一覧）に入っていること。 根拠: 2026-11-27 利用者「Sly-Radiance を導入し、Radiance と同様のメニューや導入方法・他のランタイムと同様に利用」。 起動の引数は公式 README の Quickstart（2026-11-27 確認）。実機の起動は別に確かめる（ここは全部モック）。
+
+- `test_registration_validates`
+- `test_engine_settings_are_validated`
+- `test_folder_with_colon_is_refused`
+- `test_launch_args_loopback_readonly_and_speculative`
+- `test_quantization_switches_and_kv4_and_thinking`
+- `test_gpu_utilization_leaves_the_common_margin`
+- `test_inspect_folder_suggests_quantization`
+- `test_catalog_matches_the_readme_rows`
+- `test_release_tag_conversion`
+- `test_shared_with_radiance_runtime_groups`
+- `test_a_loaded_sly_model_is_freed_for_another_runtime`
+- `test_stop_removes_a_container_left_in_removing` — 停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
+
 ### backend/tests/test_speech_engines.py
 
 目的: Supertonic 3（TTS）の保管庫・導入・合成と、機能追加の「音声エンジン」の扱いを守る。 根拠: 2026-11-19 利用者「Supertonic 3 を TTS として使いたい。開発中止・サポート終了で更新も消去もありうるので、 リポジトリを丸ごとアーカイブとして ControlDeck に保存し、機能追加から導入できるように。導入時は音声モデルも」。 - 保管庫は一度取ったものを取り直さない（上流が消えた・書き換えられた後に失わない） - アンインストールで消すのは実行環境だけで、保管庫は残す - 機能追加では「更新」が無く、導入＝利用可能（有効化・再読み込みを求めない） 実際の取得・合成は外部と重い計算なのでここでは模擬し、実機の確認は PR に記録する。
@@ -4688,6 +4705,13 @@
 目的: 機能と拡張の「検索と収集」: Web 本文抽出（Trafilatura）の導入ボタン、取得先の設定（特許庁 API を含む）への入口、 分類ごとの「まとめて導入」。導入・まとめて導入は PyPI / npm から取得するので、ここでは押さない（見える・押せることまで）。 根拠: 2026-11-21 利用者「必要なコードやプラグインは、機能と拡張に導入ボタンと更新ボタンを付けて、個別管理・一括導入・更新」 「特許庁などからデータをダウンロードする API の設定はどこ？見当たらない」。 */
 
 - 機能と拡張: 検索と収集（${width}px）
+
+### frontend/e2e/sly-radiance.spec.ts
+
+目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（HF の取得 Job）→ 取得したフォルダがフォームへ入る、 フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、登録の本文が API の形（同時に答える数 1〜8・ 先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
+
+- Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）
+- Sly-Radiance は Radiance のカードの中のスイッチ（320px）
 
 ### frontend/e2e/speech-engines.spec.ts
 

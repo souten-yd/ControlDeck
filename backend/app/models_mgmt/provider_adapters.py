@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.models_mgmt import display_names
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
 from app.models_mgmt import llama, local_llm, model_names, ollama, providers, strata_catalog, strata_gateway
 
 
@@ -251,6 +252,27 @@ async def list_models(provider_id: str) -> list[dict]:
                 },
             }
         return [radiance_row(item) for item in await asyncio.to_thread(radiance.list_instances)]
+    if provider["provider"] == "sly-radiance" and provider["managed"]:
+        from app.models_mgmt import sly_radiance
+
+        def sly_row(item: dict) -> dict:
+            folder = Path(str(item["model_path"]))
+            return {
+                "id": item["alias"], "name": f"Sly-Radiance · {folder.name}",
+                "size_bytes": sum(f.stat().st_size for f in folder.glob("*.safetensors") if f.is_file()),
+                "modified_at": "", "loaded": item["loaded"],
+                "details": {
+                    "runtime": "sly-radiance", "backend": "HIP",
+                    "port": item["port"], "base_url": item["base_url"],
+                    "runtime_status": item["runtime_status"], "context": item["context"],
+                    "path": item["model_path"],
+                    "display_name": display_names.apply("sly-radiance", item["alias"], folder.name),
+                    "quantization": item.get("quantization") or "MXFP4",
+                    # The container is started with --limit-mm-per-prompt.image 0.
+                    "vision_enabled": False,
+                },
+            }
+        return [sly_row(item) for item in await asyncio.to_thread(sly_radiance.list_instances)]
     return [{
         "id": model, "name": model, "size_bytes": 0, "modified_at": "",
         # OpenAI互換APIだけでは各モデルのロード状態を判定できない。
@@ -269,7 +291,7 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
     except RuntimeError as e:
         raise ProviderError(str(e)) from e
     kind = str(provider["provider"])
-    if kind in ("strata", "radiance"):
+    if kind in ("strata", *CONTAINER_RUNTIMES):
         # A large model takes the card: free the other large models (and, for Radiance, idle
         # llama.cpp chat models) first, so the load limit counts what will actually remain.
         from app.models_mgmt import large_model_lifecycle
@@ -292,12 +314,13 @@ async def load_model(provider_id: str, model_id: str, keep_alive: str | int | No
                 raise ProviderError(str(e)) from e
         if local_llm.find(model_id) is None:
             raise ProviderNotFound(f"設定中の{kind}モデルと一致しません")
-        if kind == "radiance":
-            # One Radiance model takes the whole card: free the others first, then wait until it serves.
-            from app.models_mgmt import radiance
-            if not await radiance.ensure_ready(model_id, start=True):
-                tail = await asyncio.to_thread(radiance.log_tail, model_id, 8)
-                raise ProviderError("Radianceの起動に失敗しました" + (f": {tail[-400:]}" if tail else ""))
+        if kind in CONTAINER_RUNTIMES:
+            # One container model takes the whole card: free the others first, then wait until it serves.
+            module = local_llm.module_for(kind)
+            if not await module.ensure_ready(model_id, start=True):
+                tail = await asyncio.to_thread(module.log_tail, model_id, 8)
+                label = "Sly-Radiance" if kind == "sly-radiance" else "Radiance"
+                raise ProviderError(f"{label}の起動に失敗しました" + (f": {tail[-400:]}" if tail else ""))
             return {"model": model_id, "loaded": True}
         ok, error = await asyncio.to_thread(local_llm.start_instance, model_id)
         if not ok:
@@ -337,12 +360,12 @@ async def delete_model(provider_id: str, model_id: str) -> None:
             return
         except (KeyError, strata_gateway.StrataGatewayError) as exc:
             raise ProviderError(str(exc)) from exc
-    if provider["provider"] == "radiance":
-        from app.models_mgmt import radiance
+    if provider["provider"] in CONTAINER_RUNTIMES:
+        module = local_llm.module_for(str(provider["provider"]))
         try:
-            await asyncio.to_thread(radiance.delete_instance, model_id)
+            await asyncio.to_thread(module.delete_instance, model_id)
             return
-        except (KeyError, radiance.RadianceError) as exc:
+        except (KeyError, RuntimeError) as exc:   # each module's error class is a RuntimeError
             raise ProviderError(str(exc)) from exc
     if provider["provider"] == "llama.cpp":
         try:
@@ -441,12 +464,12 @@ async def provider_health(provider_id: str) -> dict:
                            "ok": state["ok"], "runtime_status": item["runtime_status"]}
                           for item, state in zip(instances, states, strict=True)],
         }
-    if provider["provider"] == "radiance" and provider["managed"]:
-        from app.models_mgmt import radiance
-        instances = await asyncio.to_thread(radiance.list_instances)
-        states = await asyncio.gather(*(radiance.health(str(item["alias"])) for item in instances))
+    if provider["provider"] in CONTAINER_RUNTIMES and provider["managed"]:
+        module = local_llm.module_for(str(provider["provider"]))
+        instances = await asyncio.to_thread(module.list_instances)
+        states = await asyncio.gather(*(module.health(str(item["alias"])) for item in instances))
         return {
-            "ok": any(state["ok"] for state in states), "provider": "radiance", "installed": True,
+            "ok": any(state["ok"] for state in states), "provider": provider["provider"], "installed": True,
             "instances": [{"alias": item["alias"], "port": item["port"],
                            "ok": state["ok"], "runtime_status": item["runtime_status"]}
                           for item, state in zip(instances, states, strict=True)],

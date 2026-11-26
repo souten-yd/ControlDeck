@@ -378,7 +378,17 @@ async def _fit_maya_output(payload: dict[str, Any], port: int) -> None:
     """
     from app.models_mgmt import maya_s
 
-    counted = await maya_s.prompt_room(payload.get("messages") or [], port=port)
+    _clamp_output(payload, await maya_s.prompt_room(payload.get("messages") or [], port=port))
+
+
+async def _fit_sly_output(payload: dict[str, Any], alias: str) -> None:
+    """Sly-Radiance (vLLM) also refuses prompt + output over its context: same fit as Maya-S."""
+    from app.models_mgmt import sly_radiance
+
+    _clamp_output(payload, await sly_radiance.prompt_room(alias, payload.get("messages") or []))
+
+
+def _clamp_output(payload: dict[str, Any], counted: tuple[int, int] | None) -> None:
     if counted is None:
         return
     room = counted[1] - counted[0]
@@ -845,6 +855,8 @@ async def gateway_chat(request: Request):
         payload["model"] = "strata" if instance.get("runtime") == "strata" else alias
         if instance.get("runtime") == "maya-s":
             await _fit_maya_output(payload, port)
+        elif instance.get("runtime") == "sly-radiance":
+            await _fit_sly_output(payload, alias)
     except (Exception, asyncio.CancelledError):
         await release_all()
         raise
