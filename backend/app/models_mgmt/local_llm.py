@@ -12,13 +12,16 @@ LLAMA = "llama.cpp"
 STRATA = "strata"
 MAYA_S = "maya-s"
 RADIANCE = "radiance"
-RUNTIMES = (LLAMA, STRATA, MAYA_S, RADIANCE)
+SLY_RADIANCE = "sly-radiance"
+RUNTIMES = (LLAMA, STRATA, MAYA_S, RADIANCE, SLY_RADIANCE)
 
 
 def module_for(runtime: str):
-    from app.models_mgmt import llama, strata_gateway, maya_s, radiance
+    from app.models_mgmt import llama, strata_gateway, maya_s, radiance, sly_radiance
     if runtime == RADIANCE:
         return radiance
+    if runtime == SLY_RADIANCE:
+        return sly_radiance
     if runtime == MAYA_S:
         return maya_s
     if runtime == STRATA:
@@ -49,10 +52,10 @@ def _maya_s_instances() -> list[dict]:
     return maya_s.list_instances() if maya_s.installed() else []
 
 
-def _radiance_instances() -> list[dict]:
-    from app.models_mgmt import radiance
+def _container_instances(runtime: str) -> list[dict]:
     # A removed engine must not leave selectable ghost models.
-    return radiance.list_instances() if radiance.installed() else []
+    module = module_for(runtime)
+    return module.list_instances() if module.installed() else []
 
 
 def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
@@ -66,8 +69,9 @@ def list_instances(*, runtime: str = "", role: str = "") -> list[dict]:
         items += _strata_instances()
     if runtime in ("", MAYA_S):
         items += _maya_s_instances()
-    if runtime in ("", RADIANCE):
-        items += _radiance_instances()
+    for container in (RADIANCE, SLY_RADIANCE):
+        if runtime in ("", container):
+            items += _container_instances(container)
     if role:
         items = [item for item in items if str(item.get("role", "llm")) == role]
     return items
@@ -211,7 +215,8 @@ async def await_capacity(alias: str, port: int, needed_tokens: int, *,
 def installed_runtimes() -> dict[str, bool]:
     from app.models_mgmt import llama
 
-    from app.models_mgmt import strata, maya_s, radiance
+    from app.models_mgmt import strata, maya_s, radiance, sly_radiance
 
     return {LLAMA: llama.is_installed(), STRATA: strata.installed(),
-            MAYA_S: maya_s.installed(), RADIANCE: radiance.installed()}
+            MAYA_S: maya_s.installed(), RADIANCE: radiance.installed(),
+            SLY_RADIANCE: sly_radiance.installed()}

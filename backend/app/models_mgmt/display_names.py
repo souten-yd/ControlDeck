@@ -13,7 +13,7 @@ import threading
 
 from app.config import data_dir
 
-RUNTIMES = ("llama.cpp", "strata", "radiance", "maya-s")
+RUNTIMES = ("llama.cpp", "strata", "radiance", "sly-radiance", "maya-s")
 MAX_CHARS = 80
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _lock = threading.Lock()

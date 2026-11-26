@@ -16,9 +16,11 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlsplit
 
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
+
 logger = logging.getLogger("control_deck.models_mgmt.parallel_slots")
 
-SCALING_RUNTIMES = frozenset({"radiance", "llama.cpp"})   # 並列で合計が伸びるもの（実測）
+SCALING_RUNTIMES = frozenset({*CONTAINER_RUNTIMES, "llama.cpp"})   # 並列で合計が伸びるもの（実測）
 MAX_HELPERS = 8                                           # 裏の作業の上限（設定の上書きの上限と同じ）
 EXTERNAL_DEFAULT = 4                                      # 外部 API はスロットを持たないので従来の本数
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")

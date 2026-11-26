@@ -48,6 +48,10 @@
 - MiniMax-M3.1-Flash: Maya-XS・Maya-S
 - Hy4-Flash: Maya-XS・S・M・L
 
+### Sly-Radiance（2026-11-27 追加）
+
+`SlyBase/vllm-sly-radiance`（vLLM 0.32 の R9700 向け改造版）。Radiance と同じ形で登録・起動・停止・取得ができる。目録は `sly_radiance_catalog.py`（Swift-1.5 heretic MXFP4（標準・無検閲寄り）・AMD Quark AWQ・unsloth NVFP4・ParoQuant・先読み DFlash2。MiniCPM-V 4.7 は引数が違うので未対応として載せるだけ）。取得は HF の取得 Job（M3 で再開）、置き場所はモデルライブラリ。
+
 ## 方針
 
 - **目録は 1 か所**に置く（backend）。画面は API から読む（今の `STRATA_SIZES` のような二重持ちをやめる）。

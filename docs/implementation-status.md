@@ -60,6 +60,13 @@
 - 箱の OpenCode のレビュー役（final_check の既定）は「作業と別のモデル」。作業が外部（GLM など）のとき、これまではローカル LLM にしていた。ローカルは利用者の会話と 1 枚の GPU を取り合い、11/26 には 1 手 2 分以上で 544 手かかった（#665 の調べ）。
 - 直し: `sandbox.reviewer_model_for` は、作業が外部なら順番（model_chain）の中で作業と別の外部を先に選ぶ（既定の順番なら GLM の作業には hy4-flash-free、hy4 の作業には GLM）。別の外部が無いときだけローカル。ローカルを借りない箱・外部が使えない箱の扱いは変えない。
 - 確かめたこと: test_dev_sandbox・test_opencode_roles・test_dev_workspace_targets（81 件）。
+## 2026-11-27 Sly-Radiance（SlyBase/vllm-sly-radiance）を新しい LLM ランタイムとして追加（コミット済み・Opus の監査待ち）
+- 利用者「Sly-Radiance を導入し、Radiance と同様のメニュー・導入方法で、他のランタイムと同様に使えること。目録・ダウンロード・フォルダ選択・並列の確認も」。R9700 向けの vLLM 0.32 改造版。イメージ `ghcr.io/slybase/vllm-sly-radiance:1.13.4-rocm10.1`（固定）、更新は GitHub Release（`vX.Y.Z` → `X.Y.Z-rocm10.1`）。出典は公式 README（2026-11-27 に確認）。
+- 共通部品: Radiance の podman・イメージ・unit・lock・health・登録の検証を `models_mgmt/container_runtime.py` へ移し、`radiance.py`（振る舞いは同じ。既存の Radiance のテストは無修正で通る）と新しい `sly_radiance.py` が使う。コンテナで GPU を占有する集合は `CONTAINER_RUNTIMES = ("radiance", "sly-radiance")` に 1 か所。
+- `sly_radiance.py`: 登録（別名・モデルのフォルダ・先読みのフォルダ・ポート・コンテキスト 4096〜262144・KV fp8/kv4・同時に答える数 1〜8・先読み 0〜15・GPU 使用率 0.50〜0.98（共通の VRAM の余裕を引いた値に抑える）・prefill chunk・prefix cache・思考の既定・量子化の切り替え（なし/quark/nvfp4/paroquant）・起動と停止の 3 つ・追加の `RADIANCE_*`/`R4D_*`）。起動の引数は配列。フォルダは `files.resolve` で検証し read-only で mount。compile の cache は `data/runtimes/sly-radiance/cache/` に残す。
+- 目録 `sly_radiance_catalog.py`（API `GET /models/sly-radiance/catalog`）。取得は既存の HF の取得 Job（`model.hf_download`。M3 の自動再開の対象）をそのまま使い、repo の一覧だけ `hf.list_model_files` を足した。フォルダの中身の読み取り `GET /models/sly-radiance/inspect`。画面は `SlyRadiancePanel.tsx`（Models の「＋」→ Sly-Radiance、設定 → 機能と拡張で導入・更新）。
+- ゲートウェイ・載せ替え・寿命・並列の枠・リソース・AI ゲートウェイ・ランタイム選択・provider 一覧に Radiance と同じ扱いで追加。Sly は画像を読めない設定（`--limit-mm-per-prompt.image 0`）なので vision は使えないと返す。vLLM は prompt + max_tokens がコンテキストを超えると拒否するので、`/tokenize` で数えて出力の上限を詰める（gateway と runtime_provider）。
+- 確かめていないこと: 実機の起動（初回 compile 約 10 分）・並列の速さ・`/tokenize` の応答の形・`reasoning_effort: none` の効き・kv4 の引数・ChatDeck のツール呼び出し（`tools_verified` は未確認のため False）・取得の再開の実測。
 
 ## 2026-11-27 箱の --run の時間切れの直し（#663 の誤り）
 - #663 は「子の完了が主へ届かず止まった」と見て、主の出力が 15 分無ければ止めていた。**見立てが誤り**: 箱の OpenCode の記録（opencode.db の job と session_message）を読むと、レビュー役の子（ローカル LLM）は止まっておらず、利用者の会話と GPU の順番を取り合って 1 手に 2 分以上かかりながら 544 件進んでいた。

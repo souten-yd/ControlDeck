@@ -96,6 +96,22 @@ def _radiance_target(capability: AICapability) -> AITarget:
     return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
 
 
+def _sly_radiance_target(capability: AICapability) -> AITarget:
+    from app.models_mgmt import sly_radiance
+    if not sly_radiance.installed():
+        raise AITargetUnavailable("Sly-Radianceは未導入です")
+    if capability == "vision.analyze":
+        # The container runs with --limit-mm-per-prompt.image 0: text only.
+        raise AITargetUnavailable("Sly-Radianceは画像を読めません（テキスト専用）")
+    candidates = sly_radiance.list_instances()
+    if not candidates:
+        raise AITargetUnavailable(f"{capability} に使えるSly-Radianceモデルが登録されていません")
+    from app.models_mgmt.runtime_policy import get_policy
+    preferred = get_policy().preferred_models.get("sly-radiance", "")
+    selected = min(candidates, key=lambda item: (not item["loaded"], item["alias"] != preferred, item["alias"]))
+    return AITarget(base_url=selected["base_url"], model=selected["alias"], gateway_managed=True)
+
+
 async def _ollama_target(capability: AICapability) -> AITarget:
     from app.models_mgmt import ollama
 
@@ -182,6 +198,8 @@ async def resolve_ai_target(capability: AICapability) -> AITarget:
         return await asyncio.to_thread(_strata_target, capability)
     if runtime == "radiance":
         return await asyncio.to_thread(_radiance_target, capability)
+    if runtime == "sly-radiance":
+        return await asyncio.to_thread(_sly_radiance_target, capability)
     if runtime == "maya-s":
         from app.models_mgmt import maya_s
         alias = await asyncio.to_thread(maya_s.running_alias)

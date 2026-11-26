@@ -212,6 +212,14 @@ FEATURES: dict[str, dict] = {
         "repo": "StillDeadcode/radiance",
         "summary": "Qwen3.8-27B などを .rad 形式で速く動かす推論サーバー。導入時に ROCm でビルド。モデルは別途用意",
     },
+    "sly-radiance": {
+        "name": "Sly-Radiance（vLLM 改造版 / R9700）",
+        "kind": "gpu-runtime",
+        "executable": "sly-radiance",
+        "route_gated": False,
+        "repo": "SlyBase/vllm-sly-radiance",
+        "summary": "R9700 1 枚向けに速くした vLLM（Qwen3.8-27B MXFP4・先読み DFlash2・8 本同時）。公式イメージを podman で動かす。モデルは別途用意",
+    },
     "strata": {
         "name": "Strata（ローカルLLM Terminal / R9700）",
         "kind": "gpu-runtime",
@@ -344,6 +352,10 @@ def _managed_executable(feature_id: str) -> Path:
             from app.models_mgmt import radiance
 
             return radiance.entrypoint()
+        if feature_id == "sly-radiance":
+            from app.models_mgmt import sly_radiance
+
+            return sly_radiance.entrypoint()
         if feature_id == "maya-s":
             return maya_s.entrypoint()
         return strata.binary_path()

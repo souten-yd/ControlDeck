@@ -114,7 +114,7 @@ class SwapSchedulerSettings(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"] = "ollama"
+    selected_runtime: Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance", "sly-radiance"] = "ollama"
     # llama.cppのみROCm/Vulkanを選択。Strataは任意導入の専用ランタイム。
     selected_backend: Literal["rocm", "vulkan", ""] = ""
     coexistence: Literal["exclusive", "coexist"] = "exclusive"
@@ -129,7 +129,7 @@ class RuntimePolicy(BaseModel):
     # 既定モデルの指定は selected_runtime + preferred_models（ランタイム別の優先モデル）で持つ。
     # 単一の default_model_ref は gateway.resolve_instance のフォールバック（起動中 → 優先 → 登録順）で
     # 置き換わったため未使用。旧 model-runtime-policy.json に残っても pydantic が読み捨てる。
-    preferred_models: dict[Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance"],
+    preferred_models: dict[Literal["ollama", "llama.cpp", "strata", "maya-s", "radiance", "sly-radiance"],
                            Annotated[str, Field(max_length=512)]] = Field(default_factory=dict)
     assistant_name: str = Field(default="AIアシスタント", min_length=1, max_length=64)
     chat: ChatDefaults = Field(default_factory=ChatDefaults)
@@ -354,15 +354,19 @@ async def environment() -> dict:
                          "running": await asyncio.to_thread(maya_s.is_running), "addon_id": "maya-s",
                          "warning": "選択だけではモデルを起動しません", "experimental": True,
                          "coexist": False})
-    from app.models_mgmt import radiance
-    if await asyncio.to_thread(radiance.installed):
-        radiance_items = await asyncio.to_thread(radiance.list_instances)
-        runtimes.append({"id": "radiance", "runtime": "radiance", "backend": "",
-                         "label": "Radiance（R9700）", "available": True, "installed": True,
-                         "selected": policy.selected_runtime == "radiance",
-                         "running": any(item.get("loaded") for item in radiance_items),
-                         "addon_id": "radiance", "experimental": True, "coexist": False,
-                         "warning": "" if radiance_items else "モデル（.rad）を登録してください"})
+    from app.models_mgmt.large_model_lifecycle import container_modules
+    for container, module in container_modules().items():
+        if await asyncio.to_thread(module.installed):
+            container_items = await asyncio.to_thread(module.list_instances)
+            sly = container == "sly-radiance"
+            runtimes.append({"id": container, "runtime": container, "backend": "",
+                             "label": "Sly-Radiance（R9700）" if sly else "Radiance（R9700）",
+                             "available": True, "installed": True,
+                             "selected": policy.selected_runtime == container,
+                             "running": any(item.get("loaded") for item in container_items),
+                             "addon_id": container, "experimental": True, "coexist": False,
+                             "warning": "" if container_items else (
+                                 "モデル（HF 形式のフォルダ）を登録してください" if sly else "モデル（.rad）を登録してください")})
     gpu_caps = await asyncio.to_thread(amd_gpu.capabilities)
     if gpu_caps:
         pwr = gpu_caps["power"]
@@ -501,31 +505,36 @@ async def apply_selection(policy: RuntimePolicy) -> None:
                 if not ok:
                     raise RuntimeError(reason or "Strataモデルを停止できませんでした")
 
-    from app.models_mgmt import maya_s, radiance
+    from app.models_mgmt import maya_s
+    from app.models_mgmt.large_model_lifecycle import container_modules
 
-    def _release_radiance() -> None:
-        if not radiance.installed():
-            return
-        for item in radiance.list_instances():
-            if item.get("loaded"):
-                ok, reason = radiance.stop_instance(str(item["alias"]))
-                if not ok:
-                    raise RuntimeError(reason or "Radianceモデルを停止できませんでした")
+    def _release_containers(keep: str = "") -> None:
+        # Radiance / Sly-Radiance: one container model holds the card; free every other runtime's.
+        for container, module in container_modules().items():
+            if container == keep or not module.installed():
+                continue
+            for item in module.list_instances():
+                if item.get("loaded"):
+                    ok, reason = module.stop_instance(str(item["alias"]))
+                    if not ok:
+                        raise RuntimeError(reason or "Radiance系のモデルを停止できませんでした")
 
-    if policy.selected_runtime == "radiance":
-        if not radiance.installed():
-            raise ValueError("Radianceは未導入です。オプション機能から導入してください")
+    if policy.selected_runtime in container_modules():
+        module = container_modules()[policy.selected_runtime]
+        if not module.installed():
+            raise ValueError(f"{policy.selected_runtime}は未導入です。オプション機能から導入してください")
         if policy.coexistence == "exclusive":
             await _release_ollama()
             await asyncio.to_thread(_release_llama)
             await asyncio.to_thread(_release_strata)
+            await asyncio.to_thread(_release_containers, policy.selected_runtime)
             if maya_s.installed():
                 ok, reason = await asyncio.to_thread(maya_s.stop_instance)
                 if not ok:
                     raise RuntimeError(reason)
         return  # Selection never starts a model; a request or 「ロード」 does.
     if policy.coexistence == "exclusive":
-        await asyncio.to_thread(_release_radiance)
+        await asyncio.to_thread(_release_containers)
     if policy.selected_runtime == "maya-s":
         if not maya_s.installed():
             raise ValueError("Maya-Sは未導入です")

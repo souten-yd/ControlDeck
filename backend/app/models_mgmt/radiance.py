@@ -13,25 +13,17 @@ nothing goes through a shell.
 from __future__ import annotations
 
 import asyncio
-import fcntl
-import hashlib
 import json
 import os
-import platform
 import re
-import shutil
-import subprocess
-import sys
 import threading
-import time
 import urllib.request
-from contextlib import contextmanager
-from functools import wraps
 from pathlib import Path
 
 import httpx
 
 from app.config import data_dir
+from app.models_mgmt import container_runtime as cr
 
 RUNTIME = "radiance"
 IMAGE = "docker.io/stilldeadcode/radiance"
@@ -83,15 +75,15 @@ def _log_path(alias: str) -> Path:
 
 
 def _unit(alias: str) -> str:
-    return "control-deck-radiance-" + re.sub(r"[^a-z0-9-]", "-", alias)
+    return cr.unit_name("radiance", alias)
 
 
 def _container(alias: str) -> str:
-    return "cd-radiance-" + re.sub(r"[^a-z0-9-]", "-", alias)
+    return cr.container_name("radiance", alias)
 
 
 def _podman() -> str | None:
-    return shutil.which("podman")
+    return cr.podman()
 
 
 def entrypoint() -> Path:
@@ -101,86 +93,29 @@ def entrypoint() -> Path:
 
 # ---- engine (image) ------------------------------------------------------------------------
 
-@contextmanager
-def _operation_lock():
-    directory = root()
-    if directory.is_symlink():
-        raise RadianceError("管理ディレクトリがシンボリックリンクです")
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(directory / "operation.lock", flags, 0o600)
-    except OSError as exc:
-        raise RadianceError("Radiance操作のロックを作成できません") from exc
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RadianceError("Radianceの別の操作が実行中です") from exc
-        yield
-    finally:
-        os.close(descriptor)
-
-
-def _serialized(fn):
-    @wraps(fn)
-    def call(*args, **kwargs):
-        if os.geteuid() == 0:
-            raise RadianceError("Radianceの管理操作はrootで実行できません")
-        with _operation_lock():
-            return fn(*args, **kwargs)
-    return call
+_serialized = cr.serialized(RadianceError, "Radiance", lambda: root())
 
 
 def available() -> bool:
-    return (sys.platform == "linux" and platform.machine().lower() in ("x86_64", "amd64")
-            and _podman() is not None and Path("/dev/kfd").exists())
+    return cr.gpu_available()
 
 
 def _read_marker() -> dict:
-    try:
-        value = json.loads(_marker().read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return cr.read_marker(_marker())
 
 
 def _image_ref(tag: str | None = None) -> str:
     return f"{IMAGE}:{tag or _read_marker().get('tag') or PINNED_TAG}"
 
 
-def _image_exists(ref: str) -> bool:
-    podman = _podman()
-    if podman is None:
-        return False
-    try:
-        return subprocess.run([podman, "image", "exists", ref], capture_output=True,
-                              timeout=30, check=False).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 def installed() -> bool:
     marker = _read_marker()
     return (_marker().is_file() and not _marker().is_symlink() and bool(marker.get("tag"))
-            and _image_exists(_image_ref(str(marker["tag"]))))
-
-
-def _exec(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                                timeout=timeout, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RadianceError("Radiance操作を実行できないか、タイムアウトしました") from exc
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
-        raise RadianceError(f"Radiance操作が失敗しました（exit {result.returncode}）: {detail[0][:200]}")
-    return result
+            and cr.image_exists(_image_ref(str(marker["tag"]))))
 
 
 def _version_key(tag: str) -> tuple[int, int, int]:
-    match = _TAG.fullmatch(tag)
-    return (int(match[1]), int(match[2]), int(match[3])) if match else (-1, -1, -1)
+    return cr.version_key(_TAG, tag)
 
 
 def _latest_tag() -> str:
@@ -199,18 +134,11 @@ def _latest_tag() -> str:
 
 
 def _pull(tag: str) -> str:
-    podman = _podman()
-    if podman is None:
-        raise RadianceError("podman が必要です")
-    ref = _image_ref(tag)
-    # No --quiet: podman 4.9 panics with it when the image is already present.
-    _exec([podman, "pull", ref], timeout=3600)
-    digest = _exec([podman, "image", "inspect", ref, "--format", "{{.Digest}}"]).stdout.strip()
-    return digest
+    return cr.pull(_image_ref(tag), RadianceError, "Radiance")
 
 
 def _write_marker(tag: str, digest: str) -> None:
-    _marker().write_text(json.dumps({"image": IMAGE, "tag": tag, "digest": digest}), encoding="utf-8")
+    cr.write_marker(_marker(), IMAGE, tag, digest)
 
 
 def _version() -> str:
@@ -247,7 +175,7 @@ def _update() -> dict:
     # The new image is pulled beside the current one; the marker moves only after it arrived.
     _write_marker(tag, _pull(tag))
     if previous and previous != tag and _podman():
-        subprocess.run([_podman(), "rmi", _image_ref(previous)], capture_output=True, timeout=120, check=False)
+        cr.remove_image(_image_ref(previous))
     return runtime_status()
 
 
@@ -276,7 +204,7 @@ def uninstall() -> dict:
     if any(_running(alias) for alias in _read()):
         raise RadianceError("モデル稼働中は削除できません。停止してください")
     # The image only: registrations and .rad model files stay.
-    subprocess.run([_podman() or "podman", "rmi", _image_ref()], capture_output=True, timeout=120, check=False)
+    cr.remove_image(_image_ref())
     _marker().unlink(missing_ok=True)
     return runtime_status()
 
@@ -332,12 +260,7 @@ def _validate_model_path(value: str) -> str:
 
 
 def _running(alias: str) -> bool:
-    try:
-        result = subprocess.run(["systemctl", "--user", "is-active", _unit(alias)],
-                                capture_output=True, text=True, timeout=15, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.stdout.strip() in ("active", "activating")
+    return cr.unit_running(_unit(alias))
 
 
 def _present(alias: str, cfg: dict) -> dict:
@@ -390,42 +313,15 @@ def save_instance(alias: str, *, model_path: str, port: int, context: int = 1310
               "on_demand_start": bool(on_demand_start),
               "idle_exclude": bool(idle_exclude), "auto_start": bool(auto_start)}
     with _registry_lock:
-        items = _read()
-        if replace and alias in items:
-            changed = {key for key, value in wanted.items() if items[alias].get(key) != value}
-            if changed <= set(LIFECYCLE_KEYS):
-                # Lifecycle flags only: fine while running.
-                items[alias] = {**items[alias], **{key: wanted[key] for key in LIFECYCLE_KEYS}}
-                _write(items)
-                return get_instance(alias)
-            if _running(alias):
-                raise RadianceError("設定を変更する前にRadianceモデルを停止してください")
-        elif replace:
-            raise KeyError(alias)
-        elif alias in items:
-            raise RadianceError("同じ別名は既に登録されています")
-        if any(item.get("port") == int(port) for key, item in items.items() if key != alias):
-            raise RadianceError("Radiance内でポートが重複しています")
-        from app.models_mgmt import local_llm
-        if not replace and local_llm.find(alias) is not None:
-            raise RadianceError("同じ別名を使用する別のLLMがあります")
-        if local_llm.port_taken_by_other_runtime(int(port), RUNTIME):
-            raise RadianceError("別のローカルランタイムがポートを使用しています")
-        items[alias] = wanted
-        _write(items)
+        cr.register(RUNTIME, alias, wanted, replace=replace, read=_read, write=_write, running=_running,
+                    error=RadianceError, label="Radiance", lifecycle_keys=LIFECYCLE_KEYS)
     return get_instance(alias)
 
 
 def delete_instance(alias: str) -> dict:
     with _registry_lock:
-        items = _read()
-        if alias not in items:
-            raise KeyError(alias)
-        if _running(alias):
-            raise RadianceError("稼働中のRadianceモデルを先に停止してください")
-        items.pop(alias)
-        _write(items)
-    return {"alias": alias, "config_deleted": True, "model_files_deleted": False}
+        return cr.unregister(alias, read=_read, write=_write, running=_running,
+                             error=RadianceError, label="Radiance")
 
 
 PREFIX_CACHE_MIB = 8192
@@ -492,12 +388,10 @@ def launch_args(alias: str, cfg: dict) -> list[str]:
     """
     model = Path(cfg["model_path"])
     config = _config_dir() / f"{alias}.yaml"
-    return [entrypoint().as_posix(), "run", "--rm", "--replace", "--name", _container(alias),
-            "--network", "host", "--init", "--ulimit", "host",
-            "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
-            "--security-opt", "seccomp=unconfined", "--stop-timeout", "30",
-            "-v", f"{model.parent}:/models:ro", "-v", f"{config}:/config/radiance.yaml:ro",
-            _image_ref(), "--config", "/config/radiance.yaml"]
+    return cr.gpu_run_args(
+        entrypoint().as_posix(), _container(alias),
+        [f"{model.parent}:/models:ro", f"{config}:/config/radiance.yaml:ro"],
+        _image_ref(), ["--config", "/config/radiance.yaml"])
 
 
 def _start(alias: str) -> tuple[bool, str]:
@@ -512,20 +406,10 @@ def _start(alias: str) -> tuple[bool, str]:
         _validate_model_path(cfg["model_path"])
     except RadianceError as exc:
         return False, str(exc)
-    log = _log_path(alias)
-    log.parent.mkdir(parents=True, exist_ok=True)
     write_config(alias, cfg)
-    runner = ["systemd-run", "--user", "--quiet", "--collect", "--unit=" + _unit(alias),
-              "--property=UMask=0077", "--property=TimeoutStopSec=60",
-              "--property=StandardOutput=append:" + str(log),
-              "--property=StandardError=append:" + str(log)]
-    try:
-        result = subprocess.run([*runner, *launch_args(alias, cfg)], capture_output=True, text=True,
-                                stdin=subprocess.DEVNULL, timeout=40, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False, "Radianceを起動できませんでした"
-    if result.returncode:
-        return False, (result.stderr or result.stdout)[-400:].strip() or "Radianceを起動できませんでした"
+    ok, message = cr.start_unit(_unit(alias), _log_path(alias), launch_args(alias, cfg), "Radiance")
+    if not ok:
+        return False, message
     from app.models_mgmt import large_model_lifecycle
     large_model_lifecycle.mark_used(RUNTIME, alias)
     large_model_lifecycle.follow_selection(RUNTIME)
@@ -540,68 +424,24 @@ def start_instance(alias: str) -> tuple[bool, str]:
 def stop_instance(alias: str) -> tuple[bool, str]:
     if alias not in _read():
         return False, "Radianceモデルが見つかりません"
-    try:
-        if _podman():
-            subprocess.run([_podman(), "stop", "--ignore", "-t", "30", _container(alias)],
-                           capture_output=True, timeout=60, check=False)
-        subprocess.run(["systemctl", "--user", "stop", _unit(alias)], capture_output=True,
-                       timeout=90, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False, "Radianceモデルを停止できませんでした"
-    return (False, "停止を確認できません") if _running(alias) else (True, "")
+    return cr.stop_unit(_unit(alias), _container(alias), "Radiance")
 
 
 async def health(alias: str) -> dict:
     cfg = _read().get(alias)
     if not cfg or not await asyncio.to_thread(_running, alias):
         return {"ok": False, "status_code": None}
-    try:
-        async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-            res = await client.get(f"http://127.0.0.1:{cfg['port']}/v1/models")
-            if res.status_code != 200:
-                return {"ok": False, "status_code": res.status_code}
-            data = res.json().get("data")
-            return {"ok": isinstance(data, list) and bool(data), "status_code": 200}
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-        return {"ok": False, "status_code": None}
+    return await cr.http_health(cfg["port"])
 
 
 async def wait_ready(alias: str, *, timeout_seconds: int = 900) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if (await health(alias))["ok"]:
-            return True
-        if not await asyncio.to_thread(_running, alias):
-            return False  # the unit exited: a startup error, the log says why
-        await asyncio.sleep(2)
-    return False
+    return await cr.wait_ready(alias, health, _running, timeout_seconds=timeout_seconds)
 
 
 async def ensure_ready(alias: str, *, timeout_seconds: int = 900, start: bool | None = None) -> bool:
     """Ready for a request; starts a registered model when "要求時に自動起動" is on."""
-    from app.models_mgmt import large_model_lifecycle
-
-    if (await health(alias))["ok"]:
-        large_model_lifecycle.mark_used(RUNTIME, alias)
-        return True
-    cfg = _read().get(alias)
-    if not cfg:
-        return False
-    allowed = cfg.get("on_demand_start", True) if start is None else start
-    if not allowed:
-        return False
-    if not await asyncio.to_thread(_running, alias):
-        try:
-            await large_model_lifecycle.release_for(RUNTIME)
-        except RuntimeError:
-            return False
-        ok, _reason = await asyncio.to_thread(start_instance, alias)
-        if not ok:
-            return False
-    if not await wait_ready(alias, timeout_seconds=timeout_seconds):
-        return False
-    large_model_lifecycle.mark_used(RUNTIME, alias)
-    return True
+    return await cr.ensure_ready(RUNTIME, alias, config=_read().get, health=health, running=_running,
+                                 start=start_instance, timeout_seconds=timeout_seconds, start_allowed=start)
 
 
 async def prompt_room(alias: str, messages: list) -> tuple[int, int] | None:
@@ -623,9 +463,7 @@ async def prompt_room(alias: str, messages: list) -> tuple[int, int] | None:
 
 
 def residency_key(instance: dict) -> str:
-    return "radiance:" + hashlib.sha256(
-        (str(instance.get("alias", "")) + ":" + str(instance.get("model_path", ""))).encode("utf-8")
-    ).hexdigest()[:24]
+    return cr.residency_key(RUNTIME, instance)
 
 
 def mark_used_by_base_url(base_url: str) -> str | None:
@@ -643,10 +481,4 @@ def mark_used_by_base_url(base_url: str) -> str | None:
 
 
 def log_tail(alias: str, lines: int = 60) -> str:
-    path = _log_path(alias)
-    try:
-        with path.open("rb") as handle:
-            handle.seek(max(0, path.stat().st_size - 32768))
-            return "\n".join(handle.read().decode("utf-8", errors="replace").splitlines()[-lines:])
-    except OSError:
-        return ""
+    return cr.log_tail(_log_path(alias), lines)

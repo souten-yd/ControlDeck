@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.models_mgmt import local_llm
+from app.models_mgmt.container_runtime import CONTAINER_RUNTIMES
 from app.models_mgmt.runtime_policy import get_policy
 from app.resources.devices import DeviceCollection
 from app.resources.providers import ProviderReservation, ResourceProvider
@@ -99,7 +100,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
                 continue
         # Strata uses many sharded MoE weights, not one model_path; reserve a
         # conservative VRAM envelope rather than reporting a zero-size model.
-        if str(instance.get("runtime")) in ("strata", "maya-s", "radiance"):
+        if str(instance.get("runtime")) in ("strata", "maya-s", *CONTAINER_RUNTIMES):
             model_bytes = 28 * 1024**3
         device = self._devices.get("gpu0")
         headroom = 0 if loaded else 512 * 1024 * 1024
@@ -184,7 +185,7 @@ class LocalLlmCapacityProvider(ResourceProvider):
         observed = device.observed_used_bytes if device is not None else 0
         sizes = []
         for item in running:
-            if item.get("runtime") in ("strata", "maya-s", "radiance"):
+            if item.get("runtime") in ("strata", "maya-s", *CONTAINER_RUNTIMES):
                 # Disk-streamed MoE GGUF size is not GPU residency.
                 sizes.append(min(28 * 1024**3, device.total_bytes) if device else 28 * 1024**3)
                 continue

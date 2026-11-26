@@ -371,12 +371,13 @@ async def maya_s_start_model(
     if not any(item["alias"] == alias for item in await asyncio.to_thread(maya_s.list_instances)):
         raise HTTPException(status_code=422, detail="先にMayaのモデル準備を完了してください")
     # Never auto-evict another engine or secretly switch the shared runtime.
-    from app.models_mgmt import radiance
+    from app.models_mgmt import radiance, sly_radiance
     others = await asyncio.gather(
         asyncio.to_thread(llama.list_instances),
         asyncio.to_thread(strata_gateway.list_instances),
         ollama.running_models(),
-        asyncio.to_thread(lambda: radiance.list_instances() if radiance.installed() else []),
+        asyncio.to_thread(lambda: [item for module in (radiance, sly_radiance) if module.installed()
+                                   for item in module.list_instances()]),
     )
     # 資料検索の補助（埋め込み・並べ替え）は必要なときに自動で起きる小さなモデル。LLM の競合とは
     # 数えず、Maya の前に降ろす（以前は Strata を止めた直後に自動で起きたこれが起動を 409 で塞いでいた）。

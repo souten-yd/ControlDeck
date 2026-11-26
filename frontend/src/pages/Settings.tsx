@@ -799,7 +799,7 @@ interface PlaywrightComponent {
 }
 
 interface GpuRuntimeDetail {
-  runtime: "llama.cpp" | "strata" | "maya-s" | "radiance";
+  runtime: "llama.cpp" | "strata" | "maya-s" | "radiance" | "sly-radiance";
   warning?: string;
   /** llama.cpp */
   active_backend?: string;
