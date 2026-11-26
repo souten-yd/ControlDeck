@@ -238,3 +238,49 @@ def test_web_documents_are_split_by_headings_without_changing_the_collection(mon
     rows = rag.chunk_rows("web-md-test")
     assert any(r["text"].startswith("[題 > 効果]") for r in rows)
     assert rag.get_config("web-md-test")["strategy"] == "recursive"
+
+
+
+def test_crawl_discovery_stays_same_origin_and_rejects_dtd():
+    """目的: W3a (PLAN-web-collector §7) 同一origin、クエリ保持、XML外部参照を拒否。"""
+    from app.web_collector import crawl
+
+    root = "https://example.test/start"
+    assert crawl.scoped_url(root, root, "/a?q=1#section") == "https://example.test/a?q=1"
+    for bad in ("//evil.test/a", "http://example.test/a", "https://example.test:8443/a",
+                "https://user@example.test/a", "javascript:alert(1)", "/\\evil.test", "/a\nb"):
+        assert crawl.scoped_url(root, root, bad) is None
+    xml = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.test/a?q=1</loc></url><url><loc>https://evil.test/a</loc></url></urlset>'
+    assert crawl.discover_xml(root, root, xml) == [("https://example.test/a?q=1", "page")]
+    with pytest.raises(ValueError):
+        crawl.discover_xml(root, root, '<!DOCTYPE x [<!ENTITY e "a">]><urlset/>')
+    assert crawl.discover_xml(root, root, '<rss><channel><item><link>/a</link></item></channel></rss>') == [
+        ("https://example.test/a", "page")]
+    assert crawl.discover_xml(root, root, '<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="/b"/></entry></feed>') == [
+        ("https://example.test/b", "page")]
+
+
+def test_crawl_queue_persists_and_recovers_without_expanding_scope(tmp_path):
+    """目的: W3a 停止/再開、重複、同一origin、上限、キャンセル。通信は行わない。"""
+    from app.web_collector import crawl
+
+    path = tmp_path / "crawl.sqlite3"
+    q = crawl.CrawlQueue(path)
+    q.create("j", "https://example.test/start")
+    item = q.claim("j")
+    assert item["depth"] == 0
+    assert q.enqueue("j", item["id"], [("/a", "page"), ("/a#x", "page"), ("//evil.test/a", "page")]) == 1
+    q.state("j", "pause")
+    assert q.claim("j") is None
+    q = crawl.CrawlQueue(path)
+    assert q.recover("j") == 1
+    q.state("j", "resume")
+    item = q.claim("j")
+    q.finish("j", item["id"], "success")
+    assert q.enqueue("j", item["id"], [(f"/p{i}", "page") for i in range(300)]) == 198
+    assert sum(q.counts("j").values()) == crawl.MAX_PAGES
+    running = q.claim("j")
+    q.state("j", "cancel")
+    assert q.claim("j") is None
+    q.finish("j", running["id"], "success")
+    assert q.counts("j") == {"success": 1, "cancelled": 199}
