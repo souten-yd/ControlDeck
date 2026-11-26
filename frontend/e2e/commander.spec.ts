@@ -55,6 +55,8 @@ interface ConsoleFixture {
   commander_state?: "working" | "waiting" | "limited" | "error" | "exited";
   commander_last_line?: string;
   commander_detail?: string;
+  commander_autoresume?: string;
+  commander_resume_at?: string;
 }
 
 function consoleFixture(overrides: Partial<ConsoleFixture> & Pick<ConsoleFixture, "id">): ConsoleFixture {
@@ -85,6 +87,7 @@ interface CommanderState {
   accountDeletes: string[];
   labelPuts: { cli: string; name: string; label: string }[];
   folderPosts: string[];
+  autoresumePuts: { id: string; enabled: boolean }[];
 }
 
 function initialState(): CommanderState {
@@ -100,6 +103,7 @@ function initialState(): CommanderState {
         commander_cli: "opencode", commander_account: "default", commander_account_label: "ControlDeck の API",
         commander_state: "limited", commander_last_line: "Build · DeepSeek",
         commander_detail: "Error: 429 Too Many Requests — rate limit exceeded",
+        commander_resume_at: String(Math.floor(new Date(2026, 10, 27, 22, 21).getTime() / 1000)),
       }),
     ],
     accounts: {
@@ -120,6 +124,7 @@ function initialState(): CommanderState {
     accountDeletes: [],
     labelPuts: [],
     folderPosts: [],
+    autoresumePuts: [],
   };
 }
 
@@ -148,6 +153,14 @@ async function mockCommander(page: Page, state: CommanderState) {
       }));
       for (const item of opened) state.consoles.push(item);
       return route.fulfill({ status: 201, json: { opened, not_opened: 0, reason: "" } });
+    }
+    const autoresumeMatch = path.match(/^consoles\/([0-9a-f]+)\/autoresume$/);
+    if (autoresumeMatch && method === "PUT") {
+      const body = request.postDataJSON() as { enabled: boolean };
+      state.autoresumePuts.push({ id: autoresumeMatch[1], enabled: body.enabled });
+      state.consoles = state.consoles.map((item) => (item.id === autoresumeMatch[1]
+        ? { ...item, commander_autoresume: body.enabled ? undefined : "off" } : item));
+      return route.fulfill({ json: { ok: true, enabled: body.enabled } });
     }
     const consoleMatch = path.match(/^consoles\/([0-9a-f]+)$/);
     if (consoleMatch && method === "DELETE") {
@@ -242,6 +255,15 @@ test.describe("AI Commander", () => {
     const second = rows.nth(1);
     await expect(second).toContainText("上限で停止");
     await expect(second).toContainText("429 Too Many Requests");
+    // C3: 自動再開の予定と、コンソールごとの止める・戻す（押しても全画面は開かない）
+    await expect(second).toContainText("自動再開の予定 22:21");
+    await second.getByRole("button", { name: "止める" }).click();
+    await expect(second).toContainText("自動再開: 止めています");
+    await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
+    await second.getByRole("button", { name: "再開させる" }).click();
+    await expect(second).toContainText("自動再開の予定");
+    expect(state.autoresumePuts).toEqual([{ id: "aa110002", enabled: false }, { id: "aa110002", enabled: true }]);
+    await expect(first.locator("[data-commander-autoresume]")).toHaveCount(0);
     await expect(page.getByText("未導入")).toHaveCount(0);
 
     // 押すと全画面の端末。閉じると一覧へ戻る

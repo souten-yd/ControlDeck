@@ -56,6 +56,10 @@ export interface CommanderConsole {
   commander_last_line?: string;
   /** 上限・エラーの行（上限で停止・エラーのとき）。 */
   commander_detail?: string;
+  /** C3: 自動再開。"off" で止めている。resume_at は次に送る予定（unix 秒）。 */
+  commander_autoresume?: string;
+  commander_resume_at?: string;
+  commander_resume_count?: string;
   commander_created_by?: string;
 }
 
@@ -115,6 +119,10 @@ export async function setAccountLabel(cli: string, name: string, label: string):
     method: "PUT",
     json: { label },
   });
+}
+
+export async function setConsoleAutoResume(id: string, enabled: boolean): Promise<{ ok: boolean }> {
+  return api(`/commander/consoles/${encodeURIComponent(id)}/autoresume`, { method: "PUT", json: { enabled } });
 }
 
 export async function fetchConsoles(): Promise<CommanderConsole[]> {

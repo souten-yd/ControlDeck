@@ -39,6 +39,12 @@ class ConsoleCreate(BaseModel):
         return cleaned
 
 
+class ConsoleAutoResume(BaseModel):
+    """コンソールごとの自動再開（上限からの「続けて」）の入り切り。"""
+
+    enabled: bool
+
+
 class AccountLabel(BaseModel):
     """アカウントの画面の名前（空で外す）。既定のアカウントにも付けられる。"""
 

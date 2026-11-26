@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 259 ファイル、2568 テスト（目的の未記入 93 ファイル）
+- backend: 260 ファイル、2573 テスト（目的の未記入 93 ファイル）
 - E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
@@ -704,6 +704,16 @@
 - `test_consoles_api_delete_only_marked_sessions` — コンソールの削除: 印のあるセッションだけを閉じられる（Terminal と同じ閉じ方）。
 - `test_opencode_console_uses_the_controldeck_opencode_api` — OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API）で開く。素の opencode は使わない。
 - `test_opencode_accounts_are_the_registered_api_connections` — OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
+
+### backend/tests/test_commander_resume.py
+
+目的: AI Commander の上限からの自動再開（C3・LLM なし）の試験。 目的: 上限で止まったコンソールを回復の時刻に「続けて」で再開する。空振り（まだ上限）・送りすぎ・ 利用者が続けた後の誤送信を防ぐ歯止めを守る。 根拠: docs/PLAN-ai-commander.md C3。上限の文言は C0 の実機の記録（c1-spec.md）と Codex の表示。 既存の試験に同じ観点は無い（test-catalog で確認。Terminal の automation は条件つきの送信で、上限は扱わない）。
+
+- `test_parse_claude_and_codex_reset_times` — Claude の「resets 10:20pm (Asia/Tokyo)」「resets Nov 30, 12am」・Codex の「try again at/in」。
+- `test_plan_waits_until_reset_then_sends_with_guards` — 回復の時刻＋猶予までは待ち、過ぎたら送る。送った後は 10 分空ける・10 回で止める・止めたら送らない。
+- `test_tick_sends_only_when_still_limited_and_records` — 送る直前に画面を読み直し、まだ上限のときだけ「続けてください」を送って回数・時刻を残す。
+- `test_tick_clears_and_schedules` — 止まっていないコンソールは印を消し、待ちのコンソールは次の予定を残す（画面に出す）。
+- `test_autoresume_toggle_api` — コンソールごとに自動再開を止める・戻す（off の印を付ける・外す）。無いコンソールは 404。
 
 ### backend/tests/test_commander_status.py
 
