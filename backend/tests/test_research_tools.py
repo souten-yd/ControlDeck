@@ -527,3 +527,59 @@ def test_research_limits_are_clamped_and_saved(monkeypatch, tmp_path):
             rk.set_limits(bad)
     rk.reset_limits()
     assert rk.limits() == {"read_per_aspect": 5, "max_sources": 20, "llm_parallel": 0}
+
+
+
+def test_shared_source_can_support_multiple_aspects(monkeypatch):
+    """目的・根拠: PLAN-web-collector W5。観点をまたぐ URL 重複で根拠を失わない。
+    同じ URL の focus は異なるが、出典の一覧は重複しない。"""
+    intent = ri.Intent(goal="g", subjects=["Foo"], aspects=[
+        ri.Aspect("速度", ["Foo speed"]), ri.Aspect("消費電力", ["Foo power"])])
+    url = "https://example.test/benchmark"
+    async def search(*args, **kwargs):
+        return {"results": [{"title": "Foo", "url": url, "snippet": "Foo speed power"}]}
+    calls = []
+    async def read(url, focus="", max_chars=3500, **kwargs):
+        calls.append(focus)
+        return {**_page(("Foo " + focus + " ") * 40), "url": url}
+    async def ranker(q, texts, keep):
+        return [0.9] * len(texts)
+    monkeypatch.setattr(rt, "search_web", search)
+    inv = run(ri.investigate(intent, searx=None, base_url="b", model="m", rounds=1,
+                             now=NOW, read=read, ranker=ranker))
+    assert set(calls) == {"速度", "消費電力"}
+    assert len(inv.usable(0)) == len(inv.usable(1)) == 1
+    assert len(inv.sources()) == 1
+
+
+def test_unselected_candidate_is_available_in_later_round(monkeypatch):
+    """目的: 1 回目に選ばなかった候補を 2 回目の調査から排除しない。"""
+    intent = ri.Intent(goal="g", subjects=["Foo"], aspects=[ri.Aspect("速度", ["Foo speed"])])
+    candidates = [{"title": "Foo", "url": f"https://example.test/{i}", "snippet": "Foo speed"}
+                  for i in range(12)]
+    async def search(*args, **kwargs):
+        return {"results": candidates}
+    calls = []
+    async def read(url, focus="", max_chars=3500, **kwargs):
+        calls.append(url)
+        return {"ok": False}
+    async def ranker(q, texts, keep):
+        return [0.9] * len(texts)
+    async def llm(*args, **kwargs):
+        return json.dumps({"gaps": [{"aspect": 1, "queries": ["Foo benchmark"]}]})
+    monkeypatch.setattr(rt, "search_web", search)
+    inv = run(ri.investigate(intent, searx=None, base_url="b", model="m", rounds=3,
+                             now=NOW, llm=llm, read=read, ranker=ranker))
+    assert inv.rounds == 2 and len(calls) == 10 and len(set(calls)) == 10
+
+
+def test_snippet_date_does_not_certify_unread_page():
+    """目的: 本文が取得できなければ検索要約の日付が合っていても確認済みにしない。"""
+    async def read(*args, **kwargs):
+        return {"ok": False}
+    results = [{"url": "https://example.test/2026/11/22/a", "title": "記事",
+                "snippet": "2026年11月22日 発表"}]
+    window = rtime.window_for(rtime.resolve_relative("今日", NOW), "latest", NOW.date())
+    rows = run(ri.read_and_judge(results, window=window, today=NOW.date(), focus="記事",
+                                 limit=1, read=read))
+    assert rows[0]["status"] == "unread" and rows[0]["page"] is None
