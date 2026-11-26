@@ -187,6 +187,13 @@ def stop_unit(unit: str, container: str, label: str) -> tuple[bool, str]:
                            capture_output=True, timeout=60, check=False)
         subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True,
                        timeout=90, check=False)
+        # unit が止まっても、`run --rm` の後片付けが他の podman 操作（別のランタイムの起動など）と
+        # 重なると container が「Removing」のまま残り、次の起動（--replace）が待たされる
+        # （2026-11-27 実機: Sly-Radiance の停止が 416 秒）。残っていれば強制で外す。
+        if podman() and subprocess.run([podman(), "container", "exists", container],
+                                       capture_output=True, timeout=30, check=False).returncode == 0:
+            subprocess.run([podman(), "rm", "-f", "--ignore", "-t", "0", container],
+                           capture_output=True, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return False, f"{label}モデルを停止できませんでした"
     return (False, "停止を確認できません") if unit_running(unit) else (True, "")

@@ -180,3 +180,36 @@ def test_a_loaded_sly_model_is_freed_for_another_runtime(monkeypatch):
     monkeypatch.setattr(large_model_lifecycle, "release_gpu_helpers", noop)
     asyncio.run(large_model_lifecycle.release_for("strata"))
     assert stopped == ["q"]
+
+
+def test_stop_removes_a_container_left_in_removing(monkeypatch):
+    """停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
+
+    根拠: 2026-11-27 実機。別のランタイムの起動と podman の操作が重なり、Sly-Radiance の container が
+    「Removing」のまま 416 秒残った。次の起動（--replace）が待たされる。
+    """
+    from app.models_mgmt import container_runtime as cr
+
+    calls = []
+
+    class Done:
+        def __init__(self, code=0):
+            self.returncode = code
+            self.stdout = ""
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[1:3] == ["container", "exists"]:
+            return Done(0)   # まだ残っている
+        return Done(0)
+
+    monkeypatch.setattr(cr, "podman", lambda: "/usr/bin/podman")
+    monkeypatch.setattr(cr.subprocess, "run", fake_run)
+    monkeypatch.setattr(cr, "unit_running", lambda unit: False)
+    assert cr.stop_unit("u.service", "cd-sly-radiance-x", "Sly-Radiance") == (True, "")
+    assert ["/usr/bin/podman", "rm", "-f", "--ignore", "-t", "0", "cd-sly-radiance-x"] in calls
+    # 残っていなければ rm は呼ばない
+    calls.clear()
+    monkeypatch.setattr(cr.subprocess, "run", lambda argv, **kw: calls.append(argv) or Done(1 if argv[1:3] == ["container", "exists"] else 0))
+    cr.stop_unit("u.service", "cd-sly-radiance-x", "Sly-Radiance")
+    assert not any(a[1:2] == ["rm"] for a in calls)
