@@ -571,18 +571,39 @@ def widen_queries(query: str) -> list[str]:
 
 
 def _norm_url(url: str) -> str:
-    """URL の重複判定用。未知のクエリは別資料を指す可能性があるので保持する。
+    """検索候補の保守的な識別子。通信先やキャッシュキーには使用しない。
 
-    URL 自体は変更せず、従来どおりフラグメントは比較に含めない。
+    RFC 3986 §6: scheme/host の大小だけ正規化。www、scheme、末尾 slash、
+    query の順序・重複・encoding は別資料の可能性があるため維持する。
+    追跡引数除去は検索候補のヒューリスティックであり同一内容の証明ではない。
     """
-    parts = urlsplit(url)
-    host = parts.netloc.lower().removeprefix("www.")
-    # 追跡用の引数（utm_*・fbclid など）だけ違う URL は同じ記事。残りの引数は順番をそろえて比べる
-    keep = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING.match(k))
-    return f"{host}{parts.path.rstrip('/')}" + (f"?{urlencode(keep)}" if keep else "")
+    from urllib.parse import unquote, urlunsplit
+
+    if not isinstance(url, str) or not url or "\\" in url or any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        return ""
+    try:
+        p = urlsplit(url)
+        if p.scheme not in ("http", "https") or not p.hostname or p.username is not None or p.password is not None:
+            return ""
+        port = p.port
+        host = p.hostname.lower()
+        netloc = f"[{host}]" if ":" in host else host
+        if port is not None and port != (443 if p.scheme == "https" else 80):
+            netloc += f":{port}"
+    except ValueError:
+        return ""
+    fields = p.query.split("&") if p.query else []
+    names = [unquote(v.partition("=")[0]) for v in fields]
+    # 署名・認証付き URL は追跡引数を含め変更しない。
+    signed = any(_SIGNED_QUERY.match(n) for n in names)
+    query = p.query if signed else "&".join(v for v, n in zip(fields, names) if not _TRACKING.fullmatch(n))
+    # SPA の hash route / text fragment は普通の節アンカーと区別する。
+    fragment = p.fragment if p.fragment.startswith(("/", "!", ":~:")) else ""
+    return urlunsplit((p.scheme, netloc, p.path or "/", query, fragment))
 
 
-_TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_ga|_gl|ref_src|spm)$", re.I)
+_TRACKING = re.compile(r"utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_ga|_gl|ref_src|spm", re.I)
+_SIGNED_QUERY = re.compile(r"^(?:x-amz-|x-goog-|signature$|sig$|token$|access_token$|auth$|key$|expires$|policy$|hmac$|jwt$)", re.I)
 
 
 def _merge(groups: list[list[dict]], limit: int) -> list[dict]:
