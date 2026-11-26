@@ -284,3 +284,52 @@ def test_crawl_queue_persists_and_recovers_without_expanding_scope(tmp_path):
     assert q.claim("j") is None
     q.finish("j", running["id"], "success")
     assert q.counts("j") == {"success": 1, "cancelled": 199}
+
+
+def test_crawl_transport_checks_robots_and_every_redirect(monkeypatch):
+    """目的・根拠: W3b-1 PLAN-web-collector。robots拒否・別originへのredirect・429で停止。
+    通信はMockTransportだけ。既存 egress の実通信試験とは別の観点。
+    """
+    import httpx
+    from app.web_collector import crawl_http
+
+    requests = []
+    async def handler(req):
+        requests.append(str(req.url))
+        path = req.url.path
+        if path == "/robots.txt":
+            return httpx.Response(200, content=b"User-agent: *\nDisallow: /deny")
+        if path == "/redirect":
+            return httpx.Response(302, headers={"Location": "/deny"})
+        if path == "/outside":
+            return httpx.Response(302, headers={"Location": "https://other.test/a"})
+        if path == "/rate":
+            return httpx.Response(429, headers={"Retry-After": "120"})
+        return httpx.Response(200, content=b"ok")
+
+    monkeypatch.setattr(egress, "guarded_client", lambda **kw: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=False))
+    async def parser(text, url):
+        return not url.endswith("/deny"), 0.0
+    async def run():
+        t = crawl_http.CrawlTransport("https://site.test/", parser=parser)
+        for path, status in (("/redirect", "robots_denied"), ("/outside", "security_rejected"), ("/rate", "blocked"), ("/ok", "blocked")):
+            with pytest.raises(crawl_http.StopCrawl) as exc:
+                await t.get(path)
+            assert exc.value.status == status
+        assert requests == ["https://site.test/robots.txt", "https://site.test/redirect",
+                            "https://site.test/outside", "https://site.test/rate"]
+    asyncio.run(run())
+
+
+def test_crawl_transport_never_connects_in_confidential_scope(monkeypatch):
+    """目的: 秘密会話は robots 取得前にも遮断する。"""
+    from app.security.offline import confidential_scope, ExternalResearchBlocked
+    from app.web_collector import crawl_http
+
+    monkeypatch.setattr(egress, "guarded_client", lambda **kw: pytest.fail("unexpected network"))
+    async def run():
+        with confidential_scope():
+            with pytest.raises(ExternalResearchBlocked):
+                await crawl_http.CrawlTransport("https://site.test/").get("/")
+    asyncio.run(run())
