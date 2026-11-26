@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-27 Nexarch: 自動再開の文言を全体とコンソールごとに
+- 利用者「継続の文言は個別設定とグローバル設定として変えられるように。既定はグローバルで」「続けてくださいの表示は消して」。
+- 送る文言: コンソールごと（tmux の印 @cd-commander-resume_message、✏️ から）→ 全体（その他メニュー「自動再開の文言（全体）」、`data/ai-commander/settings.json` 0600）→ 既定「続けてください」。空で上の段へ戻す。改行・制御文字は断る（Enter として届くと途中で送られる）。
+- タイルの「（「続けてください」を送ります）」の表示を消した（予定の時刻だけ）。
+- API: `GET/PUT /commander/settings`、`PUT /commander/consoles/{id}/resume-message`。
+- 確かめたこと: 試験（段の順・空で戻す・0600・改行の断り）、E2E（全体と個別の設定）。
+
 ## 2026-11-27 AI Commander を Nexarch に改名・Claude と Codex が「未導入」と出る不具合・自動再開のトグル
 - 名前: 利用者の指定で「Nexarch」（AI COMMAND SYSTEM）。メニュー・見出しを変え、マーク（縦の 2 本と点で折れる矢印）を入れた。URL（/commander）と API は変えない。
 - 不具合: ControlDeck の service の PATH に `~/.local/npm-global/bin` が無く、そこにある claude・codex を「未導入」と出していた。PATH の次に利用者の bin（npm-global・~/.local/bin・bun・volta など）を探し、見つけた絶対パスで開き、その場所を PATH の先頭に足す（codex は `#!/usr/bin/env node` のスクリプト）。

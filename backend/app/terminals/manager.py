@@ -32,7 +32,9 @@ SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 # 一覧で読み返すため、option の名前はここで固定する（値は commander 側で組み立てる）。
 COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by",
                        # C3: 自動再開（off で止める・次の予定・送った回数・最後に送った時刻）
-                       "autoresume", "resume_at", "resume_count", "resume_last")
+                       "autoresume", "resume_at", "resume_count", "resume_last",
+                       # コンソールごとの再開の文言（空なら全体の設定）
+                       "resume_message")
 # create_session(env=) で受け付ける環境変数の名前と値の上限。
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ENV_VALUE_MAX = 4096
@@ -424,7 +426,8 @@ class TerminalManager:
             raise ValueError("不明なセッション属性です")
         for key, value in marks.items():
             # 一覧は tab 区切りで読み返すので、tab・改行などの制御文字は入れない。
-            if (not isinstance(value, str) or not value or len(value) > 96
+            limit = 500 if key == "resume_message" else 96
+            if (not isinstance(value, str) or not value or len(value) > limit
                     or any(ord(c) < 0x20 or ord(c) == 0x7f for c in value)):
                 raise ValueError(f"セッション属性 {key} の値が不正です")
         if tmux_available():

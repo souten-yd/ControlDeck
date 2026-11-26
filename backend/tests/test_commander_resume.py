@@ -100,7 +100,7 @@ def test_tick_sends_only_when_still_limited_and_records(monkeypatch):
     audits = []
     monkeypatch.setattr(resume, "_audit", lambda sid, row, count: audits.append((sid, count)))
     assert resume.tick(now=5000.0) == ["aa000001"]
-    assert fake.sent == [("aa000001", resume.MESSAGE, True)]
+    assert fake.sent == [("aa000001", "続けてください", True)]
     assert fake.tags["aa000001"]["resume_count"] == "1" and fake.tags["aa000001"]["resume_last"] == "5000"
     assert audits == [("aa000001", 1)]
     # 利用者が先に続けていた（画面がもう作業中）なら送らない
@@ -140,3 +140,39 @@ def test_autoresume_toggle_api(admin_client, monkeypatch):
     assert fake.cleared == [("aa000001", ("autoresume",))]
     assert admin_client.put("/api/v1/commander/consoles/ffffffff/autoresume", headers=CSRF_HEADERS,
                             json={"enabled": False}).status_code == 404
+
+
+def test_resume_message_console_then_global_then_default(admin_client, monkeypatch):
+    """送る文言: コンソールの設定 → 全体の設定 → 既定「続けてください」。空で上の段へ戻す。
+
+    根拠: 2026-11-27 利用者「継続の文言は個別設定とグローバル設定として変えられるように。既定はグローバルで」。
+    """
+    import stat as stat_mod
+
+    from app.commander import consoles, settings as commander_settings
+    from app.config import data_dir
+    from app.terminals import manager as manager_module
+    from tests.conftest import CSRF_HEADERS
+
+    assert admin_client.get("/api/v1/commander/settings").json()["resume_message"] == "続けてください"
+    r = admin_client.put("/api/v1/commander/settings", headers=CSRF_HEADERS,
+                         json={"resume_message": "上限が戻ったので、続きをお願いします"})
+    assert r.status_code == 200 and r.json()["resume_message"] == "上限が戻ったので、続きをお願いします"
+    assert stat_mod.S_IMODE((data_dir() / "ai-commander" / "settings.json").stat().st_mode) == 0o600
+    assert commander_settings.message_for(_row()) == "上限が戻ったので、続きをお願いします"
+    assert commander_settings.message_for(_row(commander_resume_message="go on")) == "go on"
+    # 改行は断る（Enter として届くと途中で送られる）
+    assert admin_client.put("/api/v1/commander/settings", headers=CSRF_HEADERS,
+                            json={"resume_message": "a\nb"}).status_code == 400
+
+    fake = FakeManager("")
+    monkeypatch.setattr(manager_module, "manager", fake)
+    monkeypatch.setattr(consoles, "list_consoles", lambda: [_row()])
+    assert admin_client.put("/api/v1/commander/consoles/aa000001/resume-message", headers=CSRF_HEADERS,
+                            json={"message": "このコンソールだけ"}).status_code == 200
+    assert fake.tags["aa000001"] == {"resume_message": "このコンソールだけ"}
+    admin_client.put("/api/v1/commander/consoles/aa000001/resume-message", headers=CSRF_HEADERS, json={"message": ""})
+    assert fake.cleared == [("aa000001", ("resume_message",))]
+    # 全体を空にすると既定へ
+    admin_client.put("/api/v1/commander/settings", headers=CSRF_HEADERS, json={"resume_message": ""})
+    assert commander_settings.resume_message() == "続けてください"

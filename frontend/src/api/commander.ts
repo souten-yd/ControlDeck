@@ -60,6 +60,8 @@ export interface CommanderConsole {
   commander_autoresume?: string;
   commander_resume_at?: string;
   commander_resume_count?: string;
+  /** そのコンソールだけの再開の文言（無ければ全体の設定）。 */
+  commander_resume_message?: string;
   commander_created_by?: string;
 }
 
@@ -123,6 +125,20 @@ export async function setAccountLabel(cli: string, name: string, label: string):
 
 export async function setConsoleAutoResume(id: string, enabled: boolean): Promise<{ ok: boolean }> {
   return api(`/commander/consoles/${encodeURIComponent(id)}/autoresume`, { method: "PUT", json: { enabled } });
+}
+
+export interface CommanderSettings { resume_message: string; default_resume_message: string }
+
+export async function fetchCommanderSettings(): Promise<CommanderSettings> {
+  return api<CommanderSettings>("/commander/settings");
+}
+
+export async function putCommanderSettings(body: { resume_message: string }): Promise<CommanderSettings> {
+  return api<CommanderSettings>("/commander/settings", { method: "PUT", json: body });
+}
+
+export async function setConsoleResumeMessage(id: string, message: string): Promise<{ ok: boolean }> {
+  return api(`/commander/consoles/${encodeURIComponent(id)}/resume-message`, { method: "PUT", json: { message } });
 }
 
 export async function fetchConsoles(): Promise<CommanderConsole[]> {

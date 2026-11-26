@@ -15,6 +15,7 @@ import { PageHeader } from "../components/PageHeader";
 import { ConsoleRow, ConsoleTile } from "../features/commander/ConsoleTile";
 import { NewConsoleSheet } from "../features/commander/NewConsoleSheet";
 import { AccountsSheet } from "../features/commander/AccountsSheet";
+import { GlobalResumeMessageSheet } from "../features/commander/ResumeMessageSheet";
 import { useToasts } from "../stores";
 
 const XtermView = lazy(() => import("../features/terminal/XtermView"));
@@ -56,6 +57,7 @@ export default function CommanderPage() {
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [newSheet, setNewSheet] = useState(false);
   const [accountsSheet, setAccountsSheet] = useState(false);
+  const [resumeSheet, setResumeSheet] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [closing, setClosing] = useState<CommanderConsole | null>(null);
   // 選んでいなければ PC はタイル、モバイルは一覧。
@@ -120,7 +122,10 @@ export default function CommanderPage() {
         <DropdownMenu
           ariaLabel="その他の操作"
           trigger={<IconDots />}
-          items={[{ label: "アカウントの管理", onSelect: () => setAccountsSheet(true) }]}
+          items={[
+            { label: "アカウントの管理", onSelect: () => setAccountsSheet(true) },
+            { label: "自動再開の文言（全体）", onSelect: () => setResumeSheet(true) },
+          ]}
         />
         <IconButton variant="primary" label="＋ コンソール" onClick={() => setNewSheet(true)}>
           <IconPlus />
@@ -183,6 +188,7 @@ export default function CommanderPage() {
       )}
       {newSheet && <NewConsoleSheet clis={clis} onClose={() => setNewSheet(false)} />}
       {accountsSheet && <AccountsSheet clis={clis} onClose={() => setAccountsSheet(false)} />}
+      {resumeSheet && <GlobalResumeMessageSheet onClose={() => setResumeSheet(false)} />}
     </div>
   );
 }
