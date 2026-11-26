@@ -84,6 +84,7 @@ interface CommanderState {
   accountPosts: { cli: string; name: string }[];
   accountDeletes: string[];
   labelPuts: { cli: string; name: string; label: string }[];
+  folderPosts: string[];
 }
 
 function initialState(): CommanderState {
@@ -118,6 +119,7 @@ function initialState(): CommanderState {
     accountPosts: [],
     accountDeletes: [],
     labelPuts: [],
+    folderPosts: [],
   };
 }
 
@@ -187,12 +189,20 @@ async function mockCommander(page: Page, state: CommanderState) {
   });
   // 作業フォルダの FilePicker が使う files API
   await page.route(/\/api\/v1\/files\/roots$/, (route) => route.fulfill({ json: [ROOT] }));
-  await page.route(/\/api\/v1\/files\/list/, (route) => route.fulfill({
-    json: {
-      path: ROOT,
-      entries: [{ name: "projects", path: `${ROOT}/projects`, is_dir: true, hidden: false }],
-    },
-  }));
+  await page.route(/\/api\/v1\/files\/list/, (route) => {
+    const listed = new URL(route.request().url()).searchParams.get("path") ?? ROOT;
+    return route.fulfill({
+      json: {
+        path: listed,
+        entries: listed === ROOT ? [{ name: "projects", path: `${ROOT}/projects`, is_dir: true, hidden: false }] : [],
+      },
+    });
+  });
+  // FilePicker の「＋ 新しいフォルダ」
+  await page.route(/\/api\/v1\/files\/directory$/, (route) => {
+    state.folderPosts.push((route.request().postDataJSON() as { path: string }).path);
+    return route.fulfill({ json: { ok: true } });
+  });
   // 端末の WebSocket: 接続したら空の履歴で「Live」にする（実 CLI・実 tmux を使わない）
   await page.routeWebSocket(/\/terminals\/[0-9a-f]+\/connect/, (ws) => {
     ws.send(JSON.stringify({ type: "history_reset", connectionGeneration: 1 }));
@@ -320,10 +330,22 @@ test.describe("AI Commander", () => {
     await sheet.getByRole("button", { name: /フォルダを選ぶ|選ぶ/ }).first().click();
     const picker = page.getByRole("dialog", { name: "作業フォルダを選択" });
     await expect(picker).toBeVisible();
+    // 新しいフォルダをその場で作り、その中へ入って選ぶ（同じ名前・「/」は断る）
+    await picker.getByRole("button", { name: "＋ 新しいフォルダ" }).click();
+    await picker.getByLabel("新しいフォルダの名前").fill("projects");
+    await expect(picker.getByText("同じ名前があります")).toBeVisible();
+    await expect(picker.getByRole("button", { name: "作成" })).toBeDisabled();
+    await picker.getByLabel("新しいフォルダの名前").fill("a/b");
+    await expect(picker.getByText("「/」などは使えません")).toBeVisible();
+    await picker.getByLabel("新しいフォルダの名前").fill("night-batch");
+    await picker.getByRole("button", { name: "作成" }).click();
+    await expect(picker.getByText(`${ROOT}/night-batch`)).toBeVisible();
+    expect(state.folderPosts).toEqual([`${ROOT}/night-batch`]);
+    await page.screenshot({ path: "test-results/commander-new-folder-320.png" });
     await picker.getByRole("button", { name: "このフォルダを選択" }).click();
     await expect(picker).toHaveCount(0);
     // 選んだパスが作業フォルダのボタンへ入る
-    await expect(sheet.getByRole("button", { name: /選ぶ/ })).toContainText(ROOT);
+    await expect(sheet.getByRole("button", { name: /選ぶ/ })).toContainText(`${ROOT}/night-batch`);
 
     // 個数 2・表示名
     await sheet.getByLabel("開く個数").selectOption("2");
@@ -334,7 +356,7 @@ test.describe("AI Commander", () => {
     // アカウントを作ってからコンソールを開いている
     expect(state.accountPosts).toEqual([{ cli: "codex", name: "sub2" }]);
     expect(state.consolePosts).toEqual([{
-      cli: "codex", account: "sub2", cwd: ROOT, count: 2, label: "夜間バッチ",
+      cli: "codex", account: "sub2", cwd: `${ROOT}/night-batch`, count: 2, label: "夜間バッチ",
     }]);
     await expect(page.locator("[data-commander-row]")).toHaveCount(4);
     await expect(page.getByText("2 個のコンソールを開きました")).toBeVisible();
