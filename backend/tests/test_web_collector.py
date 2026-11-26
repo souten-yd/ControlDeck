@@ -267,3 +267,15 @@ def test_collect_returns_table_metadata_without_changing_body(server, monkeypatc
     assert out["status"] == "success" and "窒化ガリウム" in out["markdown"]
     assert len(out["tables"]) == 1
     assert out["tables"][0]["cells"][-1]["text"] == "10 W"
+
+
+def test_structured_tables_reject_missing_cells_and_hidden_tables():
+    """目的: 2026-11-26 合成評価で検出した誤った行列・非表示の情報抽出を防ぐ。"""
+    from app.web_collector.html_tables import extract_tables
+
+    normal = '<table><tr><th>GPU</th><th>Decode</th></tr><tr><td>R9700</td><td>60</td></tr></table>'
+    assert extract_tables(normal)[0]
+    assert not extract_tables(normal.replace('<td>R9700</td>', ''))[0]
+    assert not extract_tables(normal.replace('<table>', '<table hidden>'))[0]
+    assert not extract_tables(normal.replace('<table>', '<table aria-hidden="true">'))[0]
+    assert not extract_tables('<div style="display: none">' + normal + '</div>')[0]
