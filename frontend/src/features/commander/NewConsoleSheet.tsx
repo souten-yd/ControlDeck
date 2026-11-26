@@ -111,7 +111,8 @@ export function NewConsoleSheet({
 
         <section aria-label="アカウント">
           <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">アカウント</h3>
-          {multi ? (
+          {multi || cli?.connector ? (
+            <>
             <ul className="grid gap-1.5" role="radiogroup" aria-label="アカウントを選ぶ">
               {(accounts ?? []).map((a) => (
                 <li key={a.name}>
@@ -127,7 +128,7 @@ export function NewConsoleSheet({
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate">
-                      {accountTitle(a.name, a.label, true)}
+                      {accountTitle(a.name, a.label, true, a.title)}
                       {a.logged_in === true && <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">ログイン済み</span>}
                       {a.logged_in === false && <span className="ml-2 text-[10px] text-zinc-400">未ログイン（開いてから CLI の中でログイン）</span>}
                     </span>
@@ -135,7 +136,7 @@ export function NewConsoleSheet({
                   </button>
                 </li>
               ))}
-              <li>
+              {multi && <li>
                 <button
                   type="button"
                   role="radio"
@@ -149,8 +150,8 @@ export function NewConsoleSheet({
                 >
                   ＋ 新しいアカウント
                 </button>
-              </li>
-              {account === "__new__" && (
+              </li>}
+              {multi && account === "__new__" && (
                 <li className="pl-1">
                   <input
                     value={newAccountName}
@@ -163,13 +164,17 @@ export function NewConsoleSheet({
                 </li>
               )}
             </ul>
+            {cli?.connector === "controldeck-opencode" && (
+              <p className="mt-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                ControlDeck の OpenCode を、選んだ接続（OpenCode 画面に登録した API）で開きます。接続を増やすのは OpenCode 画面の設定です。
+              </p>
+            )}
+            </>
           ) : (
             <p className="rounded-xl bg-zinc-50 px-3 py-2.5 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
               {(() => {
                 const title = accountTitle("default", accounts?.[0]?.label, true);
-                return cli?.connector === "controldeck-opencode"
-                  ? `${title}: ControlDeck の OpenCode を、OpenCode 画面に登録した API（ゲートウェイ・OpenRouter など）で開きます。`
-                  : `${title}: この CLI は既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。`;
+                return `${title}: この CLI は既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。`;
               })()}
             </p>
           )}

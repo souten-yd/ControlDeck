@@ -32,6 +32,7 @@ interface AccountFixture {
   default: boolean;
   logged_in: boolean | null;
   label: string;
+  title?: string;
 }
 
 interface ConsoleFixture {
@@ -100,7 +101,10 @@ function initialState(): CommanderState {
         { name: "work", default: false, logged_in: false, label: "" },
       ],
       codex: [{ name: "default", default: true, logged_in: null, label: "" }],
-      opencode: [{ name: "default", default: true, logged_in: null, label: "ControlDeck の API" }],
+      opencode: [
+        { name: "default", default: true, logged_in: null, label: "ControlDeck の API", title: "OpenCode の設定のモデル（auto・ゲートウェイ）" },
+        { name: "api-1a2b3c4d5e", default: false, logged_in: null, label: "", title: "DeepSeek V4.1 Flash（openrouter）" },
+      ],
       gemini: [{ name: "default", default: true, logged_in: null, label: "" }],
     },
     consolePosts: [],
@@ -289,7 +293,9 @@ test.describe("AI Commander", () => {
 
     // OpenCode は ControlDeck の API で開く（アカウントは既定の 1 つ。付けた名前が出る）
     await sheet.getByRole("radio", { name: /OpenCode/ }).click();
-    await expect(sheet.getByText(/ControlDeck の API: ControlDeck の OpenCode を、OpenCode 画面に登録した API/)).toBeVisible();
+    await expect(sheet.getByRole("radio", { name: /ControlDeck の API/ })).toBeChecked();
+    await expect(sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ })).toBeVisible();
+    await expect(sheet.getByText(/選んだ接続（OpenCode 画面に登録した API）で開きます/)).toBeVisible();
     await expect(sheet.getByRole("radio", { name: "＋ 新しいアカウント" })).toHaveCount(0);
 
     // codex の新しいアカウントをその場で作る
@@ -341,8 +347,9 @@ test.describe("AI Commander", () => {
     await expect(claudeSection.getByText("既定のアカウント（普段の設定）")).toBeVisible();
     await expect(claudeSection.getByText("ログイン済み", { exact: true })).toBeVisible();
     await expect(claudeSection.getByText("work")).toBeVisible();
-    await expect(sheet.getByRole("region", { name: "Gemini CLIのアカウント" }))
-      .toContainText("既定のアカウントだけ使えます");
+    // まず対象のコンソールを選ぶ。選んだものの登録済みのアカウントだけが出る
+    await expect(sheet.getByRole("radio", { name: "Claude Code" })).toBeChecked();
+    await expect(sheet.getByRole("region", { name: "Gemini CLIのアカウント" })).toHaveCount(0);
 
     // 作る
     await claudeSection.getByLabel("Claude Codeの新しいアカウント名").fill("sub");
@@ -367,11 +374,20 @@ test.describe("AI Commander", () => {
     await claudeSection.getByRole("button", { name: "保存" }).click();
     await expect(claudeSection.getByText("仕事用")).toBeVisible();
     expect(state.labelPuts).toEqual([{ cli: "claude", name: "default", label: "仕事用" }]);
-    // OpenCode は API で開く案内と、既定のアカウントの名前
+    // OpenCode を選ぶと、OpenCode 画面に登録した接続がアカウントとして並ぶ
+    await sheet.getByRole("radio", { name: "OpenCode" }).click();
     const opencodeSection = sheet.getByRole("region", { name: "OpenCodeのアカウント" });
     await expect(opencodeSection).toContainText("ControlDeck の API");
-    await expect(opencodeSection).toContainText("OpenCode 画面に登録した API");
+    await expect(opencodeSection).toContainText("DeepSeek V4.1 Flash（openrouter）");
+    await expect(opencodeSection).toContainText("OpenCode 画面に登録した接続");
     await expect(opencodeSection.getByLabel("OpenCodeの新しいアカウント名")).toHaveCount(0);
+    await expect(sheet.getByRole("region", { name: "Claude Codeのアカウント" })).toHaveCount(0);
+    await sheet.getByRole("radio", { name: "Gemini CLI" }).click();
+    await expect(sheet.getByRole("region", { name: "Gemini CLIのアカウント" })).toContainText("既定のアカウントだけ使えます");
+    await expect(sheet.getByRole("radio", { name: "Gemini CLI" })).toBeChecked();
+    await expect(sheet.getByRole("radio", { name: "OpenCode" })).not.toBeChecked();
+    await expect(sheet.getByRole("radio", { name: "Claude Code" })).not.toBeChecked();
+    await page.waitForTimeout(400);
     await page.screenshot({ path: "test-results/commander-accounts-320.png", fullPage: true });
   });
 

@@ -155,7 +155,7 @@ async def create_consoles(
     cli = _cli_or_400(body.cli)
     if not accounts.is_installed(cli):
         raise HTTPException(status_code=400, detail=f"{cli.name} は導入されていません")
-    if body.account != accounts.DEFAULT_ACCOUNT and not cli.env_targets:
+    if body.account != accounts.DEFAULT_ACCOUNT and not cli.env_targets and not cli.connector:
         raise HTTPException(status_code=400, detail=f"{cli.name} は既定のアカウントだけ使えます")
     if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
         try:

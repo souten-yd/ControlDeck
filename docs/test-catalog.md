@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 258 ファイル、2561 テスト（目的の未記入 93 ファイル）
+- backend: 258 ファイル、2562 テスト（目的の未記入 93 ファイル）
 - E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
@@ -703,6 +703,7 @@
 - `test_consoles_api_rejects_bad_requests` — 入力の断り: 不明な CLI・未導入・許可の外の作業フォルダ・無いアカウント・個数。
 - `test_consoles_api_delete_only_marked_sessions` — コンソールの削除: 印のあるセッションだけを閉じられる（Terminal と同じ閉じ方）。
 - `test_opencode_console_uses_the_controldeck_opencode_api` — OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API）で開く。素の opencode は使わない。
+- `test_opencode_accounts_are_the_registered_api_connections` — OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
 
 ### backend/tests/test_compaction.py
 

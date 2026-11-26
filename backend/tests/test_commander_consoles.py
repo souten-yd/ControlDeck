@@ -356,6 +356,49 @@ def test_opencode_console_uses_the_controldeck_opencode_api(admin_client, monkey
     listed = {row["id"]: row for row in admin_client.get("/api/v1/commander/consoles").json()["consoles"]}
     assert listed["aa000000"]["commander_account_label"] == "ControlDeck の API"
     assert "commander_account_label" not in listed["aa000001"], "名前の無いアカウントには付けない"
-    # 名前付きのアカウントは作れない・選べない
+    # 登録に無い接続は選べない
     assert admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
-                             json={"cli": "opencode", "account": "work", "cwd": _root()}).status_code == 400
+                             json={"cli": "opencode", "account": "work", "cwd": _root()}).status_code == 404
+
+
+def test_opencode_accounts_are_the_registered_api_connections(admin_client, monkeypatch):
+    """OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
+
+    根拠: 2026-11-27 利用者「対象のコンソールを選んで、登録済みのアカウントが出るように」。選んだ接続の
+    モデルで開き、接続ごとに設定フォルダを分ける（並べて開いた TUI の設定を書き換えない）。
+    """
+    from app.integrations.opencode import provider
+    from app.commander import router as commander_router
+
+    monkeypatch.setattr(provider, "get_settings", lambda: {"model": "auto", "base_url": "http://x/v1"})
+    monkeypatch.setattr(provider, "_cloud_models_for_opencode", lambda: [
+        {"id": "cloud:openrouter/deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "provider": "openrouter"},
+    ])
+    rows = admin_client.get("/api/v1/commander/accounts/opencode").json()["accounts"]
+    assert [r["default"] for r in rows] == [True, False]
+    assert "auto" in rows[0]["title"] and rows[1]["title"] == "DeepSeek V4.1 Flash（openrouter）"
+    api_name = rows[1]["name"]
+    assert accounts.ACCOUNT_NAME_RE.fullmatch(api_name) and api_name.startswith("api-")
+    # 接続にも名前を付けられる
+    assert admin_client.put(f"/api/v1/commander/accounts/opencode/{api_name}/label", headers=CSRF_HEADERS,
+                            json={"label": "DeepSeek"}).status_code == 200
+
+    calls = []
+
+    def fake_tui(*, project_path, owner_user_id=None, model="", config_key="", **_):
+        calls.append((model, config_key))
+        return "exec /opt/opencode2", project_path
+
+    fake = FakeManager()
+    monkeypatch.setattr(consoles, "manager", fake)
+    monkeypatch.setattr(accounts, "is_installed", lambda cli: True)
+    monkeypatch.setattr(provider, "tui_command", fake_tui)
+    monkeypatch.setattr(commander_router, "_warm_opencode_llm", lambda: None)
+    r = admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
+                          json={"cli": "opencode", "account": api_name, "cwd": _root()})
+    assert r.status_code == 201, r.text
+    assert calls == [("cloud:openrouter/deepseek/deepseek-v4.1-flash", api_name)]
+    assert r.json()["opened"][0]["commander_account_label"] == "DeepSeek"
+    admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
+                      json={"cli": "opencode", "cwd": _root()})
+    assert calls[-1] == ("auto", ""), "設定のモデルは今までどおりの設定フォルダ"

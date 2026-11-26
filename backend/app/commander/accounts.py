@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -112,6 +113,53 @@ def is_installed(cli: CliDef) -> bool:
     return shutil.which(cli.executable) is not None
 
 
+# ---- OpenCode の接続（OpenCode 画面に登録した API） --------------------------------------
+
+def opencode_connections() -> list[dict]:
+    """OpenCode のアカウント = OpenCode 画面に登録した接続（ゲートウェイの設定のモデルと、送信を許した外部モデル）。
+
+    name は印・環境に使うので ACCOUNT_NAME_RE の形（既定は "default"、外部は "api-" + 識別子の hash）。
+    model は tui_command へ渡すモデル（ゲートウェイ経由）。title は画面の既定の見せ方。
+    """
+    from app.integrations.opencode import provider
+
+    settings = provider.get_settings()
+    model = str(settings.get("model") or "auto")
+    rows = [{"name": DEFAULT_ACCOUNT, "model": model,
+             "title": f"OpenCode の設定のモデル（{model}・ゲートウェイ）"}]
+    try:
+        cloud = provider._cloud_models_for_opencode()
+    except Exception:  # noqa: BLE001 - 外部モデルの都合で一覧を止めない
+        cloud = []
+    for item in cloud:
+        model_id = str(item.get("id") or "")
+        if not model_id:
+            continue
+        digest = hashlib.sha1(model_id.encode("utf-8")).hexdigest()[:10]
+        provider_name = str(item.get("provider") or "")
+        name = str(item.get("name") or model_id)
+        rows.append({"name": f"api-{digest}", "model": model_id,
+                     "title": f"{name}（{provider_name}）" if provider_name else name})
+    return rows
+
+
+def opencode_connection(account: str) -> dict:
+    for row in opencode_connections():
+        if row["name"] == account:
+            return row
+    raise FileNotFoundError("OpenCode の接続が見つかりません（OpenCode 画面の設定を確かめてください）")
+
+
+def account_exists(cli: CliDef, account: str) -> bool:
+    if account == DEFAULT_ACCOUNT:
+        return True
+    if not ACCOUNT_NAME_RE.fullmatch(account):
+        return False
+    if cli.connector == CONNECTOR_CONTROLDECK_OPENCODE:
+        return any(row["name"] == account for row in opencode_connections())
+    return account_dir(cli, account).is_dir()
+
+
 # ---- 画面に出す名前 ----------------------------------------------------------------------
 
 def _labels_path() -> Path:
@@ -157,7 +205,7 @@ def set_account_label(cli: CliDef, account: str, label: str) -> str:
     """アカウントに画面の名前を付ける（空なら外す）。既定のアカウントにも付けられる。"""
     if account != DEFAULT_ACCOUNT:
         validate_name(account)
-        if not account_dir(cli, account).is_dir():
+        if not account_exists(cli, account):
             raise FileNotFoundError("アカウントが見つかりません")
     label = clean_label(label)
     labels = _read_labels()
@@ -240,6 +288,10 @@ def _default_logged_in(cli: CliDef) -> bool | None:
 def list_accounts(cli: CliDef) -> list[dict]:
     """アカウントの一覧。既定のアカウントは常に先頭（作る・消すはできない）。"""
     labels = labels_for(cli.id)
+    if cli.connector == CONNECTOR_CONTROLDECK_OPENCODE:
+        return [{"name": row["name"], "default": row["name"] == DEFAULT_ACCOUNT, "logged_in": None,
+                 "label": labels.get(row["name"], ""), "title": row["title"]}
+                for row in opencode_connections()]
     rows = [{"name": DEFAULT_ACCOUNT, "default": True, "logged_in": _default_logged_in(cli),
              "label": labels.get(DEFAULT_ACCOUNT, "")}]
     root = accounts_root() / cli.id
@@ -261,6 +313,9 @@ def env_for(cli: CliDef, account: str) -> dict[str, str] | None:
     値は accounts_root 配下のパスだけ。検証済みのパス以外は create_session に渡さない。
     """
     if account == DEFAULT_ACCOUNT:
+        return None
+    if cli.connector == CONNECTOR_CONTROLDECK_OPENCODE:
+        opencode_connection(validate_name(account))   # 接続はモデルで分ける（環境変数は付けない）
         return None
     if not cli.env_targets:
         raise ValueError(f"{cli.name} は既定のアカウントだけ使えます")

@@ -34,7 +34,8 @@ def list_consoles() -> list[dict]:
     return rows
 
 
-def _command_for(cli: CliDef, workdir: str, user_id: int | None) -> tuple[str, dict[str, str] | None]:
+def _command_for(cli: CliDef, workdir: str, user_id: int | None,
+                 account: str = accounts.DEFAULT_ACCOUNT) -> tuple[str, dict[str, str] | None]:
     """開くコマンドと環境変数。
 
     ControlDeck の OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API・
@@ -43,7 +44,12 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None) -> tuple[str, d
     if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
         from app.integrations.opencode import provider
         try:
-            command, _project = provider.tui_command(project_path=workdir, owner_user_id=user_id)
+            connection = accounts.opencode_connection(account)
+            command, _project = provider.tui_command(
+                project_path=workdir, owner_user_id=user_id, model=connection["model"],
+                # 接続ごとに設定フォルダを分ける（並べて開いた別の接続の TUI の設定を書き換えない）
+                config_key="" if account == accounts.DEFAULT_ACCOUNT else account,
+            )
         except provider.CodeAgentError as exc:
             raise ValueError(str(exc)) from exc
         return command, None
@@ -67,7 +73,7 @@ def create_consoles(
     if not workdir.is_dir():
         raise NotADirectoryError(f"ディレクトリではありません: {cwd}")
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
-    command, _ = _command_for(cli, str(workdir), user_id)
+    command, _ = _command_for(cli, str(workdir), user_id, account)
 
     opened: list[dict] = []
     reason = ""
