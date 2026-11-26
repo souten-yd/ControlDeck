@@ -605,7 +605,10 @@ cmd_e2e() {
   # E2E のブラウザが足りないときは、勝手に入れず止める（外部から取得するので、入れるのは利用者のボタン操作だけ）
   (cd "$REPO_ROOT/backend" && env -u CONTROL_DECK_CONFIG "$VENV/bin/python" -m app.features.playwright_browsers \
     e2e-check "$(deck_data_dir)" "$PLAYWRIGHT_BROWSERS_PATH") || die "E2E のブラウザを導入してから、もう一度実行してください"
-  [ -f "$REPO_ROOT/frontend/dist/index.html" ] || (cd "$REPO_ROOT/frontend" && npm run build) || die "frontend のビルドに失敗しました"
+  # dist が無い・src（または index.html・設定）が dist より新しいときだけ組み直す（古い画面で試験しない）
+  if [ ! -f "$REPO_ROOT/frontend/dist/index.html" ] || [ -n "$(find "$REPO_ROOT/frontend/src" "$REPO_ROOT/frontend/index.html" "$REPO_ROOT/frontend/vite.config.ts" -newer "$REPO_ROOT/frontend/dist/index.html" -print -quit 2>/dev/null)" ]; then
+    (cd "$REPO_ROOT/frontend" && npm run build) || die "frontend のビルドに失敗しました"
+  fi
   local port="${CONTROL_DECK_E2E_PORT:-18765}"
   if curl -fsS -o /dev/null "http://127.0.0.1:$port/api/v1/health" 2>/dev/null; then
     die "ポート $port は使用中です（CONTROL_DECK_E2E_PORT で変えられます）"

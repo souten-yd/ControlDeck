@@ -231,6 +231,24 @@ test.describe("AI Commander", () => {
     await page.reload();
     await expect(rows).toHaveCount(1);
     await page.screenshot({ path: "test-results/commander-320-dark.png", fullPage: true });
+
+    // 表示の切り替え（文字の無いアイコンのボタン）: タイルにすると中身が見え、再読み込みでも覚えている
+    const toggle = page.locator("[data-commander-view-toggle]");
+    await expect(toggle).toHaveAttribute("data-view", "list");
+    await expect(toggle).toHaveAccessibleName("中身を見ながら表示");
+    expect((await toggle.innerText()).trim()).toBe("");
+    // 見出しが切れない（切り替えのボタンを足しても 320px に収まる）
+    expect(await page.getByRole("heading", { name: "AI Commander" }).evaluate((h) => h.scrollWidth <= h.clientWidth)).toBe(true);
+    await toggle.click();
+    const tiles = page.locator("[data-commander-tile]");
+    await expect(tiles).toHaveCount(1);
+    await expect(rows).toHaveCount(0);
+    await expect.poll(async () => tiles.first().locator("[data-terminal-root]").getAttribute("data-terminal-replaying")).toBe("false");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+    await page.screenshot({ path: "test-results/commander-320-tiles-dark.png", fullPage: true });
+    await page.reload();
+    await expect(tiles).toHaveCount(1);
+    await expect(toggle).toHaveAttribute("data-view", "tiles");
   });
 
   test("＋ コンソール: 未導入は選べない・アカウント・フォルダ・個数・表示名を選んで開ける（320px）", async ({ page, context }) => {
@@ -360,5 +378,13 @@ test.describe("AI Commander", () => {
     await expect(tiles).toHaveCount(2);
     await expect.poll(async () => first.locator("[data-terminal-root]").getAttribute("data-terminal-replaying")).toBe("false");
     await page.screenshot({ path: "test-results/commander-1280-dark.png", fullPage: true });
+
+    // PC でも一覧へ切り替えられる（端末は埋め込まない）
+    await expect(page.locator("[data-commander-view-toggle]")).toHaveAccessibleName("一覧で表示");
+    await page.locator("[data-commander-view-toggle]").click();
+    await expect(page.locator("[data-commander-row]")).toHaveCount(2);
+    await expect(tiles).toHaveCount(0);
+    await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
+    await page.screenshot({ path: "test-results/commander-1280-list-dark.png", fullPage: true });
   });
 });

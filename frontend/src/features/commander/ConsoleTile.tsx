@@ -8,7 +8,7 @@ import type { CommanderConsole } from "../../api/commander";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
-const TILE_TERMINAL_HEIGHT = "h-[300px] xl:h-[340px]";
+const TILE_TERMINAL_HEIGHT = "h-[220px] md:h-[300px] xl:h-[340px]";
 
 export function activityText(timestamp: number): string {
   if (!timestamp) return "N/A";
