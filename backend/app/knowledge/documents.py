@@ -255,7 +255,8 @@ def search_documents(question: str, *, names: Iterable[str] | None = None, consu
     for entry in docs.values():
         scores = sorted((h["score"] for h in entry["hits"]), reverse=True)
         entry["score"] = round(scores[0] + 0.2 * sum(scores[1:4]), 5)
-    exact_all = find_by_identifier(question)
+    explicit = textproc.has_explicit_syntax(question)
+    exact_all = [] if explicit else find_by_identifier(question)
     for ref in exact_all:   # 番号が完全に一致した文書は、本文の当たりがあっても先頭へ
         if ref in docs:
             docs[ref]["relation"] = "exact"
@@ -275,7 +276,7 @@ def search_documents(question: str, *, names: Iterable[str] | None = None, consu
                           "sensitivity": doc["sensitivity"], "ai_use": doc["ai_use"], "score": 1.0, "best": 1.0,
                           "hits": [], "relation": "exact"})
     ranked = ranked[:limit]
-    if expand:
+    if expand and not explicit:
         have = {d["ref"] for d in ranked}
         extra = []
         for doc in ranked[:3]:
