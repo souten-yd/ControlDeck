@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-27 AI の CLI を設定から導入・更新・削除／Claude の使用率を Nexarch の外の分も
+- 利用者「各 CLI の導入と削除と更新ができるように Settings の機能に追加して」: 設定 → オプション機能に「AI の CLI（Nexarch）」の分類を足し、Claude Code（@anthropic-ai/claude-code）・Codex CLI（@openai/codex）・Gemini CLI（@google/gemini-cli）を置いた。新しい種類 `npm-global`: 利用者の npm のグローバル（`npm prefix -g`、この PC は ~/.local/npm-global。端末でも使う実体）へ `npm install -g`・`@latest` で更新・`npm uninstall -g`。管理領域に別の写しを作らない。更新ありの確認は npm の公開情報（既存の仕組み）。実機で Claude Code 2.1.332・Codex 0.172.0 を導入済み、Gemini は未導入と判定。
+- 利用者「Claude は週や 5 時間の制限が出ないの？」: Claude の値は Nexarch で開いたコンソールが応答したときにしか来なかった。アカウントの管理の Claude の各アカウントに「使用率を取る」スイッチ: そのアカウントの Claude の settings.json（既定は ~/.claude、名前付きは CLAUDE_CONFIG_DIR）へ使用率を書く statusline を足す・外す。ほかの設定は変えず、利用者の別の statusline は上書きしない。最初の 1 回だけ元を settings.json.bak-nexarch に残す。
+- 確かめたこと: 試験（npm の呼び方・導入/更新/削除の状態、statusline の足し外し・上書きしない・元を残す）、E2E 5 件、実機の状態。
+
 ## 2026-11-27 Nexarch の AI チームの設計（調査と比較）
 - 利用者「AI チームを作りたい。情報の橋渡し、リーダーはローカル LLM もフロンティアも自由に。どういう形が使いやすいか調査検討して」。`docs/PLAN-nexarch-team.md` に調査（Claude Code agent teams・MCP Agent Mail・Agent Deck・各 CLI の subagent・Anthropic の multi-agent・ローカル LLM の失敗の論文）と推奨の形・段（T1〜T4）をまとめた。コードはまだ。
 

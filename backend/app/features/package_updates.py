@@ -10,7 +10,7 @@ import time
 
 from app.features import registry
 
-PACKAGE_KINDS = ("npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp")
+PACKAGE_KINDS = ("npm", "npm-global", "pip", "python-lib", "opencode-plugin", "opencode-mcp")
 _CACHE_S = 1800
 _cache: dict[str, tuple[float, dict]] = {}
 

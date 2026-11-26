@@ -145,7 +145,7 @@ def test_accounts_api_create_list_delete_and_audit(admin_client):
     names = [row["name"] for row in body["accounts"]]
     assert names[0] == "default" and "work" in names
     # 返事は名前・既定か・ログイン済み・画面の名前だけ（鍵・トークン・中身は無い）
-    assert set(body["accounts"][0]) == {"name", "default", "logged_in", "label", "usage"}
+    assert set(body["accounts"][0]) == {"name", "default", "logged_in", "label", "usage", "usage_statusline"}
 
     # 既定のアカウントは消せない
     assert admin_client.delete(

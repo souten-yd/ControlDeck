@@ -22,6 +22,8 @@ export interface CommanderAccount {
   /** 既定の見せ方（OpenCode の接続は「モデル名（提供元）」など）。 */
   title?: string;
   usage?: CommanderUsage | null;
+  /** Claude: アカウントの設定の statusline（ours=Nexarch が使用率を取る・other=利用者の別のもの・none）。 */
+  usage_statusline?: "ours" | "other" | "none";
 }
 
 /** アカウントの見せ方: 画面の名前 → 接続の見せ方 → 既定／フォルダの名前。 */
@@ -146,6 +148,10 @@ export async function putCommanderSettings(body: { resume_message: string }): Pr
 
 export async function setConsoleResumeMessage(id: string, message: string): Promise<{ ok: boolean }> {
   return api(`/commander/consoles/${encodeURIComponent(id)}/resume-message`, { method: "PUT", json: { message } });
+}
+
+export async function setUsageStatusline(name: string, enabled: boolean): Promise<{ usage_statusline: string }> {
+  return api(`/commander/accounts/claude/${encodeURIComponent(name)}/usage-statusline`, { method: "PUT", json: { enabled } });
 }
 
 export async function fetchConsoles(): Promise<CommanderConsole[]> {

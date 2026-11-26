@@ -765,6 +765,7 @@ function ControlDeckUpdateSection() {
 /** オプション機能の分け方（backend の features.registry.CATEGORIES と同じ順）。 */
 const FEATURE_CATEGORIES: [string, string, string][] = [
   ["opencode", "OpenCode（開発）", "OpenCode 本体と、そこで使う拡張・道具（レビュー、UI 検証、文書の参照など）"],
+  ["cli", "AI の CLI（Nexarch）", "Nexarch のコンソールで使う Claude Code・Codex・Gemini。端末でも使う npm のグローバルへ入れ・更新し・消します。ログインは CLI の中で行います"],
   ["runtime", "LLM ランタイム（GPU）", "ローカル LLM を動かす推論エンジン。モデルの登録と切り替えは Models で行います"],
   ["addon", "拡張アプリ", "画像・音・特許などのアプリ。導入すると左のメニューに並びます"],
   ["speech", "音声（TTS / ASR）", "音声合成と音声認識のエンジン。使うエンジンの選択と試し聞きは Models の TTS / ASR で行います"],
@@ -774,7 +775,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm"; route_gated: boolean;
+  kind: "npm" | "npm-global" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   /** 派生（例: Sly-Radiance → radiance）。独立したカードにせず、親のカードの中の切り替えで出す。 */
@@ -829,7 +830,7 @@ interface ReleaseStatus {
 }
 
 /** pip・npm で入れる機能（PyPI / npm の最新版と比べて「更新あり」を出せる）。 */
-const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
+const PACKAGE_KINDS: AddonState["kind"][] = ["npm", "npm-global", "pip", "python-lib", "opencode-plugin", "opencode-mcp"];
 /** チェックを付けてまとめて導入できる種類（GPU ランタイム・アプリは個別に）。 */
 const BULK_KINDS: AddonState["kind"][] = [...PACKAGE_KINDS, "managed-script", "playwright-browsers"];
 

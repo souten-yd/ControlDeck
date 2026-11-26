@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models import User
 from app.schemas.commander import (
     AccountCreate, AccountLabel, CommanderSettingsBody, ConsoleAutoResume, ConsoleCreate, ResumeMessage,
+    UsageStatusline,
 )
 from app.security.deps import require_permission
 from app.terminals.router import streams
@@ -216,6 +217,28 @@ def set_console_autoresume(
     audit.record(db, "commander.console.autoresume_setting", user=user, resource_type="commander_console",
                  resource_id=session_id, request=request, metadata={"enabled": body.enabled})
     return {"ok": True, "enabled": body.enabled}
+
+
+@router.put("/accounts/claude/{name}/usage-statusline")
+def set_usage_statusline(
+    name: str,
+    body: UsageStatusline,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """Claude のアカウントの設定に、5 時間・週の使用率を書く statusline を足す・外す（Nexarch の外の分も取る）。"""
+    from app.commander import usage
+
+    if name != accounts.DEFAULT_ACCOUNT and not accounts.account_exists(accounts.CLIS["claude"], name):
+        raise HTTPException(status_code=404, detail="アカウントが見つかりません")
+    try:
+        state = usage.set_account_statusline(name, body.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(db, "commander.account.usage_statusline", user=user, resource_type="commander_account",
+                 resource_id=f"claude/{name}", request=request, metadata={"enabled": body.enabled})
+    return {"name": name, "usage_statusline": state}
 
 
 @router.get("/settings")

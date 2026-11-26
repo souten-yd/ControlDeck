@@ -22,6 +22,36 @@ FEATURES: dict[str, dict] = {
     #
     # 実行ファイルに opencode2 を選ぶのは、PATH 上の外部 v1 を「外部導入の v2」と
     # 誤検出しないため。v1 の bin は opencode だけで、opencode2 を持つのは v2 だけ。
+    # Nexarch で使う AI の CLI。利用者の npm のグローバル（~/.local/npm-global など。端末でも使う実体）へ
+    # npm install -g / uninstall -g する（ControlDeck の管理領域に別の写しを作らない）。2026-11-27 利用者
+    # 「各 CLI の導入と削除と更新ができるように」。
+    "claude-code": {
+        "name": "Claude Code",
+        "kind": "npm-global",
+        "package": "@anthropic-ai/claude-code",
+        "executable": "claude",
+        "category": "cli",
+        "route_gated": False,
+        "summary": "Anthropic のコーディング CLI。Nexarch のコンソールで使う（ログインは CLI の中で）",
+    },
+    "codex-cli": {
+        "name": "Codex CLI",
+        "kind": "npm-global",
+        "package": "@openai/codex",
+        "executable": "codex",
+        "category": "cli",
+        "route_gated": False,
+        "summary": "OpenAI のコーディング CLI。Nexarch のコンソールで使う（ログインは CLI の中で）",
+    },
+    "gemini-cli": {
+        "name": "Gemini CLI",
+        "kind": "npm-global",
+        "package": "@google/gemini-cli",
+        "executable": "gemini",
+        "category": "cli",
+        "route_gated": False,
+        "summary": "Google のコーディング CLI。Nexarch のコンソールで使う（ログインは CLI の中で）",
+    },
     "opencode-v2": {
         "name": "OpenCode v2",
         "kind": "npm",
@@ -252,6 +282,7 @@ FEATURES.update(_system_packages.FEATURES)
 # 画面での分け方。導入・更新の仕組み（kind）ではなく、利用者から見た用途で分ける。
 CATEGORIES = {
     "opencode": "OpenCode（開発）",
+    "cli": "AI の CLI（Nexarch）",
     "runtime": "LLM ランタイム（GPU）",
     "addon": "拡張アプリ",
     "speech": "音声（TTS / ASR）",
@@ -290,7 +321,29 @@ def _release_catalog() -> dict[str, dict]:
 FEATURES.update(_release_catalog())
 # package.json を導入の印にする npm の種類（実行ファイルを PATH に持たない）。
 NPM_MODULE_KINDS = ("opencode-plugin", "opencode-mcp")
-NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items() if value["kind"] in ("npm", *NPM_MODULE_KINDS)}
+NPM_PACKAGES = {key: value["package"] for key, value in FEATURES.items()
+                if value["kind"] in ("npm", "npm-global", *NPM_MODULE_KINDS)}
+
+
+def _npm_global_bin() -> Path | None:
+    """npm のグローバルの bin（`npm prefix -g` の bin）。npm が無ければ None。"""
+    npm = shutil.which("npm")
+    if npm is None:
+        return None
+    try:
+        result = subprocess.run([npm, "prefix", "-g"], capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    prefix = result.stdout.strip() if result.returncode == 0 else ""
+    return Path(prefix) / "bin" if prefix else None
+
+
+def _npm_global(args: list[str]) -> subprocess.CompletedProcess[str]:
+    npm = shutil.which("npm")
+    if npm is None:
+        raise FeatureError("npmが必要です")
+    return subprocess.run([npm, *args, "--no-fund", "--no-audit"], capture_output=True, text=True,
+                          timeout=900, check=False)
 KNOWN_FEATURES = set(FEATURES)
 
 
@@ -339,6 +392,10 @@ def _feature_root(feature_id: str) -> Path:
 
 def _managed_executable(feature_id: str) -> Path:
     spec = FEATURES[_known(feature_id)]
+    if spec["kind"] == "npm-global":
+        # 利用者の npm のグローバルの bin（端末でも使う実体）
+        bindir = _npm_global_bin()
+        return (bindir / spec["executable"]) if bindir else Path("/nonexistent") / spec["executable"]
     root = _feature_root(feature_id)
     if spec["kind"] == "cpu-llm":
         from app.news import cpu_llm
@@ -444,6 +501,12 @@ def executable(feature_id: str) -> Path | None:
     if spec["kind"] == "release-bundle":
         managed = _managed_executable(feature_id)
         return managed.resolve() if managed.is_file() and os.access(managed, os.X_OK) else None
+    if spec["kind"] == "npm-global":
+        managed = _managed_executable(feature_id)
+        if managed.is_file() and os.access(managed, os.X_OK):
+            return managed.resolve()
+        external = shutil.which(spec["executable"])
+        return Path(external).resolve() if external else None
     if spec["kind"] in NPM_MODULE_KINDS:
         # 管理領域に入れたものだけを扱う（外部の同名パッケージは拾わない）。
         managed = _managed_executable(feature_id)
@@ -665,7 +728,7 @@ def status(feature_id: str) -> dict:
     installed = binary is not None if spec["kind"] != "release-bundle" else installed
     toolchain = (
         True if spec["kind"] == "release-bundle"
-        else shutil.which("npm") if spec["kind"] in ("npm", *NPM_MODULE_KINDS)
+        else shutil.which("npm") if spec["kind"] in ("npm", "npm-global", *NPM_MODULE_KINDS)
         else shutil.which("git") if spec["kind"] == "managed-script" else shutil.which("python3")
     )
     # route_gatedでないアドオンは、導入＝利用可能（有効化の一手間と再読み込みを求めない）。
@@ -803,6 +866,8 @@ def _install_package(feature_id: str, *, latest: bool) -> subprocess.CompletedPr
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise FeatureError(f"{spec['name']}の導入に失敗しました: {exc}") from exc
     package = spec["package"]
+    if spec["kind"] == "npm-global":
+        return _npm_global(["install", "-g", f"{package}@latest" if latest else package])
     if spec["kind"] == "pip":
         return _pip_install(feature_id, package)
     if spec["kind"] in NPM_MODULE_KINDS:
@@ -1154,6 +1219,12 @@ def uninstall(feature_id: str) -> dict:
     if FEATURES[feature_id]["kind"] == "managed-script":
         # 導入先（例 ~/.local/share/searxng）と Apps の登録を巻き込むので、ここからは消さない
         raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません（Apps から管理）")
+    if FEATURES[feature_id]["kind"] == "npm-global":
+        result = _npm_global(["uninstall", "-g", FEATURES[feature_id]["package"]])
+        if result.returncode != 0:
+            raise FeatureError(f"{FEATURES[feature_id]['name']}の削除に失敗しました{_tail(result)}")
+        invalidate_feature_cache()
+        return status(feature_id)
     if FEATURES[feature_id].get("models"):
         from app.news import imagegen
 
