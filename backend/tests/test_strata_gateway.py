@@ -1,4 +1,8 @@
-"""Strata must not download a model or alter the active runtime by default."""
+"""Strata must not download a model or alter the active runtime by default.
+
+加えて、目録（strata_catalog.py）の全系列・全量子化が登録でき、古い登録の設定が壊れないことを守る。
+根拠: 2026-11-26 の指示書 M1（目録を 1 か所へ。0.2.22 の Inkling は思考あり）。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -78,13 +82,20 @@ def test_cannot_register_untrusted_family_or_injected_alias(monkeypatch, tmp_pat
 
 
 def test_unsloth_flash_next_sizes_are_registrable(monkeypatch, tmp_path):
+    """目的: 目録にある Unsloth の全量子化が登録でき、ほかの系列の量子化は混ぜられない。
+    根拠: 2026-11-26 M1 で unsloth の quantum を 2 つから 11 個へ広げた（ud-iq4_xs の既存登録も残す）。
+    """
     _managed(monkeypatch, tmp_path)
     saved = strata_gateway.save_instance("qwen-iq4", family="unsloth", model="ud-iq4_xs", port=8097)
     assert saved["alias"] == "qwen-iq4"
+    # 0.2.22 の目録では q8_0 も ud-iq1_m も登録できる（大きさ未確認の行も含む）。
+    assert strata_gateway.save_instance("qwen-q8", family="unsloth", model="q8_0", port=8098)["model"] == "q8_0"
+    assert strata_gateway.save_instance("qwen-small", family="unsloth", model="ud-iq1_m", port=8099)["model"] == "ud-iq1_m"
     with pytest.raises(strata_gateway.StrataGatewayError):
-        strata_gateway.save_instance("qwen-q8", family="unsloth", model="q8_0", port=8098)
+        strata_gateway.save_instance("qwen-mix", family="qwen", model="ud-iq4_xs", port=8100)
+    # 手作業の変換が要る無検閲の行は、目録にはあるが登録できない。
     with pytest.raises(strata_gateway.StrataGatewayError):
-        strata_gateway.save_instance("qwen-mix", family="qwen", model="ud-iq4_xs", port=8098)
+        strata_gateway.save_instance("orca", family="orca", model="iq3_xxs", port=8101)
 
 
 def test_uninstall_never_deletes_models(monkeypatch, tmp_path):
@@ -359,12 +370,13 @@ def test_strata_refuses_quantizations_it_cannot_run_at_registration(tmp_path):
     assert strata_gateway.gguf_header(q4ks)["general.file_type"] == 14
 
 
-def test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments(monkeypatch, tmp_path):
-    """Inkling 2 Mini（Strata 0.2.19 の strata-inkling）を登録・起動できる。Qwen 用の引数と思考の設定は渡さない。
-    根拠: 2026-11-23 利用者「Strata や Radiance で inkling がサポートされていれば候補として追加できるように」。
-    strata-inkling は --set の値をそのままエンジンの引数へ足す（Strata の terminal/serve/inkling_kind.py）ので、
-    知らない引数（--ple-io・--kv-resident・思考）は起動を壊しうる。思考は持たない（inkling_family.HAS_THINKING=False）。
-    系列名と量子化は 0.2.20 の `strata launch --family inkling-2-mini --model sq-20 --plan` で確かめた。"""
+def test_inkling_2_mini_keeps_thinking_but_not_qwen_only_arguments(monkeypatch, tmp_path):
+    """目的: Inkling 2 Mini を登録・起動するとき、Qwen 用の引数だけを渡さないことを守る。
+    根拠: 2026-11-23 に追加したときは思考なし（0.2.19）だったが、0.2.22 の docs/MODELS.md では
+    thinking levels（none〜max・0〜0.99）に対応する。2026-11-26 M1 で Qwen と同じ /settings の
+    経路に合わせたため、思考の既定は渡す（実機での効きは未確認）。"""
+    import httpx
+
     from app.models_mgmt import local_llm
     _managed(monkeypatch, tmp_path)
     monkeypatch.setattr(local_llm, "find", lambda alias: None)
@@ -374,12 +386,14 @@ def test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments(
                                             model=size, port=port)["model"] == size
     with pytest.raises(strata_gateway.StrataGatewayError):          # Qwen の量子化名は通さない
         strata_gateway.save_instance("ink-bad", family="inkling-2-mini", model="iq3_s", port=8119)
-    with pytest.raises(strata_gateway.StrataGatewayError, match="思考"):
-        strata_gateway.save_instance("ink-think", family="inkling-2-mini", model="sq-20", port=8119, reasoning_effort="low")
+    # 0.2.22 では思考の既定を渡せる（Qwen と同じ経路）。
+    row = strata_gateway.save_instance("ink-think", family="inkling-2-mini", model="sq-20", port=8119,
+                                       reasoning_effort="low", thinking_budget=2048)
+    assert row["reasoning_effort"] == "low" and row["thinking_budget"] == 2048
     with pytest.raises(strata_gateway.StrataGatewayError, match="Qwen系"):
-        strata_gateway.save_instance("ink-kv", family="inkling-2-mini", model="sq-20", port=8119, kv_resident=32768)
+        strata_gateway.save_instance("ink-kv", family="inkling-2-mini", model="sq-20", port=8120, kv_resident=32768)
     with pytest.raises(strata_gateway.StrataGatewayError, match="DSpark"):
-        strata_gateway.save_instance("ink-mtp", family="inkling-2-mini", model="sq-20", port=8119, drafting="mtp")
+        strata_gateway.save_instance("ink-mtp", family="inkling-2-mini", model="sq-20", port=8120, drafting="mtp")
 
     settings = strata_gateway.launch_engine_settings({"family": "inkling-2-mini", "kv_resident": 32768})
     assert "ple-io" not in settings and "kv-resident" not in settings
@@ -391,5 +405,18 @@ def test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments(
     strata_gateway._start_locked("inkling-sq-20", explicit=True)
     joined = " ".join(seen[0])
     assert seen[0][:5] == ["launch", "--family", "inkling-2-mini", "--model", "sq-20"]
-    assert "reasoning-effort" not in joined and "reasoning-budget-tokens" not in joined and "ple-io" not in joined
-    assert strata_gateway.apply_thinking("inkling-sq-20") is False   # 思考の既定を送らない
+    assert "ple-io" not in joined
+    assert "reasoning-effort=off" in joined and "reasoning-budget-tokens=off" in joined
+
+    # 思考の既定は Strata の共有設定へ POST する（Qwen と同じ経路）。
+    sent: list[dict] = []
+    original_client = httpx.Client
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(strata_gateway.httpx, "Client",
+                        lambda **kw: original_client(transport=httpx.MockTransport(transport), **kw))
+    assert strata_gateway.apply_thinking("ink-think") is True
+    assert sent == [{"defaults": {"reasoning_effort": "low", "reasoning_budget_tokens": 2048}}]

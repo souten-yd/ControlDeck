@@ -1497,7 +1497,8 @@ class StrataModelBody(BaseModel):
     model_path: str = Field(default="", max_length=4096)
     model_config = ConfigDict(extra="forbid")
     alias: str = Field(min_length=1, max_length=48)
-    family: Literal["qwen", "unsloth", "deepseek41", "inkling-2-mini"] = "qwen"
+    # 系列は目録（strata_catalog.py）の id だけを受け付ける。Fixed Literal を置かない。
+    family: str = "qwen"
     model: str = Field(min_length=1, max_length=50)
     # Any "<N>k" from 4k to 1024k; strata_gateway.valid_context checks the range.
     context: str = Field(default="32k", pattern=r"^[1-9][0-9]{0,3}k$")
@@ -1509,6 +1510,14 @@ class StrataModelBody(BaseModel):
     reasoning_effort: Literal["", "low", "medium", "xhigh"] = ""
     thinking_budget: int = Field(default=0, ge=0, le=262144)
 
+    @field_validator("family")
+    @classmethod
+    def _strata_family_from_catalog(cls, value: str) -> str:
+        from app.models_mgmt import strata_catalog
+        if not strata_catalog.has_family(value):
+            raise ValueError("Strataの系列が不正です")
+        return value
+
 
 @router.get("/strata/instances")
 def strata_instances(user: User = Depends(require_permission("workflows.run"))):
@@ -1516,10 +1525,17 @@ def strata_instances(user: User = Depends(require_permission("workflows.run"))):
     return {"runtime": strata.runtime_status(), "instances": strata_gateway.list_instances()}
 
 
+@router.get("/strata/catalog")
+def strata_catalog_endpoint(user: User = Depends(require_permission("workflows.run"))):
+    """Strata 0.2.22 の系列・量子化の目録。同期のままで、同期的な判定を event loop で待たない。"""
+    from app.models_mgmt import strata_catalog
+    return strata_catalog.api_payload()
+
+
 @router.post("/strata/memory-estimate")
 def strata_memory_estimate(body: StrataModelBody, user: User = Depends(require_permission("workflows.run"))):
-    from app.models_mgmt import strata_gateway, strata_memory
-    if not strata_gateway.valid_context(body.context) or body.model not in strata_gateway._FAMILIES[body.family]:
+    from app.models_mgmt import strata_catalog, strata_gateway, strata_memory
+    if not strata_gateway.valid_context(body.context) or not strata_catalog.is_valid(body.family, body.model):
         raise HTTPException(status_code=422, detail="モデルまたはコンテキストが不正です")
     cfg = body.model_dump()
     return strata_memory.estimate(cfg, strata_memory.hardware(), strata_memory.model_info(cfg))

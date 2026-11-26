@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.models_mgmt import strata_catalog
+
 # A quantisation marker ends the model name: UD-Q4_K_M, IQ5R-V4, Q8_0, MXFP4, FP8, BF16, IQ2_XXS ...
 _QUANT = re.compile(
     r"[-_.](?:UD[-_])?(?:I?Q\d[\w-]*|IQ\dR[\w-]*|MXFP4[\w-]*|NVFP4[\w-]*|FP8[\w-]*|BF16|F16|F32|W4A\d+[\w-]*|AWQ[\w-]*)$",
@@ -58,5 +60,5 @@ def file_size(path: str | Path) -> int:
     return total
 
 
-STRATA_FAMILIES = {"qwen": "Qwen3.8-Flash-Next", "unsloth": "Qwen3.8-Flash-Next", "deepseek41": "DeepSeek-V4.1-Flash",
-                   "inkling-2-mini": "Inkling-2-Mini"}
+# 登録済みモデルの表示名は目録（strata_catalog.py）から読む。手作業の案内行は候補に出さない。
+STRATA_FAMILIES = {item.id: item.short_name for item in strata_catalog.families() if not item.manual}

@@ -62,14 +62,24 @@ for (const width of [320, 1280]) {
 }
 
 
-// 目的: Strata の登録で Inkling 2 Mini（strata-inkling）を選べる。選ぶと量子化が SQ-*・UD-* になり、思考の欄と
-// Qwen 用のメモリ設定は消え、投機デコードは「自動（内蔵の DSpark）」か「使わない」だけになる。保存に思考の値を載せない。
+// 目的: Strata の登録で Inkling 2 Mini を選べる。選ぶと量子化が API の目録（13 件）から入り、Qwen 用のメモリ設定は消え、
+// 投機デコードは「自動（内蔵の DSpark）」か「使わない」だけになる。Strata 0.2.22 では Inkling も思考を持つので、
+// 思考の欄は残り、保存に reasoning_effort / thinking_budget が載る。
 // 根拠: 2026-11-23 利用者「Strata や Radiance で inkling がサポートされていれば候補として追加できるように」。
-// Inkling は思考を持たず、別のエンジンで Qwen 用の引数を受け付けない（backend の strata_gateway.OTHER_ENGINE_FAMILIES）。
-test("Strata registration offers Inkling 2 Mini without thinking or Qwen-only memory settings", async ({ page, context }) => {
+// 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。0.2.22 で Inkling も思考あり）。
+// AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す）。
+test("Strata registration offers Inkling 2 Mini with thinking and without Qwen-only memory settings", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 900 });
   await establishSession(page, context);
+  const quantIds = ["sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-q4_k_m", "ud-iq4_xs",
+    "ud-q3_k_xl", "ud-iq3_xxs", "ud-q2_k_xl", "ud-iq2_xxs", "ud-iq1_m", "ud-iq1_s"];
+  await page.route("**/api/v1/models/strata/catalog", route => route.fulfill({ json: {
+    families: [{ id: "inkling-2-mini", name: "Inkling 2 Mini（Thinking Machines）", short_name: "Inkling",
+      engine: "other", thinking: true, visible: true, manual: false, uncensored: false, note: "",
+      quantizations: quantIds.map((id) => ({ id, label: id, download_gib: 10, memory_gib: 20, fit: "fits", uncensored: false, manual: false })) }],
+    hardware: { ram_total_gib: 92, vram_total_gib: 24 },
+  } }));
   let saved: any;
   await page.route("**/api/v1/models/runtime-environment", async route => {
     const env = await (await route.fetch()).json();
@@ -91,15 +101,17 @@ test("Strata registration offers Inkling 2 Mini without thinking or Qwen-only me
   const sheet = page.getByRole("dialog", { name: "ink · 個別設定", exact: true });
   await sheet.getByLabel("Strataモデル系列").selectOption("inkling-2-mini");
   await expect(sheet.getByLabel("Strataモデル量子化")).toHaveValue("sq-20");
-  await expect(sheet.getByLabel("Strataモデル量子化").locator("option")).toHaveText(["sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-iq4_xs"]);
+  const options = sheet.getByLabel("Strataモデル量子化").locator("option");
+  await expect(options).toHaveCount(13);
+  expect(await options.evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value))).toEqual(quantIds);
   await expect(sheet.getByLabel("StrataKVのVRAM保持長", { exact: true })).toHaveCount(0);
-  await expect(sheet.getByText("要求が深さを指定しないときの既定")).toHaveCount(0);
+  await expect(sheet.getByText("要求が深さを指定しないときの既定")).toBeVisible();
   await expect(sheet.getByLabel("投機デコード").locator("option")).toHaveCount(2);
   await page.screenshot({ path: "test-results/strata-inkling-390.png", fullPage: true });
   await sheet.getByRole("button", { name: "保存", exact: true }).last().click();
   await expect.poll(() => saved?.family).toBe("inkling-2-mini");
   expect(saved.model).toBe("sq-20");
-  expect(saved.reasoning_effort).toBe("");
+  expect(saved.reasoning_effort).toBe("low");
   expect(saved.thinking_budget).toBe(0);
   expect(saved.kv_resident).toBeNull();
 });

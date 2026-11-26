@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.models_mgmt import display_names
-from app.models_mgmt import llama, local_llm, model_names, ollama, providers, strata_gateway
+from app.models_mgmt import llama, local_llm, model_names, ollama, providers, strata_catalog, strata_gateway
 
 
 class ProviderError(RuntimeError):
@@ -209,7 +209,7 @@ async def list_models(provider_id: str) -> list[dict]:
             # 手元の GGUF を使う登録は、系列名ではなくファイルの名前と量子化を出す。系列名だと同じ系列のモデルが同じ名前になった
             # （2026-11-21 利用者「モデルが同じ名前になるので分かりにくい」）
             name, quant = model_names.from_file(item.get("model_path") or "") if item.get("model_path") else ("", "")
-            default = name or model_names.STRATA_FAMILIES.get(item["family"], item["family"])
+            default = name or strata_catalog.short_name(item["family"])
             return display_names.apply("strata", item["alias"], default), quant or str(item["model"]).upper()
 
         return [{

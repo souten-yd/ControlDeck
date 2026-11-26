@@ -23,23 +23,18 @@ from typing import Any
 import httpx
 
 from app.config import data_dir
-from app.models_mgmt import strata
+from app.models_mgmt import strata, strata_catalog
 
-_FAMILIES = {
-    "qwen": {"q2_0", "iq2_xs", "iq3_xxs", "iq3_s"},
-    # Unsloth's Flash-Next GGUFs: the two sizes Strata recommends for this family.
-    "unsloth": {"ud-iq4_xs", "ud-q4_k_xl"},
-    "deepseek41": {"ista-das-coder", "ist-das-2.00bpw"},
-    # Thinking Machines の Inkling 2 Mini（Strata 0.2.19 の strata-inkling エンジン。2026-11-23 追加）。
-    # SQ-* は Strata 自身の量子化（SQ-20 は元の重みと同じ答え・19.3GB。R9700 の 32GB に全部載る）、UD-* は Unsloth の GGUF。
-    "inkling-2-mini": {"sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-iq4_xs"},
-}
+# 目録は strata_catalog.py の 1 か所だけに置き、ここはそこから作る（2026-11-26 M1）。
+_FAMILIES = {item.id: strata_catalog.quant_ids(item.id) for item in strata_catalog.families()}
 # Qwen 系（strata-engine）とは別のエンジンで動く系列。Qwen 用の引数（--ple-io・--kv-resident）を渡さない。
 # strata-inkling は --set の値をそのままエンジンの引数へ足すので、知らない引数は起動を壊しうる
 # （Strata のソース terminal/serve/inkling_kind.py の engine_args。--vram-reserve-mib は受け付ける）。
-OTHER_ENGINE_FAMILIES = {"deepseek41", "inkling-2-mini"}
-# 思考を持たない系列（Strata の inkling_family.HAS_THINKING = False）。思考の既定を渡さない
-NO_THINKING_FAMILIES = {"inkling-2-mini"}
+OTHER_ENGINE_FAMILIES = {item.id for item in strata_catalog.families()
+                         if strata_catalog.is_other_engine(item.id)}
+# 0.2.22 では Inkling も思考を持つので空集合。Strata の共有設定へ渡す経路は Qwen と同じ（実機未確認）。
+NO_THINKING_FAMILIES = {item.id for item in strata_catalog.families()
+                        if not strata_catalog.has_thinking(item.id)}
 # Strata takes any "<N>k"; past the trained 256K it adds yarn scaling itself.
 _CONTEXT = re.compile(r"^([1-9][0-9]{0,3})k$")
 _CONTEXT_MIN_K, _CONTEXT_MAX_K = 4, 1024
@@ -386,7 +381,7 @@ def save_instance(alias: str, *, family: str, model: str,
         raise StrataGatewayError("Strataの導入が必要です")
     if not _ALIAS.fullmatch(alias) or alias in {"auto", "strata"}:
         raise StrataGatewayError("別名は小文字英数字とハイフン（先頭英字、最大48文字）にしてください")
-    if family not in _FAMILIES or model not in _FAMILIES[family]:
+    if not strata_catalog.is_valid(family, model):
         raise StrataGatewayError("このモデル・量子化はStrataの管理対象外です")
     if not valid_context(context) or not (_MIN_PORT <= port <= _MAX_PORT):
         raise StrataGatewayError("コンテキストまたはポートがサポート範囲外です")

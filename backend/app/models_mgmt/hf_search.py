@@ -118,14 +118,14 @@ def classify_gguf(repo: str, files: list[dict]) -> dict:
         family = "qwen" if "gsq-rco" in kinds and "deepseek" not in repo.casefold() else (
             "deepseek41" if "gsq-rco" in kinds else "unsloth")
         if "inkling" in repo.casefold():
-            family = "inkling-2-mini"      # Strata 0.2.19 の strata-inkling（Unsloth の UD-* を直接読む）
+            family = "inkling-2-mini"      # Strata 0.2.22 の strata-inkling（SQ-* と Unsloth の UD-* を読む）
     else:
         family = ""
     registerable: list[str] = []
     if family:
-        from app.models_mgmt import strata_gateway
+        from app.models_mgmt import strata_catalog
 
-        allowed = strata_gateway._FAMILIES.get(family, set())
+        allowed = strata_catalog.quant_ids(family)
         registerable = [b["quant"] for b in basis if b["quant"].casefold() in allowed]
     return {"gguf": True, "quants": sorted(quants.values(), key=lambda q: q["quant"]), "strata": bool(basis),
             "strata_basis": basis, "strata_family": family, "strata_registerable": registerable, "llama_cpp": True}
