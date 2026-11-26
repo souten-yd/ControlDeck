@@ -96,6 +96,12 @@ class LogsConfig(BaseModel):
     audit_retention_days: int = 180
 
 
+class JobsConfig(BaseModel):
+    # 再起動で中断された取得などの Job を、起動後に裏で続きから作り直す。
+    # 回数の上限（3 回）と期限（7 日）は jobs/service.py が持つ。
+    auto_resume: bool = True
+
+
 class UIConfig(BaseModel):
     app_name: str = "Ubuntu Control Deck"
     accent_color: str = "#3b82f6"
@@ -202,6 +208,7 @@ class Config(BaseModel):
     terminal: TerminalConfig = TerminalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
     logs: LogsConfig = LogsConfig()
+    jobs: JobsConfig = JobsConfig()
     ui: UIConfig = UIConfig()
     applications: ApplicationsConfig = ApplicationsConfig()
     addons: AddonsConfig = AddonsConfig()

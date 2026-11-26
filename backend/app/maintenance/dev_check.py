@@ -227,7 +227,10 @@ def _secret_patterns() -> list[re.Pattern]:
     except Exception:  # noqa: BLE001 - 検査が診断の都合で止まらないようにする
         return [
             re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"),
-            re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs]|hf)[-_][A-Za-z0-9_-]{8,}"),
+            re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}"),
+            # HF のトークンは hf_ + 英数字（下線なし・十分に長い）。Job の種類名
+            # （model.hf_download の download は 8 字）を鍵と取り違えないよう分けて置く。
+            re.compile(r"\bhf_[A-Za-z0-9]{10,}"),
             re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"),
             _LITERAL_ASSIGNMENT,
         ]

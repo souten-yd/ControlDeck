@@ -63,9 +63,11 @@
 | M0 | Strata を 0.2.22 へ更新・起動の確認 | 更新済み（起動の確認は `HANDOFF` の作業記録） |
 | M1 | Strata の目録を 1 か所にして全系列・全量子化を出す（無検閲は「手作業の変換が要る」印で案内） | 実装済み（実機の確認待ち） |
 | M2 | Maya の目録に GLM-5.3・DeepSeek の ds4-quant を足す。Maya の取得（setup で取る）を画面から | 未着手 |
-| M3 | 取得の Job の自動再開（再起動の後も）。Strata・Maya・HF・Radiance で実測 | 未着手 |
+| M3 | 取得の Job の自動再開（再起動の後も）。Strata・Maya・HF・Radiance で実測 | 実装済み（実機の再起動での確認待ち） |
 | M4 | 3 つとも「フォルダを選ぶ → 候補のファイルの一覧 → 選ぶ」 | 未着手 |
 | M5 | 設定の形を揃える（上の方針） | 未着手 |
 | M6 | 無検閲: Strata の OrcaRouter の変換を Job で（取得 → `iq_pack.py` → run config）。Maya の Maya-M-Derisked・abliterated を目録に | 未着手 |
 
 効果と処理時間（`AGENTS.md`「機能を取り込む条件」）: 目録の読み込みは画面を開いた時だけで、計算は RAM・VRAM の比べだけ。自動再開は起動時に 1 回 Job の表を読むだけ。どちらも測って PR に書く。
+
+M3 の載せ方（M2・M4 で Maya・Radiance の取得 Job を作るとき）: 取得の Job を `jobs.create(..., resume={JSON にできる平らな引数})` で作り、`app/models_mgmt/resume.py` と同じ形で `jobs.register_resumable(kind, factory, title=...)` をモジュールの読み込み時に登録する（factory は保存した引数から runner を作る）。秘密値（HF のトークン等）は resume に入れない。再開の記録・回数の歯止め（3 回・7 日）・停止時の扱いは Job 基盤が持つので、ランタイムごとに作らない。

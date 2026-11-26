@@ -25,6 +25,8 @@ def test_redact_hides_secrets():
     plain = "SIGTERM received from uid=1000 pid=2009 systemd; session started; key points: none"
     assert redact("SIGTERM received from uid=1000 pid=2009 systemd") == "SIGTERM received from uid=1000 pid=2009 systemd"
     assert "SIGTERM" in redact(plain) and "uid=1000" in redact(plain)
+    # Job の種類名は秘密ではない（HF のトークンと取り違えて伏せない）
+    assert "model.hf_download" in redact("model.hf_download")
     # JSON に通しても壊れない（以前は escape を消して JSONDecodeError になった）
     event = {"message": 'password=abcd"efg', "detail": {"token": "zzzz9999"}, "kind": "log"}
     cleaned = redact_value(json.loads(json.dumps(event)))

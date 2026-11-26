@@ -10,6 +10,16 @@
 - 実測: M1（Strata の目録）を箱の OpenCode に作らせたところ、主の会話がレビュー役の子の結果（`background_wait`）を 18 分以上待ったまま止まった。子の最後の要求は 200 で返っており、子の完了が主へ届いていなかった。`--run` に時間切れが無く、誰も気づかなければ終わらない。
 - 直し（`maintenance/sandbox.py`）: `_run_streaming` は出力を別スレッドで読み、最後の行が `background_wait` のまま `CONTROL_DECK_SANDBOX_STALL_SECONDS`（既定 900 秒）何も出なければ止める。`run_with_chain` は同じモデル・同じ会話へ「待たずに続けて。関門は自分で行い報告して」を送る（2 回まで）。`background_wait` でない間は、出力の間が空いても止めない（長いテストを切らない）。
 - テスト: `test_dev_sandbox.py` に 2 件（止まったら同じ会話へ続ける・普通の長い間では止めない）。
+## 2026-11-26 モデル取得の Job を、再起動の後に自動で続きから再開（M3）
+- 利用者「Strata・Radiance・Maya などのモデルのダウンロードは、停止されても、再起動させられても、途中から再開できるようにしてほしい」。ランタイムごとに作らず、Job の仕組みに 1 つだけ足した。
+- `jobs/service.py`: `register_resumable(kind, factory, title=...)` と `create(..., resume=...)`。`data_dir()/jobs/resumable/<job_id>.json` に `{kind, params, owner_user_id, title, created_at, attempts}` を 0600・一時ファイル→rename で保存（秘密値は入力しない）。succeeded / failed / canceled で削除し、利用者が止めたものは再開しない。起動時は `recover_on_startup` の後に裏の task（`resume_after_startup`）が登録済みの種類だけ作り直し、元の Job の error に「再起動のあと Job <新しい id> で続きから再開しました」を残す。新しい Job の題には「（再起動のあと続きから）」を付け、Models の実行中の一覧で分かるようにする（新しい画面は作らない）。自動の再開は 3 回まで・7 日まで。未登録の種類・壊れた記録・中断以外で終わった行の記録は消し、起動を止めない。
+- 停止による cancel と利用者の cancel を区別する: lifespan の後始末の先頭で `jobs.begin_shutdown()` を呼び、停止中は再開できる Job を canceled にせず記録を残す。asyncio は loop を閉じるとき残りの task を cancel するため、区別しないと再起動のたびに再開の対象が消える（既存の Job は従来どおり canceled）。
+- 設定: `jobs.auto_resume`（既定 true、config.yaml）で自動再開を切れる。切ったときは記録を消さず残す。
+- 載せた取得: `model.hf_download`（repo・files・revision・library_id・expected_bytes・register。HF のトークンは含めない）と `model.strata.start`（alias）。runner は `app/models_mgmt/resume.py` に共通化し、画面の API も同じものを使う。Maya・Radiance の取得 Job は M2 で作るときに同じ仕組みへ載せる（載せ方は `docs/PLAN-model-catalog.md` の M3 の下）。
+- 試験: `backend/tests/test_jobs_persistence.py`（24 件。記録の内容と 0600・成功/失敗/取り消しで削除・停止では残す・起動後の作り直し〔factory・owner・題・attempts〕・3 回で停止・7 日で停止・設定で停止・未登録/壊れた記録/中断以外の削除・HF runner の引数・画面の API から再開可能な Job が作られトークンを残さないこと）。`env -u CONTROL_DECK_CONFIG`。外部へ通信しない。
+- 確かめていないこと: 実機でサービスを再起動しての通し（再開用の記録が残るか、起動後に Job が動くか）。Strata 自身の重み取得が途中から続くか（Strata 任せで未確認）。HF は完了済みのファイルを飛ばし、`.part` が残っていれば Range で続くが、`hf.py::_download_file` の finally が `.part` を消すため、丁寧な停止では途中のファイルを最初から取り直す（コード上。実機で確認する）。
+- 関門の誤検知: 秘密の形の判定が `model.hf_download` を HF のトークン（`hf_...`）と取り違えていた。伏せ字の形を `hf_` + 英数字 10 字以上に絞り、Job の種類名は伏せない（`test_dev_check.py`・`test_diagnostics.py` に確認を追加）。
+- 処理時間: 起動時に再開用の記録の一覧を 1 回読むだけ（通常は空）。Job の終了ごとに小さな unlink（再開する Job だけ）。画面・目録の追加は無し。
 
 ## 2026-11-26 ニュース設定: まとめのモデルは LLM のタブに集約（基本のタブから見えるように）
 - 利用者「ニュースで使うモデルは LLM のところに集約。日刊・週刊のまとめもニュースの LLM の設定を使ってほしい」。調べた結果、LLM を呼ぶ所（まとめ・一言要約・下ごしらえ・リーダーの翻訳・ハブの仕事 2 つ）は既に全てニュースの LLM の設定（`llm.digest_model`・`gist_model`・`prep_model`）を見ていた。足りなかったのは、基本のタブ（更新のタイミング）からそれが分からないこと。

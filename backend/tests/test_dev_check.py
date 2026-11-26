@@ -79,10 +79,14 @@ def test_status_doc_must_be_updated_when_code_changes():
 
 def test_secret_shapes_are_found_unless_marked_allowed():
     added = {"a.py": {1: f'key = "{SK}abcdefgh12345678"', 2: 'password = "' + "x" * 20 + '"',
-                      3: "ok = 1", 4: f'v = "{SK}abcdefgh12345678"  # {dc.ALLOW_MARK}: 見本'}}
+                      3: "ok = 1", 4: f'v = "{SK}abcdefgh12345678"  # {dc.ALLOW_MARK}: 見本',
+                      # Job の種類名は HF のトークン（hf_ + 英数字）ではない
+                      5: 'kind = "model.hf_download"',
+                      6: 'token = "hf_' + "abcdefgh12345678" + '"'}}
     result = dc.check_secrets(added)
     assert result.status == dc.NG and "a.py:1" in result.message and "a.py:2" in result.message
     assert "a.py:3" not in result.message and "a.py:4" not in result.message
+    assert "a.py:5" not in result.message and "a.py:6" in result.message
     assert dc.check_secrets({"a.py": {1: "token = get_token()"}}).status == dc.OK
 
 

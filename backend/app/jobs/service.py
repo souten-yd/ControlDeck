@@ -18,11 +18,13 @@ import heapq
 import itertools
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.resources.broker import BrokerError, ResourceBroker, broker as resource_broker
@@ -37,6 +39,12 @@ DB_EVENT_SNAPSHOT = 50  # DB に残す末尾イベント件数
 RESOURCE_PHASES = {
     "waiting_resource", "starting", "generating", "postprocess", "validate", "package"
 }
+# 再起動で中断された Job を自動で作り直す回数と期限。何度も落ちる種類で
+# 再起動のたびに取得をやり直し続けないための歯止め（m3-spec.md）。
+RESUME_MAX_ATTEMPTS = 3
+RESUME_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_RESUME_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+TERMINAL_STATUSES = ("succeeded", "failed", "canceled")
 
 
 @dataclass
@@ -57,6 +65,8 @@ class Job:
     error: str = ""
     owner_user_id: int | None = None
     idempotency_key: str | None = None
+    # 再起動後に続きから作り直せる Job か（resume= 付きで作られた Job）。
+    resumable: bool = False
     priority: int = 0
     revision: int = 0
     heartbeat_at: float = field(default_factory=time.time)
@@ -162,6 +172,24 @@ MAX_CONCURRENT = 4
 MAX_EXTERNAL_ACTIVE_PER_OWNER = 8
 _stream_revision = 0
 _global_changed = asyncio.Event()
+_shutdown_started = False
+
+
+def begin_shutdown() -> None:
+    """停止の合図を受けたことを記録する（lifespan の後始末の先頭で呼ぶ）。
+
+    asyncio の loop を閉じるときに残りの task は cancel される。その CancelledError は
+    利用者の取り消しと同じ形なので、区別しないと再起動のたびに「キャンセル」と記録され、
+    自動再開の対象が消える。停止中は再開できる Job を終わらせずに残す。
+    """
+    global _shutdown_started
+    _shutdown_started = True
+
+
+def begin_startup() -> None:
+    """起動のたびに停止の印を戻す（同じプロセスで lifespan を繰り返す試験のため）。"""
+    global _shutdown_started
+    _shutdown_started = False
 
 
 def _notify_job(job: Job) -> None:
@@ -222,6 +250,10 @@ def _db_write(job: Job, finished: bool = False) -> None:
         control.revision = job.revision
         control.priority = job.priority
         db.commit()
+        # 終わった Job の再開用の記録は残さない（利用者が止めたもの・失敗したものも
+        # 同じ失敗を繰り返さないため再開しない）。DB の更新が済んでから消す。
+        if finished and job.resumable and job.status in TERMINAL_STATUSES:
+            _remove_resume_file(job.id)
     except Exception:
         logger.exception("job DB write failed (%s)", job.id)
         db.rollback()
@@ -229,13 +261,263 @@ def _db_write(job: Job, finished: bool = False) -> None:
         db.close()
 
 
+# ---- 再開できる Job の記録（m3-spec.md） ----
+#
+# 取得などの長い Job は、サーバーの再起動でメモリの実行状態が消える。Job の種類ごとに
+# 「保存した引数から runner を作り直す」関数を登録しておき、中断されたものだけを起動後に
+# 裏で作り直す。ランタイム（Strata・Maya・HF）ごとに仕組みを作らない。
+
+ResumeFactory = Callable[[dict[str, Any]], Callable[[Job], Awaitable[Any]]]
+
+
+@dataclass(frozen=True)
+class _ResumableKind:
+    factory: ResumeFactory
+    title: Callable[[dict[str, Any]], str]
+
+
+_resumable_kinds: dict[str, _ResumableKind] = {}
+
+
+def register_resumable(
+    kind: str,
+    factory: ResumeFactory,
+    *,
+    title: Callable[[dict[str, Any]], str],
+) -> None:
+    """再起動後に続きから作り直せる Job の種類を登録する（モジュールの読み込み時に呼ぶ）。
+
+    factory は保存した引数から runner を作る。title は引数から画面に出す題を作る。
+    """
+    _resumable_kinds[kind] = _ResumableKind(factory=factory, title=title)
+
+
+def _resume_dir() -> Path:
+    from app.config import data_dir
+
+    root = data_dir() / "jobs" / "resumable"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return root
+
+
+def _remove_resume_file(job_id: str) -> None:
+    try:
+        (_resume_dir() / f"{job_id}.json").unlink(missing_ok=True)
+    except OSError:
+        logger.warning("再開用の記録を消せませんでした (%s)", job_id)
+
+
+def _write_resume_file(job: Job, params: dict, *, attempts: int, created_at: float | None = None) -> None:
+    """再開に要る引数だけを 0600 の JSON に書く（秘密値は呼び出し側が入れない）。
+
+    一時ファイルへ書いてから rename する（途中で落ちても半端な JSON を残さない）。
+    """
+    doc = {
+        "kind": job.kind,
+        "params": params,
+        "owner_user_id": job.owner_user_id,
+        "title": job.title,
+        # 最初に作った時刻を引き継ぐ（再開のたびに 7 日の期限が延びないように）
+        "created_at": time.time() if created_at is None else float(created_at),
+        "attempts": int(attempts),
+    }
+    text = json.dumps(doc, ensure_ascii=False)
+    try:
+        root = _resume_dir()
+        target = root / f"{job.id}.json"
+        temp = root / f".{job.id}.{uuid.uuid4().hex[:8]}.tmp"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(temp, target)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+    except OSError:
+        # 記録が書けなくても Job 自体は実行する（再開できないだけ）。
+        logger.exception("再開用の記録を書けませんでした (%s)", job.id)
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("再開用の記録を消せませんでした: %s", path.name)
+
+
+def _read_resume_doc(path: Path) -> dict[str, Any] | None:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("再開用の記録を読めないので消します: %s", path.name)
+        return None
+    if not (
+        isinstance(doc, dict)
+        and isinstance(doc.get("kind"), str)
+        and isinstance(doc.get("params"), dict)
+        and (doc.get("owner_user_id") is None or isinstance(doc.get("owner_user_id"), int))
+        and isinstance(doc.get("title"), str)
+        and isinstance(doc.get("created_at"), (int, float))
+        and isinstance(doc.get("attempts"), int)
+    ):
+        logger.warning("再開用の記録の形が違うので消します: %s", path.name)
+        return None
+    return doc
+
+
+def _collect_resume_candidates() -> list[dict[str, Any]]:
+    """再開できる記録を読む（同期。呼び出し側が to_thread で包む）。
+
+    続けられない記録（未登録の種類・回数や期限を超えたもの・壊れたもの・
+    中断で終わっていない Job のもの）はここで消す。起動を止めない。
+    """
+    try:
+        root = _resume_dir()
+        entries = sorted(root.iterdir())
+    except OSError:
+        logger.exception("再開用の記録の置き場を読めません")
+        return []
+    from app.database import SessionLocal
+    from app.models import Job as JobRow
+
+    now = time.time()
+    candidates: list[dict[str, Any]] = []
+    exhausted: list[tuple[str, str]] = []
+    with SessionLocal() as db:
+        for path in entries:
+            if path.is_symlink():
+                _unlink_quietly(path)
+                continue
+            if path.name.startswith(".") and path.suffix == ".tmp":
+                _unlink_quietly(path)  # 書いている途中で落ちた一時ファイル
+                continue
+            if not path.is_file() or path.suffix != ".json":
+                continue
+            job_id = path.stem
+            if _RESUME_NAME_RE.fullmatch(job_id) is None:
+                _unlink_quietly(path)
+                logger.warning("再開用の記録の名前が不正なので消します: %s", path.name)
+                continue
+            try:
+                if path.resolve().parent != root.resolve():
+                    _unlink_quietly(path)
+                    continue
+            except OSError:
+                _unlink_quietly(path)
+                continue
+            doc = _read_resume_doc(path)
+            if doc is None:
+                _unlink_quietly(path)
+                continue
+            row = db.get(JobRow, job_id)
+            if row is None or row.status != "interrupted":
+                _unlink_quietly(path)
+                continue
+            if doc["kind"] not in _resumable_kinds:
+                _unlink_quietly(path)
+                logger.info("再開の登録が無い Job の記録を消しました: kind=%s", doc["kind"])
+                continue
+            if doc["attempts"] >= RESUME_MAX_ATTEMPTS:
+                _unlink_quietly(path)
+                exhausted.append((
+                    job_id,
+                    f"自動の再開を {RESUME_MAX_ATTEMPTS} 回試してやめました",
+                ))
+                continue
+            if now - float(doc["created_at"]) > RESUME_MAX_AGE_SECONDS:
+                _unlink_quietly(path)
+                logger.info("再開の期限（7日）を過ぎた Job の記録を消しました: %s", job_id)
+                continue
+            candidates.append({"job_id": job_id, **doc})
+        if exhausted:
+            for job_id, message in exhausted:
+                row = db.get(JobRow, job_id)
+                if row is not None:
+                    row.error = message
+            db.commit()
+    return candidates
+
+
+def _close_resume(job_id: str, message: str) -> None:
+    """再開の記録を消し、元の Job の行に結果（続きの Job の id・断念の理由）を残す。"""
+    from app.database import SessionLocal
+    from app.models import Job as JobRow
+
+    with SessionLocal() as db:
+        row = db.get(JobRow, job_id)
+        if row is not None:
+            row.error = message[:2000]
+            db.commit()
+    _remove_resume_file(job_id)
+
+
+async def resume_after_startup() -> list[str]:
+    """起動の後に裏で、再起動で中断された Job を続きから作り直す（起動は待たせない）。
+
+    lifespan が task として起こす。設定 jobs.auto_resume が false なら何もしない。
+    """
+    from app.config import get_config
+
+    if not get_config().jobs.auto_resume:
+        logger.info("Job の自動再開は設定（jobs.auto_resume）で無効です")
+        return []
+    try:
+        candidates = await asyncio.to_thread(_collect_resume_candidates)
+    except Exception:  # noqa: BLE001 - 起動後の再開の失敗でサーバーを止めない
+        logger.exception("再開できる Job の記録を読めませんでした")
+        return []
+    resumed: list[str] = []
+    for item in candidates:
+        params = item["params"]
+        spec = _resumable_kinds.get(item["kind"])
+        if spec is None:  # 収集後に登録が消えた場合
+            await asyncio.to_thread(_remove_resume_file, item["job_id"])
+            continue
+        try:
+            runner = spec.factory(params)
+            base_title = spec.title(params)
+            job = create(
+                # 画面の実行中の一覧で、再起動の後に続きから始まったことが分かるようにする。
+                # 元の題は保存した params から作り直すので、何度再開しても印は重ならない。
+                item["kind"], f"{base_title}（再起動のあと続きから）", runner,
+                owner_user_id=item["owner_user_id"],
+                resume=params,
+                _resume_attempts=int(item["attempts"]) + 1,
+                _resume_created_at=float(item["created_at"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - 1 件の失敗で起動後の再開全体を止めない
+            logger.exception("再開する Job を作れませんでした (%s)", item["job_id"])
+            await asyncio.to_thread(
+                _close_resume, item["job_id"],
+                f"再開できませんでした: {type(exc).__name__}",
+            )
+            continue
+        await asyncio.to_thread(
+            _close_resume, item["job_id"],
+            f"再起動のあと Job {job.id} で続きから再開しました",
+        )
+        resumed.append(job.id)
+    if resumed:
+        logger.info("中断された Job を %d 件、続きから再開しました", len(resumed))
+    return resumed
+
+
 def create(
     kind: str, title: str, runner: Callable[[Job], Awaitable[Any]],
     owner_user_id: int | None = None,
     *, idempotency_key: str | None = None, priority: int = 0,
     resource: Callable[[str], ResourceRequest] | None = None,
+    resume: dict | None = None,
+    _resume_attempts: int = 0,
+    _resume_created_at: float | None = None,
 ) -> Job:
-    """ジョブをpriority queueへ登録する。同一owner/kind/keyの有効結果は再利用する。"""
+    """ジョブをpriority queueへ登録する。同一owner/kind/keyの有効結果は再利用する。
+
+    resume に、再開に要る引数（JSON にできる平らな値だけ。秘密値は入れない）を渡すと、
+    再起動で中断されたときに resume_after_startup() が同じ処理を作り直す。
+    _resume_attempts は自動再開の回数（通常の作成では 0）。
+    """
     if idempotency_key:
         if len(idempotency_key) > 160:
             raise ValueError("idempotency_keyは160文字以内です")
@@ -244,10 +526,15 @@ def create(
             memory = _jobs.get(existing["id"])
             return memory if memory is not None else _dict_to_job(existing)
         _retire_failed_idempotency(owner_user_id, kind, idempotency_key)
+    if resume is not None:
+        # 書けない引数（秘密を含めない約束のため、JSON にできるものだけ）は
+        # Job を作る前に弾く。後から書けずに再開できない状態を作らない。
+        json.dumps(resume, ensure_ascii=False)
     priority = max(-100, min(100, int(priority)))
     job = Job(
         id=uuid.uuid4().hex[:12], kind=kind, title=title, owner_user_id=owner_user_id,
         idempotency_key=idempotency_key, priority=priority,
+        resumable=resume is not None,
     )
     resource_request = resource(job.id) if resource is not None else None
     if resource_request is not None and resource_request.job_id != job.id:
@@ -260,6 +547,8 @@ def create(
     for old in finished[: max(0, len(_jobs) - MAX_JOBS)]:
         _jobs.pop(old.id, None)
     _db_write(job)  # queued作成時に1回
+    if resume is not None:
+        _write_resume_file(job, resume, attempts=_resume_attempts, created_at=_resume_created_at)
     _notify_job(job)
     if resource_request is None:
         heapq.heappush(_pending, (-priority, next(_sequence), job.id, runner))
@@ -496,8 +785,14 @@ async def _run_job(job: Job, runner: Callable[[Job], Awaitable[Any]]) -> None:
             job.result = result
             job.status = "succeeded"
     except asyncio.CancelledError:
-        job.status = "canceled"
-        job.error = "キャンセルされました"
+        if _shutdown_started and job.resumable:
+            # 利用者の取り消しではなくサーバーの停止。終わったことにせず、
+            # 次の起動で続きから再開できるよう記録を残す。
+            job.error = "サーバーの停止により中断しました（次回の起動で続きから再開します）"
+            job.log(job.error)
+        else:
+            job.status = "canceled"
+            job.error = "キャンセルされました"
     except Exception as e:  # ジョブ失敗は記録して終わり（プロセスは守る）
         if job.status not in ("queued", "running"):
             return
@@ -755,6 +1050,8 @@ def recover_on_startup() -> int:
     """起動時に、前回queued/runningのまま残ったDBジョブをinterruptedにする。
 
     メモリは再起動で消えているため、未完了の行は復元不能。件数を返す。
+    再開できる Job（register_resumable に登録した種類で resume= 付きで作られたもの）は、
+    この後に resume_after_startup() が保存した引数から作り直す。
     """
     from app.database import SessionLocal
     from app.models import Job as JobRow
