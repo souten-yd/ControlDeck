@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 258 ファイル、2559 テスト（目的の未記入 93 ファイル）
+- backend: 258 ファイル、2561 テスト（目的の未記入 93 ファイル）
 - E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
@@ -688,6 +688,7 @@
 - `test_commander_api_requires_authentication` — 認証の無い呼び出しは 401。Terminal と同じ権限で守る。
 - `test_cli_list_reports_installed_state` — /clis は導入済みか・アカウントを分けられるかを返す（gemini は分けられない）。
 - `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
+- `test_account_labels_including_the_default_account` — アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
 
 ### backend/tests/test_commander_consoles.py
 
@@ -701,6 +702,7 @@
 - `test_consoles_api_limit_reports_partial_open` — Terminal の上限に当たったら、開けた分と理由を返す（例外にしない）。
 - `test_consoles_api_rejects_bad_requests` — 入力の断り: 不明な CLI・未導入・許可の外の作業フォルダ・無いアカウント・個数。
 - `test_consoles_api_delete_only_marked_sessions` — コンソールの削除: 印のあるセッションだけを閉じられる（Terminal と同じ閉じ方）。
+- `test_opencode_console_uses_the_controldeck_opencode_api` — OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API）で開く。素の opencode は使わない。
 
 ### backend/tests/test_compaction.py
 
