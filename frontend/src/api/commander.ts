@@ -8,6 +8,8 @@ export interface CommanderCli {
   installed: boolean;
   /** アカウントを分けられる CLI か（gemini は false）。 */
   multi_account: boolean;
+  /** "controldeck-opencode" は ControlDeck の OpenCode を OpenCode 画面の API 設定で開く。 */
+  connector?: string;
 }
 
 export interface CommanderAccount {
@@ -15,6 +17,15 @@ export interface CommanderAccount {
   default: boolean;
   /** null は「判定しない」（OpenCode・Gemini は C1 では判定しない）。 */
   logged_in: boolean | null;
+  /** 画面の名前（既定のアカウントにも付けられる）。空なら付けていない。 */
+  label: string;
+}
+
+/** アカウントの見せ方: 画面の名前 → 無ければ既定／フォルダの名前。 */
+export function accountTitle(name: string, label?: string, long = false): string {
+  if (label) return label;
+  if (name === "default") return long ? "既定のアカウント（普段の設定）" : "既定";
+  return name;
 }
 
 /** コンソール = Terminal のセッション + 印（commander_*）。一覧は生きているか・最後に動いた時刻も持つ。 */
@@ -33,6 +44,7 @@ export interface CommanderConsole {
   workload: "idle" | "running";
   commander_cli: string;
   commander_account: string;
+  commander_account_label?: string;
   commander_label?: string;
   commander_role?: string;
   commander_created_by?: string;
@@ -80,6 +92,13 @@ export async function createAccount(cli: string, name: string): Promise<Commande
 export async function deleteAccount(cli: string, name: string): Promise<void> {
   await api<void>(`/commander/accounts/${encodeURIComponent(cli)}/${encodeURIComponent(name)}`, {
     method: "DELETE",
+  });
+}
+
+export async function setAccountLabel(cli: string, name: string, label: string): Promise<{ name: string; label: string }> {
+  return api(`/commander/accounts/${encodeURIComponent(cli)}/${encodeURIComponent(name)}/label`, {
+    method: "PUT",
+    json: { label },
   });
 }
 

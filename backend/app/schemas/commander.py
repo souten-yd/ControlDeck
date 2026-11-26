@@ -37,3 +37,9 @@ class ConsoleCreate(BaseModel):
         if any(ord(c) < 0x20 or ord(c) == 0x7f for c in cleaned):
             raise ValueError("表示名に制御文字（tab・改行など）は使えません")
         return cleaned
+
+
+class AccountLabel(BaseModel):
+    """アカウントの画面の名前（空で外す）。既定のアカウントにも付けられる。"""
+
+    label: str = Field(default="", max_length=32)

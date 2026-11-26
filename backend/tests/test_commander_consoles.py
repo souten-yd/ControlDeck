@@ -319,3 +319,43 @@ def test_consoles_api_delete_only_marked_sessions(admin_client, monkeypatch):
         ).scalars().first()
         assert row is not None
         assert row.resource_id == "0123abcd"
+
+
+def test_opencode_console_uses_the_controldeck_opencode_api(admin_client, monkeypatch):
+    """OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API）で開く。素の opencode は使わない。
+
+    根拠: 2026-11-27 利用者「OpenCode のアカウントは API で登録しているはずなので、その API で接続して」。
+    アカウントの画面の名前はコンソールの一覧にも出る。
+    """
+    from app.integrations.opencode import provider
+    from app.commander import router as commander_router
+
+    calls = []
+
+    def fake_tui(*, project_path, owner_user_id=None, **_):
+        calls.append((project_path, owner_user_id))
+        return "XDG_CONFIG_HOME=/x exec /opt/opencode2 --standalone " + project_path, project_path
+
+    fake = FakeManager()
+    monkeypatch.setattr(consoles, "manager", fake)
+    monkeypatch.setattr(accounts, "is_installed", lambda cli: True)
+    monkeypatch.setattr(provider, "tui_command", fake_tui)
+    monkeypatch.setattr(commander_router, "_warm_opencode_llm", lambda: None)
+    accounts.set_account_label(accounts.CLIS["opencode"], "default", "ControlDeck の API")
+
+    r = admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
+                          json={"cli": "opencode", "cwd": _root(), "count": 2})
+    assert r.status_code == 201, r.text
+    assert len(calls) == 1 and calls[0][1] is not None, "OpenCode の設定は 1 回だけ作り、利用者の id を渡す"
+    assert all(c["command"].startswith("XDG_CONFIG_HOME=/x exec /opt/opencode2") for c in fake.calls)
+    assert fake.envs == [None, None], "アカウントの環境変数は付けない（接続先は OpenCode の設定）"
+    assert r.json()["opened"][0]["commander_account_label"] == "ControlDeck の API"
+    marked = [{"id": "aa000000", "commander_cli": "opencode", "commander_account": "default"},
+              {"id": "aa000001", "commander_cli": "claude", "commander_account": "default"}]
+    monkeypatch.setattr(fake, "list_sessions", lambda: [dict(row) for row in marked])
+    listed = {row["id"]: row for row in admin_client.get("/api/v1/commander/consoles").json()["consoles"]}
+    assert listed["aa000000"]["commander_account_label"] == "ControlDeck の API"
+    assert "commander_account_label" not in listed["aa000001"], "名前の無いアカウントには付けない"
+    # 名前付きのアカウントは作れない・選べない
+    assert admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
+                             json={"cli": "opencode", "account": "work", "cwd": _root()}).status_code == 400

@@ -4,6 +4,7 @@
 - GET    /commander/accounts/{cli}          アカウントの一覧（ログイン済みの印つき）
 - POST   /commander/accounts/{cli}          アカウントの作成
 - DELETE /commander/accounts/{cli}/{name}    アカウントの削除（ログインの情報も消える）
+- PUT    /commander/accounts/{cli}/{name}/label  画面の名前（既定のアカウントにも付けられる）
 - GET    /commander/consoles                コンソールの一覧
 - POST   /commander/consoles                コンソールを個数ぶん開く
 - DELETE /commander/consoles/{session_id}   コンソールを閉じる
@@ -11,8 +12,12 @@
 アカウントの作成・削除とコンソールの作成・削除は監査ログへ残す
 （アカウントのフォルダにはログインの情報が入るため）。
 endpoint は def で threadpool へ任せる（tmux の subprocess で event loop を止めない）。
+コンソールを開くだけは async で、OpenCode のときに LLM を裏で温めてから threadpool で開く。
 """
 from __future__ import annotations
+
+import asyncio
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -21,11 +26,14 @@ from app.audit import service as audit
 from app.commander import accounts, consoles
 from app.database import get_db
 from app.models import User
-from app.schemas.commander import AccountCreate, ConsoleCreate
+from app.schemas.commander import AccountCreate, AccountLabel, ConsoleCreate
 from app.security.deps import require_permission
 from app.terminals.router import streams
 
 router = APIRouter(prefix="/commander", tags=["commander"])
+logger = logging.getLogger(__name__)
+# OpenCode の LLM を温める task（GC されないよう持っておく。OpenCode 画面と同じ方式）
+_warmups: set[asyncio.Task] = set()
 
 
 def _cli_or_400(cli_id: str) -> accounts.CliDef:
@@ -94,6 +102,43 @@ def delete_account(
     )
 
 
+@router.put("/accounts/{cli_id}/{name}/label")
+def set_account_label(
+    cli_id: str,
+    name: str,
+    body: AccountLabel,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """アカウントに画面の名前を付ける（空で外す）。既定のアカウントにも付けられる。"""
+    cli = _cli_or_400(cli_id)
+    try:
+        label = accounts.set_account_label(cli, name, body.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit.record(
+        db, "commander.account.label", user=user, resource_type="commander_account",
+        resource_id=f"{cli.id}/{name}", request=request,
+    )
+    return {"name": name, "label": label}
+
+
+def _warm_opencode_llm() -> None:
+    """OpenCode は ControlDeck の起動の hook を通らないので、設定の LLM を裏で起こしておく（待たない）。"""
+    from app.integrations.opencode import provider
+    from app.models_mgmt import local_llm
+
+    endpoint = str(provider.get_settings().get("base_url") or "").strip().rstrip("/")
+    if not endpoint:
+        return
+    task = asyncio.create_task(local_llm.ensure_ready_by_base_url(endpoint))
+    _warmups.add(task)
+    task.add_done_callback(_warmups.discard)
+
+
 @router.get("/consoles")
 def list_consoles(user: User = Depends(require_permission("terminal.use"))):
     del user
@@ -101,7 +146,7 @@ def list_consoles(user: User = Depends(require_permission("terminal.use"))):
 
 
 @router.post("/consoles", status_code=201)
-def create_consoles(
+async def create_consoles(
     body: ConsoleCreate,
     request: Request,
     user: User = Depends(require_permission("terminal.use")),
@@ -112,10 +157,16 @@ def create_consoles(
         raise HTTPException(status_code=400, detail=f"{cli.name} は導入されていません")
     if body.account != accounts.DEFAULT_ACCOUNT and not cli.env_targets:
         raise HTTPException(status_code=400, detail=f"{cli.name} は既定のアカウントだけ使えます")
+    if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
+        try:
+            _warm_opencode_llm()
+        except Exception:  # noqa: BLE001 - 温めに失敗してもコンソールは開く
+            logger.exception("OpenCode の LLM を温められませんでした")
     try:
-        result = consoles.create_consoles(
+        result = await asyncio.to_thread(
+            consoles.create_consoles,
             cli=cli, account=body.account, cwd=body.cwd,
-            count=body.count, label=body.label, created_by=user.username,
+            count=body.count, label=body.label, created_by=user.username, user_id=user.id,
         )
     except PermissionError as exc:  # files.resolve の許可の外
         raise HTTPException(status_code=400, detail=str(exc)) from exc

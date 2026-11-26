@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -18,6 +20,10 @@ from app.config import data_dir
 # アカウント名。CLI 側の設定フォルダの名前にもなるので、素朴で安全な形だけ。
 ACCOUNT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 DEFAULT_ACCOUNT = "default"
+# 画面に出す名前（既定のアカウントにも付けられる）。フォルダの名前とは別。
+LABEL_MAX = 32
+# ControlDeck の OpenCode 画面と同じ形で開く（OpenCode の設定の API: ゲートウェイ・OpenRouter・Zen）
+CONNECTOR_CONTROLDECK_OPENCODE = "controldeck-opencode"
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,8 @@ class CliDef:
       1 つでもあれば「あり」。公式の保存場所が不確かな CLI では空 = 判定しない）。
     default_home_dir: 既定のアカウント（環境変数を付けない）の設定フォルダの HOME からの相対。
       ログイン済みの判定だけに使う（空なら判定しない）。
+    connector: 空なら executable をそのまま開く。CONNECTOR_CONTROLDECK_OPENCODE なら
+      ControlDeck の OpenCode（v2）を OpenCode 画面の API 設定で開く（provider.tui_command）。
     """
 
     id: str
@@ -38,6 +46,7 @@ class CliDef:
     env_targets: tuple[tuple[str, str], ...] = ()
     login_files: tuple[str, ...] = ()
     default_home_dir: str = ""
+    connector: str = ""
 
 
 # CLI の表。実行ファイル名はここにあるものだけを使う（利用者の入力を混ぜない）。
@@ -54,9 +63,11 @@ CLIS: dict[str, CliDef] = {
         login_files=("auth.json",),
         default_home_dir=".codex",
     ),
+    # OpenCode は ControlDeck の OpenCode（v2）を、OpenCode 画面に登録した API（ゲートウェイ・
+    # OpenRouter・Zen）で開く。接続先は OpenCode の設定が決めるので、アカウントは既定の 1 つだけ。
     "opencode": CliDef(
-        id="opencode", name="OpenCode", executable="opencode",
-        env_targets=(("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data")),
+        id="opencode", name="OpenCode", executable="opencode2",
+        connector=CONNECTOR_CONTROLDECK_OPENCODE,
     ),
     # Gemini CLI はアカウントを分ける確かな方法が無い（HOME を変えると他の道具も変わる）。
     # C1 では既定のアカウントだけ。アカウントの作成・選択は断る。
@@ -80,14 +91,83 @@ def cli_info(cli: CliDef) -> dict:
         "id": cli.id,
         "name": cli.name,
         "executable": cli.executable,
-        "installed": shutil.which(cli.executable) is not None,
+        "installed": is_installed(cli),
         "multi_account": bool(cli.env_targets),
+        "connector": cli.connector,
     }
 
 
 def is_installed(cli: CliDef) -> bool:
-    """CLI の実行ファイルが PATH にあるか。無いものは開けない（画面でも選べない）。"""
+    """開けるか。無いものは開けない（画面でも選べない）。
+
+    ControlDeck の OpenCode は、オプション機能が有効で実行ファイルがあるとき（OpenCode 画面と同じ判定）。
+    """
+    if cli.connector == CONNECTOR_CONTROLDECK_OPENCODE:
+        from app.integrations.opencode import provider
+        try:
+            provider.active_binary()
+        except provider.CodeAgentError:
+            return False
+        return True
     return shutil.which(cli.executable) is not None
+
+
+# ---- 画面に出す名前 ----------------------------------------------------------------------
+
+def _labels_path() -> Path:
+    return accounts_root().parent / "labels.json"
+
+
+def _read_labels() -> dict[str, dict[str, str]]:
+    try:
+        raw = json.loads(_labels_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {cli: {k: v for k, v in names.items() if isinstance(k, str) and isinstance(v, str)}
+            for cli, names in raw.items() if cli in CLIS and isinstance(names, dict)}
+
+
+def _write_labels(labels: dict[str, dict[str, str]]) -> None:
+    path = _labels_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(temp, 0o600)
+    os.replace(temp, path)
+
+
+def account_label(cli_id: str, account: str) -> str:
+    return _read_labels().get(cli_id, {}).get(account, "")
+
+
+def labels_for(cli_id: str) -> dict[str, str]:
+    return dict(_read_labels().get(cli_id, {}))
+
+
+def clean_label(value: str) -> str:
+    label = value.strip()
+    if len(label) > LABEL_MAX or any(ord(c) < 0x20 or ord(c) == 0x7f for c in label):
+        raise ValueError(f"名前は {LABEL_MAX} 文字以内で、制御文字（tab・改行など）は使えません")
+    return label
+
+
+def set_account_label(cli: CliDef, account: str, label: str) -> str:
+    """アカウントに画面の名前を付ける（空なら外す）。既定のアカウントにも付けられる。"""
+    if account != DEFAULT_ACCOUNT:
+        validate_name(account)
+        if not account_dir(cli, account).is_dir():
+            raise FileNotFoundError("アカウントが見つかりません")
+    label = clean_label(label)
+    labels = _read_labels()
+    names = labels.setdefault(cli.id, {})
+    if label:
+        names[account] = label
+    else:
+        names.pop(account, None)
+    _write_labels(labels)
+    return label
 
 
 def account_dir(cli: CliDef, name: str) -> Path:
@@ -135,6 +215,9 @@ def delete_account(cli: CliDef, name: str) -> None:
     if not directory.is_dir():
         raise FileNotFoundError("アカウントが見つかりません")
     shutil.rmtree(directory)
+    labels = _read_labels()
+    if labels.get(cli.id, {}).pop(name, None) is not None:
+        _write_labels(labels)
 
 
 def logged_in(cli: CliDef, directory: Path) -> bool | None:
@@ -156,7 +239,9 @@ def _default_logged_in(cli: CliDef) -> bool | None:
 
 def list_accounts(cli: CliDef) -> list[dict]:
     """アカウントの一覧。既定のアカウントは常に先頭（作る・消すはできない）。"""
-    rows = [{"name": DEFAULT_ACCOUNT, "default": True, "logged_in": _default_logged_in(cli)}]
+    labels = labels_for(cli.id)
+    rows = [{"name": DEFAULT_ACCOUNT, "default": True, "logged_in": _default_logged_in(cli),
+             "label": labels.get(DEFAULT_ACCOUNT, "")}]
     root = accounts_root() / cli.id
     if root.is_dir():
         for directory in sorted(root.iterdir()):
@@ -165,6 +250,7 @@ def list_accounts(cli: CliDef) -> list[dict]:
                     "name": directory.name,
                     "default": False,
                     "logged_in": logged_in(cli, directory),
+                    "label": labels.get(directory.name, ""),
                 })
     return rows
 
