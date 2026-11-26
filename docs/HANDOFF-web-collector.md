@@ -10,9 +10,17 @@
 | 調査・計画・引き継ぎ資料 | ☑ | W1 の PR に同梱 |
 | W1 共通の取得・抽出・SSRF・機能と拡張・JPO | ☑ v0.108 で本番に適用・評価済み | #504 |
 | W2 ブラウザ（中継プロキシ） | ☑ 実装・試験済み（2026-11-26、ブランチ feat/web-collector-w2。マージ・本番評価は司令塔のレビュー後） | — |
-| W3 巡回 | ☐ | — |
+| W3a 巡回の発見・永続キュー | Draft・初期実装、未検証 | 本PR |
+| W3b 巡回実行・認可・Jobs・UI・robots/Retry-After | ☐ | — |
 | P1 Patent の調査 | ☐ | — |
 | AI アシスタントのサイト指定の調査・依頼の理解・日付の確認（`research_tools.py`・`research_intent.py`・`research_time.py`） | ☑ 2026-11-22（実機評価済み・Reddit は取得制限あり） | — |
+
+## W3a の初期実装（2026-11-26）
+
+- `crawl.py`: 同一 origin の URL の整形、Sitemap/RSS/Atom と内部リンクの発見、SQLite キュー（件数200、深さ3、停止・再開・取消・停止済み worker の復旧）。
+- ネットワーク処理はまだ接続しない。URL整形は SSRF 検査ではない。W3b は egress 経由で robots を各ページとリダイレクト前に確認、Retry-After/全体時間・容量・ドメイン間隔を守る。ブラウザの自動使用・公開API・ナレッジの自動保存は行わない。
+- DB path は信頼された管理領域からのみ。認可・秘密会話・Jobs と接続するまでは内部部品のみ。既存の runtime/UI/manifest は不変。
+- test_web_collector.py に回帰試験追加。clone不可のため全体試験・test-catalog・実機評価未実施。
 
 ## 2. W1 で作ったもの
 
