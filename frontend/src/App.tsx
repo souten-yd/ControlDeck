@@ -17,6 +17,7 @@ import SystemPage from "./pages/System";
 import SettingsPage from "./pages/Settings";
 import FilesPage from "./pages/Files";
 import TerminalPage from "./pages/Terminal";
+import CommanderPage from "./pages/Commander";
 import WorkflowsPage from "./pages/Workflows";
 import WorkflowRunnerPage from "./pages/WorkflowRunner";
 import RemotePage from "./pages/Remote";
@@ -131,6 +132,7 @@ function buildRouter() {
       { path: "diagnostics", element: <Suspense fallback={null}><DiagnosticsPage /></Suspense> },
       { path: "files", element: <FilesPage /> },
       { path: "terminal", element: <TerminalPage /> },
+      { path: "commander", element: <CommanderPage /> },
       { path: "workflows", element: <WorkflowsPage /> },
       { path: "runner", element: <WorkflowRunnerPage /> },
       { path: "workflows/:id", element: <WorkflowsPage /> },

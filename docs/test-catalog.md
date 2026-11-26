@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 256 ファイル、2541 テスト（目的の未記入 93 ファイル）
-- E2E: 143 spec、312 テスト
+- backend: 258 ファイル、2559 テスト（目的の未記入 93 ファイル）
+- E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
 
@@ -676,6 +676,32 @@
 
 - `test_research_for_code_returns_evidence_and_keeps_the_opencode_answer` — 「調べて反映して」: 調べた根拠を OpenCode への依頼に付け、回答の meta は OpenCode のまま（出典は残す）。
 
+### backend/tests/test_commander_accounts.py
+
+目的: AI Commander のアカウント管理（app/commander/accounts.py と /accounts API）の試験。 目的: アカウント = 設定ディレクトリという C1 の根幹を守る。 - CLI の表（環境変数の対応）が公式の方法（CLAUDE_CONFIG_DIR・CODEX_HOME・XDG_*）どおりであること。 - アカウント名の検証・フォルダの権限（0700）・ログイン情報を返さないこと。 - 既定のアカウント（環境変数を付けない）という扱いが壊れないこと。 根拠: c1-spec.md（2026-11-26 の指示書）と docs/PLAN-ai-commander.md C1。 秘密（auth.json の中身）を読まない・返さないことを、API の返事の形で確かめる。 既存の Terminal の試験（test_terminals.py）は CLI のアカウントを扱わないので 同じ観点の試験は無い（./deck.sh test-catalog で確認済み）。
+
+- `test_cli_table_matches_official_account_isolation` — CLI の表: アカウントを分ける環境変数が公式の方法どおりであること。
+- `test_account_folder_permissions_and_login_check` — アカウントのフォルダは 0700 で作られる。ログイン済みはファイルの有無だけ。
+- `test_account_name_validation_and_reserved_default` — アカウント名の検証: 名前は folders の名前になるので素朴な形だけ。「default」は reserved。
+- `test_env_for_default_account_is_none` — 既定のアカウントは環境変数を付けない（利用者の普段の ~/.claude などを使う）。
+- `test_accounts_api_create_list_delete_and_audit` — アカウントの API: 作成・一覧・削除と監査ログ。返事に秘密（中身）を含めない。
+- `test_commander_api_requires_authentication` — 認証の無い呼び出しは 401。Terminal と同じ権限で守る。
+- `test_cli_list_reports_installed_state` — /clis は導入済みか・アカウントを分けられるかを返す（gemini は分けられない）。
+- `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
+
+### backend/tests/test_commander_consoles.py
+
+目的: AI Commander のコンソール（app/commander/consoles.py・manager の env と印・/consoles API）の試験。 目的: 「コンソール = Terminal の tmux セッション + 印」を守る。 - 既定のアカウントは環境変数を付けない・名前付きアカウントは CLI の表の環境変数を tmux へ配列引数で渡すこと（shell を使わない）。 - 印（@cd-commander-*）がセッションへ付き、一覧で読み返せること。 - Terminal の上限に当たったら部分的に開いて理由を返すこと。作業フォルダは許可の外なら 400。 根拠: c1-spec.md（2026-11-26）と AGENTS.md の「shell=True 禁止」「async の中で 同期的に待たない」（endpoint は def）。env をシェル文字列へ連結すると パスに空白が含まれるだけで壊れるので、配列引数であることを機械的に確かめる。 Terminal の manager を広げたので test_terminals.py と役割を分担する （あちらは engine・PTY の既存の振る舞い、こちらは env と印）。
+
+- `test_create_session_passes_env_as_array_arguments` — 環境変数は tmux へ配列引数として渡ること（シェルの文字列に連結しない）。
+- `test_commander_marks_roundtrip_with_real_tmux` — 印（@cd-commander-*）を付けたセッションが一覧で読み返せること。
+- `test_env_reaches_tmux_session_environment` — create_session(env=) の値が tmux のセッション環境に実際に届くこと。
+- `test_consoles_api_flow_default_account_and_batch` — コンソールの作成: 既定アカウントは環境変数無し・コマンドは表の実行ファイル名だけ。
+- `test_consoles_api_named_account_uses_env` — 名前付きアカウントは CLI の表の環境変数（パスは accounts の管理下だけ）を付ける。
+- `test_consoles_api_limit_reports_partial_open` — Terminal の上限に当たったら、開けた分と理由を返す（例外にしない）。
+- `test_consoles_api_rejects_bad_requests` — 入力の断り: 不明な CLI・未導入・許可の外の作業フォルダ・無いアカウント・個数。
+- `test_consoles_api_delete_only_marked_sessions` — コンソールの削除: 印のあるセッションだけを閉じられる（Terminal と同じ閉じ方）。
+
 ### backend/tests/test_compaction.py
 
 目的: Automatic compaction: the threshold rule, the AI assistant's folding, and the Models flags.
@@ -843,6 +869,8 @@
 - `test_run_switches_model_on_limit_error_and_continues_the_session` — 目的: 上限の印（type=error＋limit 等）で次のモデルへ、取れた sessionID は --session で続け、last_model を保存する。
 - `test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted` — 目的: 道具の失敗では切り替えない。全部尽きたら最後の終了コードで終わる。
 - `test_run_nudges_the_same_session_when_a_subagent_wait_stalls` — 目的: 子の結果待ち（background_wait）のまま動きが無ければ止め、同じモデル・同じ会話へ「待たずに続けて」を送る。
+- `test_run_keeps_waiting_while_the_subagent_is_still_progressing` — 目的: 主の会話が background_wait で黙っていても、子の会話が更新され続けていれば止めない。
+- `test_child_activity_reads_the_latest_update_of_running_subagents` — 目的: 箱の OpenCode の記録から、動いている子の会話の最後の更新時刻を読む（終わった子・記録が無いときは None）。
 - `test_run_does_not_treat_slow_normal_output_as_a_stall` — 目的: background_wait でない間は、出力の間が空いても止めない（長いテストの実行などを切らない）。
 - `test_explicit_model_is_used_alone_and_local_is_an_alias` — 目的: --model 明示は順番を使わず 1 つだけ。local はローカル LLM。
 - `test_limit_detection_uses_word_boundaries` — 目的: 上限の印は語の区切りで見る。"rate" だけで判定すると generate・accurate を含むふつうのエラーで
@@ -4163,6 +4191,15 @@
 - uses getRandomValues when randomUUID is unavailable
 - works without crypto and satisfies the backend contract
 - generates 1000 unique identifiers without crypto
+
+### frontend/e2e/commander.spec.ts
+
+目的: AI Commander（/commander）の E2E。API と端末の WebSocket はモック（実 CLI を動かさない）。 目的（c1-spec.md「E2E」の項目）: - ＋ コンソールのシートの流れ（未導入の CLI は選べない・アカウント・作業フォルダ・個数・表示名） - タイル（1280px）とモバイル 320px の 1 つずつ（リスト → 全画面） - アカウントを作る・消す（確認ダイアログ） - 320 と 1280 のライト・ダークの撮影
+
+- モバイル 320px: 一覧から 1 個ずつ開き、閉じる・削除も確認できる
+- ＋ コンソール: 未導入は選べない・アカウント・フォルダ・個数・表示名を選んで開ける（320px）
+- アカウントの管理: 一覧・作る・消す（確認ダイアログ）（320px）
+- PC 1280px: タイル 2 列で並べ、押すと大きく開く（ライト・ダークの撮影も）
 
 ### frontend/e2e/dashboard-fans.spec.ts
 
