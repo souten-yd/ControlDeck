@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
+from email.utils import format_datetime, parsedate_to_datetime
 import copy
 import json
 import re
@@ -40,9 +40,12 @@ def response_allowed(headers) -> bool:
     # Explicit opt-in from origin; no Vary (even Accept-Encoding), cookies,
     # authentication challenge, partial representation, no-store or private.
     cc = headers.get("cache-control", "").casefold()
-    directives = {x.strip().split("=", 1)[0].strip() for x in cc.split(",")}
-    return ("public" in directives and not directives & {"private", "no-store"}
-            and not headers.get("vary") and "set-cookie" not in headers
+    if not cc or len(cc) > 1024 or '"' in cc or "\\" in cc:
+        return False
+    parts = {x.strip() for x in cc.split(",")}
+    directives = {x.split("=", 1)[0].strip() for x in parts}
+    return ("public" in parts and not directives & {"private", "no-store"}
+            and "vary" not in headers and "set-cookie" not in headers
             and "www-authenticate" not in headers and "proxy-authenticate" not in headers
             and "content-range" not in headers)
 
@@ -55,7 +58,8 @@ def validators(headers) -> dict:
     lm = headers.get("last-modified", "")
     if len(lm) <= 80 and "\r" not in lm and "\n" not in lm:
         try:
-            if parsedate_to_datetime(lm).utcoffset() is not None:
+            parsed = parsedate_to_datetime(lm)
+            if format_datetime(parsed, usegmt=True) == lm:
                 out["If-Modified-Since"] = lm
         except (ValueError, TypeError, OverflowError):
             pass
@@ -75,6 +79,7 @@ class RevalidationCache:
     def __init__(self):
         self._items = OrderedDict()
         self._size = 0
+        self._epoch = 0
 
     def drop(self, key):
         old = self._items.pop(key, None)
@@ -89,7 +94,28 @@ class RevalidationCache:
         self.drop(key)
         return None
 
-    def store(self, key, page: dict, headers) -> bool:
+    def take(self, key):
+        # Global generation is deliberately conservative under concurrent use:
+        # only the newest request may populate/restore an entry.
+        self._epoch += 1
+        entry = self.get(key)
+        self.drop(key)
+        return entry, self._epoch
+
+    def _insert(self, key, entry):
+        self.drop(key)
+        while self._items and (len(self._items) >= MAX_ENTRIES or self._size + entry.size > MAX_BYTES):
+            self.drop(next(iter(self._items)))
+        self._items[key] = entry
+        self._size += entry.size
+
+    def restore(self, key, entry, epoch):
+        if epoch == self._epoch and entry.expires > time.monotonic():
+            self._insert(key, entry)
+
+    def store(self, key, page: dict, headers, epoch) -> bool:
+        if epoch != self._epoch:
+            return False
         self.drop(key)
         v = validators(headers)
         if (not response_allowed(headers) or not v
@@ -104,10 +130,7 @@ class RevalidationCache:
             return False
         if size > MAX_BYTES:
             return False
-        while self._items and (len(self._items) >= MAX_ENTRIES or self._size + size > MAX_BYTES):
-            self.drop(next(iter(self._items)))
-        self._items[key] = _Entry(copy.deepcopy(page), v, time.monotonic()+MAX_AGE, size)
-        self._size += size
+        self._insert(key, _Entry(copy.deepcopy(page), v, time.monotonic()+MAX_AGE, size))
         return True
 
 
@@ -117,7 +140,7 @@ def accepts_304(entry: _Entry, headers) -> bool:
     if not response_allowed(headers):
         return False
     v = validators(headers)
-    if "etag" in headers and v.get("If-None-Match") != entry.headers.get("If-None-Match"):
+    if ("If-None-Match" in entry.headers or "etag" in headers) and v.get("If-None-Match") != entry.headers.get("If-None-Match"):
         return False
     if "last-modified" in headers and v.get("If-Modified-Since") != entry.headers.get("If-Modified-Since"):
         return False
