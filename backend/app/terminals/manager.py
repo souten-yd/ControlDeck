@@ -373,6 +373,27 @@ class TerminalManager:
             return
         self._close_fallback(sid, kill=True)
 
+    def capture_text(self, sid: str, lines: int = 60) -> str:
+        """画面の最後の lines 行を、色の印を外した文字で返す（AI Commander の状態の判定用）。
+
+        tmux の capture-pane（-J で折り返しをつなぐ）。読めないときは空文字列。
+        """
+        lines = max(1, min(int(lines), 500))
+        if tmux_available():
+            try:
+                result = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", _target(sid)],
+                    capture_output=True, text=True, errors="replace", timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired, KeyError):
+                return ""
+            return result.stdout if result.returncode == 0 else ""
+        session = self._fallback.get(sid)
+        if session is None:
+            return ""
+        text = bytes(session.buffer[-64_000:]).decode("utf-8", errors="replace")
+        return "\n".join(re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).splitlines()[-lines:])
+
     def tag_session(self, sid: str, marks: dict[str, str]) -> None:
         """セッションへ印（tmux の user option @cd-commander-<key>）を付ける。
 

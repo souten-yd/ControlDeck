@@ -52,6 +52,9 @@ interface ConsoleFixture {
   commander_account: string;
   commander_label?: string;
   commander_account_label?: string;
+  commander_state?: "working" | "waiting" | "limited" | "error" | "exited";
+  commander_last_line?: string;
+  commander_detail?: string;
 }
 
 function consoleFixture(overrides: Partial<ConsoleFixture> & Pick<ConsoleFixture, "id">): ConsoleFixture {
@@ -89,10 +92,13 @@ function initialState(): CommanderState {
       consoleFixture({
         id: "aa110001", program: "claude", commander_cli: "claude",
         commander_account: "default", commander_label: "調査",
+        commander_state: "working", commander_last_line: "· Drizzling… (2m 39s · ↓ 16k tokens)",
       }),
       consoleFixture({
         id: "aa110002", program: "opencode", cwd: "~/CodeDEV/Hello",
         commander_cli: "opencode", commander_account: "default", commander_account_label: "ControlDeck の API",
+        commander_state: "limited", commander_last_line: "Build · DeepSeek",
+        commander_detail: "Error: 429 Too Many Requests — rate limit exceeded",
       }),
     ],
     accounts: {
@@ -219,6 +225,13 @@ test.describe("AI Commander", () => {
     await expect(first).toContainText("既定");
     await expect(first).toContainText("調査");
     await expect(first).toContainText("最終活動");
+    // C2: 状態（LLM なしの判定）と最後の行。上限で停止ならその行を出す
+    await expect(first.locator("[data-commander-state]")).toHaveAttribute("data-commander-state", "working");
+    await expect(first).toContainText("作業中");
+    await expect(first).toContainText("Drizzling");
+    const second = rows.nth(1);
+    await expect(second).toContainText("上限で停止");
+    await expect(second).toContainText("429 Too Many Requests");
     await expect(page.getByText("未導入")).toHaveCount(0);
 
     // 押すと全画面の端末。閉じると一覧へ戻る

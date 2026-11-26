@@ -167,10 +167,11 @@ def test_accounts_api_create_list_delete_and_audit(admin_client):
     with SessionLocal() as db:
         rows = db.execute(
             select(AuditLog)
-            .where(AuditLog.resource_id == "claude/work")
+            .where(AuditLog.resource_id == "claude/work", AuditLog.action.like("commander.account.%"))
             .order_by(AuditLog.id)
         ).scalars().all()
-        assert [r.action for r in rows] == [
+        # 他の試験（コンソール）が同じ名前のアカウントを作って消した記録もあり得るので、最後の 2 件を見る
+        assert [r.action for r in rows][-2:] == [
             "commander.account.create", "commander.account.delete",
         ]
         assert all(r.username for r in rows)
