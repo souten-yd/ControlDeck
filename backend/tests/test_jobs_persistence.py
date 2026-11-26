@@ -407,7 +407,8 @@ def test_two_exclusive_resource_jobs_execute_serially(monkeypatch):
             resource=lambda job_id: requirement(job_id),
         )
         for _ in range(1000):   # 最大 10 秒（関門の全体実行の負荷でも待てるように。速ければすぐ抜ける）
-            if first.status == "running" and second.wait_reason:
+            # status が running になってから runner が動き出すまでに間がある。runner が始まったことも待つ
+            if first.status == "running" and second.wait_reason and order:
                 break
             await asyncio.sleep(0.01)
         assert first.status == "running"
@@ -460,3 +461,446 @@ def test_jobs_api_hides_other_owners_and_streams_snapshot(admin_client):
         assert snapshot["type"] == "snapshot"
         ids = {item["id"] for item in snapshot["jobs"]}
         assert own_id in ids and foreign_id not in ids
+
+
+# ---------------------------------------------------------------------------
+# 再起動の後の自動再開（m3-spec.md 2026-11-26）
+# ---------------------------------------------------------------------------
+
+
+def _use_tmp_resume_dir(monkeypatch, tmp_path):
+    """再開用の記録の置き場を、本番の data_dir ではなく試験の tmp へ向ける。"""
+    root = tmp_path / "resumable"
+
+    def resume_dir():
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    monkeypatch.setattr(jobs, "_resume_dir", resume_dir)
+    return root
+
+
+def _admin_id() -> int:
+    from app.database import SessionLocal
+    from app.models import User
+
+    with SessionLocal() as db:
+        return db.query(User).filter(User.username == "admin").one().id
+
+
+def _seed_interrupted(
+    root, tmp_path, *, kind: str, params: dict, owner_user_id: int | None,
+    attempts: int = 0, created_at: float | None = None, title: str = "続きの試験",
+    status: str = "interrupted", job_id: str | None = None,
+) -> str:
+    """再起動で中断された Job の行と、再開用の記録を用意する（再起動の直前の状態）。"""
+    import json
+    import uuid
+
+    from app.database import SessionLocal
+    from app.models import Job as JobRow
+
+    job_id = job_id or f"resume-{uuid.uuid4().hex[:10]}"
+    with SessionLocal() as db:
+        db.add(JobRow(id=job_id, kind=kind, title=title, status=status,
+                      owner_user_id=owner_user_id,
+                      error="バックエンド再起動により中断されました"))
+        db.commit()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"{job_id}.json").write_text(json.dumps({
+        "kind": kind, "params": params, "owner_user_id": owner_user_id,
+        "title": title, "created_at": time.time() if created_at is None else created_at,
+        "attempts": attempts,
+    }, ensure_ascii=False), encoding="utf-8")
+    return job_id
+
+
+def _job_row(job_id: str):
+    from app.database import SessionLocal
+    from app.models import Job as JobRow
+
+    with SessionLocal() as db:
+        return db.get(JobRow, job_id)
+
+
+def test_resumable_job_saves_only_resume_params_privately(client, monkeypatch, tmp_path):
+    """目的: 再開できる Job の作成で、再開に要る引数だけを 0600 の JSON に残すこと。
+
+    根拠: 再起動で中断された取得などの Job を続きから作り直す（m3-spec.md 2026-11-26）。
+    秘密値（HF のトークンなど）を混ぜないため、保存するのは呼び出し側が渡した params だけ
+    にする（設定から取る秘密は含めない）。
+    """
+    import json
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    params = {"alias": "m1", "files": ["a.gguf"], "register": None}
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def run(job):
+            await gate.wait()
+            return {}
+
+        job = jobs.create("test.resume", "続きの試験", run, owner_user_id=None,
+                          resume=params)
+        path = root / f"{job.id}.json"
+        assert path.exists()
+        assert path.stat().st_mode & 0o777 == 0o600
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        created_at = doc.pop("created_at")
+        assert isinstance(created_at, float)
+        assert doc == {
+            "kind": "test.resume", "params": params, "owner_user_id": None,
+            "title": "続きの試験", "attempts": 0,
+        }
+        gate.set()
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "failed"])
+def test_finished_resumable_job_forgets_record(client, monkeypatch, tmp_path, outcome):
+    """目的: 成功・失敗で終わった Job の再開用の記録を消すこと。
+
+    根拠: 失敗した取得を再起動のたびに繰り返さない（m3-spec.md 2026-11-26）。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+
+    async def scenario():
+        async def run(job):
+            if outcome == "failed":
+                raise ValueError("わざと失敗")
+            return {}
+
+        job = jobs.create("test.resume", "終わる試験", run, resume={"n": 1})
+        path = root / f"{job.id}.json"
+        assert path.exists()
+        while job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        assert job.status == outcome
+        assert not path.exists()
+
+    _run(scenario())
+
+
+def test_canceled_resumable_job_is_not_resumed(client, monkeypatch, tmp_path):
+    """目的: 利用者が止めた Job の記録は消し、再起動の後に勝手に再開しないこと。
+
+    根拠: 「止めたものは再開しない」（m3-spec.md 2026-11-26）。操作の意図を再起動で覆さない。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "MAX_CONCURRENT", 0)
+    monkeypatch.setattr(jobs, "_shutdown_started", False)
+
+    async def run(job):
+        return {}
+
+    job = jobs.create("test.resume", "止める試験", run, resume={"n": 1})
+    path = root / f"{job.id}.json"
+    assert path.exists()
+    assert jobs.cancel(job.id)
+    assert not path.exists()
+    assert _run(jobs.resume_after_startup()) == []
+
+
+def test_shutdown_does_not_cancel_resumable_job(client, monkeypatch, tmp_path):
+    """目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
+    せず、再開用の記録を残すこと。
+
+    根拠: 丁寧な停止（systemd の restart）では asyncio が loop を閉じる前に残りの task を
+    cancel する。取り消しと同じ扱いにすると、再起動のたびに再開の対象が消える
+    （m3-spec.md 2026-11-26「再起動させられても途中から再開」）。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_shutdown_started", True)
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def run(job):
+            await gate.wait()
+            return {}
+
+        job = jobs.create("test.resume", "停止の試験", run, resume={"n": 1})
+        path = root / f"{job.id}.json"
+        while job.status != "running":
+            await asyncio.sleep(0.01)
+        job.task.cancel()
+        await asyncio.gather(job.task, return_exceptions=True)
+        assert job.status != "canceled"
+        assert path.exists()
+        # 試験の後片付け（次の試験の一覧に残さない）
+        job.status = "canceled"
+        await asyncio.to_thread(jobs._db_write, job, True)
+
+    _run(scenario())
+
+
+def test_startup_resumes_interrupted_job_with_factory_and_owner(client, monkeypatch, tmp_path):
+    """目的: 起動後に、中断された Job を保存した引数から作り直すこと。
+
+    根拠: 再起動の後に続きから再開する（m3-spec.md 2026-11-26）。factory が呼ばれ、
+    持ち主・題を引き継ぎ、元の Job の行に続きの Job の id が残ること。
+    """
+    import json
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    owner = _admin_id()
+    seen = {}
+    gate = asyncio.Event()
+
+    def factory(params):
+        seen["params"] = params
+
+        async def run(job):
+            await gate.wait()
+            return {"ok": True}
+
+        return run
+
+    monkeypatch.setitem(
+        jobs._resumable_kinds, "test.resume",
+        jobs._ResumableKind(factory, lambda params: f"再開: {params['alias']}"),
+    )
+    old_id = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={"alias": "m1"}, owner_user_id=owner)
+
+    async def scenario():
+        resumed = await jobs.resume_after_startup()
+        assert len(resumed) == 1
+        new_id = resumed[0]
+        assert seen["params"] == {"alias": "m1"}
+        new_job = jobs.get(new_id)
+        assert new_job is not None
+        assert new_job.owner_user_id == owner
+        assert new_job.title == "再開: m1（再起動のあと続きから）"
+        new_doc = json.loads((root / f"{new_id}.json").read_text(encoding="utf-8"))
+        assert new_doc["attempts"] == 1
+        assert not (root / f"{old_id}.json").exists()
+        gate.set()
+        while new_job.status in ("queued", "running"):
+            await asyncio.sleep(0.01)
+        return new_id
+
+    new_id = _run(scenario())
+    row = _job_row(old_id)
+    assert row.status == "interrupted"
+    assert f"Job {new_id} で続きから再開しました" in row.error
+
+
+def test_startup_stops_after_three_resume_attempts(client, monkeypatch, tmp_path):
+    """目的: 自動の再開を 3 回試したら、それ以上作り直さず理由を Job に残すこと。
+
+    根拠: 何度も落ちる種類で、再起動のたびに取得をやり直し続けない（m3-spec.md 2026-11-26）。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    called = []
+
+    def factory(params):
+        called.append(params)
+
+        async def run(job):
+            return {}
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "再開"))
+    old_id = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={"alias": "m1"}, owner_user_id=None, attempts=3)
+
+    assert _run(jobs.resume_after_startup()) == []
+    assert called == []
+    assert not (root / f"{old_id}.json").exists()
+    assert _job_row(old_id).error == "自動の再開を 3 回試してやめました"
+
+
+def test_resumed_record_keeps_the_first_created_at(client, monkeypatch, tmp_path):
+    """目的: 自動で作り直した Job の記録は、最初に作った時刻を引き継ぐこと。
+    根拠: 再開のたびに時刻を書き直すと、7 日の期限が延び続ける（2026-11-27 Opus の監査）。"""
+    import json
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+
+    async def scenario():
+        async def run(job):
+            await asyncio.Event().wait()
+
+        job = jobs.create("test.resume", "時刻の試験", run, resume={"n": 1},
+                          _resume_attempts=1, _resume_created_at=1000.0)
+        doc = json.loads((root / f"{job.id}.json").read_text(encoding="utf-8"))
+        assert doc["created_at"] == 1000.0
+        assert doc["attempts"] == 1
+        assert jobs.cancel(job.id)
+        await asyncio.gather(*( [job.task] if job.task else []), return_exceptions=True)
+
+    _run(scenario())
+
+
+def test_startup_does_not_resume_record_older_than_seven_days(client, monkeypatch, tmp_path):
+    """目的: 作られてから 7 日を過ぎた Job は再開せず、記録を消すこと。
+
+    根拠: 古い取得を、状況が変わった後に勝手にやり直さない（m3-spec.md 2026-11-26）。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    called = []
+
+    def factory(params):
+        called.append(params)
+
+        async def run(job):
+            return {}
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "再開"))
+    old_id = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"alias": "m1"}, owner_user_id=None,
+        created_at=time.time() - 8 * 24 * 60 * 60,
+    )
+
+    assert _run(jobs.resume_after_startup()) == []
+    assert called == []
+    assert not (root / f"{old_id}.json").exists()
+
+
+def test_startup_resume_can_be_disabled_by_config(client, monkeypatch, tmp_path):
+    """目的: 設定 jobs.auto_resume=false で、起動後の自動再開を止められること。
+
+    根拠: 自動再開を切る手段を用意する（m3-spec.md 2026-11-26）。記録は消さず、次に
+    有効にしたときに再開できるよう残す。
+    """
+    from app.config import Config, JobsConfig
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr("app.config.get_config",
+                        lambda: Config(jobs=JobsConfig(auto_resume=False)))
+    called = []
+
+    def factory(params):
+        called.append(params)
+
+        async def run(job):
+            return {}
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "再開"))
+    old_id = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={"alias": "m1"}, owner_user_id=None)
+
+    assert _run(jobs.resume_after_startup()) == []
+    assert called == []
+    assert (root / f"{old_id}.json").exists()
+
+
+def test_startup_discards_unregistered_broken_or_finished_records(client, monkeypatch, tmp_path):
+    """目的: 再開できない記録（未登録の種類・壊れた JSON・中断以外で終わった Job）を
+    起動後に消し、起動を止めないこと。
+
+    根拠: 再開の対象を「登録済み・壊れていない・interrupted の行」に限る（m3-spec.md
+    2026-11-26）。利用者が止めた Job を再起動で甦らせない。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    unknown = _seed_interrupted(root, tmp_path, kind="test.unknown",
+                                params={}, owner_user_id=None, job_id="resume-unknown")
+    broken = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={}, owner_user_id=None, job_id="resume-broken")
+    (root / f"{broken}.json").write_text("{not json", encoding="utf-8")
+    canceled = _seed_interrupted(root, tmp_path, kind="test.resume",
+                                 params={}, owner_user_id=None, job_id="resume-canceled",
+                                 status="canceled")
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(lambda params: None, lambda params: "再開"))
+    assert _run(jobs.resume_after_startup()) == []
+    for job_id in (unknown, broken, canceled):
+        assert not (root / f"{job_id}.json").exists()
+
+
+def test_model_download_jobs_are_registered_as_resumable(client, monkeypatch):
+    """目的: HF 取得と Strata 初回起動の Job が、自動再開の仕組みに載っていること。
+
+    根拠: モデルのダウンロードを再起動後に続きから再開する（m3-spec.md 2026-11-26）。
+    登録が外れると、再起動後の再開が黙って効かなくなる。
+    """
+    assert "model.hf_download" in jobs._resumable_kinds
+    assert "model.strata.start" in jobs._resumable_kinds
+
+
+def test_huggingface_download_runner_forwards_saved_params(monkeypatch):
+    """目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
+
+    根拠: 再開の道が通常の取得と同じ処理を通る（m3-spec.md 2026-11-26）。通信はしない。
+    """
+    from app.models_mgmt import hf, resume
+
+    calls = {}
+
+    async def fake_download(job, repo, files, **kwargs):
+        calls.update({"repo": repo, "files": files, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(hf, "download", fake_download)
+    params = {
+        "repo": "org/model-GGUF", "files": ["m-Q4_K_M.gguf"], "revision": "main",
+        "library_id": "lib1", "expected_bytes": 123,
+        "register": {"alias": "m", "role": None, "endpoint_id": None, "port": None},
+    }
+    runner = resume.huggingface_download_runner(params)
+    result = _run(runner(jobs.Job(id="hf-resume", kind="model.hf_download", title="t")))
+    assert result == {"ok": True}
+    assert calls == {
+        "repo": "org/model-GGUF", "files": ["m-Q4_K_M.gguf"], "revision": "main",
+        "library_id": "lib1", "expected_bytes": 123,
+        "register": params["register"],
+    }
+
+
+def test_hf_download_endpoint_creates_resumable_job_without_secret(admin_client, monkeypatch, tmp_path):
+    """目的: 画面から始めた HF 取得が再開可能な Job になり、 HF のトークンを記録しないこと。
+
+    根拠: 取得の引数だけを残して再起動後に同じ処理を作り直す（m3-spec.md 2026-11-26）。
+    画面の API と再開用 runner の接続が切れると、再開の登録だけ残って実際には動かない。
+    """
+    import json
+
+    from app.models_mgmt import hf
+    from tests.conftest import CSRF_HEADERS
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    calls = {}
+
+    async def fake_download(job, repo, files, **kwargs):
+        calls.update({"repo": repo, "files": files, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(hf, "download", fake_download)
+    response = admin_client.post(
+        "/api/v1/models/hf/download-jobs",
+        json={"repo": "org/model-GGUF", "files": ["m-Q4.gguf"]},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    doc = json.loads((root / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert doc["params"] == {
+        "repo": "org/model-GGUF", "files": ["m-Q4.gguf"], "revision": "main",
+        "library_id": "", "expected_bytes": 0, "register": None,
+    }
+    assert "token" not in json.dumps(doc)
+    assert calls["repo"] == "org/model-GGUF"
+
+    async def wait_file_gone():
+        for _ in range(500):
+            if not (root / f"{job_id}.json").exists():
+                return
+            await asyncio.sleep(0.01)
+
+    _run(wait_file_gone())
+    assert not (root / f"{job_id}.json").exists()

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 256 ファイル、2526 テスト（目的の未記入 93 ファイル）
+- backend: 256 ファイル、2541 テスト（目的の未記入 93 ファイル）
 - E2E: 143 spec、312 テスト
 
 ## backend（backend/tests）
@@ -842,6 +842,8 @@
 - `test_default_chain_skips_opencode_models_without_zen_key_or_when_box_disallows` — 目的: 既定の順番、キー無し・allow_zen off で opencode* を飛ばす、meta の model_chain が優先、local は別名。
 - `test_run_switches_model_on_limit_error_and_continues_the_session` — 目的: 上限の印（type=error＋limit 等）で次のモデルへ、取れた sessionID は --session で続け、last_model を保存する。
 - `test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_when_exhausted` — 目的: 道具の失敗では切り替えない。全部尽きたら最後の終了コードで終わる。
+- `test_run_nudges_the_same_session_when_a_subagent_wait_stalls` — 目的: 子の結果待ち（background_wait）のまま動きが無ければ止め、同じモデル・同じ会話へ「待たずに続けて」を送る。
+- `test_run_does_not_treat_slow_normal_output_as_a_stall` — 目的: background_wait でない間は、出力の間が空いても止めない（長いテストの実行などを切らない）。
 - `test_explicit_model_is_used_alone_and_local_is_an_alias` — 目的: --model 明示は順番を使わず 1 つだけ。local はローカル LLM。
 - `test_limit_detection_uses_word_boundaries` — 目的: 上限の印は語の区切りで見る。"rate" だけで判定すると generate・accurate を含むふつうのエラーで
 - `test_a_box_has_its_own_git_author_and_the_users_gitconfig_is_not_needed` — 開発の作業場 1 段目: 箱の中にはコミットの作者が無く不定だった。作業ツリーの local の設定に固定の作者を入れる。
@@ -1442,6 +1444,19 @@
 - `test_resource_job_oom_is_normalized_profiled_and_not_retried`
 - `test_two_exclusive_resource_jobs_execute_serially`
 - `test_jobs_api_hides_other_owners_and_streams_snapshot`
+- `test_resumable_job_saves_only_resume_params_privately` — 目的: 再開できる Job の作成で、再開に要る引数だけを 0600 の JSON に残すこと。
+- `test_finished_resumable_job_forgets_record` — 目的: 成功・失敗で終わった Job の再開用の記録を消すこと。
+- `test_canceled_resumable_job_is_not_resumed` — 目的: 利用者が止めた Job の記録は消し、再起動の後に勝手に再開しないこと。
+- `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
+- `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
+- `test_startup_stops_after_three_resume_attempts` — 目的: 自動の再開を 3 回試したら、それ以上作り直さず理由を Job に残すこと。
+- `test_resumed_record_keeps_the_first_created_at` — 目的: 自動で作り直した Job の記録は、最初に作った時刻を引き継ぐこと。
+- `test_startup_does_not_resume_record_older_than_seven_days` — 目的: 作られてから 7 日を過ぎた Job は再開せず、記録を消すこと。
+- `test_startup_resume_can_be_disabled_by_config` — 目的: 設定 jobs.auto_resume=false で、起動後の自動再開を止められること。
+- `test_startup_discards_unregistered_broken_or_finished_records` — 目的: 再開できない記録（未登録の種類・壊れた JSON・中断以外で終わった Job）を
+- `test_model_download_jobs_are_registered_as_resumable` — 目的: HF 取得と Strata 初回起動の Job が、自動再開の仕組みに載っていること。
+- `test_huggingface_download_runner_forwards_saved_params` — 目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
+- `test_hf_download_endpoint_creates_resumable_job_without_secret` — 目的: 画面から始めた HF 取得が再開可能な Job になり、 HF のトークンを記録しないこと。
 
 ### backend/tests/test_jobs_stream_cleanup.py
 

@@ -13,6 +13,7 @@ from app.database import SessionLocal, get_db
 from app.jobs import service as jobs
 from app.models import User
 from app.models_mgmt import ollama
+from app.models_mgmt import resume as model_resume
 from app.security.deps import authenticate_websocket, require_permission
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -1111,22 +1112,25 @@ async def hf_download(
     user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
 ):
     """GGUF 取得をサーバー側ジョブで行う（ブラウザを閉じても継続）。"""
-    from app.models_mgmt import hf
-
     register = None
     if body.alias:
         register = {"alias": body.alias, "role": body.role,
                     "endpoint_id": body.endpoint_id, "port": body.port}
 
-    async def run(job: jobs.Job):
-        return await hf.download(
-            job, body.repo, body.files, library_id=body.library_id,
-            revision=body.revision, expected_bytes=body.expected_bytes, register=register,
-        )
-
-    job = jobs.create("model.hf_download", f"HuggingFace取得: {body.repo}", run,
-                      owner_user_id=user.id,
-                      idempotency_key=request.headers.get("idempotency-key"), priority=0)
+    # 再起動で中断されても続きから取れるよう、取得の引数を Job に預ける
+    # （トークンは含めない。hf が取得のたびに設定から読む）。
+    resume = {
+        "repo": body.repo, "files": list(body.files), "revision": body.revision,
+        "library_id": body.library_id, "expected_bytes": body.expected_bytes,
+        "register": register,
+    }
+    job = jobs.create(
+        "model.hf_download",
+        f"HuggingFace取得: {body.repo}", model_resume.huggingface_download_runner(resume),
+        owner_user_id=user.id,
+        idempotency_key=request.headers.get("idempotency-key"), priority=0,
+        resume=resume,
+    )
     audit.record(db, "model.hf_download", user=user, resource_type="model",
                  resource_id=body.repo, request=request,
                  metadata={"job_id": job.id, "files": len(body.files), "alias": body.alias or ""})
@@ -1605,15 +1609,14 @@ async def strata_start_job(
     if alias not in {item["alias"] for item in await asyncio.to_thread(strata_gateway.list_instances)}:
         raise HTTPException(status_code=404, detail="Strataモデル設定がありません")
 
-    async def run(job: jobs.Job) -> dict:
-        job.set_progress("Strataモデルを取得・起動しています。容量と環境により時間がかかります", 0, 1)
-        from app.models_mgmt import provider_adapters
-        await provider_adapters.load_model("strata", alias)
-        job.set_progress("起動完了", 1, 1)
-        return {"alias": alias, "loaded": True}
-
-    job = jobs.create("model.strata.start", f"Strata初回起動: {alias}", run,
-                      owner_user_id=user.id, idempotency_key=request.headers.get("idempotency-key"))
+    # 初回起動は重みの取得を含む。再起動で中断されても続きから起動し直せるよう
+    # 対象の alias を Job に預ける（Strata 自身が取得を続きからできるかは実機で確認）。
+    resume = {"alias": alias}
+    job = jobs.create("model.strata.start", f"Strata初回起動: {alias}",
+                      model_resume.strata_start_runner(resume),
+                      owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"),
+                      resume=resume)
     audit.record(db, "strata.start", user=user, resource_type="model",
                  resource_id=alias, request=request, metadata={"job_id": job.id})
     return {"job_id": job.id}

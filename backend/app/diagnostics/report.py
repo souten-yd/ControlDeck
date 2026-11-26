@@ -18,8 +18,11 @@ _KEYWORD = (r"(?:[\w.-]*(?:token|secret|passw(?:or)?d|passwd|api[_-]?key|apikey|
 _SECRETS = [
     # Authorization: Bearer/Basic/Token <値>
     (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
-    # 既知の形の鍵（ControlDeck のゲートウェイ cdk-、OpenAI/OpenRouter sk-、GitHub、Slack、Hugging Face）
-    (re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs]|hf)[-_][A-Za-z0-9_-]{8,}"), "***"),
+    # 既知の形の鍵（ControlDeck のゲートウェイ cdk-、OpenAI/OpenRouter sk-、GitHub、Slack）
+    (re.compile(r"\b(?:cdk|sk|pk|rk|ghp|gho|ghs|ghu|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{8,}"), "***"),
+    # Hugging Face のトークンは hf_ + 英数字。Job の種類名（model.hf_download の
+    # download は 8 字）まで伏せないよう、下線を許さず十分に長いものだけ拾う。
+    (re.compile(r"\bhf_[A-Za-z0-9]{10,}"), "***"),
     # JWT
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"), "***"),
     # 鍵らしい名前の後の値: key=v / key: v / "key": "v" / 'key': 'v' / ?sig=v

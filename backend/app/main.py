@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     # 前回実行中のまま残ったジョブを interrupted にマーク（メモリは再起動で消える）
     from app.jobs import service as jobs_service
 
+    jobs_service.begin_startup()
     jobs_service.recover_on_startup()
     from app.monitoring.fan_control import run as fan_control_loop
     from app.alerts.engine import alert_loop
@@ -121,6 +122,9 @@ async def lifespan(app: FastAPI):
 
     tasks = [
         *diagnostics_recorder.start(),
+        # 再起動で中断された取得などの Job を、起動後に裏で続きから作り直す
+        # （保存した引数と登録済みの種類だけ。回数と期限の歯止めは jobs/service.py）。
+        asyncio.create_task(jobs_service.resume_after_startup()),
         asyncio.create_task(collector.run()),
         asyncio.create_task(scheduler_loop()),
         asyncio.create_task(pause_recovery_loop()),
@@ -165,6 +169,9 @@ async def lifespan(app: FastAPI):
     notify_ready()
     logger.info("Control Deck 起動完了")
     yield
+    # これから loop が閉じ、残りの task が cancel される。停止による cancel を
+    # 利用者の取り消しと区別し、再開できる Job の記録を残す。
+    jobs_service.begin_shutdown()
     from app.maintenance.watchdog import sd_notify
 
     sd_notify("STOPPING=1")
