@@ -58,6 +58,9 @@ def _grid(table) -> dict:
             width = max(width, column)
     if not cells or not any(c["header"] for c in cells):
         raise ValueError("no explicit headers")
+    # 欠けたセルの位置を推測しない。明示された空セルは used に含まれる。
+    if len(used) != len(rows) * width:
+        raise ValueError("ragged table")
     caption = _text(table.find("caption", recursive=False))
     return {"caption": caption[:MAX_CELL_TEXT], "rows": len(rows), "cols": width, "cells": cells}
 
@@ -82,6 +85,11 @@ def extract_tables(html: str) -> tuple[list[dict], list[str]]:
     if len(found) > MAX_TABLES:
         warnings.append("structured_tables_count_limit")
     for index, table in enumerate(found[:MAX_TABLES]):
+        if any(t.has_attr("hidden") or str(t.get("aria-hidden", "")).casefold() == "true"
+               or re.search(r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
+                            str(t.get("style", "")), re.I)
+               for t in (table, *table.parents)):
+            continue
         if table.find_parent(["table", "nav", "header", "footer", "aside", "template", "form"]) is not None:
             continue
         if str(table.get("role", "")).lower() in ("presentation", "none"):
