@@ -62,8 +62,8 @@ function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: Co
   return (
     <li className="flex min-h-11 items-center gap-2 rounded-xl bg-zinc-50 px-3 dark:bg-zinc-900">
       <span className="min-w-0 flex-1 truncate text-sm">
-        {accountTitle(account.name, account.label, true)}
-        {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{folder}）</span>}
+        {accountTitle(account.name, account.label, true, account.title)}
+        {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.title || folder}）</span>}
       </span>
       <LoginBadge logged_in={account.logged_in} />
       <button
@@ -131,7 +131,7 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
       </ul>
       {cli.connector === "controldeck-opencode" ? (
         <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-          ControlDeck の OpenCode を、OpenCode 画面に登録した API（ゲートウェイ・OpenRouter など）で開きます。接続先は OpenCode 画面の設定で変えます。
+          OpenCode 画面に登録した接続（ゲートウェイ・OpenRouter など）がアカウントとして並びます。接続を増やす・外すのは OpenCode 画面の設定です。
         </p>
       ) : !cli.multi_account ? (
         <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -180,15 +180,36 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
 }
 
 export function AccountsSheet({ clis, onClose }: { clis: CommanderCli[]; onClose: () => void }) {
+  // まず対象のコンソール（CLI）を選び、その CLI に登録済みのアカウントだけを出す。
+  const [cliId, setCliId] = useState(() => (clis.find((c) => c.installed) ?? clis[0])?.id ?? "");
+  const cli = clis.find((c) => c.id === cliId);
   return (
     <BottomSheet title="アカウントの管理" onClose={onClose} wide>
-      <p className="rounded-xl bg-zinc-50 px-3 py-2.5 text-xs leading-relaxed text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+      <div role="radiogroup" aria-label="対象のコンソール" className="flex flex-wrap gap-1.5">
+        {clis.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            role="radio"
+            aria-checked={cliId === c.id}
+            onClick={() => setCliId(c.id)}
+            className={`min-h-11 rounded-full border px-4 text-sm font-medium transition ${
+              cliId === c.id
+                ? "border-accent-500 bg-accent-50 text-accent-700 dark:border-accent-500 dark:bg-accent-600/15 dark:text-accent-300"
+                : "border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:border-zinc-700 dark:text-zinc-300"
+            }`}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3">
+        {cli && <CliAccountsSection key={cli.id} cli={cli} />}
+      </div>
+      <p className="mt-3 rounded-xl bg-zinc-50 px-3 py-2.5 text-xs leading-relaxed text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
         ログインは、そのアカウントでコンソールを開き、CLI の中で行ってください。
         ControlDeck はログインの情報（鍵・トークン）を読みません・画面にも出しません。
       </p>
-      <div className="mt-3 grid gap-3">
-        {clis.map((cli) => <CliAccountsSection key={cli.id} cli={cli} />)}
-      </div>
     </BottomSheet>
   );
 }

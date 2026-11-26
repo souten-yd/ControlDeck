@@ -19,11 +19,14 @@ export interface CommanderAccount {
   logged_in: boolean | null;
   /** 画面の名前（既定のアカウントにも付けられる）。空なら付けていない。 */
   label: string;
+  /** 既定の見せ方（OpenCode の接続は「モデル名（提供元）」など）。 */
+  title?: string;
 }
 
-/** アカウントの見せ方: 画面の名前 → 無ければ既定／フォルダの名前。 */
-export function accountTitle(name: string, label?: string, long = false): string {
+/** アカウントの見せ方: 画面の名前 → 接続の見せ方 → 既定／フォルダの名前。 */
+export function accountTitle(name: string, label?: string, long = false, title?: string): string {
   if (label) return label;
+  if (long && title) return title;
   if (name === "default") return long ? "既定のアカウント（普段の設定）" : "既定";
   return name;
 }

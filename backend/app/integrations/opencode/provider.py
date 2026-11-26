@@ -1720,8 +1720,12 @@ def tui_command(
     owner_user_id: int | None = None,
     runtime: str = "",
     resume: str = "",
+    config_key: str = "",
 ) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
+
+    config_key: 設定フォルダを分ける印（英数字）。同じ利用者が別のモデルの TUI を並べて開くとき
+    （AI Commander）に、後から開いた方の設定で先の TUI の設定を書き換えないようにする。
 
     resume: "" は新しい会話、"last" はそのプロジェクトの最後の会話の続き（--continue）、
     "ses_…" はその会話の続き（--session）。TUI は閉じると終わるので、開き直すときに使う。
@@ -1745,7 +1749,7 @@ def tui_command(
     if not project.is_dir():
         raise CodeAgentError("project pathはディレクトリを指定してください")
     config = _runtime_config(
-        f"tui-{owner_user_id or 0}", endpoint, model_id,
+        f"tui-{owner_user_id or 0}" + (f"-{config_key}" if config_key else ""), endpoint, model_id,
         owner_user_id=owner_user_id, project_id=_managed_project_id(project),
         runtime=runtime,
     )
