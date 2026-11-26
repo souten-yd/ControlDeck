@@ -488,6 +488,8 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     await expect(page.getByLabel("週刊の曜日")).toHaveValue("0");
     await expect(page.getByLabel("週刊の時刻")).toHaveValue("07:00");
     await expect(page.getByRole("button", { name: "今すぐ日刊のまとめを作る" })).toBeVisible();
+    // まとめのモデルは LLM タブに集約。基本のタブでは何を使うかを見せ、LLM タブへ案内する
+    await expect(page.getByTestId("digest-model-note")).toContainText("まとめに使うモデル");
     // 更新の設定を変えて保存（基本のタブ）
     await page.getByLabel("ホームのフィードの更新の間隔").fill("5");
     await page.getByLabel("日刊の時刻").fill("05:45");
@@ -496,8 +498,9 @@ for (const [width, height, egress] of [[1280, 900, false], [320, 700, true]] as 
     await page.getByRole("button", { name: "保存", exact: true }).first().click();
     await expect.poll(() => savedSettings.length).toBe(1);
     expect(savedSettings[0]).toMatchObject({ feed_refresh_minutes: 5, digest_daily: { time: "05:45" }, digest_weekly: { weekday: 4 }, quiet: { enabled: true } });
-    // LLM: 無料が先で「無料」「有料」の印
-    await page.getByRole("tab", { name: "LLM" }).click();
+    // LLM: 無料が先で「無料」「有料」の印（基本のタブのまとめの案内から移る）
+    await page.getByRole("link", { name: "LLM のタブを開く" }).click();
+    await expect(page.getByRole("tab", { name: "LLM" })).toHaveAttribute("aria-selected", "true");
     const select = page.getByLabel("まとめのモデル");
     await expect.poll(async () => (await select.locator("option").allTextContents()).some((t) => t.startsWith("有料 ·"))).toBe(true);      // タブを開いてから選択肢が届く
     const options = await select.locator("option").allTextContents();
