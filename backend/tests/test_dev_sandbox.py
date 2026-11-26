@@ -496,6 +496,58 @@ def test_run_nudges_the_same_session_when_a_subagent_wait_stalls(zen_box, monkey
     assert "同じ会話へ続きを送ります（1/2）" in capsys.readouterr().err
 
 
+def test_run_keeps_waiting_while_the_subagent_is_still_progressing(zen_box, monkeypatch):
+    """目的: 主の会話が background_wait で黙っていても、子の会話が更新され続けていれば止めない。
+    根拠: 2026-11-26 実測、ローカル LLM のレビュー役は 1 手 2 分以上で 544 件進んでいた。主の出力だけで判定すると切ってしまう。"""
+    import threading
+    import time as _time
+
+    release = threading.Event()
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            def lines():
+                yield json.dumps({"type": "background_wait", "sessionID": "ses_3", "jobs": [{"kind": "subagent"}]}) + "\n"
+                release.wait(5)
+                yield json.dumps({"type": "text", "sessionID": "ses_3"}) + "\n"
+            self.stdout = lines()
+
+        def terminate(self):
+            raise AssertionError("進んでいる子を止めた")
+
+        def wait(self, timeout=None):
+            return 0
+
+    ticks = []
+
+    def activity(box):
+        ticks.append(1)
+        if len(ticks) >= 3:
+            release.set()                       # 子が結果を返した
+        return _time.time()                     # 子はいま更新された
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", Proc)
+    monkeypatch.setattr(sandbox, "STALL_SECONDS", 0.1)
+    monkeypatch.setattr(sandbox, "child_activity", activity)
+    assert sandbox.run_with_chain(zen_box, "x", CHAIN) == 0
+    assert len(ticks) >= 3
+
+
+def test_child_activity_reads_the_latest_update_of_running_subagents(zen_box):
+    """目的: 箱の OpenCode の記録から、動いている子の会話の最後の更新時刻を読む（終わった子・記録が無いときは None）。"""
+    import sqlite3
+
+    assert sandbox.child_activity(zen_box) is None
+    db = zen_box.home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE job (child_session_id TEXT, kind TEXT, status TEXT)")
+        conn.execute("CREATE TABLE session_message (session_id TEXT, time_updated INTEGER)")
+        conn.execute("INSERT INTO job VALUES ('c1', 'subagent', 'running'), ('c2', 'subagent', 'completed')")
+        conn.execute("INSERT INTO session_message VALUES ('c1', 1000), ('c1', 5000), ('c2', 9000)")
+    assert sandbox.child_activity(zen_box) == 5.0
+
+
 def test_run_does_not_treat_slow_normal_output_as_a_stall(zen_box, monkeypatch):
     """目的: background_wait でない間は、出力の間が空いても止めない（長いテストの実行などを切らない）。"""
     import time as _time

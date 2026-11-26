@@ -1188,19 +1188,39 @@ def is_limit_error(line: dict) -> str:
     return text[:200] if LIMIT_PATTERN.search(text) else ""
 
 
-# 子エージェント（レビュー役など）の結果を待つ印 background_wait のまま何も出ない時間の上限。
-# 2026-11-26 実測: 箱の OpenCode がレビュー役の子を待ったまま 18 分以上止まり、子の最後の要求は 200 で
-# 返っていた（子の完了が主の会話へ届かなかった）。時間切れが無いと --run が終わらない。
+# 子エージェント（レビュー役など）の結果を待つ印 background_wait の間、主の会話は何も出さない。
+# 子が本当に止まったかは、箱の OpenCode の記録（子の会話の最後の更新）で判定する。
+# 2026-11-26 実測: レビュー役（ローカル LLM）は利用者の会話と GPU の順番を取り合い、1 手に 2 分以上かかりながら
+# 544 件進んでいた。主の出力だけで「止まった」と決めると、進んでいる子を切ってしまう（#663 の誤り）。
 STALL_SECONDS = int(os.environ.get("CONTROL_DECK_SANDBOX_STALL_SECONDS", "900"))
 STALL_RETRIES = 2
-STALL_MESSAGE = ("子エージェントの結果が {minutes} 分届きません。待たずに続けてください。"
+STALL_MESSAGE = ("子エージェントの結果が {minutes} 分以上進みません。待たずに続けてください。"
                  "残りの確かめ（指示にある関門・テスト）は自分で行い、指示の「完了の条件」の形で報告してください。")
 
 
-def _run_streaming(argv: list[str], *, stall_seconds: float | None = None) -> tuple[int, str, str, bool]:
+def child_activity(box: "Sandbox") -> float | None:
+    """箱の OpenCode で動いている子エージェントの会話が最後に更新された時刻（秒）。子が無い・読めないときは None。"""
+    import sqlite3
+
+    db = box.home / ".local" / "share" / "opencode" / "opencode.db"
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2) as conn:
+            row = conn.execute(
+                "SELECT MAX(m.time_updated) FROM job j JOIN session_message m ON m.session_id = j.child_session_id "
+                "WHERE j.kind = 'subagent' AND j.status = 'running'").fetchone()
+    except sqlite3.Error:
+        return None
+    return float(row[0]) / 1000 if row and row[0] else None
+
+
+def _run_streaming(argv: list[str], *, stall_seconds: float | None = None,
+                   activity=None) -> tuple[int, str, str, bool]:
     """argv を動かし、標準出力の JSONL をそのまま流しつつ読む。(終了コード, sessionID, 上限の理由, 止まったか)。
 
-    最後の行が background_wait のまま stall_seconds 何も出なければ、process を止めて「止まった」を返す。
+    最後の行が background_wait のまま stall_seconds 何も出ず、子の会話（activity() の時刻）も stall_seconds
+    更新されていなければ、process を止めて「止まった」を返す。子が進んでいる間は待ち続ける。
     """
     import queue
     import threading
@@ -1224,6 +1244,9 @@ def _run_streaming(argv: list[str], *, stall_seconds: float | None = None) -> tu
         try:
             raw = lines.get(timeout=limit if waiting else None)
         except queue.Empty:
+            last = activity() if activity else None
+            if last is not None and time.time() - last < limit:
+                continue                      # 子は進んでいる（遅いだけ）。待ち続ける
             print(f"子エージェントの結果待ちのまま {int(limit)} 秒動きが無いので止めます", file=sys.stderr)
             process.terminate()
             try:
@@ -1261,7 +1284,7 @@ def run_with_chain(box: Sandbox, message: str, models: list[str], session: str =
         _save_meta(box.path, box.meta)
         argv = opencode_argv(box, message=message, session=session, model=model, interactive=False)
         try:
-            code, found, reason, stalled = _run_streaming(argv)
+            code, found, reason, stalled = _run_streaming(argv, activity=lambda: child_activity(box))
         finally:
             remove_env_file(argv)
         session = found or session
