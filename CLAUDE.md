@@ -14,6 +14,10 @@
 
 **検索基盤の強化（Web 収集エンジン・特許の調査）**（2026-11-21〜）。**まず `docs/HANDOFF-web-collector.md` を読む。** 計画は `docs/PLAN-web-collector.md`、調査と採否は `docs/research-web-collector.md`。
 
+**モデル登録の拡充（2026-11-26〜）**: Strata・Maya・Radiance の目録・取得・再開・フォルダの選択・設定の形。計画は `docs/PLAN-model-catalog.md`。
+
+**AI Commander（2026-11-26〜）**: 複数の AI の CLI（Claude・Codex・OpenCode・Gemini・Grok）を 1 画面で、複数アカウント・監視・自動再開・利用量・チーム。計画は `docs/PLAN-ai-commander.md`。ControlDeck の作業場（OpenCode）で作る。
+
 ## 読む順
 
 1. `AGENTS.md`
