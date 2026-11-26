@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 258 ファイル、2562 テスト（目的の未記入 93 ファイル）
+- backend: 259 ファイル、2568 テスト（目的の未記入 93 ファイル）
 - E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
@@ -704,6 +704,17 @@
 - `test_consoles_api_delete_only_marked_sessions` — コンソールの削除: 印のあるセッションだけを閉じられる（Terminal と同じ閉じ方）。
 - `test_opencode_console_uses_the_controldeck_opencode_api` — OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API）で開く。素の opencode は使わない。
 - `test_opencode_accounts_are_the_registered_api_connections` — OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
+
+### backend/tests/test_commander_status.py
+
+目的: AI Commander の状態の判定（C2・LLM なし）の試験。 目的: コンソールの画面の文字から「作業中・入力待ち・上限で停止・エラー・終了」と最後の行を正しく出す。 自動再開（C3）はこの判定の「上限で停止」を見て動くので、誤判定は再開の空振り・止め損ねになる。 根拠: 2026-11-27 に実機で取った画面（Claude Code 2.1.332 の作業中、Codex 0.172.0・OpenCode v2.4.2 の 入力待ち）を縮めて使う。上限の文言は C0 の実機の記録（c1-spec.md）。 既存の Terminal の試験（test_terminals.py）は CLI の状態を扱わないので同じ観点は無い（test-catalog で確認）。
+
+- `test_states_from_real_screens` — 実機の画面で 5 つの状態を正しく出す。
+- `test_error_only_near_the_bottom_and_not_from_conversation_text` — エラーは画面の一番下の数行だけで判定する（会話の本文に出た「API Error」の話は拾わない）。
+- `test_limit_wording_does_not_trigger_on_ordinary_numbers_and_working_wins` — 「429 tokens」などの本文では上限にしない。上限の後に再開して作業中なら作業中。
+- `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
+- `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
+- `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
 
 ### backend/tests/test_compaction.py
 

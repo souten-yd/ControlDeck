@@ -4,7 +4,7 @@
  * 中身は既存の XtermView を埋め込み表示（embedded）で収める。
  * 頭を押すと全画面で大きく開く。 */
 import { lazy, Suspense } from "react";
-import { accountTitle, type CommanderConsole } from "../../api/commander";
+import { accountTitle, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -17,14 +17,37 @@ export function activityText(timestamp: number): string {
   });
 }
 
+const STATE_DOT: Record<CommanderState, string> = {
+  working: "bg-blue-500 animate-pulse",
+  waiting: "bg-emerald-500",
+  limited: "bg-amber-500",
+  error: "bg-red-500",
+  exited: "bg-zinc-400",
+};
+
+function stateOf(item: CommanderConsole): CommanderState {
+  return item.commander_state ?? (item.alive ? "waiting" : "exited");
+}
+
 function AliveDot({ item }: { item: CommanderConsole }) {
-  const running = item.alive && item.workload === "running";
+  const state = stateOf(item);
+  return <span aria-hidden title={STATE_LABEL[state]} className={`h-2.5 w-2.5 shrink-0 rounded-full ${STATE_DOT[state]}`} />;
+}
+
+/** 状態の文字と最後の行（上限・エラーならその行）。 */
+function StateLine({ item }: { item: CommanderConsole }) {
+  const state = stateOf(item);
+  const text = (state === "limited" || state === "error") && item.commander_detail ? item.commander_detail : item.commander_last_line;
   return (
-    <span
-      aria-hidden
-      title={item.alive ? (running ? "実行中" : "入力待ち") : "終了"}
-      className={`h-2.5 w-2.5 shrink-0 rounded-full ${!item.alive ? "bg-red-500" : running ? "bg-blue-500" : "bg-emerald-500"}`}
-    />
+    <span data-commander-state={state} className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px]">
+      <span className={`shrink-0 font-semibold ${
+        state === "limited" ? "text-amber-700 dark:text-amber-400"
+          : state === "error" ? "text-red-600 dark:text-red-400"
+            : state === "working" ? "text-blue-600 dark:text-blue-400"
+              : "text-zinc-500 dark:text-zinc-400"
+      }`}>{STATE_LABEL[state]}</span>
+      {text && <span className="min-w-0 truncate font-mono text-zinc-500 dark:text-zinc-400" title={text}>{text}</span>}
+    </span>
   );
 }
 
@@ -61,6 +84,7 @@ export function ConsoleTile({
           <span className="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400" title={item.cwd}>
             {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
           </span>
+          <StateLine item={item} />
         </button>
         <button
           type="button"
@@ -125,6 +149,7 @@ export function ConsoleRow({
         <span className="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400" title={item.cwd}>
           {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
         </span>
+        <StateLine item={item} />
       </button>
       <button
         type="button"

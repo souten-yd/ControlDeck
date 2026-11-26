@@ -156,6 +156,9 @@ class FakeManager:
     def tag_session(self, sid: str, marks: dict) -> None:
         self.marks[sid] = marks
 
+    def capture_text(self, sid: str, lines: int = 60) -> str:  # noqa: ARG002
+        return self.screens.get(sid, "") if hasattr(self, "screens") else ""
+
     def kill_session(self, sid: str) -> None:
         self.killed.append(sid)
 
@@ -212,6 +215,8 @@ def test_consoles_api_named_account_uses_env(admin_client, monkeypatch):
     assert env["CLAUDE_CONFIG_DIR"].startswith(str(accounts.accounts_root()))
     assert "claude" in env["CLAUDE_CONFIG_DIR"]
     assert fake.marks[fake.created[0]["id"]]["account"] == "work"
+    # 後の試験（アカウントの API）が同じ名前で作れるよう片付ける（順序に依存させない）
+    accounts.delete_account(accounts.CLIS["claude"], "work")
 
 
 def test_consoles_api_limit_reports_partial_open(admin_client, monkeypatch):

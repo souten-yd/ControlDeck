@@ -50,8 +50,20 @@ export interface CommanderConsole {
   commander_account_label?: string;
   commander_label?: string;
   commander_role?: string;
+  /** C2: 画面の文字から判定した状態（LLM なし）。 */
+  commander_state?: CommanderState;
+  /** 画面の飾りを除いた最後の行。 */
+  commander_last_line?: string;
+  /** 上限・エラーの行（上限で停止・エラーのとき）。 */
+  commander_detail?: string;
   commander_created_by?: string;
 }
+
+export type CommanderState = "working" | "waiting" | "limited" | "error" | "exited";
+
+export const STATE_LABEL: Record<CommanderState, string> = {
+  working: "作業中", waiting: "入力待ち", limited: "上限で停止", error: "エラー", exited: "終了",
+};
 
 export interface OpenedConsole {
   id: string;
