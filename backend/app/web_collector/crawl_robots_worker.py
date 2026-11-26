@@ -8,10 +8,12 @@ def main():
     resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
     from protego import Protego
-    req = json.loads(sys.stdin.buffer.read(3_200_000))
+    req = json.loads(sys.stdin.buffer.read(4_000_000))
     rules = Protego.parse(req["text"])
     agent = "ControlDeck-WebCollector"
     delay = rules.crawl_delay(agent) or 0
+    if rules.visit_time(agent) is not None:
+        raise ValueError("unsupported visit-time")
     rate = rules.request_rate(agent)
     # 時間帯つきの rate は解釈を推測せず拒否。
     if rate:
