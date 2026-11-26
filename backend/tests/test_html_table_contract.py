@@ -15,3 +15,7 @@ def test_table_bundle_integrity():
     for attr in ('hidden', 'aria-hidden="true"', 'style="display:none"'):
         assert table_bundle(html.replace('<td>60', '<td '+attr+'>60'))[0] == []
     assert not table_bundle(html.replace('<td>60', '<td headers="unknown">60'))[0]
+
+    assert not table_bundle(html.replace("<td>60", "<td><span hidden>60</span>"))[0]
+    cross = '<table><thead><tr><th rowspan="2">Model</th><th>Decode tok/s</th></tr></thead><tbody><tr><td>60</td></tr></tbody></table>'
+    assert not table_bundle(cross)[0]
