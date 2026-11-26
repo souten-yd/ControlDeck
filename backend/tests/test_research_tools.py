@@ -530,28 +530,6 @@ def test_research_limits_are_clamped_and_saved(monkeypatch, tmp_path):
 
 
 
-def test_shared_source_can_support_multiple_aspects(monkeypatch):
-    """目的・根拠: PLAN-web-collector W5。観点をまたぐ URL 重複で根拠を失わない。
-    同じ URL の focus は異なるが、出典の一覧は重複しない。"""
-    intent = ri.Intent(goal="g", subjects=["Foo"], aspects=[
-        ri.Aspect("速度", ["Foo speed"]), ri.Aspect("消費電力", ["Foo power"])])
-    url = "https://example.test/benchmark"
-    async def search(*args, **kwargs):
-        return {"results": [{"title": "Foo", "url": url, "snippet": "Foo speed power"}]}
-    calls = []
-    async def read(url, focus="", max_chars=3500, **kwargs):
-        calls.append(focus)
-        return {**_page(("Foo " + focus + " ") * 40), "url": url}
-    async def ranker(q, texts, keep):
-        return [0.9] * len(texts)
-    monkeypatch.setattr(rt, "search_web", search)
-    inv = run(ri.investigate(intent, searx=None, base_url="b", model="m", rounds=1,
-                             now=NOW, read=read, ranker=ranker))
-    assert set(calls) == {"速度", "消費電力"}
-    assert len(inv.usable(0)) == len(inv.usable(1)) == 1
-    assert len(inv.sources()) == 1
-
-
 def test_unselected_candidate_is_available_in_later_round(monkeypatch):
     """目的: 1 回目に選ばなかった候補を 2 回目の調査から排除しない。"""
     intent = ri.Intent(goal="g", subjects=["Foo"], aspects=[ri.Aspect("速度", ["Foo speed"])])
@@ -571,6 +549,30 @@ def test_unselected_candidate_is_available_in_later_round(monkeypatch):
     inv = run(ri.investigate(intent, searx=None, base_url="b", model="m", rounds=3,
                              now=NOW, llm=llm, read=read, ranker=ranker))
     assert inv.rounds == 2 and len(calls) == 10 and len(set(calls)) == 10
+
+
+def test_same_page_found_by_two_aspects_is_read_once(monkeypatch):
+    """目的: 2 つの観点の検索で同じページが見つかっても、取得（と本文の取り出し・ブラウザの描画）は 1 回だけ。
+    根拠: 2026-11-26 Codex #637 の観点ごとの読み直しは、取得を観点の数だけ繰り返して遅くなるので戻した（AGENTS.md「機能を取り込む条件」）。"""
+    intent = ri.Intent(goal="g", subjects=["Foo"], aspects=[ri.Aspect("速度", ["Foo speed"]), ri.Aspect("価格", ["Foo price"])])
+    shared = [{"title": "Foo", "url": f"https://example.test/{i}", "snippet": "Foo speed price"} for i in range(3)]
+
+    async def search(*args, **kwargs):
+        return {"results": shared}
+    calls = []
+
+    async def read(url, focus="", max_chars=3500, **kwargs):
+        calls.append(url)
+        return {"ok": False}
+
+    async def ranker(q, texts, keep):
+        return [0.9] * len(texts)
+
+    async def llm(*args, **kwargs):
+        return json.dumps({"gaps": []})
+    monkeypatch.setattr(rt, "search_web", search)
+    run(ri.investigate(intent, searx=None, base_url="b", model="m", rounds=1, now=NOW, llm=llm, read=read, ranker=ranker))
+    assert sorted(calls) == sorted(set(calls)) and len(calls) == 3
 
 
 def test_snippet_date_does_not_certify_unread_page():

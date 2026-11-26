@@ -381,8 +381,10 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
     llm_gate = asyncio.Semaphore(max(1, llm_parallel))
     read_gate = asyncio.Semaphore(READ_PARALLEL)   # 観点が並んでも、ページを読む総数は READ_PARALLEL 本
     pending = {i: list(a.queries) for i, a in enumerate(intent.aspects)}
-    # 同じページでも観点ごとに異なる focus で読む。未選択の候補は消さない。
-    seen_urls: dict[int, set[str]] = {i: set() for i in range(len(intent.aspects))}
+    # 観点をまたいで同じページを読み直さない（2026-11-26: 観点ごとに読み直す Codex #637 の変更は、取得・本文の取り出し・
+    # ブラウザの描画を観点の数だけ繰り返して遅くなるうえ効果を測っていないので戻した。AGENTS.md「機能を取り込む条件」）。
+    # 印を付けるのは実際に読むページだけ（下の process_aspect）。
+    seen_urls: set[str] = set()
     say("plan", "調べること: " + "・".join(a.text[:40] for a in intent.aspects))
     for n in range(1, rounds + 1):
         inv.rounds = n
@@ -402,13 +404,16 @@ async def investigate(intent: Intent, *, searx, base_url: str, model: str, progr
         batches = await asyncio.gather(*[search_aspect(i, qs) for i, qs in pending.items() if qs])
         fresh_by_aspect = []
         for i, results in batches:
-            fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls[i]]  # noqa: SLF001
+            fresh = [r for r in results if rt._norm_url(r["url"]) not in seen_urls]  # noqa: SLF001
             fresh_by_aspect.append((i, len(results), fresh))
 
         async def process_aspect(i: int, found: int, fresh: list[dict]) -> tuple[int, list[dict]]:
             chosen = await select_results(intent.aspects[i].text, intent.subjects, fresh, per_aspect + (1 if intent.sites else 0),
                                           ranker=ranker)
-            seen_urls[i].update(rt._norm_url(r["url"]) for r in chosen)  # noqa: SLF001
+            # 既読の印は読むと選んだページにだけ付ける（選ばれなかった候補は次の回に読める・Codex #637）。印は観点をまたいで共通で、
+            # 確かめてから付けるまでに await を挟まないので、並んだ観点が同じページを二重に読まない
+            chosen = [r for r in chosen if rt._norm_url(r["url"]) not in seen_urls]  # noqa: SLF001
+            seen_urls.update(rt._norm_url(r["url"]) for r in chosen)  # noqa: SLF001
             say("read", f"観点{i + 1}: {found} 件から {len(chosen)} 件を読みます")
             # ページの読み取りは HTTP と reranker だけ（チャットの LLM を使わない）ので、スロット数と無関係に READ_PARALLEL 本
             judged = await read_and_judge(chosen, window=window, today=today, focus=intent.aspects[i].text,
