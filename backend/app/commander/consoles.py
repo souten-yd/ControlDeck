@@ -18,12 +18,41 @@ MAX_BATCH = 8
 
 
 def list_consoles() -> list[dict]:
-    """印のある Terminal セッション（= AI Commander のコンソール）だけを返す。"""
-    return [s for s in manager.list_sessions() if s.get("commander_cli")]
+    """印のある Terminal セッション（= AI Commander のコンソール）だけを返す。
+
+    アカウントの画面の名前（既定のアカウントにも付けられる）を commander_account_label に添える。
+    """
+    rows = [s for s in manager.list_sessions() if s.get("commander_cli")]
+    labels: dict[str, dict[str, str]] = {}
+    for row in rows:
+        cli_id = str(row["commander_cli"])
+        if cli_id not in labels:
+            labels[cli_id] = accounts.labels_for(cli_id) if cli_id in CLIS else {}
+        label = labels[cli_id].get(str(row.get("commander_account") or ""), "")
+        if label:
+            row["commander_account_label"] = label
+    return rows
+
+
+def _command_for(cli: CliDef, workdir: str, user_id: int | None) -> tuple[str, dict[str, str] | None]:
+    """開くコマンドと環境変数。
+
+    ControlDeck の OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API・
+    job ごとの設定フォルダ・箱）で開く。ほかは CLIS の実行ファイルをアカウントの環境変数で開く。
+    """
+    if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
+        from app.integrations.opencode import provider
+        try:
+            command, _project = provider.tui_command(project_path=workdir, owner_user_id=user_id)
+        except provider.CodeAgentError as exc:
+            raise ValueError(str(exc)) from exc
+        return command, None
+    return cli.executable, None
 
 
 def create_consoles(
     *, cli: CliDef, account: str, cwd: str, count: int, label: str, created_by: str,
+    user_id: int | None = None,
 ) -> dict:
     """コンソールを count 個開く。
 
@@ -38,6 +67,7 @@ def create_consoles(
     if not workdir.is_dir():
         raise NotADirectoryError(f"ディレクトリではありません: {cwd}")
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
+    command, _ = _command_for(cli, str(workdir), user_id)
 
     opened: list[dict] = []
     reason = ""
@@ -48,7 +78,7 @@ def create_consoles(
                 "config/config.yaml の terminal.max_sessions で変えられます"
             )
             break
-        session = manager.create_session(cwd=str(workdir), command=cli.executable, env=env)
+        session = manager.create_session(cwd=str(workdir), command=command, env=env)
         marks = {"cli": cli.id, "account": account, "created_by": created_by}
         if label:
             marks["label"] = label
@@ -68,6 +98,7 @@ def create_consoles(
                 "commander_cli": cli.id,
                 "commander_account": account,
                 "commander_label": label,
+                **({"commander_account_label": name} if (name := accounts.account_label(cli.id, account)) else {}),
             }
             for session in opened
         ],

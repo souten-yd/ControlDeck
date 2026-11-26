@@ -1,10 +1,15 @@
-/** アカウントの管理: CLI ごとの一覧・作る・消す・「ログイン済み」の印。
+/** アカウントの管理: CLI ごとの一覧・作る・消す・名前を付ける・「ログイン済み」の印。
+ *
+ * 名前（画面の名前）は既定のアカウントにも付けられる。フォルダの名前とは別。
  *
  * ログインは利用者がそのアカウントでコンソールを開き、CLI の中で行う。
  * ControlDeck はログインの情報（鍵・トークン）を読まない・見せない。 */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createAccount, deleteAccount, fetchAccounts, type CommanderCli } from "../../api/commander";
+import {
+  accountTitle, createAccount, deleteAccount, fetchAccounts, setAccountLabel,
+  type CommanderAccount, type CommanderCli,
+} from "../../api/commander";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { useToasts } from "../../stores";
 
@@ -17,6 +22,73 @@ function LoginBadge({ logged_in }: { logged_in: boolean | null }) {
   );
 }
 
+/** 1 行: 名前（押すとその場で編集）・ログインの印・削除。 */
+function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: CommanderAccount; onDelete: () => void }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(account.label);
+  const save = useMutation({
+    mutationFn: () => setAccountLabel(cli.id, account.name, draft.trim()),
+    onSuccess: () => {
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["commander-accounts", cli.id] });
+      qc.invalidateQueries({ queryKey: ["commander-consoles"] });
+      show(draft.trim() ? `名前を「${draft.trim()}」にしました` : "名前を外しました");
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "名前を保存できませんでした", "error"),
+  });
+  const folder = account.default ? "既定" : account.name;
+  if (editing) {
+    return (
+      <li className="rounded-xl bg-zinc-50 px-3 py-2 dark:bg-zinc-900">
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+          <input
+            autoFocus
+            value={draft}
+            maxLength={32}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={account.default ? "例: 仕事用・個人" : account.name}
+            aria-label={`${folder} のアカウントの名前`}
+            className="h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <button type="submit" disabled={save.isPending} className="min-h-11 shrink-0 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white hover:bg-accent-700 disabled:opacity-40">保存</button>
+          <button type="button" onClick={() => { setDraft(account.label); setEditing(false); }} className="min-h-11 shrink-0 rounded-xl px-3 text-sm text-zinc-500">やめる</button>
+        </form>
+        <p className="mt-1 text-[11px] text-zinc-400">空にすると名前を外します（{account.default ? "「既定」と出ます" : `フォルダの名前「${account.name}」が出ます`}）。</p>
+      </li>
+    );
+  }
+  return (
+    <li className="flex min-h-11 items-center gap-2 rounded-xl bg-zinc-50 px-3 dark:bg-zinc-900">
+      <span className="min-w-0 flex-1 truncate text-sm">
+        {accountTitle(account.name, account.label, true)}
+        {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{folder}）</span>}
+      </span>
+      <LoginBadge logged_in={account.logged_in} />
+      <button
+        type="button"
+        onClick={() => { setDraft(account.label); setEditing(true); }}
+        aria-label={`${folder} のアカウントに名前を付ける`}
+        title="名前を付ける"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      >
+        ✏️
+      </button>
+      {!account.default && (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label={`アカウント ${account.name} を削除`}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+        >
+          🗑️
+        </button>
+      )}
+    </li>
+  );
+}
+
 function CliAccountsSection({ cli }: { cli: CommanderCli }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
@@ -25,7 +97,6 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
   const { data: accounts } = useQuery({
     queryKey: ["commander-accounts", cli.id],
     queryFn: () => fetchAccounts(cli.id),
-    enabled: cli.multi_account,
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["commander-accounts", cli.id] });
@@ -53,55 +124,42 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
         <span className="min-w-0 truncate">{cli.name}</span>
         {!cli.installed && <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">未導入</span>}
       </h3>
-      {!cli.multi_account ? (
+      <ul className="mt-2 grid gap-1">
+        {(accounts ?? []).map((a) => (
+          <AccountRow key={a.name} cli={cli} account={a} onDelete={() => setDeleting(a.name)} />
+        ))}
+      </ul>
+      {cli.connector === "controldeck-opencode" ? (
+        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+          ControlDeck の OpenCode を、OpenCode 画面に登録した API（ゲートウェイ・OpenRouter など）で開きます。接続先は OpenCode 画面の設定で変えます。
+        </p>
+      ) : !cli.multi_account ? (
         <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
           既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。
         </p>
       ) : (
-        <>
-          <ul className="mt-2 grid gap-1">
-            {(accounts ?? []).map((a) => (
-              <li key={a.name} className="flex min-h-11 items-center gap-2 rounded-xl bg-zinc-50 px-3 dark:bg-zinc-900">
-                <span className="min-w-0 flex-1 truncate text-sm">
-                  {a.default ? "既定のアカウント（普段の設定）" : a.name}
-                </span>
-                <LoginBadge logged_in={a.logged_in} />
-                {!a.default && (
-                  <button
-                    type="button"
-                    onClick={() => setDeleting(a.name)}
-                    aria-label={`アカウント ${a.name} を削除`}
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-                  >
-                    🗑️
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-          <form
-            className="mt-2 flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) create.mutate();
-            }}
+        <form
+          className="mt-2 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="新しいアカウント名（英小数字・_・-）"
+            aria-label={`${cli.name}の新しいアカウント名`}
+            className="h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim() || create.isPending}
+            className="min-h-11 shrink-0 rounded-xl bg-zinc-100 px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
           >
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="新しいアカウント名（英小数字・_・-）"
-              aria-label={`${cli.name}の新しいアカウント名`}
-              className="h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-            <button
-              type="submit"
-              disabled={!name.trim() || create.isPending}
-              className="min-h-11 shrink-0 rounded-xl bg-zinc-100 px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-            >
-              追加
-            </button>
-          </form>
-        </>
+            追加
+          </button>
+        </form>
       )}
       {deleting && (
         <ConfirmDialog

@@ -38,9 +38,10 @@ def test_cli_table_matches_official_account_isolation():
     assert list(accounts.CLIS) == ["claude", "codex", "opencode", "gemini"]
     assert accounts.CLIS["claude"].env_targets == (("CLAUDE_CONFIG_DIR", "dir"),)
     assert accounts.CLIS["codex"].env_targets == (("CODEX_HOME", "dir"),)
-    assert accounts.CLIS["opencode"].env_targets == (
-        ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
-    )
+    # OpenCode は ControlDeck の OpenCode（v2）を OpenCode 画面の API 設定で開く（2026-11-27 利用者）。
+    # 接続先は OpenCode の設定が決めるので、アカウントは既定の 1 つだけ。
+    assert accounts.CLIS["opencode"].env_targets == ()
+    assert accounts.CLIS["opencode"].connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE
     assert accounts.CLIS["gemini"].env_targets == ()
     # コマンドは表の実行ファイル名だけ。gemini は未導入でも表にある（画面で断るため）。
     assert accounts.CLIS["claude"].executable == "claude"
@@ -67,12 +68,9 @@ def test_account_folder_permissions_and_login_check():
     assert accounts.logged_in(codex, codex_dir) is False
     (codex_dir / "auth.json").write_text("", encoding="utf-8")
     assert accounts.logged_in(codex, codex_dir) is True
-    # opencode は判定しない（公式の保存場所を確かめてから。C2 の宿題）
-    opencode_dir = accounts.create_account(accounts.CLIS["opencode"], "login-probe")
-    assert accounts.logged_in(accounts.CLIS["opencode"], opencode_dir) is None
-    assert (opencode_dir / "config").is_dir()
-    assert (opencode_dir / "data").is_dir()
-    assert stat.S_IMODE((opencode_dir / "config").stat().st_mode) == 0o700
+    # opencode は ControlDeck の API で開くので、アカウントのフォルダを作らない
+    with pytest.raises(ValueError):
+        accounts.create_account(accounts.CLIS["opencode"], "login-probe")
 
 
 def test_account_name_validation_and_reserved_default():
@@ -105,13 +103,7 @@ def test_env_for_default_account_is_none():
     assert accounts.env_for(claude, "default") is None
     env = accounts.env_for(claude, "env-probe")
     assert env == {"CLAUDE_CONFIG_DIR": str(_account_root() / "claude" / "env-probe")}
-    opencode = accounts.CLIS["opencode"]
-    accounts.create_account(opencode, "env-probe")
-    env = accounts.env_for(opencode, "env-probe")
-    assert env == {
-        "XDG_CONFIG_HOME": str(_account_root() / "opencode" / "env-probe" / "config"),
-        "XDG_DATA_HOME": str(_account_root() / "opencode" / "env-probe" / "data"),
-    }
+    assert accounts.env_for(accounts.CLIS["opencode"], "default") is None
     # 無いアカウント・gemini のアカウントは断る
     with pytest.raises(FileNotFoundError):
         accounts.env_for(claude, "ghost")
@@ -152,8 +144,8 @@ def test_accounts_api_create_list_delete_and_audit(admin_client):
     assert body["cli"]["id"] == "claude"
     names = [row["name"] for row in body["accounts"]]
     assert names[0] == "default" and "work" in names
-    # 返事は名前・既定か・ログイン済みだけ（鍵・トークン・中身は無い）
-    assert set(body["accounts"][0]) == {"name", "default", "logged_in"}
+    # 返事は名前・既定か・ログイン済み・画面の名前だけ（鍵・トークン・中身は無い）
+    assert set(body["accounts"][0]) == {"name", "default", "logged_in", "label"}
 
     # 既定のアカウントは消せない
     assert admin_client.delete(
@@ -213,7 +205,8 @@ def test_cli_list_reports_installed_state(admin_client):
     for row in body["clis"]:
         assert isinstance(row["installed"], bool)
     assert by_id["gemini"]["multi_account"] is False
-    assert by_id["opencode"]["multi_account"] is True
+    assert by_id["opencode"]["multi_account"] is False
+    assert by_id["opencode"]["connector"] == accounts.CONNECTOR_CONTROLDECK_OPENCODE
     assert by_id["gemini"]["name"] == "Gemini CLI"
 
 
@@ -237,3 +230,34 @@ def test_delete_account_refuses_symlinked_folder(tmp_path):
         assert (outside / "keep.txt").exists()
     finally:
         link.unlink()
+
+
+def test_account_labels_including_the_default_account(admin_client):
+    """アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
+
+    根拠: 2026-11-27 利用者「既定のアカウントにも名前を付けてほしい」。名前はフォルダの名前と別に
+    labels.json（0600）へ置く。制御文字は一覧の表示を壊すので断る。
+    """
+    accounts.create_account(accounts.CLIS["codex"], "label-probe")
+    r = admin_client.put("/api/v1/commander/accounts/codex/default/label", headers=CSRF_HEADERS,
+                         json={"label": "仕事用（Plus）"})
+    assert r.status_code == 200, r.text
+    assert admin_client.put("/api/v1/commander/accounts/codex/label-probe/label", headers=CSRF_HEADERS,
+                            json={"label": "個人"}).status_code == 200
+    rows = {row["name"]: row for row in admin_client.get("/api/v1/commander/accounts/codex").json()["accounts"]}
+    assert rows["default"]["label"] == "仕事用（Plus）" and rows["label-probe"]["label"] == "個人"
+    assert stat.S_IMODE((data_dir() / "ai-commander" / "labels.json").stat().st_mode) == 0o600
+    # 既定のアカウントしか無い CLI（gemini）でも既定には名前を付けられる
+    assert admin_client.put("/api/v1/commander/accounts/gemini/default/label", headers=CSRF_HEADERS,
+                            json={"label": "Google"}).status_code == 200
+    # 無いアカウント・制御文字は断る
+    assert admin_client.put("/api/v1/commander/accounts/codex/ghost/label", headers=CSRF_HEADERS,
+                            json={"label": "x"}).status_code == 404
+    assert admin_client.put("/api/v1/commander/accounts/codex/default/label", headers=CSRF_HEADERS,
+                            json={"label": "a\tb"}).status_code == 400
+    # 空で外す・アカウントを消すと名前も消える
+    assert admin_client.put("/api/v1/commander/accounts/codex/default/label", headers=CSRF_HEADERS,
+                            json={"label": ""}).json()["label"] == ""
+    assert admin_client.delete("/api/v1/commander/accounts/codex/label-probe", headers=CSRF_HEADERS).status_code == 204
+    assert "label-probe" not in accounts.labels_for("codex")
+    assert "default" not in accounts.labels_for("codex")

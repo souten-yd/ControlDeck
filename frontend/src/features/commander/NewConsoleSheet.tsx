@@ -5,7 +5,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createAccount, fetchAccounts, openConsoles,
+  accountTitle, createAccount, fetchAccounts, openConsoles,
   type CommanderCli, type OpenConsolesBody,
 } from "../../api/commander";
 import { FilePicker } from "../../components/FilePicker";
@@ -38,7 +38,7 @@ export function NewConsoleSheet({
   const { data: accounts } = useQuery({
     queryKey: ["commander-accounts", cliId],
     queryFn: () => fetchAccounts(cliId),
-    enabled: Boolean(cliId) && multi,
+    enabled: Boolean(cliId),
   });
 
   const chooseCli = (id: string) => {
@@ -127,7 +127,7 @@ export function NewConsoleSheet({
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate">
-                      {a.default ? "既定のアカウント（普段の設定）" : a.name}
+                      {accountTitle(a.name, a.label, true)}
                       {a.logged_in === true && <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">ログイン済み</span>}
                       {a.logged_in === false && <span className="ml-2 text-[10px] text-zinc-400">未ログイン（開いてから CLI の中でログイン）</span>}
                     </span>
@@ -165,7 +165,12 @@ export function NewConsoleSheet({
             </ul>
           ) : (
             <p className="rounded-xl bg-zinc-50 px-3 py-2.5 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
-              この CLI は既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。
+              {(() => {
+                const title = accountTitle("default", accounts?.[0]?.label, true);
+                return cli?.connector === "controldeck-opencode"
+                  ? `${title}: ControlDeck の OpenCode を、OpenCode 画面に登録した API（ゲートウェイ・OpenRouter など）で開きます。`
+                  : `${title}: この CLI は既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。`;
+              })()}
             </p>
           )}
         </section>

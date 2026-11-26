@@ -17,12 +17,13 @@ interface CliFixture {
   executable: string;
   installed: boolean;
   multi_account: boolean;
+  connector?: string;
 }
 
 const CLIS: CliFixture[] = [
   { id: "claude", name: "Claude Code", executable: "claude", installed: true, multi_account: true },
   { id: "codex", name: "Codex CLI", executable: "codex", installed: true, multi_account: true },
-  { id: "opencode", name: "OpenCode", executable: "opencode", installed: true, multi_account: true },
+  { id: "opencode", name: "OpenCode", executable: "opencode2", installed: true, multi_account: false, connector: "controldeck-opencode" },
   { id: "gemini", name: "Gemini CLI", executable: "gemini", installed: false, multi_account: false },
 ];
 
@@ -30,6 +31,7 @@ interface AccountFixture {
   name: string;
   default: boolean;
   logged_in: boolean | null;
+  label: string;
 }
 
 interface ConsoleFixture {
@@ -48,6 +50,7 @@ interface ConsoleFixture {
   commander_cli: string;
   commander_account: string;
   commander_label?: string;
+  commander_account_label?: string;
 }
 
 function consoleFixture(overrides: Partial<ConsoleFixture> & Pick<ConsoleFixture, "id">): ConsoleFixture {
@@ -76,6 +79,7 @@ interface CommanderState {
   consoleDeletes: string[];
   accountPosts: { cli: string; name: string }[];
   accountDeletes: string[];
+  labelPuts: { cli: string; name: string; label: string }[];
 }
 
 function initialState(): CommanderState {
@@ -87,22 +91,23 @@ function initialState(): CommanderState {
       }),
       consoleFixture({
         id: "aa110002", program: "opencode", cwd: "~/CodeDEV/Hello",
-        commander_cli: "opencode", commander_account: "work",
+        commander_cli: "opencode", commander_account: "default", commander_account_label: "ControlDeck の API",
       }),
     ],
     accounts: {
       claude: [
-        { name: "default", default: true, logged_in: true },
-        { name: "work", default: false, logged_in: false },
+        { name: "default", default: true, logged_in: true, label: "" },
+        { name: "work", default: false, logged_in: false, label: "" },
       ],
-      codex: [{ name: "default", default: true, logged_in: null }],
-      opencode: [{ name: "default", default: true, logged_in: null }],
-      gemini: [{ name: "default", default: true, logged_in: null }],
+      codex: [{ name: "default", default: true, logged_in: null, label: "" }],
+      opencode: [{ name: "default", default: true, logged_in: null, label: "ControlDeck の API" }],
+      gemini: [{ name: "default", default: true, logged_in: null, label: "" }],
     },
     consolePosts: [],
     consoleDeletes: [],
     accountPosts: [],
     accountDeletes: [],
+    labelPuts: [],
   };
 }
 
@@ -147,9 +152,18 @@ async function mockCommander(page: Page, state: CommanderState) {
       state.accountPosts.push({ cli: accountsMatch[1], name: body.name });
       state.accounts[accountsMatch[1]] = [
         ...(state.accounts[accountsMatch[1]] ?? []),
-        { name: body.name, default: false, logged_in: false },
+        { name: body.name, default: false, logged_in: false, label: "" },
       ];
       return route.fulfill({ status: 201, json: { name: body.name, logged_in: false } });
+    }
+    const labelMatch = path.match(/^accounts\/([a-z]+)\/([a-z0-9_-]+)\/label$/);
+    if (labelMatch && method === "PUT") {
+      const body = request.postDataJSON() as { label: string };
+      state.labelPuts.push({ cli: labelMatch[1], name: labelMatch[2], label: body.label });
+      state.accounts[labelMatch[1]] = (state.accounts[labelMatch[1]] ?? []).map(
+        (item) => (item.name === labelMatch[2] ? { ...item, label: body.label } : item),
+      );
+      return route.fulfill({ json: { name: labelMatch[2], label: body.label } });
     }
     const deleteMatch = path.match(/^accounts\/([a-z]+)\/([a-z0-9_-]+)$/);
     if (deleteMatch && method === "DELETE") {
@@ -273,8 +287,13 @@ test.describe("AI Commander", () => {
     await expect(sheet.getByText("ログイン済み", { exact: true })).toBeVisible();
     await expect(sheet.getByRole("radio", { name: /既定のアカウント/ })).toBeChecked();
 
-    // opencode の新しいアカウントをその場で作る
+    // OpenCode は ControlDeck の API で開く（アカウントは既定の 1 つ。付けた名前が出る）
     await sheet.getByRole("radio", { name: /OpenCode/ }).click();
+    await expect(sheet.getByText(/ControlDeck の API: ControlDeck の OpenCode を、OpenCode 画面に登録した API/)).toBeVisible();
+    await expect(sheet.getByRole("radio", { name: "＋ 新しいアカウント" })).toHaveCount(0);
+
+    // codex の新しいアカウントをその場で作る
+    await sheet.getByRole("radio", { name: /Codex CLI/ }).click();
     await sheet.getByRole("radio", { name: "＋ 新しいアカウント" }).click();
     await sheet.getByLabel("新しいアカウント名").fill("sub2");
 
@@ -294,9 +313,9 @@ test.describe("AI Commander", () => {
     await sheet.getByRole("button", { name: "開く", exact: true }).click();
     await expect(sheet).toHaveCount(0);
     // アカウントを作ってからコンソールを開いている
-    expect(state.accountPosts).toEqual([{ cli: "opencode", name: "sub2" }]);
+    expect(state.accountPosts).toEqual([{ cli: "codex", name: "sub2" }]);
     expect(state.consolePosts).toEqual([{
-      cli: "opencode", account: "sub2", cwd: ROOT, count: 2, label: "夜間バッチ",
+      cli: "codex", account: "sub2", cwd: ROOT, count: 2, label: "夜間バッチ",
     }]);
     await expect(page.locator("[data-commander-row]")).toHaveCount(4);
     await expect(page.getByText("2 個のコンソールを開きました")).toBeVisible();
@@ -341,6 +360,19 @@ test.describe("AI Commander", () => {
     await confirm.getByRole("button", { name: "削除する" }).click();
     await expect(claudeSection.getByText("work")).toHaveCount(0);
     expect(state.accountDeletes).toEqual(["claude/work"]);
+
+    // 既定のアカウントにも名前を付けられる（✏️ → 入力 → 保存）
+    await claudeSection.getByRole("button", { name: "既定 のアカウントに名前を付ける" }).click();
+    await claudeSection.getByLabel("既定 のアカウントの名前").fill("仕事用");
+    await claudeSection.getByRole("button", { name: "保存" }).click();
+    await expect(claudeSection.getByText("仕事用")).toBeVisible();
+    expect(state.labelPuts).toEqual([{ cli: "claude", name: "default", label: "仕事用" }]);
+    // OpenCode は API で開く案内と、既定のアカウントの名前
+    const opencodeSection = sheet.getByRole("region", { name: "OpenCodeのアカウント" });
+    await expect(opencodeSection).toContainText("ControlDeck の API");
+    await expect(opencodeSection).toContainText("OpenCode 画面に登録した API");
+    await expect(opencodeSection.getByLabel("OpenCodeの新しいアカウント名")).toHaveCount(0);
+    await page.screenshot({ path: "test-results/commander-accounts-320.png", fullPage: true });
   });
 
   test("PC 1280px: タイル 2 列で並べ、押すと大きく開く（ライト・ダークの撮影も）", async ({ page, context }) => {
