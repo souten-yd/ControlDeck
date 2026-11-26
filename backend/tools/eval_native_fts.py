@@ -111,7 +111,21 @@ def run(rows):
             proposed = guarded(conn,q,20)
             negatives.append({"query":q,"native_forbidden":sum(forbidden in rows[i-1][2] for i in actual),
                               "guarded_forbidden":sum(forbidden in rows[i-1][2] for i in proposed)})
-        return {"sqlite":sqlite3.sqlite_version,"documents":len(rows),"metrics":out,"negatives":negatives}
+        explicit = []
+        # Sample-specific expected document identities, derived from the source passages.
+        if [(a,p) for a,p,_,_ in rows] == [(0,0),(1,0),(2,0),(3,1),(4,0),(5,0),(6,0),(7,0),(9,0),(10,0),(12,0),(13,0),(14,0),(15,0),(16,2),(17,1),(18,0),(19,0),(20,2),(21,6)]:
+            for q, expected in [
+                ("首都 -ベルギー",{6,7}), ("首都 -コンゴ共和国",{7,10}),
+                ("梅雨 OR 落語家",{1,14}), ('"国際連合平和維持軍"',{5}),
+                ('"国際連合平和維持軍" -PKF',set()),
+                ('"日本共産党" OR "コンゴ共和国"',{6,8}),
+            ]:
+                native = set(_fts_ranks(conn,q,[1],20))
+                proposed = set(guarded(conn,q,20))
+                explicit.append({"query":q,"expected":sorted(expected),
+                    "native":sorted(native),"guarded":sorted(proposed),
+                    "native_exact":native==expected,"guarded_exact":proposed==expected})
+        return {"sqlite":sqlite3.sqlite_version,"documents":len(rows),"metrics":out,"negatives":negatives,"explicit":explicit}
 
 
 if __name__ == "__main__":
