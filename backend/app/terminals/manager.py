@@ -28,6 +28,14 @@ from app.config import data_dir, get_config
 TMUX_PREFIX = "cdterm-"
 TERMINAL_ENGINES = {"v1", "v2-lab"}
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+# AI Commander（app/commander）がコンソール用のセッションへ付ける印。
+# 一覧で読み返すため、option の名前はここで固定する（値は commander 側で組み立てる）。
+COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by")
+# create_session(env=) で受け付ける環境変数の名前と値の上限。
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_VALUE_MAX = 4096
+# list-sessions の形式文字列へ足す AI Commander の印の部分。
+COMMANDER_MARK_FORMAT = "".join(f"\t#{{@cd-commander-{key}}}" for key in COMMANDER_MARK_KEYS)
 HISTORY_LINES = 100_000
 # tmux側の全履歴は保持しつつ、Web初期表示は最新部分だけを取得する。
 # 4 MiBの一括解析ではxterm parser/rendererがモバイルのメインスレッドを
@@ -97,6 +105,19 @@ def _session_metadata(*, command: str, cwd: str, pid: int, activity_at: float, a
     }
 
 
+def _apply_commander_marks(session: dict, values: list[str]) -> None:
+    """AI Commander の印（@cd-commander-*）を一覧の行へ読み込む。
+
+    印の無いセッション（既存の Terminal と同じ）は鍵を足さない。
+    values は COMMANDER_MARK_KEYS の順で、tmux の出力そのまま（空文字列=印なし）。
+    """
+    if not values or not values[0]:
+        return
+    for key, value in zip(COMMANDER_MARK_KEYS, values):
+        if value:
+            session[f"commander_{key}"] = value
+
+
 def _tmux_config_path() -> str:
     path = data_dir() / "terminal-tmux.conf"
     content = f"set -g history-limit {HISTORY_LINES}\n"
@@ -155,6 +176,8 @@ class PtySession:
     buffer_truncated: bool = False
     attached: bool = False
     engine: str = "v1"
+    # AI Commander の印（tmux user option と同じ内容。fallback でも一覧へ出す）
+    marks: dict[str, str] = field(default_factory=dict)
 
     def alive(self) -> bool:
         try:
@@ -176,7 +199,7 @@ class TerminalManager:
                 ["tmux", "list-sessions", "-F",
                  "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_activity}"
                  "\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_dead}"
-                 "\t#{@control-deck-engine}"],
+                 "\t#{@control-deck-engine}" + COMMANDER_MARK_FORMAT],
                 capture_output=True, text=True, timeout=10,
             )
             sessions = []
@@ -189,7 +212,7 @@ class TerminalManager:
                         pid = int(parts[6]) if len(parts) > 6 else 0
                     except ValueError:
                         pid = 0
-                    sessions.append({
+                    session = {
                         "id": parts[0][len(TMUX_PREFIX):],
                         "name": parts[0],
                         "created_at": float(parts[1]) if len(parts) > 1 else 0,
@@ -203,14 +226,17 @@ class TerminalManager:
                             activity_at=float(parts[3]) if len(parts) > 3 and parts[3] else 0,
                             alive=not (len(parts) > 7 and parts[7] == "1"),
                         ),
-                    })
+                    }
+                    _apply_commander_marks(session, parts[9:])
+                    sessions.append(session)
             return sessions
         # フォールバック
         dead = [sid for sid, s in self._fallback.items() if not s.alive()]
         for sid in dead:
             self._close_fallback(sid)
-        return [
-            {
+        sessions = []
+        for s in self._fallback.values():
+            entry = {
                 "id": s.id,
                 "name": s.name,
                 "created_at": s.created_at,
@@ -219,8 +245,9 @@ class TerminalManager:
                 "engine": s.engine,
                 **self._fallback_metadata(s),
             }
-            for s in self._fallback.values()
-        ]
+            _apply_commander_marks(entry, [s.marks.get(key, "") for key in COMMANDER_MARK_KEYS])
+            sessions.append(entry)
+        return sessions
 
     @staticmethod
     def _fallback_metadata(session: PtySession) -> dict[str, object]:
@@ -239,9 +266,14 @@ class TerminalManager:
 
     def create_session(
         self, cwd: str | None = None, command: str | None = None, *, engine: str = "v1",
+        env: dict[str, str] | None = None,
     ) -> dict:
         """セッションを作成する。command 指定時はシェルでそのコマンドを実行する
-        （例: gh auth login。継続利用するコマンド側で exec bash 等を付ける）。"""
+        （例: gh auth login。継続利用するコマンド側で exec bash 等を付ける）。
+
+        env 指定時はその環境変数をセッションへ渡す（tmux の new-session -e、
+        フォールバック時は子プロセスの環境）。値は呼び出し側で検証済みのものだけを
+        受ける（この module では名前と文字種の上限だけ確かめる）。"""
         cfg = get_config().terminal
         if engine not in TERMINAL_ENGINES:
             raise ValueError("unsupported terminal engine")
@@ -249,6 +281,12 @@ class TerminalManager:
             raise RuntimeError("ターミナルは無効化されています")
         if len(self.list_sessions()) >= cfg.max_sessions:
             raise RuntimeError(f"セッション数の上限（{cfg.max_sessions}）に達しています")
+        if env:
+            for key, value in env.items():
+                if not ENV_KEY_RE.fullmatch(key) or not isinstance(value, str):
+                    raise ValueError("セッションの環境変数の名前が不正です")
+                if not value or len(value) > ENV_VALUE_MAX or any(c in value for c in "\x00\n\r"):
+                    raise ValueError(f"セッションの環境変数 {key} の値が不正です")
         sid = secrets.token_hex(4)
         workdir = cwd or str(os.path.expanduser("~"))
         if tmux_available():
@@ -260,8 +298,12 @@ class TerminalManager:
                 capture_output=True, timeout=10,
             )
             # tmux はコマンドを 1 引数で渡すと sh -c で実行する（複数引数は空白結合されるため不可）
-            base = ["tmux", "-f", config_path, "new-session", "-d", "-s", name, "-c", workdir,
-                    command or cfg.shell]
+            base = ["tmux", "-f", config_path, "new-session", "-d", "-s", name, "-c", workdir]
+            if env:
+                # -e KEY=VALUE は 1 つの引数として渡す（シェルの文字列へ連結しない）
+                for key, value in env.items():
+                    base += ["-e", f"{key}={value}"]
+            base.append(command or cfg.shell)
             # tmux サーバーを本サービスの cgroup 外（独立 scope）で起動する。
             # そうしないとサービス再起動時に systemd が cgroup ごと tmux を kill し、
             # 「永続」のはずのセッションが全て消える。
@@ -299,6 +341,7 @@ class TerminalManager:
             "USER": os.environ.get("USER", ""),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "LANG": os.environ.get("LANG", "C.UTF-8"),
+            **(env or {}),
         }
         proc = subprocess.Popen(
             ["bash", "-lc", command] if command else [cfg.shell, "-l"],
@@ -329,6 +372,37 @@ class TerminalManager:
             )
             return
         self._close_fallback(sid, kill=True)
+
+    def tag_session(self, sid: str, marks: dict[str, str]) -> None:
+        """セッションへ印（tmux の user option @cd-commander-<key>）を付ける。
+
+        値は tmux へ配列引数で渡す。既定の Terminal の呼び出しでは使わない。
+        一覧（list_sessions）で同じ名前で読み返す。
+        """
+        if not marks:
+            return
+        unknown = set(marks) - set(COMMANDER_MARK_KEYS)
+        if unknown:
+            raise ValueError("不明なセッション属性です")
+        for key, value in marks.items():
+            # 一覧は tab 区切りで読み返すので、tab・改行などの制御文字は入れない。
+            if (not isinstance(value, str) or not value or len(value) > 96
+                    or any(ord(c) < 0x20 or ord(c) == 0x7f for c in value)):
+                raise ValueError(f"セッション属性 {key} の値が不正です")
+        if tmux_available():
+            target = _target(sid)
+            for key, value in marks.items():
+                tagged = subprocess.run(
+                    ["tmux", "set-option", "-t", target, f"@cd-commander-{key}", value],
+                    capture_output=True, timeout=10,
+                )
+                if tagged.returncode != 0:
+                    raise RuntimeError("セッション属性を保存できません")
+            return
+        session = self._fallback.get(sid)
+        if session is None:
+            raise KeyError("セッションが見つかりません")
+        session.marks = {**session.marks, **marks}
 
     def inject_input(self, sid: str, text: str, *, submit: bool = True) -> int:
         """Bracket-paste an explicit automation payload into one exact session.

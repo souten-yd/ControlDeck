@@ -69,12 +69,15 @@ export default function XtermView({
   onSwitch,
   onAutomation,
   onExit,
+  embedded = false,
 }: {
   sessionId: string;
   sessions: SessionInfo[];
   onSwitch: (id: string) => void;
   onAutomation?: () => void;
   onExit: () => void;
+  /** タイルなど小さい箱へ収める表示。全画面の固定レイアウト・ヘッダー・portal を外す。 */
+  embedded?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -139,7 +142,9 @@ export default function XtermView({
     const historyTrack = historyTrackRef.current;
     const historyThumb = historyThumbRef.current;
     if (!host || !root || !header || !body || !helper || !historyTrack || !historyThumb) return;
-    const coarseMobile = window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
+    // 埋め込み表示は 768px 以上の PC 幅だけで使う。万一狭い画面で呼ばれても
+    // Visual Viewport への固定（全画面の前提）をしない。
+    const coarseMobile = !embedded && window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
     if (coarseMobile) {
       // 最初のfitより前にVisual Viewportへ合わせる。接続表示後にroot寸法が変わり、
       // tmux resize/redrawが露出するraceを避ける。
@@ -1496,11 +1501,30 @@ export default function XtermView({
     pasteGestureRef.current = { startY: 0, triggered: false };
   };
 
-  // 下部ナビより手前の全画面表示（モバイルで画面全体を使う）
-  return createPortal(
-    <div ref={rootRef} data-terminal-root data-terminal-replaying={replaying ? "true" : "false"} className="fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950">
-      {/* ヘッダー */}
-      <div ref={headerRef} data-terminal-header className="safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
+  // 下部ナビより手前の全画面表示（モバイルで画面全体を使う）。
+  // 埋め込み表示（タイル）では portal も全画面の固定レイアウトも使わず、
+  // relative な親の内側へ absolute で収める。
+  const terminalRoot = (
+    <div
+      ref={rootRef}
+      data-terminal-root
+      data-terminal-replaying={replaying ? "true" : "false"}
+      className={
+        embedded
+          ? "absolute inset-0 flex flex-col overflow-hidden bg-white dark:bg-zinc-950"
+          : "fixed left-0 top-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-white dark:bg-zinc-950"
+      }
+    >
+      {/* ヘッダー（埋め込み表示では出さない。印は tile 側の頭に出す） */}
+      <div
+        ref={headerRef}
+        data-terminal-header
+        className={
+          embedded
+            ? "hidden"
+            : "safe-top flex shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-800"
+        }
+      >
         <div className="min-w-0 flex-1">
           <select
             value={sessionId}
@@ -1702,7 +1726,12 @@ export default function XtermView({
         </div>
       )}
 
-    </div>,
+    </div>
+  );
+  // 埋め込み表示は親（タイル）の中へ直接置く。全画面は従来どおり portal。
+  if (embedded) return terminalRoot;
+  return createPortal(
+    terminalRoot,
     document.body,
   );
 }

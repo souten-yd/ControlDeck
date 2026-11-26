@@ -305,6 +305,7 @@ from app.monitoring.gpu_tuning_router import router as gpu_tuning_router  # noqa
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
 from app.terminals.automation_router import router as terminal_automation_router  # noqa: E402
+from app.commander.router import router as commander_router  # noqa: E402
 from app.workflows.router import router as workflows_router  # noqa: E402
 from app.workflows.runner_router import router as workflow_runner_router  # noqa: E402
 from app.flow_app.router import router as flow_app_router  # noqa: E402
@@ -361,6 +362,7 @@ app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
 app.include_router(terminal_automation_router, prefix=API)
+app.include_router(commander_router, prefix=API)
 app.include_router(samplebook_router, prefix=API)  # /workflows/samples は /workflows/{id} より先に登録
 app.include_router(workflow_runner_router, prefix=API)
 app.include_router(flow_app_router, prefix=API)

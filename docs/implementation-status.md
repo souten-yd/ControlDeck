@@ -25,6 +25,12 @@
 - 確かめていないこと: 実機でサービスを再起動しての通し（再開用の記録が残るか、起動後に Job が動くか）。Strata 自身の重み取得が途中から続くか（Strata 任せで未確認）。HF は完了済みのファイルを飛ばし、`.part` が残っていれば Range で続くが、`hf.py::_download_file` の finally が `.part` を消すため、丁寧な停止では途中のファイルを最初から取り直す（コード上。実機で確認する）。
 - 関門の誤検知: 秘密の形の判定が `model.hf_download` を HF のトークン（`hf_...`）と取り違えていた。伏せ字の形を `hf_` + 英数字 10 字以上に絞り、Job の種類名は伏せない（`test_dev_check.py`・`test_diagnostics.py` に確認を追加）。
 - 処理時間: 起動時に再開用の記録の一覧を 1 回読むだけ（通常は空）。Job の終了ごとに小さな unlink（再開する Job だけ）。画面・目録の追加は無し。
+## 2026-11-27 AI Commander C1: AI の CLI のコンソールを何個でも開く・アカウントを分ける・1 画面で並べる
+- 利用者（2026-11-26）「Claude Code・Codex・OpenCode・Gemini CLI などのコンソールを 1 つの画面で何個でも開いて操作する。同じ CLI を別のアカウントで同時に起動できる。コンソールを足すときに CLI・アカウント・作業フォルダ・個数を選ぶ」。指示書は箱の `../c1-spec.md`、計画は `docs/PLAN-ai-commander.md`。C1 は「開く・並べる・アカウント」だけ（C2 の状態判定・C3 の自動再開・C4 の利用量・C5 の MCP・C6 のチームは作らない。C2 以降で使う印は付けた）。
+- backend: `app/commander/`（accounts・consoles・router）を新設。アカウント = `data_dir()/ai-commander/accounts/<cli>/<名前>/`（0700。中身は読まない・返さない。ログイン済みは公式の保存場所のファイルの有無だけ）。コンソール = 既存の Terminal の tmux セッション + 印（`@cd-commander-*`）。`terminals/manager.py` に `create_session(env=)`（tmux new-session -e・配列引数）と `tag_session()` を足した（既定の引数なら今までと同じ挙動）。権限は Terminal と同じ `terminal.use`。アカウント・コンソールの作成・削除は監査ログ。
+- frontend: `/commander`（ナビ「AI Commander」）。PC（768px〜）はタイル 2 列（広ければ 3 列）で各タイルの中に `XtermView` を埋め込み（`embedded` props を足した）、押すと大きく開く。モバイル（〜767px）はリスト → 全画面で 1 つずつ。主操作は「＋ コンソール」1 個（CLI・アカウント・作業フォルダ・個数・表示名を選ぶ）、アカウントの管理はその他メニュー。未導入の CLI は理由つきで選べない。FilePicker に `role="dialog"` を足した（a11y）。
+- 確かめたこと（箱の中）: pytest 15 ファイル（commander 15 件 + terminals 39 件。元の venv で直接）・`npm run build`・E2E `commander.spec.ts` 4 件（API・WS はモック。320/1280・ライト・ダークの撮影）・Terminal の E2E 12 passed / 2 skipped・`./deck.sh dev-check --base origin/main` 合格（画面の見た目は medium 4 件＝既存の Terminal 画面の文言〔Connect・Live・Shell ready〕と他 spec の写しで、この変更の範囲外）。
+- 確かめていないこと: 実際に 2 つのアカウントで `claude` にログインして同時に動くか（利用者の操作が要る。backend は `CLAUDE_CONFIG_DIR` などが tmux のセッション環境へ届ることを実 tmux で試験済み）。OpenCode・Gemini の「ログイン済み」判定は C1 ではしない（claude・codex の公式のファイル名だけ）。`config.terminal.max_sessions` を変える UI は既存に無いので、上限の案内は「config/config.yaml で変えられます」と実態に合わせた（指示書の「設定の画面」とは変えた点）。
 
 ## 2026-11-26 ニュース設定: まとめのモデルは LLM のタブに集約（基本のタブから見えるように）
 - 利用者「ニュースで使うモデルは LLM のところに集約。日刊・週刊のまとめもニュースの LLM の設定を使ってほしい」。調べた結果、LLM を呼ぶ所（まとめ・一言要約・下ごしらえ・リーダーの翻訳・ハブの仕事 2 つ）は既に全てニュースの LLM の設定（`llm.digest_model`・`gist_model`・`prep_model`）を見ていた。足りなかったのは、基本のタブ（更新のタイミング）からそれが分からないこと。

@@ -76,6 +76,9 @@ export function FilePicker({
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title ?? (mode === "dir" ? "フォルダを選択" : "ファイルを選択")}
         className="flex h-[80vh] w-full max-w-lg flex-col rounded-t-2xl bg-white sm:h-[70vh] sm:rounded-2xl dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}
       >
