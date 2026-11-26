@@ -143,3 +143,72 @@ def usage_for(cli_id: str, account: str) -> dict | None:
     except (OSError, ValueError, KeyError):
         return None
     return None
+
+
+# ---- アカウントの Claude の設定に statusline を足す（Nexarch の外で使った分も取る） ---------------
+
+OUR_MARK = "commander/statusline.py"
+
+
+def _account_settings_path(account: str) -> Path:
+    """そのアカウントの Claude の settings.json（既定は ~/.claude、名前付きは CLAUDE_CONFIG_DIR のフォルダ）。"""
+    if account == accounts.DEFAULT_ACCOUNT:
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    else:
+        base = accounts.account_dir(accounts.CLIS["claude"], accounts.validate_name(account))
+    return base / "settings.json"
+
+
+def _read_settings(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ValueError("Claude の settings.json を読めません（手で直してください）") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Claude の settings.json の形が想定と違います")
+    return raw
+
+
+def statusline_state(account: str) -> str:
+    """"ours"（Nexarch の statusline）・"other"（利用者の別の statusline）・"none"。"""
+    try:
+        current = _read_settings(_account_settings_path(account)).get("statusLine")
+    except ValueError:
+        return "other"
+    if not current:
+        return "none"
+    command = str(current.get("command") or "") if isinstance(current, dict) else ""
+    return "ours" if OUR_MARK in command else "other"
+
+
+def set_account_statusline(account: str, enabled: bool) -> str:
+    """アカウントの Claude の設定に、使用率を書く statusline を足す・外す。利用者の別の statusline は上書きしない。
+
+    書き換える前の settings.json は一度だけ settings.json.bak-nexarch に残す。他の設定は変えない。
+    """
+    path = _account_settings_path(account)
+    data = _read_settings(path)
+    state = statusline_state(account)
+    if enabled:
+        if state == "other":
+            raise ValueError("このアカウントには別の statusline が設定されています（上書きしません）")
+        out = claude_usage_file(account)
+        command = " ".join(shlex.quote(part) for part in (sys.executable, "-I", str(STATUSLINE_SCRIPT), str(out)))
+        data["statusLine"] = {"type": "command", "command": command, "padding": 0}
+    else:
+        if state != "ours":
+            return state
+        data.pop("statusLine", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = path.with_name("settings.json.bak-nexarch")
+    if path.exists() and not backup.exists():
+        backup.write_bytes(path.read_bytes())
+        os.chmod(backup, 0o600)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    temp = path.with_name(f".settings.json.nexarch-{os.getpid()}")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temp, mode)
+    os.replace(temp, path)
+    return statusline_state(account)

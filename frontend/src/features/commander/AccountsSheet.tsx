@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  accountTitle, createAccount, deleteAccount, fetchAccounts, setAccountLabel,
+  accountTitle, createAccount, deleteAccount, fetchAccounts, setAccountLabel, setUsageStatusline,
   type CommanderAccount, type CommanderCli,
 } from "../../api/commander";
 import { UsageLine } from "./UsageLine";
@@ -20,6 +20,36 @@ function LoginBadge({ logged_in }: { logged_in: boolean | null }) {
     <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">ログイン済み</span>
   ) : (
     <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">未ログイン</span>
+  );
+}
+
+/** Claude: 5 時間・週の使用率を、このアカウントの Claude の設定の statusline で取る（Nexarch の外で使った分も）。 */
+function UsageStatuslineSwitch({ cli, account }: { cli: CommanderCli; account: CommanderAccount }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const state = account.usage_statusline ?? "none";
+  if (state === "other") {
+    return <span className="mt-0.5 block text-[11px] text-zinc-400">使用率: このアカウントには別の statusline があるため、Nexarch で開いたコンソールの分だけ取ります</span>;
+  }
+  const on = state === "ours";
+  const toggle = async () => {
+    try {
+      await setUsageStatusline(account.name, !on);
+      qc.invalidateQueries({ queryKey: ["commander-accounts", cli.id] });
+      show(on ? "使用率の statusline を外しました" : "使用率を取るようにしました（次の Claude の応答から出ます）");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label="使用率を取る（Claude の設定の statusline）"
+      onClick={() => void toggle()}
+      className="mt-1 flex min-h-9 items-center gap-2 text-left text-[11px] text-zinc-500 dark:text-zinc-400">
+      <span className={`relative h-5 w-9 shrink-0 rounded-full transition ${on ? "bg-accent-600" : "bg-zinc-300 dark:bg-zinc-700"}`}>
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
+      </span>
+      <span>使用率を取る（Nexarch の外で使った分も。Claude の設定の statusline に足します）</span>
+    </button>
   );
 }
 
@@ -68,6 +98,7 @@ function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: Co
           {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.title || folder}）</span>}
         </span>
         <UsageLine usage={account.usage} />
+        {cli.id === "claude" && <UsageStatuslineSwitch cli={cli} account={account} />}
       </span>
       <LoginBadge logged_in={account.logged_in} />
       <button

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 262 ファイル、2591 テスト（目的の未記入 93 ファイル）
-- E2E: 145 spec、318 テスト
+- backend: 263 ファイル、2593 テスト（目的の未記入 93 ファイル）
+- E2E: 145 spec、319 テスト
 
 ## backend（backend/tests）
 
@@ -627,6 +627,12 @@
 - `test_signal_display_node`
 - `test_chatflow_end_to_end` — trigger(chat) -> signal.display で入力メッセージが表示信号に流れる。
 
+### backend/tests/test_cli_features.py
+
+目的: 設定 → オプション機能の「AI の CLI（Nexarch）」（Claude Code・Codex・Gemini）の試験。 目的: 利用者の npm のグローバル（端末でも使う実体）へ導入・更新・削除する。管理領域に別の写しを作らない。 根拠: 2026-11-27 利用者「各 CLI の導入と削除と更新ができるように Settings の機能に追加して」。npm は呼ばず （取得しない）、呼び方だけを確かめる。既存の npm の機能の試験は管理領域への導入で、同じ観点は無い。
+
+- `test_cli_features_use_npm_global`
+
 ### backend/tests/test_cloud_models.py
 
 目的: 外部のフロンティアモデル（docs/PLAN-frontier-models.md F1）。外部へは送らない（転送先はモック）。
@@ -736,6 +742,7 @@
 - `test_claude_settings_file_points_the_statusline_at_the_account_file` — --settings のファイルは statusline だけで、書き出し先はアカウントごと。
 - `test_claude_usage_reads_and_expires_windows`
 - `test_codex_usage_from_session_records` — Codex は sessions の最新の rollout の最後の rate_limits（primary=5 時間・secondary=週）。
+- `test_account_statusline_toggle_keeps_other_settings_and_never_overwrites` — アカウントの Claude の settings.json に使用率の statusline を足す・外す。ほかの設定は残し、利用者の別の
 
 ### backend/tests/test_compaction.py
 
@@ -4252,6 +4259,7 @@
 - ＋ コンソール: 未導入は選べない・アカウント・フォルダ・個数・表示名を選んで開ける（320px）
 - アカウントの管理: 一覧・作る・消す（確認ダイアログ）（320px）
 - PC 1280px: タイル 2 列で並べ、押すと大きく開く（ライト・ダークの撮影も）
+- 設定: AI の CLI（Nexarch）の分類に 3 つの CLI が出る（320px）
 
 ### frontend/e2e/dashboard-fans.spec.ts
 

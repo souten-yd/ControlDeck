@@ -78,3 +78,35 @@ def test_codex_usage_from_session_records(monkeypatch):
     assert got["source"] == "codex-sessions"
     assert usage.usage_for("opencode", "default") is None
     accounts.delete_account(accounts.CLIS["codex"], "usage-probe")
+
+
+def test_account_statusline_toggle_keeps_other_settings_and_never_overwrites(monkeypatch, tmp_path):
+    """アカウントの Claude の settings.json に使用率の statusline を足す・外す。ほかの設定は残し、利用者の別の
+    statusline は上書きしない。最初の 1 回だけ元を残す。
+
+    根拠: 2026-11-27 利用者「Claude は週や 5 時間の制限が出ないの？」。Nexarch の外で使った分も取れるように。
+    """
+    claude_home = tmp_path / "claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+    settings = claude_home / "settings.json"
+    settings.write_text(json.dumps({"model": "opus", "permissions": {"allow": ["Bash(ls)"]}}))
+    assert usage.statusline_state("default") == "none"
+    assert usage.set_account_statusline("default", True) == "ours"
+    data = json.loads(settings.read_text())
+    assert data["model"] == "opus" and data["permissions"] == {"allow": ["Bash(ls)"]}
+    assert usage.OUR_MARK in data["statusLine"]["command"]
+    assert json.loads((claude_home / "settings.json.bak-nexarch").read_text()) == {
+        "model": "opus", "permissions": {"allow": ["Bash(ls)"]}}
+    assert usage.set_account_statusline("default", False) == "none"
+    assert "statusLine" not in json.loads(settings.read_text())
+    # 利用者の別の statusline は上書きしない
+    settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "my-line"}}))
+    assert usage.statusline_state("default") == "other"
+    try:
+        usage.set_account_statusline("default", True)
+        raise AssertionError("上書きしてはいけない")
+    except ValueError:
+        pass
+    assert json.loads(settings.read_text())["statusLine"]["command"] == "my-line"
+    assert usage.set_account_statusline("default", False) == "other"

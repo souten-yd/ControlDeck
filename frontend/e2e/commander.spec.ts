@@ -35,6 +35,7 @@ interface AccountFixture {
   title?: string;
   usage?: { five_hour: { used_percent: number; resets_at: number | null } | null;
     seven_day: { used_percent: number; resets_at: number | null } | null } | null;
+  usage_statusline?: "ours" | "other" | "none";
 }
 
 interface ConsoleFixture {
@@ -95,6 +96,7 @@ interface CommanderState {
   autoresumePuts: { id: string; enabled: boolean }[];
   resumeMessage: string;
   consoleMessagePuts: { id: string; message: string }[];
+  statuslinePuts: { name: string; enabled: boolean }[];
 }
 
 function initialState(): CommanderState {
@@ -120,8 +122,9 @@ function initialState(): CommanderState {
     accounts: {
       claude: [
         { name: "default", default: true, logged_in: true, label: "", usage: {
-          five_hour: { used_percent: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 + 60 }, seven_day: null } },
-        { name: "work", default: false, logged_in: false, label: "" },
+          five_hour: { used_percent: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 + 60 }, seven_day: null },
+          usage_statusline: "none" },
+        { name: "work", default: false, logged_in: false, label: "", usage_statusline: "other" },
       ],
       codex: [{ name: "default", default: true, logged_in: null, label: "" }],
       opencode: [
@@ -140,6 +143,7 @@ function initialState(): CommanderState {
     autoresumePuts: [],
     resumeMessage: "続けてください",
     consoleMessagePuts: [],
+    statuslinePuts: [],
   };
 }
 
@@ -210,6 +214,14 @@ async function mockCommander(page: Page, state: CommanderState) {
         { name: body.name, default: false, logged_in: false, label: "" },
       ];
       return route.fulfill({ status: 201, json: { name: body.name, logged_in: false } });
+    }
+    const statuslineMatch = path.match(/^accounts\/claude\/([a-z0-9_-]+)\/usage-statusline$/);
+    if (statuslineMatch && method === "PUT") {
+      const enabled = (request.postDataJSON() as { enabled: boolean }).enabled;
+      state.statuslinePuts.push({ name: statuslineMatch[1], enabled });
+      state.accounts.claude = state.accounts.claude.map((item) => (item.name === statuslineMatch[1]
+        ? { ...item, usage_statusline: enabled ? "ours" : "none" } : item));
+      return route.fulfill({ json: { name: statuslineMatch[1], usage_statusline: enabled ? "ours" : "none" } });
     }
     const labelMatch = path.match(/^accounts\/([a-z]+)\/([a-z0-9_-]+)\/label$/);
     if (labelMatch && method === "PUT") {
@@ -465,6 +477,13 @@ test.describe("AI Commander", () => {
     await expect(claudeSection.getByText("既定のアカウント（普段の設定）")).toBeVisible();
     await expect(claudeSection.getByText("ログイン済み", { exact: true })).toBeVisible();
     await expect(claudeSection.locator("[data-commander-usage]").first()).toContainText("5時間12%");
+    // Claude の使用率を Nexarch の外の分も取る（アカウントの設定の statusline）。別の statusline があるアカウントは案内だけ
+    const statuslineSwitch = claudeSection.getByRole("switch", { name: /使用率を取る/ });
+    await expect(statuslineSwitch).toHaveCount(1);
+    await statuslineSwitch.click();
+    await expect(statuslineSwitch).toHaveAttribute("aria-checked", "true");
+    expect(state.statuslinePuts).toEqual([{ name: "default", enabled: true }]);
+    await expect(claudeSection).toContainText("別の statusline があるため");
     await expect(claudeSection.getByText("work")).toBeVisible();
     // まず対象のコンソールを選ぶ。選んだものの登録済みのアカウントだけが出る
     await expect(sheet.getByRole("radio", { name: "Claude Code" })).toBeChecked();
@@ -554,4 +573,19 @@ test.describe("AI Commander", () => {
     await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
     await page.screenshot({ path: "test-results/commander-1280-list-dark.png", fullPage: true });
   });
+});
+
+// 目的: 設定 → オプション機能に「AI の CLI（Nexarch）」の分類があり、Claude Code・Codex・Gemini を導入・更新・削除できる。
+// 根拠: 2026-11-27 利用者「各 CLI の導入と削除と更新ができるように Settings の機能に追加して」。押すと npm で取得するので押さない。
+test("設定: AI の CLI（Nexarch）の分類に 3 つの CLI が出る（320px）", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.setViewportSize({ width: 320, height: 900 });
+  await establishSession(page, context);
+  await page.goto("/settings/features");
+  await expect(page.getByText("AI の CLI（Nexarch）", { exact: false }).first()).toBeVisible();
+  for (const id of ["claude-code", "codex-cli", "gemini-cli"]) {
+    await expect(page.locator(`#feature-${id}`)).toBeVisible();
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+  await page.locator("#feature-claude-code").screenshot({ path: "test-results/settings-cli-claude-320.png" });
 });

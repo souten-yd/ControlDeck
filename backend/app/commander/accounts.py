@@ -329,6 +329,8 @@ def list_accounts(cli: CliDef) -> list[dict]:
 
     for row in rows:
         row["usage"] = usage.usage_for(cli.id, row["name"])
+        if cli.id == "claude":
+            row["usage_statusline"] = usage.statusline_state(row["name"])
     return rows
 
 

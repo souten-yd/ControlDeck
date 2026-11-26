@@ -55,6 +55,10 @@ class CommanderSettingsBody(BaseModel):
     resume_message: str = Field(default="", max_length=500)
 
 
+class UsageStatusline(BaseModel):
+    enabled: bool
+
+
 class AccountLabel(BaseModel):
     """アカウントの画面の名前（空で外す）。既定のアカウントにも付けられる。"""
 
