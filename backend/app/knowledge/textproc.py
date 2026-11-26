@@ -97,6 +97,12 @@ def parse_query(query):
     return expr
 
 
+def has_explicit_syntax(query):
+    """Explicit operators/quotes must not be weakened by candidate expansion."""
+    q = normalize(query)
+    return '"' in q or bool(re.search(r'(?:^|\s)-\S|(?:^|\s)or(?:\s|$)', q))
+
+
 def or_query(text, max_terms=48):
     """Bag-of-tokens query (each index token OR'ed) for ranking documents by similarity to a text."""
     seen, out = set(), []
