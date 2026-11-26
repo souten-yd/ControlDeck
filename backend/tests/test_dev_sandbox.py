@@ -450,6 +450,72 @@ def test_run_does_not_switch_on_non_limit_errors_and_ends_with_last_exit_code_wh
     assert len(calls) == 2
 
 
+def test_run_nudges_the_same_session_when_a_subagent_wait_stalls(zen_box, monkeypatch, capsys):
+    """目的: 子の結果待ち（background_wait）のまま動きが無ければ止め、同じモデル・同じ会話へ「待たずに続けて」を送る。
+    根拠: 2026-11-26 実測、箱の OpenCode がレビュー役の子を 18 分以上待って --run が終わらなかった。"""
+    import threading
+
+    calls = []
+    release = threading.Event()
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            calls.append(argv)
+            self.first = len(calls) == 1
+            wait = {"type": "background_wait", "sessionID": "ses_9", "jobs": [{"kind": "subagent"}]}
+            done = {"type": "text", "sessionID": "ses_9"}
+
+            def lines():
+                yield json.dumps({"type": "step", "sessionID": "ses_9"}) + "\n"
+                if self.first:
+                    yield json.dumps(wait) + "\n"
+                    release.wait(5)          # 子の結果が来ないまま黙る
+                else:
+                    yield json.dumps(done) + "\n"
+            self.stdout = lines()
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+            release.set()
+
+        def kill(self):
+            release.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", Proc)
+    monkeypatch.setattr(sandbox, "STALL_SECONDS", 0.2)
+    code = sandbox.run_with_chain(zen_box, "do it", CHAIN)
+    assert code == 0
+    assert len(calls) == 2
+    assert [_model_of(a) for a in calls] == [CHAIN[0], CHAIN[0]]          # モデルは切り替えない
+    assert calls[1][calls[1].index("--session") + 1] == "ses_9"
+    assert any("待たずに続けてください" in part for part in calls[1])
+    assert "同じ会話へ続きを送ります（1/2）" in capsys.readouterr().err
+
+
+def test_run_does_not_treat_slow_normal_output_as_a_stall(zen_box, monkeypatch):
+    """目的: background_wait でない間は、出力の間が空いても止めない（長いテストの実行などを切らない）。"""
+    import time as _time
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            def lines():
+                yield json.dumps({"type": "step", "sessionID": "ses_2"}) + "\n"
+                _time.sleep(0.5)
+                yield json.dumps({"type": "text", "sessionID": "ses_2"}) + "\n"
+            self.stdout = lines()
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", Proc)
+    monkeypatch.setattr(sandbox, "STALL_SECONDS", 0.1)
+    assert sandbox.run_with_chain(zen_box, "x", CHAIN) == 0
+
+
 def test_explicit_model_is_used_alone_and_local_is_an_alias(zen_box, monkeypatch):
     """目的: --model 明示は順番を使わず 1 つだけ。local はローカル LLM。"""
     calls = _fake_opencode(monkeypatch, [([{"type": "error", "error": {"message": "quota"}}], 1)])

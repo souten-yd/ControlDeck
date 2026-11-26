@@ -1188,12 +1188,52 @@ def is_limit_error(line: dict) -> str:
     return text[:200] if LIMIT_PATTERN.search(text) else ""
 
 
-def _run_streaming(argv: list[str]) -> tuple[int, str, str]:
-    """argv を動かし、標準出力の JSONL をそのまま流しつつ読む。(終了コード, sessionID, 上限の理由)。"""
+# 子エージェント（レビュー役など）の結果を待つ印 background_wait のまま何も出ない時間の上限。
+# 2026-11-26 実測: 箱の OpenCode がレビュー役の子を待ったまま 18 分以上止まり、子の最後の要求は 200 で
+# 返っていた（子の完了が主の会話へ届かなかった）。時間切れが無いと --run が終わらない。
+STALL_SECONDS = int(os.environ.get("CONTROL_DECK_SANDBOX_STALL_SECONDS", "900"))
+STALL_RETRIES = 2
+STALL_MESSAGE = ("子エージェントの結果が {minutes} 分届きません。待たずに続けてください。"
+                 "残りの確かめ（指示にある関門・テスト）は自分で行い、指示の「完了の条件」の形で報告してください。")
+
+
+def _run_streaming(argv: list[str], *, stall_seconds: float | None = None) -> tuple[int, str, str, bool]:
+    """argv を動かし、標準出力の JSONL をそのまま流しつつ読む。(終了コード, sessionID, 上限の理由, 止まったか)。
+
+    最後の行が background_wait のまま stall_seconds 何も出なければ、process を止めて「止まった」を返す。
+    """
+    import queue
+    import threading
+
+    limit = STALL_SECONDS if stall_seconds is None else stall_seconds
     session = ""
     reason = ""
+    waiting = False
     process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    for raw in process.stdout or []:
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def pump() -> None:
+        try:
+            for item in process.stdout or []:
+                lines.put(item)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=pump, name="sandbox-run-stdout", daemon=True).start()
+    while True:
+        try:
+            raw = lines.get(timeout=limit if waiting else None)
+        except queue.Empty:
+            print(f"子エージェントの結果待ちのまま {int(limit)} 秒動きが無いので止めます", file=sys.stderr)
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            return 124, session, reason, True
+        if raw is None:
+            break
         sys.stdout.write(raw)
         sys.stdout.flush()
         try:
@@ -1202,27 +1242,40 @@ def _run_streaming(argv: list[str]) -> tuple[int, str, str]:
             continue
         if not isinstance(line, dict):
             continue
+        waiting = line.get("type") == "background_wait"
         if not session and isinstance(line.get("sessionID"), str):
             session = line["sessionID"]
         reason = reason or is_limit_error(line)
-    return process.wait(), session, reason
+    return process.wait(), session, reason, False
 
 
 def run_with_chain(box: Sandbox, message: str, models: list[str], session: str = "") -> int:
-    """順番に実行する。上限の印が出たら次のモデルで同じ指示をやり直す（sessionID があれば続きとして）。"""
+    """順番に実行する。上限の印が出たら次のモデルで同じ指示をやり直す（sessionID があれば続きとして）。
+    子の結果待ちで止まったら、同じモデル・同じ会話へ「待たずに続けて」を送る（STALL_RETRIES 回まで）。"""
     code = 1
-    for index, model in enumerate(models):
+    index = 0
+    stalls = 0
+    while index < len(models):
+        model = models[index]
         box.meta["last_model"] = model
         _save_meta(box.path, box.meta)
         argv = opencode_argv(box, message=message, session=session, model=model, interactive=False)
         try:
-            code, found, reason = _run_streaming(argv)
+            code, found, reason, stalled = _run_streaming(argv)
         finally:
             remove_env_file(argv)
         session = found or session
+        if stalled:
+            if stalls >= STALL_RETRIES or not session:
+                return code
+            stalls += 1
+            message = STALL_MESSAGE.format(minutes=max(1, STALL_SECONDS // 60))
+            print(f"同じ会話へ続きを送ります（{stalls}/{STALL_RETRIES}）", file=sys.stderr)
+            continue
         if not reason or index == len(models) - 1:
             return code
         print(f"モデルを切り替えます: {model} -> {models[index + 1]}（{reason[:200]}）", file=sys.stderr)
+        index += 1
     return code
 
 
