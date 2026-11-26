@@ -21,6 +21,7 @@ export interface CommanderAccount {
   label: string;
   /** 既定の見せ方（OpenCode の接続は「モデル名（提供元）」など）。 */
   title?: string;
+  usage?: CommanderUsage | null;
 }
 
 /** アカウントの見せ方: 画面の名前 → 接続の見せ方 → 既定／フォルダの名前。 */
@@ -62,8 +63,14 @@ export interface CommanderConsole {
   commander_resume_count?: string;
   /** そのコンソールだけの再開の文言（無ければ全体の設定）。 */
   commander_resume_message?: string;
+  /** 5 時間・週の上限の使用率（Claude・Codex）。 */
+  commander_usage?: CommanderUsage;
   commander_created_by?: string;
 }
+
+export interface UsageWindow { used_percent: number; resets_at: number | null }
+/** 5 時間・週の上限の使用率（アカウントごと）。 */
+export interface CommanderUsage { five_hour: UsageWindow | null; seven_day: UsageWindow | null; updated_at?: number; source?: string }
 
 export type CommanderState = "working" | "waiting" | "limited" | "error" | "exited";
 

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 261 ファイル、2587 テスト（目的の未記入 93 ファイル）
+- backend: 262 ファイル、2591 テスト（目的の未記入 93 ファイル）
 - E2E: 145 spec、318 テスト
 
 ## backend（backend/tests）
@@ -727,6 +727,15 @@
 - `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
+
+### backend/tests/test_commander_usage.py
+
+目的: Nexarch の 5 時間・週の使用率と回復の時刻（C4 の一部）の試験。 目的: Claude は statusline（Claude Code が渡す rate_limits）、Codex は sessions の記録の rate_limits から、 アカウントごとに使用率と回復の時刻を出す。ログインの鍵は読まない。回復を過ぎた窓は 0 と見なす。 根拠: 2026-11-27 利用者「5 時間制限と週間制限の利用率とリセットまでの時間を追加して」。形は実機 （Claude Code 2.1.332 の statusline の説明・Codex 0.172.0 の rollout）。既存の試験に同じ観点は無い。
+
+- `test_statusline_script_writes_only_limits_and_prints_summary` — statusline のコマンド: 使用率と回復の時刻と model だけを 0600 で書き、短い 1 行を出す。
+- `test_claude_settings_file_points_the_statusline_at_the_account_file` — --settings のファイルは statusline だけで、書き出し先はアカウントごと。
+- `test_claude_usage_reads_and_expires_windows`
+- `test_codex_usage_from_session_records` — Codex は sessions の最新の rollout の最後の rate_limits（primary=5 時間・secondary=週）。
 
 ### backend/tests/test_compaction.py
 

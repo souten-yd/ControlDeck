@@ -10,6 +10,7 @@ import {
   accountTitle, createAccount, deleteAccount, fetchAccounts, setAccountLabel,
   type CommanderAccount, type CommanderCli,
 } from "../../api/commander";
+import { UsageLine } from "./UsageLine";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { useToasts } from "../../stores";
 
@@ -61,9 +62,12 @@ function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: Co
   }
   return (
     <li className="flex min-h-11 items-center gap-2 rounded-xl bg-zinc-50 px-3 dark:bg-zinc-900">
-      <span className="min-w-0 flex-1 truncate text-sm">
-        {accountTitle(account.name, account.label, true, account.title)}
-        {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.title || folder}）</span>}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm">
+          {accountTitle(account.name, account.label, true, account.title)}
+          {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.title || folder}）</span>}
+        </span>
+        <UsageLine usage={account.usage} />
       </span>
       <LoginBadge logged_in={account.logged_in} />
       <button

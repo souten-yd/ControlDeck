@@ -5,6 +5,7 @@
  * 頭を押すと全画面で大きく開く。 */
 import { lazy, Suspense, useState } from "react";
 import { ConsoleResumeMessageSheet } from "./ResumeMessageSheet";
+import { UsageLine } from "./UsageLine";
 import { useQueryClient } from "@tanstack/react-query";
 import { accountTitle, setConsoleAutoResume, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
 import { useToasts } from "../../stores";
@@ -140,6 +141,7 @@ export function ConsoleTile({
             {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
           </span>
           <StateLine item={item} />
+          <UsageLine usage={item.commander_usage} className="mt-0.5" />
         </button>
         <button
           type="button"
@@ -207,6 +209,7 @@ export function ConsoleRow({
           {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
         </span>
         <StateLine item={item} />
+          <UsageLine usage={item.commander_usage} className="mt-0.5" />
       </button>
       <button
         type="button"
