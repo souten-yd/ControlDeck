@@ -1,4 +1,4 @@
-/** AI Commander: AI の CLI のコンソールを 1 つの画面で何個でも開く。
+/** Nexarch（旧 AI Commander）: AI の CLI のコンソールを 1 つの画面で何個でも開く。
  *
  * 表示は 2 つから選ぶ（頭のアイコンの切り替え）:
  * - 一覧: 1 行ずつ。押すと全画面で開く。
@@ -116,7 +116,7 @@ export default function CommanderPage() {
   const items = consoles ?? [];
   return (
     <div className="mx-auto max-w-7xl p-4 md:p-6">
-      <PageHeader title="AI Commander" actions={<>
+      <PageHeader title="Nexarch" actions={<>
         <DropdownMenu
           ariaLabel="その他の操作"
           trigger={<IconDots />}
@@ -127,6 +127,7 @@ export default function CommanderPage() {
         </IconButton>
       </>} />
 
+      <p className="mb-1 text-[11px] font-semibold tracking-[0.18em] text-accent-600 dark:text-accent-400">AI COMMAND SYSTEM</p>
       <p className="mb-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
         Claude Code・Codex・OpenCode などのコンソールをアカウントごとに開いて、1 つの画面で並べます。
       </p>

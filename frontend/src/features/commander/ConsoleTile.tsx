@@ -36,35 +36,43 @@ function AliveDot({ item }: { item: CommanderConsole }) {
   return <span aria-hidden title={STATE_LABEL[state]} className={`h-2.5 w-2.5 shrink-0 rounded-full ${STATE_DOT[state]}`} />;
 }
 
-/** 上限で止まったときの自動再開の予定と入り切り（C3）。押しても行の「開く」は動かさない。 */
+/** 自動再開（上限で止まったら回復の時刻に「続けてください」）のトグル。全コンソールに出す（既定は入）。
+ * 上限で止まっているときは次の予定の時刻も出す。押しても行の「開く」は動かさない。 */
 function AutoResume({ item }: { item: CommanderConsole }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const off = item.commander_autoresume === "off";
-  if (stateOf(item) !== "limited" && !off) return null;
+  const on = item.commander_autoresume !== "off";
+  const limited = stateOf(item) === "limited";
   const at = Number(item.commander_resume_at || 0);
   const when = at ? new Date(at * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }) : "";
   const toggle = async () => {
     try {
-      await setConsoleAutoResume(item.id, off);
+      await setConsoleAutoResume(item.id, !on);
       qc.invalidateQueries({ queryKey: ["commander-consoles"] });
-      show(off ? "自動で再開するようにしました" : "自動で再開しないようにしました");
+      show(on ? "自動再開を切りました" : "自動再開を入れました");
     } catch (e) {
       show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
     }
   };
   return (
-    <span data-commander-autoresume={off ? "off" : "on"} className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
-      <span className="min-w-0 truncate">
-        {off ? "自動再開: 止めています" : when ? `自動再開の予定 ${when}（「続けてください」を送ります）` : "自動再開: 回復の時刻を待っています"}
-      </span>
+    <span data-commander-autoresume={on ? "on" : "off"} className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
       <button
         type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="自動再開"
+        title="上限で止まったら、回復の時刻に「続けてください」を送ります"
         onClick={(e) => { e.stopPropagation(); void toggle(); }}
-        className="min-h-9 shrink-0 rounded-full border border-zinc-300 px-3 font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-600 dark:text-zinc-300"
+        className="flex min-h-9 shrink-0 items-center gap-1.5"
       >
-        {off ? "再開させる" : "止める"}
+        <span className={`relative h-5 w-9 rounded-full transition ${on ? "bg-accent-600" : "bg-zinc-300 dark:bg-zinc-700"}`}>
+          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
+        </span>
+        <span className="font-medium">自動再開</span>
       </button>
+      {limited && on && (
+        <span className="min-w-0 truncate">{when ? `予定 ${when}（「続けてください」を送ります）` : "回復の時刻を待っています"}</span>
+      )}
     </span>
   );
 }
@@ -140,9 +148,7 @@ export function ConsoleTile({
           🗑️
         </button>
       </div>
-      {(stateOf(item) === "limited" || item.commander_autoresume === "off") && (
-        <div className="shrink-0 border-b border-zinc-200 px-3 pb-1.5 dark:border-zinc-800"><AutoResume item={item} /></div>
-      )}
+      <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800"><AutoResume item={item} /></div>
       <div className={`relative ${TILE_TERMINAL_HEIGHT}`}>
         <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-400">ターミナルを読み込み中...</div>}>
           <XtermView

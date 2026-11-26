@@ -60,3 +60,4 @@
 ## 2026-11-27 の変更（C1 の後）
 - アカウントに画面の名前（既定のアカウントにも）。
 - OpenCode は ControlDeck の OpenCode を OpenCode 画面の API 設定で開く（アカウントは既定の 1 つ）。
+- 2026-11-27 利用者の指定で画面の名前を「Nexarch」に改名（コードの名前 commander・URL /commander は変えない）。

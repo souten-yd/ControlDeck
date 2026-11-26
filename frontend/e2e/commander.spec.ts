@@ -115,6 +115,7 @@ function initialState(): CommanderState {
       opencode: [
         { name: "default", default: true, logged_in: null, label: "ControlDeck の API", title: "OpenCode の設定のモデル（auto・ゲートウェイ）" },
         { name: "api-1a2b3c4d5e", default: false, logged_in: null, label: "", title: "DeepSeek V4.1 Flash（openrouter）" },
+        { name: "api-9f8e7d6c5b", default: false, logged_in: null, label: "", title: "OpenRouter / nvidia/nemotron-3.5-super-vl:free-with-a-very-long-identifier（openrouter）" },
       ],
       gemini: [{ name: "default", default: true, logged_in: null, label: "" }],
     },
@@ -238,7 +239,7 @@ test.describe("AI Commander", () => {
     const state = initialState();
     await mockCommander(page, state);
     await page.goto("/commander");
-    await expect(page.getByRole("heading", { name: "AI Commander" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Nexarch" })).toBeVisible();
 
     // 1 つずつのリスト。CLI 名・アカウント・表示名・最終活動が出る
     const rows = page.locator("[data-commander-row]");
@@ -256,14 +257,18 @@ test.describe("AI Commander", () => {
     await expect(second).toContainText("上限で停止");
     await expect(second).toContainText("429 Too Many Requests");
     // C3: 自動再開の予定と、コンソールごとの止める・戻す（押しても全画面は開かない）
-    await expect(second).toContainText("自動再開の予定 22:21");
-    await second.getByRole("button", { name: "止める" }).click();
-    await expect(second).toContainText("自動再開: 止めています");
+    await expect(second).toContainText("予定 22:21");
+    const toggleSwitch = second.getByRole("switch", { name: "自動再開" });
+    await expect(toggleSwitch).toHaveAttribute("aria-checked", "true");
+    await toggleSwitch.click();
+    await expect(toggleSwitch).toHaveAttribute("aria-checked", "false");
+    await expect(second).not.toContainText("予定 22:21");
     await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
-    await second.getByRole("button", { name: "再開させる" }).click();
-    await expect(second).toContainText("自動再開の予定");
+    await toggleSwitch.click();
+    await expect(toggleSwitch).toHaveAttribute("aria-checked", "true");
     expect(state.autoresumePuts).toEqual([{ id: "aa110002", enabled: false }, { id: "aa110002", enabled: true }]);
-    await expect(first.locator("[data-commander-autoresume]")).toHaveCount(0);
+    // トグルは全コンソールに出る（上限で止まっていなくても先に切っておける）
+    await expect(first.getByRole("switch", { name: "自動再開" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByText("未導入")).toHaveCount(0);
 
     // 押すと全画面の端末。閉じると一覧へ戻る
@@ -301,7 +306,7 @@ test.describe("AI Commander", () => {
     await expect(toggle).toHaveAccessibleName("中身を見ながら表示");
     expect((await toggle.innerText()).trim()).toBe("");
     // 見出しが切れない（切り替えのボタンを足しても 320px に収まる）
-    expect(await page.getByRole("heading", { name: "AI Commander" }).evaluate((h) => h.scrollWidth <= h.clientWidth)).toBe(true);
+    expect(await page.getByRole("heading", { name: "Nexarch" }).evaluate((h) => h.scrollWidth <= h.clientWidth)).toBe(true);
     await toggle.click();
     const tiles = page.locator("[data-commander-tile]");
     await expect(tiles).toHaveCount(1);
@@ -340,6 +345,10 @@ test.describe("AI Commander", () => {
     await sheet.getByRole("radio", { name: /OpenCode/ }).click();
     await expect(sheet.getByRole("radio", { name: /ControlDeck の API/ })).toBeChecked();
     await expect(sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ })).toBeVisible();
+    // 長い接続の名前でもシートから横にはみ出さない（2026-11-27 iPhone で、はみ出していた）
+    const sheetBox = await sheet.boundingBox();
+    const longBox = await sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ }).boundingBox();
+    expect(longBox!.x + longBox!.width).toBeLessThanOrEqual(sheetBox!.x + sheetBox!.width + 1);
     await expect(sheet.getByText(/選んだ接続（OpenCode 画面に登録した API）で開きます/)).toBeVisible();
     await expect(sheet.getByRole("radio", { name: "＋ 新しいアカウント" })).toHaveCount(0);
 
@@ -370,7 +379,7 @@ test.describe("AI Commander", () => {
     await expect(sheet.getByRole("button", { name: /選ぶ/ })).toContainText(`${ROOT}/night-batch`);
 
     // 個数 2・表示名
-    await sheet.getByLabel("開く個数").selectOption("2");
+    await sheet.getByLabel("同時に開く数").selectOption("2");
     await sheet.getByLabel("コンソールの表示名").fill("夜間バッチ");
 
     await sheet.getByRole("button", { name: "開く", exact: true }).click();

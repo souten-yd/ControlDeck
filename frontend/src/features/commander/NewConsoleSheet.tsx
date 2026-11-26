@@ -1,4 +1,4 @@
-/** 「＋ コンソール」のシート: CLI・アカウント・作業フォルダ・個数・表示名を選んで開く。
+/** 「＋ コンソール」のシート: CLI・アカウント・作業フォルダ・同時に開く数・表示名を選んで開く。
  *
  * アカウントは既定・作ったもの・その場で新しく作るから選ぶ。
  * 作業フォルダは既存の FilePicker（files API の許可ルート内）を使う。 */
@@ -81,7 +81,7 @@ export function NewConsoleSheet({
       <div className="space-y-5 pt-1">
         <section>
           <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">CLI</h3>
-          <ul className="grid gap-1.5" role="radiogroup" aria-label="CLIを選ぶ">
+          <ul className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="CLIを選ぶ">
             {clis.map((c) => (
               <li key={c.id}>
                 <button
@@ -113,7 +113,7 @@ export function NewConsoleSheet({
           <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">アカウント</h3>
           {multi || cli?.connector ? (
             <>
-            <ul className="grid gap-1.5" role="radiogroup" aria-label="アカウントを選ぶ">
+            <ul className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="アカウントを選ぶ">
               {(accounts ?? []).map((a) => (
                 <li key={a.name}>
                   <button
@@ -193,12 +193,12 @@ export function NewConsoleSheet({
         </section>
 
         <div className="flex gap-3">
-          <section className="w-28" aria-label="個数">
-            <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">個数</h3>
+          <section className="w-32">
+            <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400" title="同じ CLI・アカウント・作業フォルダのコンソールを何個まとめて開くか">同時に開く数</h3>
             <select
               value={count}
               onChange={(e) => setCount(Number(e.target.value))}
-              aria-label="開く個数"
+              aria-label="同時に開く数"
               className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             >
               {COUNT_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
@@ -216,6 +216,9 @@ export function NewConsoleSheet({
             />
           </section>
         </div>
+        <p className="-mt-3 text-[11px] text-zinc-500 dark:text-zinc-400">
+          同時に開く数: 同じ CLI・アカウント・作業フォルダのコンソールを何個まとめて開くか（別々の作業を並行でさせるとき）。
+        </p>
 
         <div className="sheet-actions sticky bottom-0 -mx-5 border-t border-zinc-100 bg-white/90 px-5 pb-4 pt-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90">
           <button type="button" disabled={!canOpen || busy} onClick={() => void open()} className={`${primaryButtonClass} w-full`}>

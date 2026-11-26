@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from app.commander import accounts, status
 from app.commander.accounts import CLIS, CliDef
 from app.config import get_config
@@ -60,7 +62,15 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
         except provider.CodeAgentError as exc:
             raise ValueError(str(exc)) from exc
         return command, None
-    return cli.executable, None
+    # 見つけた絶対パスで開き、その場所を PATH の先頭に足す（codex は `#!/usr/bin/env node` の
+    # スクリプトなので、同じ場所の道具を PATH で探す）。
+    path = accounts.executable_path(cli) or cli.executable
+    if "/" not in path:
+        return path, None
+    folder = os.path.dirname(path)
+    current = os.environ.get("PATH", "/usr/bin:/bin")
+    env_path = current if folder in current.split(os.pathsep) else f"{folder}{os.pathsep}{current}"
+    return path, {"PATH": env_path[:4096]}
 
 
 def create_consoles(
@@ -80,7 +90,9 @@ def create_consoles(
     if not workdir.is_dir():
         raise NotADirectoryError(f"ディレクトリではありません: {cwd}")
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
-    command, _ = _command_for(cli, str(workdir), user_id, account)
+    command, extra_env = _command_for(cli, str(workdir), user_id, account)
+    if extra_env:
+        env = {**extra_env, **(env or {})}
 
     opened: list[dict] = []
     reason = ""

@@ -54,7 +54,7 @@ export const NAVIGATION: NavigationItem[] = [
   { to: "/remote", group: "system", label: "Remote", icon: IconRemote, feature: "remote-desktop", permission: "remote_desktop.use" },
   { to: "/files", group: "system", label: "Files", icon: IconFile, permission: "files.view" },
   { to: "/terminal", group: "dev", label: "Terminal", icon: IconTerminal, permission: "terminal.use" },
-  { to: "/commander", group: "dev", label: "AI Commander", icon: IconCommander, permission: "terminal.use" },
+  { to: "/commander", group: "dev", label: "Nexarch", icon: IconCommander, permission: "terminal.use" },
   { to: "/assistant", group: "ai", label: "AI Assistant", icon: IconAssistant },
   { to: "/github", group: "dev", label: "GitHub", icon: IconBranch, permission: "apps.view" },
   { to: "/knowledge", group: "ai", label: "Knowledge", icon: IconBook, permission: "workflows.run" },
@@ -88,7 +88,7 @@ export function IconAssistant(props: SVGProps<SVGSVGElement>) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}><path d="M12 3l1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4L12 3z" /><path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" /><path d="M5 15l.6 1.7 1.7.6-1.7.6L5 19.5l-.6-1.6-1.7-.6 1.7-.6L5 15z" /></svg>;
 }
 
-/** AI Commander: 複数のコンソール（タイル）を並べる画面。 */
+/** Nexarch（旧 AI Commander）のマーク: 縦の 2 本と、点で折れる矢印。 */
 export function IconCommander(props: SVGProps<SVGSVGElement>) {
-  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}><rect x="2" y="4" width="8.5" height="7" rx="1.5" /><rect x="13.5" y="4" width="8.5" height="7" rx="1.5" /><rect x="2" y="13.5" width="8.5" height="6.5" rx="1.5" /><path d="M17.75 13.5v6.5M13.5 17h8.5" /></svg>;
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" width="1em" height="1em" aria-hidden {...props}><path d="M5 19.5V4.5l9.5 9" /><path d="M9.5 4.5l5 4.6" /><path d="M14.5 13.5l-6 6" /><path d="M19 4.5v15" /><circle cx="14.5" cy="13.5" r="1.7" fill="currentColor" stroke="none" /></svg>;
 }

@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-27 AI Commander を Nexarch に改名・Claude と Codex が「未導入」と出る不具合・自動再開のトグル
+- 名前: 利用者の指定で「Nexarch」（AI COMMAND SYSTEM）。メニュー・見出しを変え、マーク（縦の 2 本と点で折れる矢印）を入れた。URL（/commander）と API は変えない。
+- 不具合: ControlDeck の service の PATH に `~/.local/npm-global/bin` が無く、そこにある claude・codex を「未導入」と出していた。PATH の次に利用者の bin（npm-global・~/.local/bin・bun・volta など）を探し、見つけた絶対パスで開き、その場所を PATH の先頭に足す（codex は `#!/usr/bin/env node` のスクリプト）。
+- 自動再開: すべてのコンソールにトグル（スイッチ）を出す。上限で止まっていなくても先に切っておける。止まっているときは次の予定の時刻も出す。
+- 「個数」を「同時に開く数」にして説明を足した。開くシートで長い接続の名前が横にはみ出していたのを直した（iPhone の画面）。
+- 確かめたこと: commander の試験 31 件（利用者の bin で見つける試験を追加）、E2E 4 件（スイッチ・はみ出し）。
+
 ## 2026-11-27 AI Commander C3: 上限からの自動再開（LLM なし）
 - 上限で止まったコンソール（C2 の判定）の上限の行から回復の時刻を読み、時刻＋1 分が来たら同じセッションへ「続けてください」＋Enter を送る（`app/commander/resume.py`、60 秒ごとの見回り `resume_loop`）。読める形: Claude「resets 10:20pm (Asia/Tokyo)」「resets Nov 30, 12am (Asia/Tokyo)」、Codex「try again at Nov 28th, 2026 3:05 AM」「try again in 2 hours 5 minutes」。読めないときは 30 分ごと。
 - 歯止め: 送る直前に画面を読み直し、まだ上限のときだけ送る。送ったら 10 分は次を送らない。1 回の停止につき 10 回まで。止まっていなければ記録を消す。記録は tmux の印（`@cd-commander-resume_at/count/last`）なので ControlDeck を再起動しても残る。送ったら監査ログ（commander.console.autoresume）。
