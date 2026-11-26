@@ -86,6 +86,26 @@ def cli_ids() -> list[str]:
     return list(CLIS)
 
 
+# ControlDeck の service の PATH には、利用者が npm・bun などで入れた CLI の場所が入っていない
+# （2026-11-27 実機: claude・codex は ~/.local/npm-global/bin にあるのに「未導入」と出た）。
+# PATH の次にこれらの場所を探す。実行ファイル名は CLIS の表のものだけ。
+USER_BIN_DIRS = (".local/npm-global/bin", ".npm-global/bin", ".local/bin", ".bun/bin",
+                 ".volta/bin", ".cargo/bin", "bin")
+
+
+def executable_path(cli: CliDef) -> str | None:
+    """CLI の実行ファイルの絶対パス。PATH → 利用者の bin の順に探す。無ければ None。"""
+    found = shutil.which(cli.executable)
+    if found:
+        return found
+    home = Path.home()
+    for rel in USER_BIN_DIRS:
+        candidate = home / rel / cli.executable
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def cli_info(cli: CliDef) -> dict:
     """一覧用の CLI の情報（アカウントの有無は含めない。別途 list_accounts）。"""
     return {
@@ -110,7 +130,7 @@ def is_installed(cli: CliDef) -> bool:
         except provider.CodeAgentError:
             return False
         return True
-    return shutil.which(cli.executable) is not None
+    return executable_path(cli) is not None
 
 
 # ---- OpenCode の接続（OpenCode 画面に登録した API） --------------------------------------

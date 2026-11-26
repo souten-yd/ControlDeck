@@ -183,9 +183,11 @@ def test_consoles_api_flow_default_account_and_batch(admin_client, monkeypatch):
     assert [row["commander_cli"] for row in result["opened"]] == ["claude"] * 3
     assert len(fake.created) == 3
     for call in fake.calls:
-        assert call["command"] == "claude"  # 表の実行ファイル名だけ（利用者の入力を混ぜない）
+        # 表の実行ファイル名を見つけた絶対パスだけ（利用者の入力を混ぜない）
+        assert call["command"] in ("claude", accounts.executable_path(accounts.CLIS["claude"]))
         assert call["cwd"] == _root()
-        assert call["env"] is None  # 既定のアカウント: 環境変数を付けない
+        # 既定のアカウント: アカウントの環境変数は付けない（付くのは CLI の場所の PATH だけ）
+        assert call["env"] is None or set(call["env"]) == {"PATH"}
     sid = result["opened"][0]["id"]
     assert fake.marks[sid]["cli"] == "claude"
     assert fake.marks[sid]["account"] == "default"
@@ -211,7 +213,7 @@ def test_consoles_api_named_account_uses_env(admin_client, monkeypatch):
     r = admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS, json=body)
     assert r.status_code == 201, r.text
     env = fake.envs[0]
-    assert set(env) == {"CLAUDE_CONFIG_DIR"}
+    assert set(env) - {"PATH"} == {"CLAUDE_CONFIG_DIR"}
     assert env["CLAUDE_CONFIG_DIR"].startswith(str(accounts.accounts_root()))
     assert "claude" in env["CLAUDE_CONFIG_DIR"]
     assert fake.marks[fake.created[0]["id"]]["account"] == "work"
@@ -407,3 +409,26 @@ def test_opencode_accounts_are_the_registered_api_connections(admin_client, monk
     admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
                       json={"cli": "opencode", "cwd": _root()})
     assert calls[-1] == ("auto", ""), "設定のモデルは今までどおりの設定フォルダ"
+
+
+def test_cli_found_outside_the_service_path_is_opened_by_absolute_path(monkeypatch, tmp_path):
+    """service の PATH に無い利用者の bin（~/.local/npm-global/bin など）の CLI も見つけ、絶対パスで開く。
+
+    根拠: 2026-11-27 実機。claude・codex は ~/.local/npm-global/bin にあるのに、ControlDeck の service の
+    PATH に入っておらず「未導入」と出た。codex は `#!/usr/bin/env node` なので、その場所を PATH の先頭に足す。
+    """
+    home = tmp_path / "home"
+    bindir = home / ".local" / "npm-global" / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / "codex"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(accounts.Path, "home", lambda: home)
+    monkeypatch.setattr(accounts.shutil, "which", lambda name: None)
+    codex = accounts.CLIS["codex"]
+    assert accounts.executable_path(codex) == str(exe)
+    assert accounts.is_installed(codex) is True
+    assert accounts.executable_path(accounts.CLIS["gemini"]) is None
+    command, env = consoles._command_for(codex, "/tmp", 1)
+    assert command == str(exe)
+    assert env["PATH"].split(":")[0] == str(bindir)
