@@ -45,6 +45,16 @@ class ConsoleAutoResume(BaseModel):
     enabled: bool
 
 
+class ResumeMessage(BaseModel):
+    """自動再開で送る文言（空なら上の段: コンソール→全体→既定）。"""
+
+    message: str = Field(default="", max_length=500)
+
+
+class CommanderSettingsBody(BaseModel):
+    resume_message: str = Field(default="", max_length=500)
+
+
 class AccountLabel(BaseModel):
     """アカウントの画面の名前（空で外す）。既定のアカウントにも付けられる。"""
 

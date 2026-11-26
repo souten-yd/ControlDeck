@@ -3,7 +3,8 @@
  * 頭に CLI の名前・アカウント・表示名・生きているか・最終活動を出し、
  * 中身は既存の XtermView を埋め込み表示（embedded）で収める。
  * 頭を押すと全画面で大きく開く。 */
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
+import { ConsoleResumeMessageSheet } from "./ResumeMessageSheet";
 import { useQueryClient } from "@tanstack/react-query";
 import { accountTitle, setConsoleAutoResume, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
 import { useToasts } from "../../stores";
@@ -38,8 +39,9 @@ function AliveDot({ item }: { item: CommanderConsole }) {
 
 /** 自動再開（上限で止まったら回復の時刻に「続けてください」）のトグル。全コンソールに出す（既定は入）。
  * 上限で止まっているときは次の予定の時刻も出す。押しても行の「開く」は動かさない。 */
-function AutoResume({ item }: { item: CommanderConsole }) {
+function AutoResume({ item, cliName }: { item: CommanderConsole; cliName: string }) {
   const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
   const show = useToasts((s) => s.show);
   const on = item.commander_autoresume !== "off";
   const limited = stateOf(item) === "limited";
@@ -71,8 +73,18 @@ function AutoResume({ item }: { item: CommanderConsole }) {
         <span className="font-medium">自動再開</span>
       </button>
       {limited && on && (
-        <span className="min-w-0 truncate">{when ? `予定 ${when}（「続けてください」を送ります）` : "回復の時刻を待っています"}</span>
+        <span className="min-w-0 truncate">{when ? `予定 ${when}` : "回復の時刻を待っています"}</span>
       )}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        aria-label="再開の文言"
+        title={item.commander_resume_message ? `このコンソールの文言: ${item.commander_resume_message}` : "再開の文言（全体の設定を使用中）"}
+        className={`ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${item.commander_resume_message ? "" : "opacity-60"}`}
+      >
+        ✏️
+      </button>
+      {editing && <ConsoleResumeMessageSheet item={item} cliName={cliName} onClose={() => setEditing(false)} />}
     </span>
   );
 }
@@ -148,7 +160,7 @@ export function ConsoleTile({
           🗑️
         </button>
       </div>
-      <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800"><AutoResume item={item} /></div>
+      <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800"><AutoResume item={item} cliName={cliName} /></div>
       <div className={`relative ${TILE_TERMINAL_HEIGHT}`}>
         <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-400">ターミナルを読み込み中...</div>}>
           <XtermView
@@ -214,7 +226,7 @@ export function ConsoleRow({
         🗑️
       </button>
       </div>
-      <div className="pl-4"><AutoResume item={item} /></div>
+      <div className="pl-4"><AutoResume item={item} cliName={cliName} /></div>
     </li>
   );
 }

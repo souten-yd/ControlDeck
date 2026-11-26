@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 260 ファイル、2574 テスト（目的の未記入 93 ファイル）
+- backend: 260 ファイル、2575 テスト（目的の未記入 93 ファイル）
 - E2E: 144 spec、316 テスト
 
 ## backend（backend/tests）
@@ -715,6 +715,7 @@
 - `test_tick_sends_only_when_still_limited_and_records` — 送る直前に画面を読み直し、まだ上限のときだけ「続けてください」を送って回数・時刻を残す。
 - `test_tick_clears_and_schedules` — 止まっていないコンソールは印を消し、待ちのコンソールは次の予定を残す（画面に出す）。
 - `test_autoresume_toggle_api` — コンソールごとに自動再開を止める・戻す（off の印を付ける・外す）。無いコンソールは 404。
+- `test_resume_message_console_then_global_then_default` — 送る文言: コンソールの設定 → 全体の設定 → 既定「続けてください」。空で上の段へ戻す。
 
 ### backend/tests/test_commander_status.py
 

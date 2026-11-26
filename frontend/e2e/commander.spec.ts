@@ -57,6 +57,7 @@ interface ConsoleFixture {
   commander_detail?: string;
   commander_autoresume?: string;
   commander_resume_at?: string;
+  commander_resume_message?: string;
 }
 
 function consoleFixture(overrides: Partial<ConsoleFixture> & Pick<ConsoleFixture, "id">): ConsoleFixture {
@@ -88,6 +89,8 @@ interface CommanderState {
   labelPuts: { cli: string; name: string; label: string }[];
   folderPosts: string[];
   autoresumePuts: { id: string; enabled: boolean }[];
+  resumeMessage: string;
+  consoleMessagePuts: { id: string; message: string }[];
 }
 
 function initialState(): CommanderState {
@@ -126,6 +129,8 @@ function initialState(): CommanderState {
     labelPuts: [],
     folderPosts: [],
     autoresumePuts: [],
+    resumeMessage: "続けてください",
+    consoleMessagePuts: [],
   };
 }
 
@@ -154,6 +159,21 @@ async function mockCommander(page: Page, state: CommanderState) {
       }));
       for (const item of opened) state.consoles.push(item);
       return route.fulfill({ status: 201, json: { opened, not_opened: 0, reason: "" } });
+    }
+    if (path === "settings" && method === "GET") {
+      return route.fulfill({ json: { resume_message: state.resumeMessage, default_resume_message: "続けてください" } });
+    }
+    if (path === "settings" && method === "PUT") {
+      state.resumeMessage = (request.postDataJSON() as { resume_message: string }).resume_message || "続けてください";
+      return route.fulfill({ json: { resume_message: state.resumeMessage, default_resume_message: "続けてください" } });
+    }
+    const messageMatch = path.match(/^consoles\/([0-9a-f]+)\/resume-message$/);
+    if (messageMatch && method === "PUT") {
+      const message = (request.postDataJSON() as { message: string }).message;
+      state.consoleMessagePuts.push({ id: messageMatch[1], message });
+      state.consoles = state.consoles.map((item) => (item.id === messageMatch[1]
+        ? { ...item, commander_resume_message: message || undefined } : item));
+      return route.fulfill({ json: { ok: true, message } });
     }
     const autoresumeMatch = path.match(/^consoles\/([0-9a-f]+)\/autoresume$/);
     if (autoresumeMatch && method === "PUT") {
@@ -258,6 +278,7 @@ test.describe("AI Commander", () => {
     await expect(second).toContainText("429 Too Many Requests");
     // C3: 自動再開の予定と、コンソールごとの止める・戻す（押しても全画面は開かない）
     await expect(second).toContainText("予定 22:21");
+    await expect(second).not.toContainText("続けてください");
     const toggleSwitch = second.getByRole("switch", { name: "自動再開" });
     await expect(toggleSwitch).toHaveAttribute("aria-checked", "true");
     await toggleSwitch.click();
@@ -269,6 +290,23 @@ test.describe("AI Commander", () => {
     expect(state.autoresumePuts).toEqual([{ id: "aa110002", enabled: false }, { id: "aa110002", enabled: true }]);
     // トグルは全コンソールに出る（上限で止まっていなくても先に切っておける）
     await expect(first.getByRole("switch", { name: "自動再開" })).toHaveAttribute("aria-checked", "true");
+
+    // 再開の文言: 全体（その他メニュー）→ コンソールごと（✏️。空なら全体を使う）
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "自動再開の文言（全体）" }).click();
+    const globalSheet = page.getByRole("dialog", { name: "自動再開の文言（全体）" });
+    await globalSheet.getByLabel("全体の再開の文言").fill("上限が戻ったので続きをお願いします");
+    await globalSheet.getByRole("button", { name: "保存" }).click();
+    await expect(globalSheet).toHaveCount(0);
+    expect(state.resumeMessage).toBe("上限が戻ったので続きをお願いします");
+    await second.getByRole("button", { name: "再開の文言" }).click();
+    const own = page.getByRole("dialog", { name: /の再開の文言/ });
+    await expect(own).toContainText("上限が戻ったので続きをお願いします");
+    await own.getByLabel("このコンソールの再開の文言").fill("go on");
+    await own.getByRole("button", { name: "保存" }).click();
+    await expect(own).toHaveCount(0);
+    expect(state.consoleMessagePuts).toEqual([{ id: "aa110002", message: "go on" }]);
+    await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
     await expect(page.getByText("未導入")).toHaveCount(0);
 
     // 押すと全画面の端末。閉じると一覧へ戻る

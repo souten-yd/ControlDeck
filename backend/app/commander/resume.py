@@ -3,6 +3,7 @@
 上限で止まったコンソール（C2 の判定 LIMITED）の上限の行から回復の時刻を読み、時刻が来たら
 同じセッションへ「続けてください」を送る（Terminal の automation と同じ inject_input）。
 
+- 送る文言: コンソールごとの設定（@cd-commander-resume_message）→ 全体の設定 → 既定「続けてください」。
 - 時刻の読み取り: Claude「resets 10:20pm (Asia/Tokyo)」「resets Nov 30, 12am (Asia/Tokyo)」、
   Codex「try again at Nov 28th, 2026 3:05 AM」「try again in 2 hours 5 minutes」。
   読めないときは RETRY_UNKNOWN ごとに試す。
@@ -31,7 +32,7 @@ GRACE = 60                 # 回復の時刻ちょうどは外しやすいので
 RETRY_UNKNOWN = 30 * 60    # 時刻が読めないとき
 MIN_INTERVAL = 10 * 60     # 送った後、次を送るまで
 MAX_ATTEMPTS = 10
-MESSAGE = "続けてください"
+# 送る文言はコンソールごとの設定 → 全体の設定（commander/settings.py）→ 既定「続けてください」
 
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
@@ -139,7 +140,9 @@ def tick(now: float | None = None) -> list[str]:
                 text = manager.capture_text(sid, status.CAPTURE_LINES)
                 if status.classify(str(row["commander_cli"]), text)["state"] != status.LIMITED:
                     continue
-                manager.inject_input(sid, MESSAGE, submit=True)
+                from app.commander import settings as commander_settings
+
+                manager.inject_input(sid, commander_settings.message_for(row), submit=True)
                 count = int(row.get("commander_resume_count") or 0) + 1
                 manager.tag_session(sid, {"resume_count": str(count), "resume_last": str(int(now)),
                                           "resume_at": str(int(now + MIN_INTERVAL))})

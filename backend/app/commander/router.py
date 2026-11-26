@@ -26,7 +26,9 @@ from app.audit import service as audit
 from app.commander import accounts, consoles
 from app.database import get_db
 from app.models import User
-from app.schemas.commander import AccountCreate, AccountLabel, ConsoleAutoResume, ConsoleCreate
+from app.schemas.commander import (
+    AccountCreate, AccountLabel, CommanderSettingsBody, ConsoleAutoResume, ConsoleCreate, ResumeMessage,
+)
 from app.security.deps import require_permission
 from app.terminals.router import streams
 
@@ -214,6 +216,60 @@ def set_console_autoresume(
     audit.record(db, "commander.console.autoresume_setting", user=user, resource_type="commander_console",
                  resource_id=session_id, request=request, metadata={"enabled": body.enabled})
     return {"ok": True, "enabled": body.enabled}
+
+
+@router.get("/settings")
+def get_settings(user: User = Depends(require_permission("terminal.use"))):
+    """全体の設定（自動再開の文言）。"""
+    del user
+    from app.commander import settings as commander_settings
+
+    return commander_settings.get()
+
+
+@router.put("/settings")
+def put_settings(
+    body: CommanderSettingsBody,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    from app.commander import settings as commander_settings
+
+    try:
+        result = commander_settings.set_resume_message(body.resume_message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(db, "commander.settings", user=user, resource_type="commander", resource_id="settings",
+                 request=request)
+    return result
+
+
+@router.put("/consoles/{session_id}/resume-message")
+def set_console_resume_message(
+    session_id: str,
+    body: ResumeMessage,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """そのコンソールだけの再開の文言。空なら全体の設定を使う。"""
+    from app.commander import settings as commander_settings
+    from app.terminals.manager import manager
+
+    if not any(s.get("id") == session_id for s in consoles.list_consoles()):
+        raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+    try:
+        message = commander_settings.clean_message(body.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if message:
+        manager.tag_session(session_id, {"resume_message": message})
+    else:
+        manager.clear_marks(session_id, ("resume_message",))
+    audit.record(db, "commander.console.resume_message", user=user, resource_type="commander_console",
+                 resource_id=session_id, request=request, metadata={"own": bool(message)})
+    return {"ok": True, "message": message}
 
 
 @router.delete("/consoles/{session_id}")
