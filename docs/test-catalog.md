@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 254 ファイル、2516 テスト（目的の未記入 93 ファイル）
-- E2E: 142 spec、310 テスト
+- backend: 256 ファイル、2526 テスト（目的の未記入 93 ファイル）
+- E2E: 143 spec、312 テスト
 
 ## backend（backend/tests）
 
@@ -1081,6 +1081,13 @@
 - `test_pause_recovery_does_not_block_loop`
 - `test_runtime_environment_probes_run_off_loop`
 - `test_shared_ssl_context_is_reused`
+
+### backend/tests/test_explicit_knowledge_query.py
+
+目的: Explicit lexical operators must survive retrieval and document ranking.
+
+- `test_fts_explicit_and_natural`
+- `test_explicit_never_uses_vector_or_graph`
 
 ### backend/tests/test_fake_addon_harness.py
 
@@ -2989,6 +2996,10 @@
 - `test_pages_read_per_aspect_follow_depth_setting_and_latest_floor` — 読む件数は深さ（速い 3・ふつう 5・深い 8）で変わり、設定の値が基準になる。時事は速くても最低 5 件。
 - `test_source_cap_keeps_matching_pages_first`
 - `test_research_limits_are_clamped_and_saved`
+- `test_unselected_candidate_is_available_in_later_round` — 目的: 1 回目に選ばなかった候補を 2 回目の調査から排除しない。
+- `test_same_page_found_by_two_aspects_is_read_once` — 目的: 2 つの観点の検索で同じページが見つかっても、取得（と本文の取り出し・ブラウザの描画）は 1 回だけ。
+- `test_snippet_date_does_not_certify_unread_page` — 目的: 本文が取得できなければ検索要約の日付が合っていても確認済みにしない。
+- `test_norm_url_keeps_signed_spa_and_port_but_merges_cosmetic_differences` — 目的: 重複の判定で、見た目だけ違う URL（www・http/https・末尾の /・引数の順番・追跡の引数・節のアンカー）は同じ、
 
 ### backend/tests/test_resource_api.py
 
@@ -3281,15 +3292,26 @@
 - `test_every_snapshot_is_well_formed`
 - `test_no_snapshot_allows_ai_by_default`
 
+### backend/tests/test_strata_catalog.py
+
+目的: Strata の目録が 1 か所に集約され、画面・API・登録のすべてが同じ値を見ることを守る。 確かめること: 全系列に量子化がある・id が重ならない・未知の系列を Pydantic が弾く・ NVIDIA 限定の行を NVIDIA の無い PC で出さない・「載るか」の計算・API の形（同期 endpoint）。 根拠: 2026-11-26 の指示書 M1。以前は目録が gateway・router・model_names・frontend に 二重・三重にあり、0.2.22 の全系列を登録画面に出せなかった。AGENTS.md「テストは目的と根拠を 書いてから足す」の決まりで、足す前に `./deck.sh test-catalog` で同じ観点を探した。
+
+- `test_catalog_is_complete_and_ids_do_not_collide` — 目録の全行に量子化があり、系列 id・量子化 id が重ならない。
+- `test_catalog_engine_and_thinking_flags` — Qwen 用引数を渡さない系列と、0.2.22 で思考を持つ系列を間違えない。
+- `test_family_validator_uses_catalog_not_a_fixed_literal` — API の系列は目録の id だけを受け付け、固定 Literal に無い新しい系列も通る。
+- `test_nvidia_only_family_is_hidden_without_nvidia` — NVIDIA の無い PC では nvfp4 を画面に出さない。目録自体からは消さない。
+- `test_fit_compares_memory_estimate_with_ram_plus_vram` — 「載る／ぎりぎり／載らない／不明」が RAM+VRAM と目安の比べで決まる。
+- `test_api_payload_shape_and_sync_endpoint` — 目録 API が画面に必要な形を返し、同期 endpoint で event loop を塞がない。
+
 ### backend/tests/test_strata_gateway.py
 
-目的: Strata must not download a model or alter the active runtime by default.
+目的: Strata must not download a model or alter the active runtime by default. 加えて、目録（strata_catalog.py）の全系列・全量子化が登録でき、古い登録の設定が壊れないことを守る。 根拠: 2026-11-26 の指示書 M1（目録を 1 か所へ。0.2.22 の Inkling は思考あり）。
 
 - `test_status_parses_upstream_json_even_when_human_lines_follow`
 - `test_auto_load_refuses_first_download`
 - `test_explicit_start_uses_fixed_cli_args_and_records_activation`
 - `test_cannot_register_untrusted_family_or_injected_alias`
-- `test_unsloth_flash_next_sizes_are_registrable`
+- `test_unsloth_flash_next_sizes_are_registrable` — 目的: 目録にある Unsloth の全量子化が登録でき、ほかの系列の量子化は混ぜられない。
 - `test_uninstall_never_deletes_models`
 - `test_download_only_exit_zero_does_not_activate`
 - `test_readiness_requires_loaded_health_and_models`
@@ -3304,7 +3326,7 @@
 - `test_invalid_memory_settings_are_rejected`
 - `test_legacy_memory_values_are_not_launch_changes_when_equal`
 - `test_strata_refuses_quantizations_it_cannot_run_at_registration` — Strata は Unsloth の UD-*・GSQ-RCO・Q8_0 だけを動かす。ほかの K 量子化（Q4_K_S など）は登録の時点で断り、llama.cpp を案内する。
-- `test_inkling_2_mini_is_registrable_and_launched_without_qwen_only_arguments` — Inkling 2 Mini（Strata 0.2.19 の strata-inkling）を登録・起動できる。Qwen 用の引数と思考の設定は渡さない。
+- `test_inkling_2_mini_keeps_thinking_but_not_qwen_only_arguments` — 目的: Inkling 2 Mini を登録・起動するとき、Qwen 用の引数だけを渡さないことを守る。
 
 ### backend/tests/test_strata_memory.py
 
@@ -3562,7 +3584,7 @@
 
 ### backend/tests/test_web_data_api.py
 
-目的: 公開データ API の直接利用（data_api）。 目的: - URL の形で GitHub（repo・blob・issue・PR）・OpenAlex（works・authors）だけを判定し（Wikipedia・arXiv は対象外）、それ以外は対象にしないこと。 - 固定の応答の見本から本文へ変換できること（README・issue のコメントの上位と件数の上限・OpenAlex の抄録の再構成）。 - 上限（コメント件数・応答の大きさ）、失敗の扱い（403/429 は止めて理由を返し HTML へ戻らない／404 は HTML へ戻る／ 内部アドレスは止める）。 - `fetch.collect` が前段で data_api を使い（fetch_method="data_api"）、`data_api=False` や対象外の URL では使わないこと。 根拠: docs/HANDOFF-web-collector.md「W2 で最初にやること」（GitHub README の見出し・OpenAlex の 403・Wikipedia REST）。外へは通信しない。
+目的: 公開データ API の直接利用（data_api）。 目的: - URL の形で GitHub（repo・blob・issue・PR）・Wikipedia・OpenAlex（works・authors）・arXiv（abs）だけを判定し、それ以外は対象にしないこと。 - 固定の応答の見本から本文へ変換できること（README・issue のコメントの上位と件数の上限・Wikipedia の見出しと脚注の除去・ OpenAlex の抄録の再構成・arXiv の Atom）。 - 上限（コメント件数・応答の大きさ）、失敗の扱い（403/429 は止めて理由を返し HTML へ戻らない／404 は HTML へ戻る／ 内部アドレスは止める／XML の宣言は読まない）。 - `fetch.collect` が前段で data_api を使い（fetch_method="data_api"）、`data_api=False` や対象外の URL では使わないこと。 根拠: docs/HANDOFF-web-collector.md「W2 で最初にやること」（GitHub README の見出し・OpenAlex の 403・Wikipedia REST）。外へは通信しない。
 
 - `test_match_supported`
 - `test_match_rejects_others`
@@ -3570,10 +3592,8 @@
 - `test_github_issue_comments_are_top_and_capped`
 - `test_github_blob_binary_and_truncation`
 - `test_rate_limit_and_not_found_are_distinguished`
-- `test_wikipedia_keeps_headings_and_drops_footnotes`
 - `test_openalex_work_rebuilds_abstract`
 - `test_openalex_author_survives_works_failure_but_stops_on_429`
-- `test_arxiv_atom_and_xml_declarations`
 - `test_http_get_rejects_internal_address_and_foreign_redirect`
 - `test_collect_uses_data_api_before_html`
 - `test_collect_stops_on_blocked_and_never_falls_back`
@@ -4599,12 +4619,19 @@
 - Supertonic 3 is offered under 音声 in the feature list
 - CPU rerankers are installed and chosen in Models > Embed / Reranker
 
+### frontend/e2e/strata-catalog.spec.ts
+
+目的: Strata のモデル登録画面が backend の目録 API（GET /api/v1/models/strata/catalog）から 全系列・全量子化を読み、1280px と 320px の両方で崩れずに選べることを確かめる。 量子化の選択肢には id に加えてダウンロード目安・メモリ目安・「載る／ぎりぎり／載らない／不明」が出る。 手作業が要る orca は選べない案内表示になり、Inkling では 0.2.22 の思考欄が残る。 目録の取得失敗時は alert を出して保存ボタンを無効にする。 根拠: 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。Strata 0.2.22 の 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す） と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。 API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。
+
+- Strata catalog shows all families and quantizations at ${width}px
+- Strata catalog failure shows an alert and disables save at 1280px
+
 ### frontend/e2e/strata-memory-settings.spec.ts
 
 目的: **未記入**
 
 - Strata memory planning and settings at ${width}px
-- Strata registration offers Inkling 2 Mini without thinking or Qwen-only memory settings
+- Strata registration offers Inkling 2 Mini with thinking and without Qwen-only memory settings
 
 ### frontend/e2e/terminal-attachment.spec.ts
 

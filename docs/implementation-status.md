@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-26 Strata の目録を 1 か所へ（M1・実装済み、実機と関門の確認待ち）
+- 利用者「Strata の目録を 1 か所にして、最新の Strata（0.2.22）の全系列・全量子化を登録画面に出す」。目録は `backend/app/models_mgmt/strata_catalog.py` の 1 か所に置き、gateway・router・model_names・hf_search・provider_adapters・画面（API 経由）は全部そこから読む。画面の固定の一覧（`STRATA_SIZES`・`StrataFamily`・`STRATA_OTHER_ENGINE`・`STRATA_NO_THINKING`）は消した。
+- 11 系列・47 量子化を登録できる形で収めた（大きさ未確認の unsloth 小サイズ 6 種を含む）。無検閲の OrcaRouter は公式目録外なので「無検閲・手作業が要る（案内）」として選べない行で出し、登録は拒否する。NVIDIA が要る nvfp4 は NVIDIA の無い PC では出さない。0.2.22 で Inkling も思考を持つので、Qwen と同じ `/settings` の経路で思考の既定を渡すようにした。
+- 効果と処理時間（AGENTS.md「機能を取り込む条件」）: 目録 API の生成は 2,000 回平均 34.3μs/回、JSON 約 9.9KB。画面を開いたときだけ 1 回で、計算は RAM+VRAM との比較だけ。従来の 4 系列・14 量子化に比べ、目録の二重持ちを 1 か所に減らし、選べる量子化を 47 に広げた。
+- 確かめたこと: 変更した Python 8 ファイルの `py_compile`。目録単体のスタンドアロン実行（整合性・id の一意性・is_valid・NVIDIA の絞り込み・載るかの 4 段階・API の形・11 系列 47 量子化）。
+- 確かめていないこと: この箱に `.venv`（FastAPI / pydantic / pytest）が無いため `./deck.sh dev-check --base origin/main` と `./deck.sh e2e strata` は未実行。実機の Strata 0.2.22 での起動、Inkling の思考が実際に効くか（0.2.22 の公式 docs で段があることは確認、ControlDeck の渡し方は未検証）。実機では `./deck.sh dev-check --base origin/main` と `./deck.sh e2e strata` を流すこと。
+
 ## 2026-11-26 ニュース設定: まとめのモデルは LLM のタブに集約（基本のタブから見えるように）
 - 利用者「ニュースで使うモデルは LLM のところに集約。日刊・週刊のまとめもニュースの LLM の設定を使ってほしい」。調べた結果、LLM を呼ぶ所（まとめ・一言要約・下ごしらえ・リーダーの翻訳・ハブの仕事 2 つ）は既に全てニュースの LLM の設定（`llm.digest_model`・`gist_model`・`prep_model`）を見ていた。足りなかったのは、基本のタブ（更新のタイミング）からそれが分からないこと。
 - 基本のタブの日刊・週刊のまとめの下に「まとめに使うモデル: ○○（LLM のタブで変えます）」と LLM のタブへのリンクを出す（未保存の変更があるときはリンクを出さず「保存してから」）。`prep.py` の説明文の誤り（gist_model → prep_model）を直した。

@@ -2072,18 +2072,24 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
-type StrataFamily = "qwen" | "unsloth" | "deepseek41" | "inkling-2-mini";
-// Must match backend strata_gateway._FAMILIES.
-const STRATA_SIZES: Record<StrataFamily, string[]> = {
-  qwen: ["q2_0", "iq2_xs", "iq3_xxs", "iq3_s"],
-  unsloth: ["ud-iq4_xs", "ud-q4_k_xl"],
-  deepseek41: ["ista-das-coder", "ist-das-2.00bpw"],
-  "inkling-2-mini": ["sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-iq4_xs"],
+// 目録は backend の strata_catalog.py が 1 か所で持ち、GET /models/strata/catalog から読む。
+// frontend に固定の一覧を持たない（Strata 0.2.22 の全系列・全量子化を漏れなく出すため）。
+type StrataFit = "fits" | "tight" | "no" | "unknown";
+type StrataQuant = {
+  id: string; label: string; download_gib: number | null; memory_gib: number | null;
+  fit: StrataFit; uncensored: boolean; manual: boolean;
 };
-// Qwen 系とは別のエンジンで動く系列（KVのVRAM保持長・RAM余裕は使えない）と、思考を持たない系列。backend の strata_gateway と同じ
-const STRATA_OTHER_ENGINE = new Set<StrataFamily>(["deepseek41", "inkling-2-mini"]);
-const STRATA_NO_THINKING = new Set<StrataFamily>(["inkling-2-mini"]);
-type StrataSettings = { alias: string; family: StrataFamily; model: string;
+type StrataFamilyInfo = {
+  id: string; name: string; short_name: string; engine: "qwen" | "other";
+  thinking: boolean; visible: boolean; manual: boolean; uncensored: boolean;
+  note: string; quantizations: StrataQuant[];
+};
+type StrataCatalog = { families: StrataFamilyInfo[]; hardware: { ram_total_gib: number | null; vram_total_gib: number | null } };
+const STRATA_FIT_LABEL: Record<StrataFit, string> = {
+  fits: "載る", tight: "ぎりぎり", no: "載らない（SSDから読むので遅い）", unknown: "不明",
+};
+const strataGibLabel = (value: number | null) => value == null ? "不明" : `${value.toFixed(1)}GB`;
+type StrataSettings = { alias: string; family: string; model: string;
   context: string; port: number; model_path?: string; kv?: string; vision?: string;
   parallel?: number; drafting?: string; loaded?: boolean; idle_exclude?: boolean; auto_start?: boolean;
   reasoning_effort?: string; thinking_budget?: number; kv_resident?: number | null; ram_keep_gib?: number | null; engine_settings?: Record<string, string> };
@@ -2149,8 +2155,19 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const show = useToasts((s) => s.show);
   const [alias, setAlias] = useState(initial?.alias ?? "qwen-flash-next");
   // Default to the measured best fit for an R9700 + 92GB RAM: UD-IQ4_XS at its native 256K.
-  const [family, setFamily] = useState<StrataFamily>(initial?.family ?? "unsloth");
+  // 初期値は既存登録（unsloth / ud-iq4_xs）の読み込みを壊さないため残す。
+  const [family, setFamily] = useState<string>(initial?.family ?? "unsloth");
   const [model, setModel] = useState(initial?.model ?? "ud-iq4_xs");
+  const catalog = useQuery<StrataCatalog>({ queryKey: ["strata-catalog"],
+    queryFn: () => api<StrataCatalog>("/models/strata/catalog"), retry: false });
+  const catalogLoading = catalog.isPending || (!catalog.data && !catalog.isError);
+  const families = catalog.data?.families ?? [];
+  const selectableFamilies = families.filter((f) => f.visible && !f.manual);
+  const manualFamilies = families.filter((f) => f.manual);
+  const currentFamily = families.find((f) => f.id === family);
+  const otherEngine = currentFamily?.engine === "other";
+  const thinkingEnabled = !currentFamily || currentFamily.thinking;
+  const quantizations = currentFamily?.quantizations ?? [];
   const [context, setContext] = useState(initial?.context ?? "256k");
   const [port, setPort] = useState(String(initial?.port ?? 8095));
   const [modelPath, setModelPath] = useState(initial?.model_path ?? "");
@@ -2161,8 +2178,8 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const [kvResident, setKvResident] = useState(String(initial?.kv_resident ?? initial?.engine_settings?.["kv-resident"] ?? ""));
   const [ramKeep, setRamKeep] = useState(String(initial?.ram_keep_gib ?? initial?.engine_settings?.STRATA_RAM_KEEP_GIB ?? initial?.engine_settings?.["ram-keep-gib"] ?? ""));
   const memoryConfig = { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting,
-    kv_resident: STRATA_OTHER_ENGINE.has(family) || kvResident === "" ? null : Number(kvResident),
-    ram_keep_gib: STRATA_OTHER_ENGINE.has(family) || ramKeep === "" ? null : Number(ramKeep) };
+    kv_resident: otherEngine || kvResident === "" ? null : Number(kvResident),
+    ram_keep_gib: otherEngine || ramKeep === "" ? null : Number(ramKeep) };
   const [estimateConfig, setEstimateConfig] = useState(memoryConfig);
   const memoryConfigKey = JSON.stringify(memoryConfig);
   useEffect(() => { const timer = setTimeout(() => setEstimateConfig(JSON.parse(memoryConfigKey)), 400); return () => clearTimeout(timer); }, [memoryConfigKey]);
@@ -2175,12 +2192,13 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   const [thinkingBudget, setThinkingBudget] = useState(initial?.thinking_budget ?? 0);
   const [saving, setSaving] = useState(false);
   const save = async () => {
+    if (catalogLoading || catalog.isError) return;
     setSaving(true);
     try {
       await api(initial ? `/models/strata/instances/${encodeURIComponent(initial.alias)}` : "/models/strata/instances", {
         method: initial ? "PUT" : "POST", json: { alias, family, model, context, port: Number(port), model_path: modelPath.trim(), kv, vision, parallel, drafting, idle_exclude: idleExclude, auto_start: autoStart,
-          reasoning_effort: STRATA_NO_THINKING.has(family) ? "" : reasoningEffort,
-          thinking_budget: STRATA_NO_THINKING.has(family) ? 0 : thinkingBudget, kv_resident: memoryConfig.kv_resident, ram_keep_gib: memoryConfig.ram_keep_gib },
+          reasoning_effort: thinkingEnabled ? reasoningEffort : "",
+          thinking_budget: thinkingEnabled ? thinkingBudget : 0, kv_resident: memoryConfig.kv_resident, ram_keep_gib: memoryConfig.ram_keep_gib },
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["models", "local"] }),
@@ -2206,22 +2224,27 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       {!initial && <label className="block text-xs">モデル別名（ゲートウェイで使う名前）
         <input aria-label="Strataモデル別名" value={alias} onChange={(e) => setAlias(e.target.value)} className={`${field} font-mono`} />
       </label>}
+      {catalogLoading && <p className="text-xs text-zinc-500">目録を読み込み中…</p>}
+      {catalog.isError && <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+        目録を取得できませんでした。再読み込みしてください。
+        <button type="button" onClick={() => void catalog.refetch()} className="ml-2 underline">再読み込み</button>
+      </div>}
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="block text-xs">モデル系列
-          <select aria-label="Strataモデル系列" value={family} disabled={running} onChange={(e) => {
-            const next = e.target.value as StrataFamily;
-            setFamily(next); setModel(STRATA_SIZES[next][0]);
+          <select aria-label="Strataモデル系列" value={family} disabled={running || catalogLoading || catalog.isError} onChange={(e) => {
+            const next = e.target.value;
+            setFamily(next); setModel(families.find((f) => f.id === next)?.quantizations[0]?.id ?? "");
             if (next === "inkling-2-mini" && drafting !== "off") setDrafting("auto");
           }} className={field}>
-            <option value="qwen">Qwen Flash-Next（GSQ-RCO）</option>
-            <option value="unsloth">Qwen Flash-Next（Unsloth）</option>
-            <option value="deepseek41">DeepSeek V4.1 Flash</option>
-            <option value="inkling-2-mini">Inkling 2 Mini（Thinking Machines）</option>
+            {!selectableFamilies.some((f) => f.id === family) && <option value={family}>{family}</option>}
+            {selectableFamilies.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            {manualFamilies.map((f) => <option key={f.id} value={f.id} disabled>{f.name}（無検閲・手作業が要る（案内））</option>)}
           </select>
         </label>
         <label className="block text-xs">量子化
-          <select aria-label="Strataモデル量子化" value={model} disabled={running} onChange={(e) => setModel(e.target.value)} className={field}>
-            {STRATA_SIZES[family].map((item) => <option key={item} value={item}>{item}</option>)}
+          <select aria-label="Strataモデル量子化" value={model} disabled={running || catalogLoading || catalog.isError} onChange={(e) => setModel(e.target.value)} className={`${field} tabular-nums`}>
+            {!quantizations.some((q) => q.id === model) && <option value={model}>{model}</option>}
+            {quantizations.map((q) => <option key={q.id} value={q.id}>{q.label}（{q.id}）・DL {strataGibLabel(q.download_gib)} / メモリ {strataGibLabel(q.memory_gib)}・{STRATA_FIT_LABEL[q.fit]}</option>)}
           </select>
         </label>
       </div>
@@ -2249,7 +2272,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
         value={idleExclude} onChange={setIdleExclude} />
     </SettingsGroup>
-    {!STRATA_NO_THINKING.has(family) && <SettingsGroup title="思考" description="要求が深さを指定しないときの既定">
+    {thinkingEnabled && <SettingsGroup title="思考" description="要求が深さを指定しないときの既定">
       <ThinkingDefaults live effort={reasoningEffort} budget={thinkingBudget}
         onChange={(effort, budget) => { setReasoningEffort(effort); setThinkingBudget(budget); }} />
     </SettingsGroup>}
@@ -2265,7 +2288,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
           onChange={(e) => setParallel(Number(e.target.value))} className={field} />
         <span className="text-[11px] text-zinc-500">待たせずに同時に受けますが、合計の速さはほぼ増えません（実測: 1件 102 / 4件同時 合計 106 tok/s）。並列数を増やすほどKVと会話セッションのメモリが増えます（コンテキスト長を並列数で分ける方式ではありません）。</span>
       </label>
-      {!STRATA_OTHER_ENGINE.has(family) && <div className="grid gap-2 sm:grid-cols-2">
+      {!otherEngine && <div className="grid gap-2 sm:grid-cols-2">
         <label className="block text-xs">KVのVRAM保持長（トークン）
           <input aria-label="StrataKVのVRAM保持長" type="number" min={4096} max={1048576} step={1024} placeholder="自動" value={kvResident} disabled={running} onChange={(e) => setKvResident(e.target.value)} className={field} />
           <span className="text-[10px] text-zinc-500">空欄は自動。例: 32768。残りのKVはRAMから転送します。</span>
@@ -2284,7 +2307,7 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
       </label>
     </SettingsGroup>
     <SheetActions>
-      <button disabled={saving} onClick={() => void save()} className={primaryButton}>
+      <button disabled={saving || catalogLoading || catalog.isError} onClick={() => void save()} className={primaryButton}>
         {saving ? "保存中…" : initial ? "保存" : "登録"}
       </button>
     </SheetActions>
