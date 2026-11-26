@@ -85,3 +85,13 @@ def test_cache_is_not_global(monkeypatch):
     for _ in range(2):
         _, requests = run_sequence(monkeypatch, [(200,PUBLIC,b"first")])
         assert "if-none-match" not in requests[0].headers
+
+
+def test_changed_validator_same_bytes_reuses_only_extraction(monkeypatch):
+    pages, requests = run_sequence(monkeypatch, [(200,PUBLIC,b"same"),(200,{**PUBLIC,"etag":'"v2"'},b"same"),
+                                               (304,{**PUBLIC,"etag":'"v2"'},b"")])
+    assert pages[1]["reuse_reason"] == "identical_content"
+    assert pages[1]["revalidation_http_status"] == 200
+    assert pages[1]["content_sha256"] == pages[0]["content_sha256"]
+    assert requests[2].headers["if-none-match"] == '"v2"'
+    assert pages[2]["reuse_reason"] == "not_modified"
