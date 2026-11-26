@@ -105,7 +105,7 @@ def _now() -> str:
 
 def _page(url: str, status: str, **fields) -> dict:
     base = {"url": url, "final_url": url, "canonical_url": "", "status": status, "fetch_method": "http",
-            "http_status": 0, "title": "", "content_type": "", "markdown": "", "language": "", "links": [], "tables": [],
+            "http_status": 0, "title": "", "content_type": "", "markdown": "", "language": "", "links": [], "tables": [], "tables_meta": {},
             "metadata": {}, "biblio": {}, "content_sha256": "", "fetched_at": _now(), "warnings": [], "extractor": "", "error": ""}
     base.update(fields)
     return base
@@ -217,13 +217,13 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     result = await extract.extract(html, current, mode)
     from app.web_collector import html_tables
 
-    tables, table_warnings = await asyncio.to_thread(html_tables.extract_tables, html)
+    tables, tables_meta, table_warnings = await asyncio.to_thread(html_tables.table_bundle, html)
     canonical = _CANONICAL.search(html[:200000])
     page = _page(url, "success" if result["markdown"].strip() else "empty", **base,
                  canonical_url=urljoin(current, canonical.group(1)) if canonical else "",
                  title=result.get("title", ""), markdown=result["markdown"][:limit_chars],
                  language=result.get("metadata", {}).get("language", ""), links=result.get("links", []),
-                 metadata=result.get("metadata", {}), biblio=biblio(html), tables=tables,
+                 metadata=result.get("metadata", {}), biblio=biblio(html), tables=tables, tables_meta=tables_meta,
                  warnings=[*result.get("warnings", []), *table_warnings],
                  extractor=result.get("extractor", ""))
     if render == "auto" and page["status"] in ("success", "empty"):
@@ -269,9 +269,9 @@ async def _maybe_render(page: dict, html: str, mode: str, policy: egress.Policy,
         return {**page, "warnings": [*page["warnings"], "ブラウザで開いても本文は増えませんでした"], "browser": stats}
     from app.web_collector import html_tables
 
-    tables, table_warnings = await asyncio.to_thread(html_tables.extract_tables, out["html"])
+    tables, tables_meta, table_warnings = await asyncio.to_thread(html_tables.table_bundle, out["html"])
     return {**page, "status": "success", "fetch_method": "browser", "markdown": result["markdown"][:limit_chars],
-            "tables": tables,
+            "tables": tables, "tables_meta": tables_meta,
             "title": result.get("title") or page["title"], "links": result.get("links", []) or page["links"],
             "metadata": result.get("metadata", {}) or page["metadata"], "extractor": result.get("extractor", ""),
             "warnings": [*page["warnings"], *(out.get("warnings") or []), *table_warnings, "ブラウザで描画して取りました"],
