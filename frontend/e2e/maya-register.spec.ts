@@ -109,7 +109,9 @@ for (const width of [320, 1280]) {
     await expect(sheet.getByText(/あと約 108\.1 GB 足りません/)).toBeVisible();
     await expect(sheet.getByText(/メモリ 52 GB/)).toBeVisible();
     await expect(sheet.getByText(/mmproj-Hy4-Flash-Maya-XS\.gguf（任意）/)).toBeVisible();
-    await sheet.getByText("自分で取得する場合のコマンド").click();
+    // DeepSeek のときに開いた「自分で取得する場合のコマンド」は量子化を替えても開いたまま。
+    // もう一度押すと閉じるので押さない（中身が選んだ量子化のコマンドに替わることを見る）。
+    await expect(sheet.locator("details")).toHaveAttribute("open", "");
     await expect(sheet.getByText(/hf download peasantsmith\/Hy4-Flash-Maya-GGUF/)).toBeVisible();
     await expect(sheet.getByRole("button", { name: "登録", exact: true })).toBeDisabled();
     await page.screenshot({ path: `${SHOTS}/maya-register-hy4-${width}.png` });

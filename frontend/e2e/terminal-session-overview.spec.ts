@@ -26,7 +26,7 @@ test("Terminal overview identifies the foreground program, directory, and live s
 
   try {
     await page.reload();
-    const initialCard = page.getByRole("listitem").filter({ hasText: `#${sessionId}` });
+    const initialCard = page.getByRole("listitem").filter({ hasText: `#${sessionId.slice(0, 6)}` });
     await expect(initialCard).toContainText("Shell ready");
     await expect(initialCard).toContainText("~");
     await expect(initialCard.getByRole("button", { name: /オートメーション設定$/ })).toContainText("🔧");
@@ -44,31 +44,27 @@ test("Terminal overview identifies the foreground program, directory, and live s
     }), { timeout: 10_000 }).toBe("LIVE");
     await page.evaluate(() => {
       const target = window as typeof window & { __controlDeckTerminalTest?: { sendInputForTest: (value: string) => void } };
-      target.__controlDeckTerminalTest?.sendInputForTest("cd ~/ControlDeck && sleep 30\r");
+      target.__controlDeckTerminalTest?.sendInputForTest("cd /tmp && sleep 30\r");
     });
     await expect.poll(() => page.evaluate(async (id) => {
       const response = await fetch("/api/v1/terminals", { credentials: "same-origin" });
       const sessions = (await response.json() as { sessions: Array<{ id: string; program: string; cwd: string; workload: string }> }).sessions;
       const current = sessions.find((item) => item.id === id);
       return current ? `${current.program}|${current.cwd}|${current.workload}` : "missing";
-    }, sessionId)).toBe("sleep|~/ControlDeck|running");
+    }, sessionId)).toBe("sleep|/tmp|running");
     await expect(page.getByText("Foreground sleep", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "ターミナルを閉じる" }).click();
-    const runningCard = page.getByRole("listitem").filter({ hasText: `#${sessionId}` });
+    const runningCard = page.getByRole("listitem").filter({ hasText: `#${sessionId.slice(0, 6)}` });
     await expect(runningCard).toContainText("sleep");
-    await expect(runningCard).toContainText("~/ControlDeck");
+    await expect(runningCard).toContainText("/tmp");
     await expect(runningCard).toContainText("Foreground active");
-    await expect(runningCard).toContainText("最終活動");
-    await expect(runningCard).toContainText("作成");
-    const mobileInfoLayout = await runningCard.evaluate((card) => {
-      const status = card.querySelector<HTMLElement>("[data-terminal-status-row]")!.getBoundingClientRect();
-      const meta = card.querySelector<HTMLElement>("[data-terminal-meta-row]")!.getBoundingClientRect();
-      const dates = card.querySelector<HTMLElement>("[data-terminal-dates]")!.getBoundingClientRect();
+    // 一覧は 30167f2 で詰めた形（「最終活動」「作成」の見出しは無い）。カードが Connect ごと幅に収まることを見る。
+    const fits = await runningCard.evaluate((card) => {
+      const box = card.getBoundingClientRect();
       const connect = card.querySelector<HTMLElement>("[data-terminal-connect]")!.getBoundingClientRect();
-      return { statusBottom: status.bottom, metaTop: meta.top, datesRight: dates.right, connectLeft: connect.left };
+      return connect.right <= box.right && box.right <= document.documentElement.clientWidth;
     });
-    expect(mobileInfoLayout.statusBottom).toBeLessThanOrEqual(mobileInfoLayout.metaTop);
-    expect(mobileInfoLayout.datesRight).toBeLessThanOrEqual(mobileInfoLayout.connectLeft);
+    expect(fits).toBe(true);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
     await page.setViewportSize({ width: 1280, height: 800 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
