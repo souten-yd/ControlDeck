@@ -105,7 +105,7 @@ def _now() -> str:
 
 def _page(url: str, status: str, **fields) -> dict:
     base = {"url": url, "final_url": url, "canonical_url": "", "status": status, "fetch_method": "http",
-            "http_status": 0, "title": "", "content_type": "", "markdown": "", "language": "", "links": [],
+            "http_status": 0, "title": "", "content_type": "", "markdown": "", "language": "", "links": [], "tables": [],
             "metadata": {}, "biblio": {}, "content_sha256": "", "fetched_at": _now(), "warnings": [], "extractor": "", "error": ""}
     base.update(fields)
     return base
@@ -215,12 +215,16 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     if "html" not in content_type and "<html" not in html[:2000].casefold():
         return _page(url, "success" if html.strip() else "empty", **base, markdown=html[:limit_chars], extractor="text")
     result = await extract.extract(html, current, mode)
+    from app.web_collector import html_tables
+
+    tables, table_warnings = await asyncio.to_thread(html_tables.extract_tables, html)
     canonical = _CANONICAL.search(html[:200000])
     page = _page(url, "success" if result["markdown"].strip() else "empty", **base,
                  canonical_url=urljoin(current, canonical.group(1)) if canonical else "",
                  title=result.get("title", ""), markdown=result["markdown"][:limit_chars],
                  language=result.get("metadata", {}).get("language", ""), links=result.get("links", []),
-                 metadata=result.get("metadata", {}), biblio=biblio(html), warnings=result.get("warnings", []),
+                 metadata=result.get("metadata", {}), biblio=biblio(html), tables=tables,
+                 warnings=[*result.get("warnings", []), *table_warnings],
                  extractor=result.get("extractor", ""))
     if render == "auto" and page["status"] in ("success", "empty"):
         page = await _maybe_render(page, html, mode, policy, timeout, limit_chars)
@@ -263,8 +267,12 @@ async def _maybe_render(page: dict, html: str, mode: str, policy: egress.Policy,
     result = await extract.extract(out["html"], out["final_url"], mode)
     if len(result["markdown"].strip()) <= len(page["markdown"].strip()):
         return {**page, "warnings": [*page["warnings"], "ブラウザで開いても本文は増えませんでした"], "browser": stats}
+    from app.web_collector import html_tables
+
+    tables, table_warnings = await asyncio.to_thread(html_tables.extract_tables, out["html"])
     return {**page, "status": "success", "fetch_method": "browser", "markdown": result["markdown"][:limit_chars],
+            "tables": tables,
             "title": result.get("title") or page["title"], "links": result.get("links", []) or page["links"],
             "metadata": result.get("metadata", {}) or page["metadata"], "extractor": result.get("extractor", ""),
-            "warnings": [*page["warnings"], *(out.get("warnings") or []), "ブラウザで描画して取りました"],
+            "warnings": [*page["warnings"], *(out.get("warnings") or []), *table_warnings, "ブラウザで描画して取りました"],
             "browser": stats, "_rendered_html": out["html"]}
