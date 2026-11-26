@@ -324,6 +324,11 @@ def list_accounts(cli: CliDef) -> list[dict]:
                     "logged_in": logged_in(cli, directory),
                     "label": labels.get(directory.name, ""),
                 })
+    # 5 時間・週の使用率（取れる CLI だけ。commander/usage.py）
+    from app.commander import usage
+
+    for row in rows:
+        row["usage"] = usage.usage_for(cli.id, row["name"])
     return rows
 
 

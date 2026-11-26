@@ -8,8 +8,9 @@
 from __future__ import annotations
 
 import os
+import shlex
 
-from app.commander import accounts, status
+from app.commander import accounts, status, usage
 from app.commander.accounts import CLIS, CliDef
 from app.config import get_config
 from app.files import service as files
@@ -26,6 +27,7 @@ def list_consoles() -> list[dict]:
     """
     rows = [s for s in manager.list_sessions() if s.get("commander_cli")]
     labels: dict[str, dict[str, str]] = {}
+    usage_cache: dict[tuple[str, str], dict | None] = {}
     for row in rows:
         cli_id = str(row["commander_cli"])
         if cli_id not in labels:
@@ -37,6 +39,11 @@ def list_consoles() -> list[dict]:
         text = manager.capture_text(str(row["id"]), status.CAPTURE_LINES) if row.get("alive", True) else ""
         judged = status.classify(cli_id, text, alive=bool(row.get("alive", True)),
                                  program=str(row.get("program") or ""))
+        key = (cli_id, str(row.get("commander_account") or accounts.DEFAULT_ACCOUNT))
+        if key not in usage_cache:
+            usage_cache[key] = usage.usage_for(*key)
+        if usage_cache[key]:
+            row["commander_usage"] = usage_cache[key]
         row["commander_state"] = judged["state"]
         row["commander_last_line"] = judged["last_line"]
         row["commander_detail"] = judged["detail"]
@@ -65,12 +72,16 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
     # 見つけた絶対パスで開き、その場所を PATH の先頭に足す（codex は `#!/usr/bin/env node` の
     # スクリプトなので、同じ場所の道具を PATH で探す）。
     path = accounts.executable_path(cli) or cli.executable
+    command = shlex.quote(path)
+    if cli.id == "claude":
+        # 5 時間・週の使用率を statusline から受け取る（usage.py。鍵は読まない）
+        command += " --settings " + shlex.quote(str(usage.claude_settings_file(account)))
     if "/" not in path:
-        return path, None
+        return command, None
     folder = os.path.dirname(path)
     current = os.environ.get("PATH", "/usr/bin:/bin")
     env_path = current if folder in current.split(os.pathsep) else f"{folder}{os.pathsep}{current}"
-    return path, {"PATH": env_path[:4096]}
+    return command, {"PATH": env_path[:4096]}
 
 
 def create_consoles(

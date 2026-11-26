@@ -33,6 +33,8 @@ interface AccountFixture {
   logged_in: boolean | null;
   label: string;
   title?: string;
+  usage?: { five_hour: { used_percent: number; resets_at: number | null } | null;
+    seven_day: { used_percent: number; resets_at: number | null } | null } | null;
 }
 
 interface ConsoleFixture {
@@ -58,6 +60,8 @@ interface ConsoleFixture {
   commander_autoresume?: string;
   commander_resume_at?: string;
   commander_resume_message?: string;
+  commander_usage?: { five_hour: { used_percent: number; resets_at: number | null } | null;
+    seven_day: { used_percent: number; resets_at: number | null } | null };
 }
 
 function consoleFixture(overrides: Partial<ConsoleFixture> & Pick<ConsoleFixture, "id">): ConsoleFixture {
@@ -100,6 +104,10 @@ function initialState(): CommanderState {
         id: "aa110001", program: "claude", commander_cli: "claude",
         commander_account: "default", commander_label: "調査",
         commander_state: "working", commander_last_line: "· Drizzling… (2m 39s · ↓ 16k tokens)",
+        commander_usage: {
+          five_hour: { used_percent: 82, resets_at: Math.floor(Date.now() / 1000) + 2 * 3600 + 10 * 60 + 30 },
+          seven_day: { used_percent: 40, resets_at: Math.floor(Date.now() / 1000) + 3 * 86400 + 5 * 3600 + 30 },
+        },
       }),
       consoleFixture({
         id: "aa110002", program: "opencode", cwd: "~/CodeDEV/Hello",
@@ -111,7 +119,8 @@ function initialState(): CommanderState {
     ],
     accounts: {
       claude: [
-        { name: "default", default: true, logged_in: true, label: "" },
+        { name: "default", default: true, logged_in: true, label: "", usage: {
+          five_hour: { used_percent: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 + 60 }, seven_day: null } },
         { name: "work", default: false, logged_in: false, label: "" },
       ],
       codex: [{ name: "default", default: true, logged_in: null, label: "" }],
@@ -269,6 +278,11 @@ test.describe("AI Commander", () => {
     await expect(first).toContainText("既定");
     await expect(first).toContainText("調査");
     await expect(first).toContainText("最終活動");
+    // 5 時間・週の使用率と回復までの時間（80% 以上は注意の色）
+    await expect(first.locator("[data-commander-usage]")).toContainText("5時間82%");
+    await expect(first.locator("[data-commander-usage]")).toContainText("あと 2時間10分");
+    await expect(first.locator("[data-commander-usage]")).toContainText("週40%");
+    await expect(first.locator("[data-commander-usage]")).toContainText("あと 3日5時間");
     // C2: 状態（LLM なしの判定）と最後の行。上限で停止ならその行を出す
     await expect(first.locator("[data-commander-state]")).toHaveAttribute("data-commander-state", "working");
     await expect(first).toContainText("作業中");
@@ -450,6 +464,7 @@ test.describe("AI Commander", () => {
     const claudeSection = sheet.getByRole("region", { name: "Claude Codeのアカウント" });
     await expect(claudeSection.getByText("既定のアカウント（普段の設定）")).toBeVisible();
     await expect(claudeSection.getByText("ログイン済み", { exact: true })).toBeVisible();
+    await expect(claudeSection.locator("[data-commander-usage]").first()).toContainText("5時間12%");
     await expect(claudeSection.getByText("work")).toBeVisible();
     // まず対象のコンソールを選ぶ。選んだものの登録済みのアカウントだけが出る
     await expect(sheet.getByRole("radio", { name: "Claude Code" })).toBeChecked();

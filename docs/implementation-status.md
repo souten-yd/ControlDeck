@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-27 Nexarch: 5 時間・週の上限の使用率と回復までの時間
+- 利用者「5 時間制限と週間制限の利用率とリセットまでの時間を追加して」。タイル・一覧・アカウントの管理に「5時間 82%（あと 2時間10分）・週 40%（あと 3日5時間）」を出す。80% 以上は橙、90% 以上は赤。
+- Claude Code: Nexarch が開くコンソールに `--settings` で statusline のコマンド（`app/commander/statusline.py`）を渡す。Claude Code が statusline へ渡す `rate_limits.five_hour / seven_day`（使用率・回復の時刻）と model の名前だけを `data/ai-commander/usage/claude-<アカウント>.json`（0600）へ書く。ログインの鍵は読まない。値は Claude の応答のたびに更新（契約のプランの利用者だけ。API キーでは出ない）。Nexarch で開いたコンソールの statusline はこの表示（5h 12% · 7d 40%）になる。
+- Codex CLI: アカウントの CODEX_HOME の sessions の記録（rollout-*.jsonl の末尾）の最後の `rate_limits`（primary=5 時間・secondary=週）。実機の記録で 5 時間 0%（回復済み）・週 27% を読めた。
+- 回復の時刻を過ぎた窓は 0% と見なす（次の応答で新しい値が来るまで）。OpenCode・Gemini は出さない（取れる形が無い）。
+- 確かめたこと: 試験 4 件（statusline のコマンドを実際に動かして書く中身と 0600・鍵や作業フォルダを書かない・回復済みの扱い・Codex の記録）、E2E。Claude の実際の値は、Nexarch で開いた Claude のコンソールで応答があったときに確かめる。
+
 ## 2026-11-27 Nexarch: 自動再開の文言を全体とコンソールごとに
 - 利用者「継続の文言は個別設定とグローバル設定として変えられるように。既定はグローバルで」「続けてくださいの表示は消して」。
 - 送る文言: コンソールごと（tmux の印 @cd-commander-resume_message、✏️ から）→ 全体（その他メニュー「自動再開の文言（全体）」、`data/ai-commander/settings.json` 0600）→ 既定「続けてください」。空で上の段へ戻す。改行・制御文字は断る（Enter として届くと途中で送られる）。

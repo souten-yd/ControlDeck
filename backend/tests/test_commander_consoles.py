@@ -184,7 +184,9 @@ def test_consoles_api_flow_default_account_and_batch(admin_client, monkeypatch):
     assert len(fake.created) == 3
     for call in fake.calls:
         # 表の実行ファイル名を見つけた絶対パスだけ（利用者の入力を混ぜない）
-        assert call["command"] in ("claude", accounts.executable_path(accounts.CLIS["claude"]))
+        # Claude は使用率を受け取る statusline を --settings で渡す（鍵は読まない）
+        assert call["command"].split(" --settings ")[0] in ("claude", accounts.executable_path(accounts.CLIS["claude"]))
+        assert " --settings " in call["command"]
         assert call["cwd"] == _root()
         # 既定のアカウント: アカウントの環境変数は付けない（付くのは CLI の場所の PATH だけ）
         assert call["env"] is None or set(call["env"]) == {"PATH"}
