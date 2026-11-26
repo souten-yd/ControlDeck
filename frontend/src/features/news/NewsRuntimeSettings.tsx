@@ -107,6 +107,17 @@ export function NewsRuntimeCards({ part }: { part: RuntimePart }) {
             </div>
           </div>
         </div>
+        {(draft.digest_daily.enabled || draft.digest_weekly.enabled) && (() => {
+          // まとめのモデルは LLM タブの 1 か所で決める（2026-11-26 利用者「ニュースで使うモデルは LLM のところに集約」）。ここでは見せるだけ。
+          const id = draft.llm.digest_model;
+          const found = [...(options.data?.local ?? []), ...(options.data?.cloud ?? [])].find((m) => m.id === id);
+          return (
+            <p data-testid="digest-model-note" className="text-[11px] text-zinc-500">
+              まとめに使うモデル: <b className="text-zinc-700 dark:text-zinc-300">{found?.name ?? id}</b>（モデルは「LLM」のタブで変えます。{" "}
+              {dirty ? <span>保存してから移ってください</span> : <Link to={{ search: "?tab=llm" }} className="font-semibold underline">LLM のタブを開く</Link>}）
+            </p>
+          );
+        })()}
         <div className="space-y-2">
           <Toggle label="取得しない時間帯を決める" hint="この間は記事を取りに行きません（まとめの時刻には影響しません）" value={draft.quiet.enabled} disabled={dis} onChange={(on) => set({ quiet: { ...draft.quiet, enabled: on } })} />
           {draft.quiet.enabled && (
