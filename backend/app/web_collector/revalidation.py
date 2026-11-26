@@ -112,6 +112,8 @@ class RevalidationCache:
     def restore(self, key, entry, epoch):
         if epoch == self._epoch and entry.expires > time.monotonic():
             self._insert(key, entry)
+            return True
+        return False
 
     def store(self, key, page: dict, headers, epoch) -> bool:
         if epoch != self._epoch:
