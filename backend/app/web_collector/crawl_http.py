@@ -124,7 +124,7 @@ class CrawlTransport:
             if raw_length is not None and (not raw_length.isdecimal() or int(raw_length) > limit):
                 raise StopCrawl("too_large")
             data = bytearray()
-            async for chunk in r.aiter_raw(chunk_size=64 * 1024):
+            async for chunk in r.aiter_bytes(chunk_size=64 * 1024):
                 self.bytes += len(chunk)
                 if len(data) + len(chunk) > limit or self.bytes > MAX_TOTAL:
                     raise StopCrawl("too_large")
@@ -168,6 +168,11 @@ class CrawlTransport:
                             if response.status in (401, 403):
                                 self.stopped = True
                                 raise StopCrawl("blocked")
+                            if response.status == 200 and "html" in response.content_type.casefold() and len(response.body) < 60_000:
+                                from app.web_collector import fetch
+                                if fetch._CAPTCHA.search(fetch._decode(response.body[:20_000], response.content_type)):
+                                    self.stopped = True
+                                    raise StopCrawl("captcha")
                             return response
                         raise StopCrawl("http_error")
             except (egress.EgressRejected, ExternalResearchBlocked) as exc:
