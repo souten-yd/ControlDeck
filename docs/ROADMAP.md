@@ -27,6 +27,8 @@
 | 5 | フロンティアモデル | F4 役割と接続（AI アシスタントのゲートウェイ経由化・プロジェクトの「機密」）→ F3 エージェント CLI → F5 開発チーム | F1・F2・F2+（費用・残高・月の上限）完了 | `PLAN-frontier-models.md` |
 | 6 | モデル管理の残り | 既知の不具合 4 件（`HANDOVER-model-management-v2.md` の「既知のバグ」）、A の画面、D-5 の画面 | 文書は 2026-08 で止まっている。直す前に今のコードで再確認 | `HANDOVER-model-management-v2.md` |
 | 7 | Terminal V2 | 4c-5 実機の iPhone・PWA → 4c-6 既定化 | 利用者の実機が要る | `implementation-plan.md` |
+| 8 | **モデル登録（目録・取得・再開・フォルダ・設定の形）**（2026-11-26） | M0 Strata 0.2.22 へ更新 → M1 Strata の目録 → M2 Maya の目録と取得 → M3 取得の自動再開 → M4 フォルダとファイルの選択 → M5 設定の形を揃える → M6 無検閲 | M0 済み | `PLAN-model-catalog.md` |
+| 9 | **AI Commander**（2026-11-26。複数の AI の CLI を 1 画面で・複数アカウント・監視・自動再開・利用量・チーム） | C0 実機の確認 → C1 コンソールとアカウント → C2 状態 → C3 自動再開 → C4 利用量 → C5 MCP → C6 チーム | 計画のみ。ControlDeck の作業場（OpenCode）で作り、開発環境を直しながら進める | `PLAN-ai-commander.md` |
 
 順番の理由:
 - 1 ができると、2〜6 を OpenCode とローカル LLM で進められ、Claude の使用量を減らせる。
