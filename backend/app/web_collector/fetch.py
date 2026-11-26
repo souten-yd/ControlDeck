@@ -162,14 +162,13 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     cache = (revalidation_cache if policy is egress.DEFAULT_POLICY and render == "never"
              and not keep_html and revalidation.eligible_url(url) else None)
     cache_key = (url, mode, limit_chars, max_bytes, UA)
-    entry = cache.get(cache_key) if cache is not None else None
-    if cache is not None:
-        cache.drop(cache_key)
+    entry, epoch = cache.take(cache_key) if cache is not None else (None, 0)
     response_headers = None
+    redirected = False
 
     def finish(page: dict) -> dict:
-        if cache is not None and response_headers is not None and current == url:
-            cache.store(cache_key, page, response_headers)
+        if cache is not None and response_headers is not None and current == url and not redirected:
+            cache.store(cache_key, page, response_headers, epoch)
         return page
 
     try:
@@ -180,7 +179,7 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                 if urlsplit(current).scheme not in ("http", "https"):
                     return _page(url, "security_rejected", final_url=current, error="http(s) 以外へのリダイレクト")
                 # Never forward a validator through redirects, even same-origin.
-                request_headers = entry.headers if entry is not None and _hop == 0 else {}
+                request_headers = {**entry.headers, "Cache-Control": "no-cache"} if entry is not None and _hop == 0 else {}
                 async with client.stream("GET", current, **({"headers": request_headers} if request_headers else {})) as response:
                     if response.status_code == 304:
                         if (entry is not None and _hop == 0 and revalidation.accepts_304(entry, response.headers)):
@@ -189,10 +188,12 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                                          "cache_reused": True})
                             # Keep the original fetch time, bytes/hash/status and
                             # validators. Do not renew the bounded cache lifetime.
+                            cache.restore(cache_key, entry, epoch)
                             return page
                         return _page(url, "http_error", final_url=current, http_status=304,
                                      error="再検証できない304応答")
                     if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                        redirected = True
                         current = urljoin(current, response.headers["location"])
                         continue
                     content_type = response.headers.get("content-type", "").casefold()
