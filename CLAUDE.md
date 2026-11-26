@@ -37,7 +37,9 @@
 
 ## 開発の分担
 
-Opus が司令塔になり、作業を費用に見合うモデルへ回す（探す・読むは Haiku、ふつうの実装は Sonnet、設計・本番・最終レビューは Opus）。品質の確認は Opus が行う（`AGENTS.md`「Claude での開発: Opus が司令塔」）。
+Opus が司令塔（ルーター）になり、作業を費用に見合う担い手へ回す（ローカル LLM・箱の OpenCode・OpenRouter の DeepSeek・Haiku・Sonnet は自由に使ってよい。設計・本番・最終レビューは Opus）。品質の確認は Opus が行う（`AGENTS.md`「Claude での開発: Opus が司令塔」）。
+
+利用者が「ルールにして」と言った決まりは `AGENTS.md` に節として書く（`AGENTS.md`「利用者の決まりは、このリポジトリにも書く」）。
 
 ## 評価
 
