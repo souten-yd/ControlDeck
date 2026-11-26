@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from app.security.offline import ExternalResearchBlocked
-from app.web_collector import egress, extract
+from app.web_collector import egress, extract, revalidation
 
 MAX_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 5
@@ -146,7 +146,8 @@ def _pdf_text(content: bytes, limit_chars: int) -> str:
 
 async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S, max_bytes: int = MAX_BYTES,
                   policy: egress.Policy | None = None, limit_chars: int = 2_000_000,
-                  keep_html: bool = False, render: str = "never") -> dict:
+                  keep_html: bool = False, render: str = "never",
+                  revalidation_cache: revalidation.RevalidationCache | None = None) -> dict:
     """公開の URL を 1 つ取得して本文を取り出す。
 
     render: "never"（静的な HTTP だけ）/ "auto"（静的で足りず、JavaScript が要ると判定したら、機能「Web 収集のブラウザ」が
@@ -156,6 +157,21 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return _page(url, "security_rejected", error="http(s) の公開 URL だけを取得します")
     current = url
+    # Internal opt-in only, exact URL and extraction options; test/custom
+    # egress policies and dynamic/raw HTML are excluded. No stale fallback.
+    cache = (revalidation_cache if policy is egress.DEFAULT_POLICY and render == "never"
+             and not keep_html and revalidation.eligible_url(url) else None)
+    cache_key = (url, mode, limit_chars, max_bytes, UA)
+    entry = cache.get(cache_key) if cache is not None else None
+    if cache is not None:
+        cache.drop(cache_key)
+    response_headers = None
+
+    def finish(page: dict) -> dict:
+        if cache is not None and response_headers is not None and current == url:
+            cache.store(cache_key, page, response_headers)
+        return page
+
     try:
         async with egress.guarded_client(timeout=timeout, policy=policy,
                                          headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.5",
@@ -163,12 +179,26 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
             for _hop in range(MAX_REDIRECTS + 1):
                 if urlsplit(current).scheme not in ("http", "https"):
                     return _page(url, "security_rejected", final_url=current, error="http(s) 以外へのリダイレクト")
-                async with client.stream("GET", current) as response:
+                # Never forward a validator through redirects, even same-origin.
+                request_headers = entry.headers if entry is not None and _hop == 0 else {}
+                async with client.stream("GET", current, **({"headers": request_headers} if request_headers else {})) as response:
+                    if response.status_code == 304:
+                        if (entry is not None and _hop == 0 and revalidation.accepts_304(entry, response.headers)):
+                            page = dict(entry.page)
+                            page.update({"revalidated_at": _now(), "revalidation_http_status": 304,
+                                         "cache_reused": True})
+                            # Keep the original fetch time, bytes/hash/status and
+                            # validators. Do not renew the bounded cache lifetime.
+                            return page
+                        return _page(url, "http_error", final_url=current, http_status=304,
+                                     error="再検証できない304応答")
                     if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
                         current = urljoin(current, response.headers["location"])
                         continue
                     content_type = response.headers.get("content-type", "").casefold()
-                    declared = int(response.headers.get("content-length") or 0)
+                    raw_length = response.headers.get("content-length", "")
+                    declared = int(raw_length) if raw_length.isascii() and raw_length.isdecimal() and len(raw_length) <= 16 else 0
+                    response_headers = response.headers
                     if declared > max_bytes:
                         return _page(url, "too_large", final_url=current, http_status=response.status_code,
                                      content_type=content_type, error=f"{declared} バイト")
@@ -206,14 +236,14 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
             text = await asyncio.to_thread(_pdf_text, content, limit_chars)
         except Exception as exc:  # noqa: BLE001 - 壊れた PDF
             return _page(url, "empty", **base, error=f"PDF を読めません: {exc}"[:300])
-        return _page(url, "success" if text.strip() else "empty", **base, markdown=text[:limit_chars], extractor="pypdf")
+        return finish(_page(url, "success" if text.strip() else "empty", **base, markdown=text[:limit_chars], extractor="pypdf"))
     if content_type and "html" not in content_type and not content_type.startswith("text/"):
         return _page(url, "unsupported", **base, error=f"本文として扱えない種類: {content_type}")
     html = _decode(content, content_type)
     if _CAPTCHA.search(html[:20000]) and len(html) < 60000:
         return _page(url, "captcha", **base, error="ロボット確認のページ（回避しません）")
     if "html" not in content_type and "<html" not in html[:2000].casefold():
-        return _page(url, "success" if html.strip() else "empty", **base, markdown=html[:limit_chars], extractor="text")
+        return finish(_page(url, "success" if html.strip() else "empty", **base, markdown=html[:limit_chars], extractor="text"))
     result = await extract.extract(html, current, mode)
     from app.web_collector import html_tables
 
@@ -231,7 +261,7 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
     if keep_html:
         page["html"] = page.pop("_rendered_html", None) or html
     page.pop("_rendered_html", None)
-    return page
+    return finish(page)
 
 
 async def _maybe_render(page: dict, html: str, mode: str, policy: egress.Policy, timeout: float, limit_chars: int) -> dict:
