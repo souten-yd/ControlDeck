@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-27 箱の --run の時間切れの直し（#663 の誤り）
+- #663 は「子の完了が主へ届かず止まった」と見て、主の出力が 15 分無ければ止めていた。**見立てが誤り**: 箱の OpenCode の記録（opencode.db の job と session_message）を読むと、レビュー役の子（ローカル LLM）は止まっておらず、利用者の会話と GPU の順番を取り合って 1 手に 2 分以上かかりながら 544 件進んでいた。
+- 直し: 止まったかは子の会話の最後の更新（`sandbox.child_activity`、読み取り専用で opencode.db を開く）で判定する。子が 15 分更新されないときだけ止めて同じ会話へ続きを送る。
+- 残る課題: レビュー役がローカル LLM だと、利用者がローカル LLM を使っている間はとても遅い。レビュー役の選び方（外部を先にする・ローカルが混んでいたら外部へ）は別に直す。
+
 ## 2026-11-26 Strata の目録を 1 か所へ（M1・実装済み、実機と関門の確認待ち）
 - 利用者「Strata の目録を 1 か所にして、最新の Strata（0.2.22）の全系列・全量子化を登録画面に出す」。目録は `backend/app/models_mgmt/strata_catalog.py` の 1 か所に置き、gateway・router・model_names・hf_search・provider_adapters・画面（API 経由）は全部そこから読む。画面の固定の一覧（`STRATA_SIZES`・`StrataFamily`・`STRATA_OTHER_ENGINE`・`STRATA_NO_THINKING`）は消した。
 - 11 系列・47 量子化を登録できる形で収めた（大きさ未確認の unsloth 小サイズ 6 種を含む）。無検閲の OrcaRouter は公式目録外なので「無検閲・手作業が要る（案内）」として選べない行で出し、登録は拒否する。NVIDIA が要る nvfp4 は NVIDIA の無い PC では出さない。0.2.22 で Inkling も思考を持つので、Qwen と同じ `/settings` の経路で思考の既定を渡すようにした。
