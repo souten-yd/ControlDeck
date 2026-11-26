@@ -40,7 +40,7 @@ def _hidden(tag) -> bool:
 
 def _grid(table) -> dict:
     # Removing a hidden row/cell would shift the grid; reject that table instead.
-    if any(_hidden(t) for t in table.find_all(["tr", "td", "th", "thead", "tbody", "tfoot"])):
+    if any(_hidden(t) for t in table.find_all(True)):
         raise ValueError("hidden table geometry")
     # Explicit headers= ID associations need a different parser; don't silently
     # replace them with positional guesses.
@@ -60,6 +60,10 @@ def _grid(table) -> dict:
             rs, cs = _span(cell, "rowspan", MAX_ROWS), _span(cell, "colspan", MAX_COLS)
             if i + rs > len(rows) or column + cs > MAX_COLS or len(cells) >= MAX_CELLS:
                 raise ValueError("table exceeds limits")
+            group = row.find_parent(["thead", "tbody", "tfoot"])
+            if any(rows[j].find_parent(["thead", "tbody", "tfoot"]) is not group
+                   for j in range(i, i + rs)):
+                raise ValueError("rowspan crosses row group")
             coordinates = {(r, c) for r in range(i, i + rs) for c in range(column, column + cs)}
             if coordinates & used:
                 raise ValueError("overlapping cells")
