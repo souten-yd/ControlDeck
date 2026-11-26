@@ -186,7 +186,7 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                                 and cache.restore(cache_key, entry, epoch)):
                             page = dict(entry.page)
                             page.update({"revalidated_at": _now(), "revalidation_http_status": 304,
-                                         "cache_reused": True})
+                                         "cache_reused": True, "reuse_reason": "not_modified"})
                             # Keep the original fetch time, bytes/hash/status and
                             # validators. Do not renew the bounded cache lifetime.
                             return page
@@ -232,6 +232,17 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
             return _page(url, "captcha", **base, error=f"HTTP {status_code}（ロボット確認。回避しません）")
         return _page(url, "blocked" if status_code in (401, 403, 429) else "http_error", **base,
                      error=f"HTTP {status_code}")
+    # A full 200 response can have a changed validator but exactly the same
+    # decoded HTTP body. Reuse the extraction only, not old HTTP freshness.
+    if (entry is not None and not redirected and status_code == 200
+            and response_headers is not None and revalidation.response_allowed(response_headers)
+            and entry.page["content_sha256"] == digest
+            and entry.page["content_type"] == content_type):
+        page = dict(entry.page)
+        page.update({**base, "fetched_at": _now(), "revalidated_at": _now(),
+                     "revalidation_http_status": 200, "cache_reused": True,
+                     "reuse_reason": "identical_content"})
+        return finish(page)
     if "pdf" in content_type or current.casefold().endswith(".pdf") or content[:5] == b"%PDF-":
         try:
             text = await asyncio.to_thread(_pdf_text, content, limit_chars)
