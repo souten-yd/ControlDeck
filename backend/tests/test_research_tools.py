@@ -115,8 +115,8 @@ def test_search_merge_keeps_distinct_query_urls():
     assert [r["url"] for r in found["results"]] == [u for i, u in enumerate(urls) if i != 2]
 
 
-def test_search_merge_drops_tracking_params_and_ignores_param_order():
-    """目的: 追跡用の引数（utm_*・fbclid）だけ違う URL・引数の順番だけ違う URL は同じ記事として 1 つにまとめる。
+def test_search_merge_drops_tracking_params_but_preserves_query_order():
+    """目的: 追跡引数だけ違う候補は寄せるが、通常のクエリ順序は別資料の可能性があるので保持。
     根拠: 2026-11-26 PR #634 でクエリを全部残すようにしたとき、ニュースの共有リンク（utm つき）が同じ記事の重複として残る。"""
     urls = ["https://example.test/a?p=1&utm_source=x", "https://example.test/a?p=1&fbclid=z", "https://example.test/a?utm_medium=m&p=1",
             "https://example.test/s?b=2&a=1", "https://example.test/s?a=1&b=2", "https://example.test/b?utm_source=x", "https://example.test/b"]
@@ -125,7 +125,7 @@ def test_search_merge_drops_tracking_params_and_ignores_param_order():
         return [{"title": u, "url": u, "snippet": ""} for u in urls]
 
     found = run(rt.search_web("test", limit=10, searx=searx))
-    assert [r["url"] for r in found["results"]] == [urls[0], urls[3], urls[5]]
+    assert [r["url"] for r in found["results"]] == [urls[0], urls[3], urls[4], urls[5]]
 
 
 def test_reddit_search_and_thread_comments(monkeypatch):
@@ -598,3 +598,27 @@ def test_rank_fusion_fixed_gold_and_duplicate_votes():
     assert rank_metrics(["gold", "gold", "noise"], {"gold": 3}, cutoff=1) == {
         "recall": 1.0, "mrr": 1.0, "ndcg": 1.0}
     assert result == reciprocal_rank_fusion(groups[:2], rt._norm_url, limit=3)
+
+
+def test_url_identity_preserves_possible_distinct_resources():
+    """目的: RFC3986 §6 と固定評価のURL誤統合を修正（2026-11-26）。通信なし。"""
+    same = [
+        ("https://EXAMPLE.test:443/a?x=1&utm_source=a", "https://example.test/a?x=1"),
+        ("https://example.test/a#section", "https://example.test/a"),
+    ]
+    different = [
+        ("https://example.test/a?x=1&x=2", "https://example.test/a?x=2&x=1"),
+        ("https://example.test/a?x=1&y=2", "https://example.test/a?y=2&x=1"),
+        ("https://www.example.test/a", "https://example.test/a"),
+        ("http://example.test/a", "https://example.test/a"),
+        ("https://example.test/a/", "https://example.test/a"),
+        ("https://example.test/a?q=a+b", "https://example.test/a?q=a%20b"),
+        ("https://example.test/#/a", "https://example.test/#/b"),
+        ("https://example.test/a?sig=1&utm_source=a", "https://example.test/a?sig=1&utm_source=b"),
+    ]
+    for a, b in same:
+        assert rt._norm_url(a) == rt._norm_url(b)
+    for a, b in different:
+        assert rt._norm_url(a) != rt._norm_url(b)
+    for invalid in ("", "javascript:alert(1)", "https://u:p@example.test/", "https://example.test:99999/", "https://[broken"):
+        assert rt._norm_url(invalid) == ""
