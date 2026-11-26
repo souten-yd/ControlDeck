@@ -238,3 +238,32 @@ def test_web_documents_are_split_by_headings_without_changing_the_collection(mon
     rows = rag.chunk_rows("web-md-test")
     assert any(r["text"].startswith("[題 > 効果]") for r in rows)
     assert rag.get_config("web-md-test")["strategy"] == "recursive"
+
+
+
+def test_structured_table_preserves_merged_headers_and_cells():
+    """目的・根拠: W4（PLAN-web-collector §7）。測定条件の列を失わず結合セルを複製しない。"""
+    from app.web_collector.html_tables import extract_tables
+
+    html = ('<table><caption>Benchmark</caption><tr><th rowspan="2" scope="rowgroup">GPU</th>'
+            '<th colspan="2">Speed</th></tr><tr><th>Decode</th><th>Prefill</th></tr>'
+            '<tr><td>R9700</td><td>60</td><td>420</td></tr></table>')
+    tables, warnings = extract_tables(html)
+    assert not warnings and len(tables) == 1
+    table = tables[0]
+    assert (table["caption"], table["rows"], table["cols"]) == ("Benchmark", 3, 3)
+    assert [(c["row"], c["col"], c["rowspan"], c["colspan"]) for c in table["cells"][:4]] == [
+        (0, 0, 2, 1), (0, 1, 1, 2), (1, 1, 1, 1), (1, 2, 1, 1)]
+    assert table["cells"][-2]["text"] == "60"
+    assert extract_tables('<table><tr><td>layout</td></tr></table>')[0] == []
+    assert extract_tables('<table><tr><th rowspan="0">x</th></tr></table>')[0] == []
+
+
+def test_collect_returns_table_metadata_without_changing_body(server, monkeypatch):
+    """目的: W4a は既存の共通取得結果に表を加算し、Markdown本文を維持する。"""
+    monkeypatch.setattr(extract, "worker_python", lambda: None)
+    _Handler.routes = {"/a": (200, {"Content-Type": "text/html; charset=utf-8"}, ARTICLE.encode())}
+    out = asyncio.run(fetch.collect(f"http://site.test:{server}/a", policy=_policy(server, site_test=["127.0.0.1"])))
+    assert out["status"] == "success" and "窒化ガリウム" in out["markdown"]
+    assert len(out["tables"]) == 1
+    assert out["tables"][0]["cells"][-1]["text"] == "10 W"
