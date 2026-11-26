@@ -182,13 +182,13 @@ async def collect(url: str, *, mode: str = "article", timeout: float = TIMEOUT_S
                 request_headers = {**entry.headers, "Cache-Control": "no-cache"} if entry is not None and _hop == 0 else {}
                 async with client.stream("GET", current, **({"headers": request_headers} if request_headers else {})) as response:
                     if response.status_code == 304:
-                        if (entry is not None and _hop == 0 and revalidation.accepts_304(entry, response.headers)):
+                        if (entry is not None and _hop == 0 and revalidation.accepts_304(entry, response.headers)
+                                and cache.restore(cache_key, entry, epoch)):
                             page = dict(entry.page)
                             page.update({"revalidated_at": _now(), "revalidation_http_status": 304,
                                          "cache_reused": True})
                             # Keep the original fetch time, bytes/hash/status and
                             # validators. Do not renew the bounded cache lifetime.
-                            cache.restore(cache_key, entry, epoch)
                             return page
                         return _page(url, "http_error", final_url=current, http_status=304,
                                      error="再検証できない304応答")
