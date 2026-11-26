@@ -845,7 +845,7 @@ def _fts_ranks(conn: sqlite3.Connection, question: str, collection_ids: list[int
     try:
         if strict:
             found = [r[0] for r in conn.execute(sql, (strict, *collection_ids, limit))]
-        if len(found) < limit // 4:
+        if len(found) < limit // 4 and not textproc.has_explicit_syntax(question):
             # 文章の質問はフレーズが一致しにくいので、2-gram の OR で補う（ResearchDataHub の bm25_loose）
             loose = textproc.or_query(question)
             if loose:
@@ -863,6 +863,9 @@ def search(names: Iterable[str], question: str, *, query_vector: np.ndarray | No
            mode: str = "hybrid", hybrid_weight: float = 0.5, limit: int = 80,
            exclude_confidential: bool = False, allow_other_models: bool = True) -> list[dict]:
     """コレクション（複数・分野をまたいでよい）を検索し、RRF で並べた候補を返す。"""
+    # Explicit lexical constraints must also govern vector/hybrid candidates.
+    if textproc.has_explicit_syntax(question):
+        mode = "fulltext"
     by_shard: dict[str, list[CollectionRef]] = {}
     for name in names:
         ref = find_collection(name)
