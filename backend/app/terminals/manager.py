@@ -30,7 +30,9 @@ TERMINAL_ENGINES = {"v1", "v2-lab"}
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 # AI Commander（app/commander）がコンソール用のセッションへ付ける印。
 # 一覧で読み返すため、option の名前はここで固定する（値は commander 側で組み立てる）。
-COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by")
+COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by",
+                       # C3: 自動再開（off で止める・次の予定・送った回数・最後に送った時刻）
+                       "autoresume", "resume_at", "resume_count", "resume_last")
 # create_session(env=) で受け付ける環境変数の名前と値の上限。
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ENV_VALUE_MAX = 4096
@@ -372,6 +374,21 @@ class TerminalManager:
             )
             return
         self._close_fallback(sid, kill=True)
+
+    def clear_marks(self, sid: str, keys: tuple[str, ...]) -> None:
+        """印を外す（tmux の user option を unset）。"""
+        unknown = set(keys) - set(COMMANDER_MARK_KEYS)
+        if unknown:
+            raise ValueError("不明なセッション属性です")
+        if tmux_available():
+            target = _target(sid)
+            for key in keys:
+                subprocess.run(["tmux", "set-option", "-u", "-t", target, f"@cd-commander-{key}"],
+                               capture_output=True, timeout=10, check=False)
+            return
+        session = self._fallback.get(sid)
+        if session is not None:
+            session.marks = {k: v for k, v in session.marks.items() if k not in keys}
 
     def capture_text(self, sid: str, lines: int = 60) -> str:
         """画面の最後の lines 行を、色の印を外した文字で返す（AI Commander の状態の判定用）。

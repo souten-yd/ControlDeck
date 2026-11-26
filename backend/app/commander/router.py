@@ -26,7 +26,7 @@ from app.audit import service as audit
 from app.commander import accounts, consoles
 from app.database import get_db
 from app.models import User
-from app.schemas.commander import AccountCreate, AccountLabel, ConsoleCreate
+from app.schemas.commander import AccountCreate, AccountLabel, ConsoleAutoResume, ConsoleCreate
 from app.security.deps import require_permission
 from app.terminals.router import streams
 
@@ -192,6 +192,28 @@ async def create_consoles(
         },
     )
     return result
+
+
+@router.put("/consoles/{session_id}/autoresume")
+def set_console_autoresume(
+    session_id: str,
+    body: ConsoleAutoResume,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """上限からの自動再開をコンソールごとに入り切りする（既定は入）。"""
+    from app.terminals.manager import manager
+
+    if not any(s.get("id") == session_id for s in consoles.list_consoles()):
+        raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+    if body.enabled:
+        manager.clear_marks(session_id, ("autoresume",))
+    else:
+        manager.tag_session(session_id, {"autoresume": "off"})
+    audit.record(db, "commander.console.autoresume_setting", user=user, resource_type="commander_console",
+                 resource_id=session_id, request=request, metadata={"enabled": body.enabled})
+    return {"ok": True, "enabled": body.enabled}
 
 
 @router.delete("/consoles/{session_id}")

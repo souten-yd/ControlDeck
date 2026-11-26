@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-27 AI Commander C3: 上限からの自動再開（LLM なし）
+- 上限で止まったコンソール（C2 の判定）の上限の行から回復の時刻を読み、時刻＋1 分が来たら同じセッションへ「続けてください」＋Enter を送る（`app/commander/resume.py`、60 秒ごとの見回り `resume_loop`）。読める形: Claude「resets 10:20pm (Asia/Tokyo)」「resets Nov 30, 12am (Asia/Tokyo)」、Codex「try again at Nov 28th, 2026 3:05 AM」「try again in 2 hours 5 minutes」。読めないときは 30 分ごと。
+- 歯止め: 送る直前に画面を読み直し、まだ上限のときだけ送る。送ったら 10 分は次を送らない。1 回の停止につき 10 回まで。止まっていなければ記録を消す。記録は tmux の印（`@cd-commander-resume_at/count/last`）なので ControlDeck を再起動しても残る。送ったら監査ログ（commander.console.autoresume）。
+- 画面: 上限で止まったタイル・行に「自動再開の予定 HH:MM」と、コンソールごとに止める・戻すボタン（`PUT /commander/consoles/{id}/autoresume`）。
+- 確かめたこと: 試験 6 件（時刻の読み取り・待ち・送る・間隔・回数・止める・読み直し）。実機の tmux で上限の文言を出したセッションへ、予定の時刻を過ぎたら「続けてください」が入り、記録が付いて消えることを確かめた。実際に上限に当たった CLI ではまだ（当たったときに確かめる）。
+
 ## 2026-11-27 フォルダの選択で新しいフォルダを作れる
 - 利用者「AI Commander でコンソールを開く際、作業フォルダを選ぶが、新規でもフォルダを作成できるようにして」。
 - 共通の FilePicker（フォルダ選択）に「＋ 新しいフォルダ」。いま開いているフォルダの中に作り、作ったらその中へ入る。作成は既存の `POST /files/directory`（files.resolve の検証・監査・権限 files.edit）。同じ名前・「/」「.」「..」は画面で断る。AI Commander だけでなく、フォルダを選ぶ画面すべてで使える。

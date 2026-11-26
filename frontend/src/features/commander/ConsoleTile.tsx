@@ -4,7 +4,9 @@
  * 中身は既存の XtermView を埋め込み表示（embedded）で収める。
  * 頭を押すと全画面で大きく開く。 */
 import { lazy, Suspense } from "react";
-import { accountTitle, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
+import { useQueryClient } from "@tanstack/react-query";
+import { accountTitle, setConsoleAutoResume, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
+import { useToasts } from "../../stores";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -32,6 +34,39 @@ function stateOf(item: CommanderConsole): CommanderState {
 function AliveDot({ item }: { item: CommanderConsole }) {
   const state = stateOf(item);
   return <span aria-hidden title={STATE_LABEL[state]} className={`h-2.5 w-2.5 shrink-0 rounded-full ${STATE_DOT[state]}`} />;
+}
+
+/** 上限で止まったときの自動再開の予定と入り切り（C3）。押しても行の「開く」は動かさない。 */
+function AutoResume({ item }: { item: CommanderConsole }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const off = item.commander_autoresume === "off";
+  if (stateOf(item) !== "limited" && !off) return null;
+  const at = Number(item.commander_resume_at || 0);
+  const when = at ? new Date(at * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }) : "";
+  const toggle = async () => {
+    try {
+      await setConsoleAutoResume(item.id, off);
+      qc.invalidateQueries({ queryKey: ["commander-consoles"] });
+      show(off ? "自動で再開するようにしました" : "自動で再開しないようにしました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
+  return (
+    <span data-commander-autoresume={off ? "off" : "on"} className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <span className="min-w-0 truncate">
+        {off ? "自動再開: 止めています" : when ? `自動再開の予定 ${when}（「続けてください」を送ります）` : "自動再開: 回復の時刻を待っています"}
+      </span>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); void toggle(); }}
+        className="min-h-9 shrink-0 rounded-full border border-zinc-300 px-3 font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-600 dark:text-zinc-300"
+      >
+        {off ? "再開させる" : "止める"}
+      </button>
+    </span>
+  );
 }
 
 /** 状態の文字と最後の行（上限・エラーならその行）。 */
@@ -105,6 +140,9 @@ export function ConsoleTile({
           🗑️
         </button>
       </div>
+      {(stateOf(item) === "limited" || item.commander_autoresume === "off") && (
+        <div className="shrink-0 border-b border-zinc-200 px-3 pb-1.5 dark:border-zinc-800"><AutoResume item={item} /></div>
+      )}
       <div className={`relative ${TILE_TERMINAL_HEIGHT}`}>
         <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-400">ターミナルを読み込み中...</div>}>
           <XtermView
@@ -135,8 +173,9 @@ export function ConsoleRow({
   return (
     <li
       data-commander-row
-      className="flex min-w-0 items-center gap-2 rounded-2xl border border-zinc-200 bg-white p-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
     >
+      <div className="flex min-w-0 items-center gap-2">
       <AliveDot item={item} />
       <button type="button" onClick={onOpen} className="min-h-11 min-w-0 flex-1 text-left">
         <span className="flex min-w-0 items-center gap-1.5">
@@ -168,6 +207,8 @@ export function ConsoleRow({
       >
         🗑️
       </button>
+      </div>
+      <div className="pl-4"><AutoResume item={item} /></div>
     </li>
   );
 }
