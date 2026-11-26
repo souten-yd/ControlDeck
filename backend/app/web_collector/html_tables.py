@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 
 MAX_HTML = 2_000_000
 MAX_TABLES = 12
@@ -30,7 +32,20 @@ def _span(cell, key: str, limit: int) -> int:
     return int(raw)
 
 
+def _hidden(tag) -> bool:
+    return (tag.has_attr("hidden") or str(tag.get("aria-hidden", "")).casefold() == "true"
+            or bool(re.search(r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
+                              str(tag.get("style", "")), re.I)))
+
+
 def _grid(table) -> dict:
+    # Removing a hidden row/cell would shift the grid; reject that table instead.
+    if any(_hidden(t) for t in table.find_all(["tr", "td", "th", "thead", "tbody", "tfoot"])):
+        raise ValueError("hidden table geometry")
+    # Explicit headers= ID associations need a different parser; don't silently
+    # replace them with positional guesses.
+    if table.find(["td", "th"], attrs={"headers": True}) is not None:
+        raise ValueError("explicit header IDs unsupported")
     rows = table.find_all("tr", limit=MAX_ROWS + 1)
     if len(rows) > MAX_ROWS or table.find("table") is not None:
         raise ValueError("nested or oversized table")
@@ -85,16 +100,14 @@ def extract_tables(html: str) -> tuple[list[dict], list[str]]:
     if len(found) > MAX_TABLES:
         warnings.append("structured_tables_count_limit")
     for index, table in enumerate(found[:MAX_TABLES]):
-        if any(t.has_attr("hidden") or str(t.get("aria-hidden", "")).casefold() == "true"
-               or re.search(r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
-                            str(t.get("style", "")), re.I)
-               for t in (table, *table.parents)):
+        if any(_hidden(t) for t in (table, *table.parents)):
             continue
         if table.find_parent(["table", "nav", "header", "footer", "aside", "template", "form"]) is not None:
             continue
         if str(table.get("role", "")).lower() in ("presentation", "none"):
             continue
-        for tag in table.find_all(["script", "style", "template", "noscript"]):
+        # Reverse order: nested tags may otherwise have been decomposed already.
+        for tag in reversed(table.find_all(["script", "style", "template", "noscript"])):
             tag.decompose()
         try:
             grid = _grid(table)
@@ -109,3 +122,20 @@ def extract_tables(html: str) -> tuple[list[dict], list[str]]:
         except (ValueError, RecursionError):
             warnings.append(f"structured_table_{index}_unsupported")
     return result, warnings
+
+
+TABLE_SCHEMA = "controldeck.html-table.v1"
+
+
+def table_bundle(html: str) -> tuple[list[dict], dict, list[str]]:
+    """Evidence coordinates refer to decoded HTML, not Markdown or raw HTTP bytes.
+    Digest is an integrity check, not a signature or authorization.
+    """
+    tables, warnings = extract_tables(html)
+    if not tables:
+        return tables, {}, warnings
+    payload = json.dumps(tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    meta = {"schema": TABLE_SCHEMA,
+            "html_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+            "tables_sha256": hashlib.sha256(payload).hexdigest()}
+    return tables, meta, warnings
