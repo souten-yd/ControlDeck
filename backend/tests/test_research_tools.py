@@ -583,3 +583,18 @@ def test_snippet_date_does_not_certify_unread_page():
     rows = run(ri.read_and_judge(results, window=window, today=NOW.date(), focus="記事",
                                  limit=1, read=read))
     assert rows[0]["status"] == "unread" and rows[0]["page"] is None
+
+
+def test_rank_fusion_fixed_gold_and_duplicate_votes():
+    """目的: W5bの比較評価。複数の独立検索に当たる根拠を上げるが同一検索の重複で水増ししない。"""
+    from app.workflows.research_fusion import reciprocal_rank_fusion, rank_metrics
+    def row(name):
+        return {"url": "https://example.test/" + name}
+    groups = [("q1", [row("noise1"), row("gold"), row("gold")]),
+              ("q2", [row("noise2"), row("gold")]),
+              ("q2", [row("noise2")])]
+    result = reciprocal_rank_fusion(groups, rt._norm_url, limit=3)
+    assert result[0] == row("gold")
+    assert rank_metrics(["gold", "gold", "noise"], {"gold": 3}, cutoff=1) == {
+        "recall": 1.0, "mrr": 1.0, "ndcg": 1.0}
+    assert result == reciprocal_rank_fusion(groups[:2], rt._norm_url, limit=3)
