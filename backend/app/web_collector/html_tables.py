@@ -13,6 +13,8 @@ MAX_ROWS = 100
 MAX_COLS = 32
 MAX_CELLS = 1000
 MAX_CELL_TEXT = 500
+MAX_TOTAL_CELLS = 1200
+MAX_TOTAL_TEXT = 100_000
 
 
 def _text(tag) -> str:
@@ -68,11 +70,15 @@ def extract_tables(html: str) -> tuple[list[dict], list[str]]:
         return [], []
     if len(html) > MAX_HTML:
         return [], ["structured_tables_html_limit"]
-    from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup, ParserRejectedMarkup
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except (ParserRejectedMarkup, RecursionError, ValueError):
+        return [], ["structured_tables_parse_error"]
     found = soup.find_all("table", limit=MAX_TABLES + 1)
     result, warnings = [], []
+    cell_count = text_count = 0
     if len(found) > MAX_TABLES:
         warnings.append("structured_tables_count_limit")
     for index, table in enumerate(found[:MAX_TABLES]):
@@ -83,7 +89,15 @@ def extract_tables(html: str) -> tuple[list[dict], list[str]]:
         for tag in table.find_all(["script", "style", "template", "noscript"]):
             tag.decompose()
         try:
-            result.append({"table_index": index, **_grid(table)})
-        except ValueError:
+            grid = _grid(table)
+            n = len(grid["cells"])
+            size = len(grid["caption"]) + sum(len(c["text"]) for c in grid["cells"])
+            if cell_count + n > MAX_TOTAL_CELLS or text_count + size > MAX_TOTAL_TEXT:
+                warnings.append("structured_tables_output_limit")
+                break
+            result.append({"table_index": index, **grid})
+            cell_count += n
+            text_count += size
+        except (ValueError, RecursionError):
             warnings.append(f"structured_table_{index}_unsupported")
     return result, warnings
