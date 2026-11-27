@@ -30,7 +30,7 @@ from app.config import get_config
 
 logger = logging.getLogger(__name__)
 
-GOAL_MAX = 4000
+GOAL_MAX = 20000   # 依頼の上限（API の入口と同じ。2026-11-28 本番で 5000 字の仕様が「4000 文字以内」で断られた）
 RUNS_KEPT = 30
 MAX_RESUMES = 3
 MAX_CRASH_RETRIES = 1
@@ -253,7 +253,7 @@ def _loop(team_id: str, goal: str, follow_up: bool) -> None:
             _audit(team_id, ep, seconds, "stopped")
             _set_status(team_id, "stopped", "利用者が止めました")
             return
-        failing = result.get("exit") != 0 or bool(state and state.is_error) or result.get("timed_out")
+        failing = result.get("exit") != 0 or bool(state and state.is_error) or result.get("timed_out") or result.get("too_large")
         if finish:
             _record(team_id, "done", ep, seconds, usage)
             _audit(team_id, ep, seconds, "finished")
@@ -272,11 +272,11 @@ def _loop(team_id: str, goal: str, follow_up: bool) -> None:
                 _audit(team_id, ep, seconds, "limited")
                 resume = True
                 continue  # 次のループで chain の次の endpoint（セカンダリ）が選ばれる。無ければ上で失敗
-            _record(team_id, "failed", ep, seconds, usage, f"終了コード {result.get('exit')}")
+            _record(team_id, "failed", ep, seconds, usage, team_runner.failure_reason(result))
             _audit(team_id, ep, seconds, "crashed")
             crashes += 1
             if crashes > MAX_CRASH_RETRIES:
-                _set_status(team_id, "failed", f"実行が落ちました（終了コード {result.get('exit')}）", "のチームリーダーが落ちました")
+                _set_status(team_id, "failed", f"実行が落ちました（{team_runner.failure_reason(result)}）", "のチームリーダーが落ちました")
                 return
             resume = True
             continue

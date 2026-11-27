@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 278 ファイル、2872 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2878 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -783,6 +783,17 @@
 - `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
+
+### backend/tests/test_commander_team_output_limit.py
+
+目的: AI チームの実行・確認のコマンドの「出力の上限」の試験。 目的: 2026-11-28 に本番で、チームリーダーの Codex が始めて 1 秒で落ちた（終了コード -25 = SIGXFSZ）。 子のプロセスに RLIMIT_FSIZE（50MB）を掛けていたので、Codex が自分の記録（~/.codex/logs_2.sqlite 66MB）を 書いた瞬間に落ちた。上限は「出力のファイル」だけに効かせる。次を守る: - 子が出力以外の大きなファイルを書いても落ちない（実行・確認のコマンドの両方）。 - 出力が上限を超えたら止め、失敗の理由に「出力が…MB を超えた」と出る。 - シグナルで落ちたときは、理由にシグナルの名前が出る（-25 だけでは分からない）。 根拠: 本番の失敗の記録（leader_run.reason「実行が落ちました（終了コード -25）」）。 既存の試験（t2b・t3a）は小さな出力しか扱わず、上限は見ていない（docs/test-catalog.md で確認）。
+
+- `test_check_command_may_write_big_files_but_not_big_output`
+- `test_run_is_not_killed_for_writing_big_files` — チームの実行（_execute）で、CLI が自分の記録のような大きなファイルを書いても落ちない。
+- `test_run_stops_when_output_is_too_large`
+- `test_failure_reason_names_the_signal`
+- `test_no_rlimit_on_children` — 子のプロセスに RLIMIT_FSIZE を掛けない（ソースに残っていないこと）。
+- `test_leader_goal_accepts_a_real_spec_length` — 依頼の上限は API の入口（20000 字）と同じ。2026-11-28 本番で 5638 字の仕様が「4000 文字以内」で断られた。
 
 ### backend/tests/test_commander_team_t2b.py
 

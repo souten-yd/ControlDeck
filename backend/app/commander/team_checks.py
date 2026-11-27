@@ -95,29 +95,50 @@ def _read_tail(handle, limit: int = TAIL_MAX) -> str:
 
 
 def _run_one(cmd: str, cwd: Path) -> dict:
-    import resource
+    """確認のコマンドを 1 つ走らせる。出力は一時ファイルへ、上限（OUTPUT_FILE_MAX）を超えたら止める。
+
+    子に RLIMIT_FSIZE は掛けない（子が書くすべてのファイルに効き、試験の DB・ビルドの成果物・CLI の記録で
+    SIGXFSZ になる。2026-11-28 にチームの実行で Codex が落ちたのと同じ。team_runner.output_too_large）。"""
     import tempfile
 
+    from app.commander.team_runner import output_too_large
+
     started = time.monotonic()
-
-    def _limit_output() -> None:  # 子のプロセスで、書けるファイルの大きさに上限
-        resource.setrlimit(resource.RLIMIT_FSIZE, (OUTPUT_FILE_MAX, OUTPUT_FILE_MAX))
-
-    with tempfile.TemporaryFile() as out_file:
+    with tempfile.NamedTemporaryFile() as out_file:
+        path = Path(out_file.name)
         try:
             argv = shlex.split(cmd)
             if not argv:
                 raise ValueError("空のコマンドです")
-            done = subprocess.run(  # noqa: S603 - shell=False・引数列・作業フォルダは検証済み
-                argv, cwd=str(cwd), timeout=CHECK_TIMEOUT, stdout=out_file, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, env=_env(), check=False, preexec_fn=_limit_output,
+            proc = subprocess.Popen(  # noqa: S603 - shell=False・引数列・作業フォルダは検証済み
+                argv, cwd=str(cwd), stdout=out_file, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, env=_env(), start_new_session=True,
             )
-            code, out = done.returncode, _read_tail(out_file)
-        except subprocess.TimeoutExpired:
-            code, out = -1, f"（{CHECK_TIMEOUT} 秒でタイムアウト）\n" + _read_tail(out_file)
+            note = ""
+            while proc.poll() is None:
+                if time.monotonic() - started > CHECK_TIMEOUT:
+                    note = f"（{CHECK_TIMEOUT} 秒でタイムアウト）\n"
+                elif output_too_large(path):
+                    note = f"（出力が {OUTPUT_FILE_MAX // (1024 * 1024)}MB を超えたので止めました）\n"
+                if note:
+                    _kill_group(proc)
+                    break
+                time.sleep(0.2)
+            proc.wait()
+            code = -1 if note else proc.returncode
+            out = _read_tail(out_file) + ("\n" + note.strip() if note else "")   # 理由は末尾に（tail で切れない）
         except (OSError, ValueError) as exc:
             code, out = 127, f"実行できませんでした: {exc}"
     return {"cmd": cmd, "exit_code": code, "seconds": round(time.monotonic() - started, 2), "tail": _tail(out)}
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    import signal
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
 
 
 def _workdir_for(sid: str) -> Path | None:

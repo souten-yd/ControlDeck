@@ -486,7 +486,7 @@ export function AutoTeamSheet({ expert, onClose, onCreated }: { expert: boolean;
   return (
     <BottomSheet title="作業場所を選んで頼む" onClose={onClose}>
       <label className={fieldLabel} htmlFor="auto-goal">目標</label>
-      <textarea id="auto-goal" rows={5} value={goal} maxLength={4000} onChange={(e) => setGoal(e.target.value)} className={textareaClass}
+      <textarea id="auto-goal" rows={5} value={goal} maxLength={20000} onChange={(e) => setGoal(e.target.value)} className={textareaClass}
         placeholder="例: ログイン機能を作って、試験まで通す" />
       <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
         チームリーダー（{endpointText(data?.default_leader)}）が調べ・計画し、段ごとに担い手へ振って、統合・試験まで進めます。

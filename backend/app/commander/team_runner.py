@@ -481,10 +481,34 @@ def detect_limit(texts: list[str]) -> tuple[bool, float | None]:
 
 # ---------------------------------------------------------------- 実行
 
-def _limit_output() -> None:  # 子のプロセスで、書けるファイルの大きさに上限
-    import resource
+def failure_reason(result: dict) -> str:
+    """失敗の理由（短い言葉）。シグナルで落ちたときは名前を添える（-25 だけでは分からない）。"""
+    if result.get("too_large"):
+        return f"出力が {OUTPUT_FILE_MAX // (1024 * 1024)}MB を超えたので止めました"
+    code = result.get("exit")
+    if isinstance(code, int) and code < 0:
+        import signal
 
-    resource.setrlimit(resource.RLIMIT_FSIZE, (OUTPUT_FILE_MAX, OUTPUT_FILE_MAX))
+        try:
+            return f"終了コード {code}（シグナル {signal.Signals(-code).name}）"
+        except ValueError:
+            pass
+    return f"終了コード {code}"
+
+
+def output_too_large(*paths: Path, limit: int = OUTPUT_FILE_MAX) -> bool:
+    """出力のファイルのどれかが上限を超えたか。
+
+    以前は子のプロセスに RLIMIT_FSIZE を掛けていたが、それは子が書く「すべての」ファイルに効く。
+    2026-11-28 本番で、Codex が自分の記録（~/.codex/logs_2.sqlite 66MB・thread_history 1GB）を書いた瞬間に
+    SIGXFSZ（終了コード -25）で落ち、チームリーダーが 1 秒で止まった。出力のファイルだけを見張って止める。"""
+    for path in paths:
+        try:
+            if path.stat().st_size > limit:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _read_lines(path: Path, offset: int, pending: bytes) -> tuple[int, bytes, list[bytes]]:
@@ -546,7 +570,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
         try:
             proc = subprocess.Popen(  # noqa: S603 - shell=False・引数列・作業フォルダは検証済み
                 argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=out_fd, stderr=err_fd,
-                start_new_session=True, preexec_fn=_limit_output, close_fds=True)
+                start_new_session=True, close_fds=True)
         except OSError as exc:
             raise LaunchError(f"起動できませんでした: {exc.strerror or 'OSError'}") from exc
         finally:
@@ -563,6 +587,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
             _kill(proc)
         offset, pending = 0, b""
         timed_out = False
+        too_large = False
         while True:
             code = proc.poll()
             offset, pending, lines = _read_lines(out_path, offset, pending)
@@ -586,6 +611,9 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
             elif time.monotonic() - started > timeout:
                 timed_out = True
                 _kill(proc)
+            elif not too_large and output_too_large(out_path, err_path):
+                too_large = True   # 出力が上限を超えた（ディスクを食い尽くさない）。止めて失敗にする
+                _kill(proc)
             time.sleep(POLL_INTERVAL)
         code = proc.returncode
         final = state.final_text
@@ -595,7 +623,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
             except OSError:
                 pass
         stderr_tail = _tail_of(err_path)
-        return {"exit": code, "timed_out": timed_out, "state": state, "final": (final or state.last_text)[-20000:],
+        return {"exit": code, "timed_out": timed_out, "too_large": too_large, "state": state, "final": (final or state.last_text)[-20000:],
                 "stderr": stderr_tail, "seconds": round(time.monotonic() - started, 1)}
     finally:
         if cleanup is not None:
@@ -714,7 +742,7 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
             teams._event(task, "実行を止めた", "Nexarch")
             audit_args = (code, seconds, False, "stopped")
         else:
-            failing = code != 0 or bool(state and state.is_error) or result.get("timed_out")
+            failing = code != 0 or bool(state and state.is_error) or result.get("timed_out") or result.get("too_large")
             texts = ((state.errors if state else []) + [result.get("stderr", "")]
                      + ([result.get("final", "")] if failing else []))
             limited, reset_at = detect_limit(texts) if failing else (False, None)
@@ -731,7 +759,7 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
                 followup = lambda: _policy_after(team_id, task_id)  # noqa: E731
             elif failing:
                 run["status"] = "failed"
-                why = "時間切れ" if result.get("timed_out") else f"終了コード {code}"
+                why = "時間切れ" if result.get("timed_out") else failure_reason(result)
                 teams.runs_close(task, "failed", usage=usage, exit_code=code)
                 audit_args = (code, seconds, False, "failed")
                 attempts = int(task.get("attempts") or 0)
