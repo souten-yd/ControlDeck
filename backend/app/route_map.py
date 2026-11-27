@@ -113,6 +113,7 @@ NODES: tuple[Node, ...] = (
     Node("news_hub", "QNAP ニュースハブ"),
     Node("secret_store", "鍵の保存（暗号化・0600）"),
     Node("host_systemd", "systemd・Podman・ホストの CLI"),
+    Node("host_usb", "ホストの USB 機器（/sys と /dev）と usbmuxd のソケット"),
 )
 
 ROUTES: tuple[Route, ...] = (
@@ -386,6 +387,15 @@ ROUTES: tuple[Route, ...] = (
     Route("sbx-lifecycle", "backend", "host_systemd", "subprocess", "箱（作業場）の作成・起動・停止・取り込み・マージ（systemd・podman・git）",
           ("auth", "audit", "path_check", "approval"),
           _o("maintenance/sandbox.py", "maintenance/workspaces.py", "maintenance/dev_check.py", "maintenance/change_policy.py"), "sandbox"),
+    Route("sbx-usb-devices", "sandbox_box", "host_usb", "file",
+          "箱へ渡す USB 機器（シリアル・adb・fastboot の --device と keep-groups。作業場と OpenCode のプロジェクトの箱）",
+          ("auth", "audit", "path_check", "approval"),
+          _o("maintenance/devices.py", "integrations/opencode/usb.py", "integrations/opencode/provider.py", "maintenance/sandbox.py"), "sandbox",
+          "既定は渡さない（プロジェクトは off）。渡すのは /sys から解決した実体だけで、/dev 全体・--privileged・ブロックデバイスは渡さない。"
+          "設定は管理者だけ（settings.manage・監査 opencode.devices）で、箱の中から変えられない（設定は data にあり、プロジェクトの外）"),
+    Route("sbx-usb-muxd", "sandbox_box", "host_usb", "file", "iOS 開発用にホストの usbmuxd のソケットを箱へ bind（iPhone の機器があるとき、渡す設定のときだけ）",
+          ("approval", "audit"), _o("maintenance/devices.py", "integrations/opencode/usb.py"), "sandbox",
+          "usbmuxd が動いていなければ渡さず画面に案内するだけ（インストールはしない）"),
     # ------------------------------------------------------------ secrets
     Route("sec-cloud-keys", "backend", "secret_store", "file", "クラウド AI の API キー（cloud-providers.json）", ("no_secrets",),
           _o("models_mgmt/cloud.py", "security/crypto.py"), "secrets", "読むのはゲートウェイが外部モデルへ転送する瞬間だけ"),

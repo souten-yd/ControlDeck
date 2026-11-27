@@ -6,7 +6,7 @@
  * - フロー生成: 目的→定義生成→登録→動作確認→自動修正（ビルドログ表示）
  * - フロー実行: 既存ワークフローをチャットから実行し signal.display を表示
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, wsUrl } from "../../api/client";
@@ -41,6 +41,7 @@ import {
   type AssistantPlan, type BuildState, type GenData, type GenStats, type Msg, type PersistMsg,
 } from "./chatState";
 import { GenStatsBadge, MessageBubble, RoleModels, SpeakerToggle } from "./ChatMessage";
+import { UsbChip, UsbHint } from "./ProjectUsb";
 import { agentIcon, ComposerPill, modeIcon, permissionIcon, PlusMenu, type PlusAction } from "./PlusMenu";
 import {
   PERMISSION_MODES, StopContext,
@@ -329,6 +330,8 @@ export default function AssistantChat() {
   // 調査・自動と組み合わせても効く（調べた結果で OpenCode が計画する）。語や会話の流れでは OpenCode へ回さない
   // 画像も OpenCode に渡す（読めないモデルなら送るときにサーバーが知らせる。2026-11-20 利用者の依頼）
   const plansInOpenCode = codeAgent === "plan" && opencodeAvailable;
+  // USB 機器の設定の対象: CodeDEV の名前付きプロジェクトだけ（作業場・新規・取り込み前のフォルダは対象外）
+  const usbProject = codeProjects?.projects.some((p) => p.name === codeProject) ? codeProject : "";
   const detected = detectAssistantMode(input, workflows ?? [], can("workflows.edit"), opencodeAvailable, conversationContext);
   const autoDecision = plansInOpenCode && (detected.mode === "chat" || SEARCH_MODES.includes(detected.mode))
     ? { mode: "code" as const, research: SEARCH_MODES.includes(detected.mode), reason: "プランは OpenCode で作ります" }
@@ -2047,8 +2050,8 @@ export default function AssistantChat() {
           )}
           <div className="mx-auto max-w-3xl space-y-5">
             {messages.map((m, i) => (
+              <Fragment key={m.messageId ?? i}>
               <MessageBubble
-                key={m.messageId ?? i}
                 msg={m}
                 conversationId={convId}
                 canRevertChanges={!busy && !!m.messageId && m.messageId === latestCodeTurnId}
@@ -2078,6 +2081,10 @@ export default function AssistantChat() {
                 resendDisabled={busy}
                 onCancelEdit={() => setEditingId(null)}
               />
+              {m.role === "assistant" && m.answeredBy === "code" && (
+                <UsbHint project={usbProject} text={`${m.content ?? ""}\n${(m.tools ?? []).map((t) => t.output ?? "").join("\n")}`} />
+              )}
+              </Fragment>
             ))}
             {restoring && (
               <RestoreDialog busy={restoreBusy} onConfirm={(choice) => void confirmRestore(choice)} onClose={() => setRestoring(null)} />
@@ -2153,6 +2160,7 @@ export default function AssistantChat() {
                 title="フォルダから選択（CodeDEV外はコピーして取り込みます）"
                 className="grid w-10 shrink-0 place-items-center rounded-lg border border-zinc-300 text-base dark:border-zinc-700"
               >📁</button>
+              <UsbChip project={usbProject} />
             </div>
           )}
           {effectiveMode === "code" && (codeProject.startsWith(WS_PREFIX) || codeProject === WS_NEW) && (

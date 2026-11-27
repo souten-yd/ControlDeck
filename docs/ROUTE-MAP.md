@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 105 本、ノード: 41 個
+- ルート: 107 本、ノード: 42 個
 
 ## 守りの印（guards）
 
@@ -346,7 +346,7 @@ flowchart LR
 | `notify-webpush` | 通知の入口（notify_event） | Web Push（Apple・Google の push service） | egress | Web Push（RFC 8291 暗号化・VAPID）。利用者ごとの設定・お休みモードを通ってから | `approval` `ssrf_guard` `no_secrets` | `backend/app/alerts/events.py`<br>`backend/app/alerts/webpush.py` | 送り先は既知の push service だけ。通知の文は Apple・Google の中継を通るので短く、秘密を載せない |
 | `notify-channels` | backend（FastAPI） | Discord・Slack・メール | egress | 通知チャンネル（Discord・Slack・メール）への送信 | `approval` `no_secrets` | `backend/app/alerts/notify.py` | 送り先の URL・認証は暗号化して保存 |
 
-### 箱（開発用の作業場）とホストの中継（3 本）
+### 箱（開発用の作業場）とホストの中継（5 本）
 
 ```mermaid
 flowchart LR
@@ -355,9 +355,12 @@ flowchart LR
   mcp["ControlDeck の MCP サーバー"]
   backend["backend（FastAPI）"]
   host_systemd["systemd・Podman・ホストの CLI"]
+  host_usb["ホストの USB 機器（/sys と /dev）と usbmuxd のソケット"]
   sandbox_box -->|"sbx-relay-llm (relay)"| sandbox_relay
   sandbox_box -->|"sbx-relay-mcp (relay)"| mcp
   backend -->|"sbx-lifecycle (subprocess)"| host_systemd
+  sandbox_box -->|"sbx-usb-devices (file)"| host_usb
+  sandbox_box -->|"sbx-usb-muxd (file)"| host_usb
 ```
 
 | id | from | to | channel | 流れるもの | guards | owner | 備考 |
@@ -365,6 +368,8 @@ flowchart LR
 | `sbx-relay-llm` | 箱の OpenCode（sandbox） | 箱の中継（sandbox_gateway） | relay | 箱の OpenCode が本番のゲートウェイへ届く唯一の道（models・chat・load の 3 つだけ。受けた頭は上流へ渡さない） | `loopback` `approval` `confidential` | `backend/app/maintenance/sandbox_gateway.py` | 起動の引数で機能を許す（--allow-llm・--allow-load）。許さない機能のパスは 403。cloud: は --allow-cloud のときだけ |
 | `sbx-relay-mcp` | 箱の OpenCode（sandbox） | ControlDeck の MCP サーバー | relay | 箱から呼べる ControlDeck の道具（MCP_ALLOWED_TOOLS だけ）。MCP のトークンは箱の外の中継だけが持つ | `auth` `approval` `no_secrets` | `backend/app/maintenance/sandbox_gateway.py` | 箱から来た Authorization は捨てる。更新後のトークンも箱へ返さない |
 | `sbx-lifecycle` | backend（FastAPI） | systemd・Podman・ホストの CLI | subprocess | 箱（作業場）の作成・起動・停止・取り込み・マージ（systemd・podman・git） | `auth` `audit` `path_check` `approval` | `backend/app/maintenance/sandbox.py`<br>`backend/app/maintenance/workspaces.py`<br>`backend/app/maintenance/dev_check.py`<br>`backend/app/maintenance/change_policy.py` |  |
+| `sbx-usb-devices` | 箱の OpenCode（sandbox） | ホストの USB 機器（/sys と /dev）と usbmuxd のソケット | file | 箱へ渡す USB 機器（シリアル・adb・fastboot の --device と keep-groups。作業場と OpenCode のプロジェクトの箱） | `auth` `audit` `path_check` `approval` | `backend/app/maintenance/devices.py`<br>`backend/app/integrations/opencode/usb.py`<br>`backend/app/integrations/opencode/provider.py`<br>`backend/app/maintenance/sandbox.py` | 既定は渡さない（プロジェクトは off）。渡すのは /sys から解決した実体だけで、/dev 全体・--privileged・ブロックデバイスは渡さない。設定は管理者だけ（settings.manage・監査 opencode.devices）で、箱の中から変えられない（設定は data にあり、プロジェクトの外） |
+| `sbx-usb-muxd` | 箱の OpenCode（sandbox） | ホストの USB 機器（/sys と /dev）と usbmuxd のソケット | file | iOS 開発用にホストの usbmuxd のソケットを箱へ bind（iPhone の機器があるとき、渡す設定のときだけ） | `approval` `audit` | `backend/app/maintenance/devices.py`<br>`backend/app/integrations/opencode/usb.py` | usbmuxd が動いていなければ渡さず画面に案内するだけ（インストールはしない） |
 
 ### 秘密（鍵）の保存と読む所（9 本）
 
@@ -496,3 +501,4 @@ flowchart LR
 | `news_hub` | QNAP ニュースハブ |
 | `secret_store` | 鍵の保存（暗号化・0600） |
 | `host_systemd` | systemd・Podman・ホストの CLI |
+| `host_usb` | ホストの USB 機器（/sys と /dev）と usbmuxd のソケット |
