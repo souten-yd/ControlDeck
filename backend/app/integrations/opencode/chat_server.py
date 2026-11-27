@@ -814,7 +814,6 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     actual_tokens = 0      # step 完了イベントの使用量の合計（正しい値が届いた分）
     pending_estimated = 0  # 最後の step 完了以降に delta から見積もった分
     prompt_tokens: int | None = None   # step 完了イベントから届いた入力の分（直近の値。届くまでは None）
-    context_max: int | None = None     # セッションのモデルの窓（provider が OpenCode へ渡す limit.context と同じ式）
 
     def count_delta(text: str) -> None:
         nonlocal pending_estimated

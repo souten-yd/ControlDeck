@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 277 ファイル、2866 テスト（目的の未記入 93 ファイル）
+- backend: 277 ファイル、2867 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -2791,6 +2791,7 @@
 - `test_run_turn_token_counts_follow_delta_text_length` — 目的: 進捗の gen_tokens・tok_per_sec が delta の「回数」ではなく文字数の見積もりに従うことを守る。
 - `test_run_turn_corrects_token_total_with_step_usage` — 目的: step の完了イベントに使用量（tokens.output・reasoning）があるとき、見積もりの合計を実測で
 - `test_run_turn_reports_context_usage_from_step_events` — 目的: OpenCode の会話でも進捗にコンテキストの使用量（prompt_tokens・context_max）が乗ることを守る。
+- `test_run_turn_uses_the_context_max_the_caller_passes` — 目的: チェーンでモデルを切り替えた後、呼び出し元（chat_persist）が渡した窓の大きさが使われること。
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`

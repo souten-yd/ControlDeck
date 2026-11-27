@@ -721,7 +721,7 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
             if force:
                 # 既存の PR を再利用するときは作り直した本文が付かないので、コメントで記録を残す
                 # （画面は「PR 本文にその旨が残る」と案内している。2026-11-27 の「それでも取り込む」）
-                _gh("pr", "comment", url.rstrip("/").split("/")[-1],
+                _gh("pr", "comment", url,   # URL で渡す（番号だけだと cwd のリポジトリに依って別の PR・失敗になる）
                     "--body", _forced_note(name, saved, username))
         else:
             summary_ = _diff_summary(box, head)

@@ -182,6 +182,7 @@ def test_adopt_can_be_forced_over_a_failed_check_but_not_over_changes(box, monke
     assert again["pr_url"] == result["pr_url"], "同じ作業場では PR を重ねて作らない"
     comments = [call for call in external["gh"] if call[:2] == ["pr", "comment"]]
     assert len(comments) == 1, external["gh"]
+    assert comments[0][2] == result["pr_url"], "番号だけでなく URL で渡す（cwd のリポジトリに依らない）"
     assert "不合格のまま再取り込み" in comments[0][comments[0].index("--body") + 1]
     # 確認の後に変更があれば force でも断る（確認で確かめた内容と取り込む内容が違うため）
     workspaces._update_meta(box.name, adopted=None)

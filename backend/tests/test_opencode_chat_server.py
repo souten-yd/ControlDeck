@@ -515,6 +515,31 @@ def test_run_turn_reports_context_usage_from_step_events(monkeypatch, tmp_path):
     assert last["gen_tokens"] == 102 and last["used_tokens"] == 5102, last
 
 
+def test_run_turn_uses_the_context_max_the_caller_passes(monkeypatch, tmp_path):
+    """目的: チェーンでモデルを切り替えた後、呼び出し元（chat_persist）が渡した窓の大きさが使われること。
+    根拠: 2026-11-28 のレビューで、run_turn の中で context_max を None に書き直していて、渡した値が
+    捨てられ、切り替える前のモデルの窓（20000）が出ていた。"""
+    from app.integrations.opencode import chat_server, provider
+
+    (tmp_path / "opencode.json").write_text(json.dumps({"model": "controldeck/auto"}))
+    monkeypatch.setattr(provider, "model_context_window", lambda model: 20000)
+    sid = "ses_1"
+    sequence = [
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "x" * 40}},
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    _fake_events(monkeypatch, sequence, [])
+    statuses = []
+
+    async def collect(item):
+        statuses.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                     on_tool=noop, on_permission=noop, on_status=collect, context_max=128000))
+    assert statuses and all(s["context_max"] == 128000 for s in statuses), statuses
+
+
 def test_run_turn_passes_child_permissions_and_survives_a_reconnect(monkeypatch, tmp_path):
     from app.integrations.opencode import chat_server
 
