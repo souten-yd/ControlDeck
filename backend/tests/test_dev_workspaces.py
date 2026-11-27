@@ -365,11 +365,11 @@ def test_workspace_api_requires_login_and_terminal_permission(repo, api, monkeyp
         assert anonymous.post("/api/v1/opencode/workspaces", json={"source": "controldeck"},
                               headers=CSRF_HEADERS).status_code in (401, 403)
     routes = {(route.path, tuple(sorted(route.methods))): route for route in router.routes if "workspaces" in route.path}
-    assert len(routes) == 24  # 渡す機器の選択（PUT ./devices）+ 画面の記録（一覧・配信・1 件の削除・作業場ぶんの削除・全作業場の合計と一斉削除）+ 動かす欄（lab: 状態・動かす・止める）+ 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる + 保存の時点の一覧・戻す
+    assert len(routes) == 25  # 渡す機器の選択（PUT ./devices）+ 画面の記録（一覧・配信・1 件の削除・作業場ぶんの削除・全作業場の合計と一斉削除）+ 動かす欄（lab: 状態・動かす・止める）+ 一覧・作る・消す + changes・check（GET/POST）・adopt + diff・merge（GET/POST）+ 進み具合 + ぶつかりを直させる + 確認で落ちた所を直させる（fix-check・2026-11-27）+ 保存の時点の一覧・戻す
     for route in routes.values():
-        # マージだけは管理者、直させる（会話へ送る）は送信と同じ workflows.run、ほかは terminal.use
+        # マージだけは管理者、会話へ送る直させる（ぶつかり・確認の落ち）は送信と同じ workflows.run、ほかは terminal.use
         wanted = ("settings.manage" if route.path.endswith(("/merge", "/devices"))
-                  else "workflows.run" if route.path.endswith("/resolve-conflict") else "terminal.use")
+                  else "workflows.run" if route.path.endswith(("/resolve-conflict", "/fix-check")) else "terminal.use")
         assert wanted in repr(route.dependant.dependencies[0].call.__closure__[0].cell_contents), route.path
 
 

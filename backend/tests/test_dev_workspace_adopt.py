@@ -163,6 +163,36 @@ def test_adopt_refuses_without_check_failed_check_changes_after_and_uncommitted(
     assert git(box.repo, "status", "--porcelain") == "?? d.txt", "断ったときはコミットもしない"
 
 
+def test_adopt_can_be_forced_over_a_failed_check_but_not_over_changes(box, monkeypatch, external):
+    """目的: 「それでも取り込む」（管理者の明示操作・2026-11-27 依頼）で、確認（テスト）に落ちていても
+    取り込めること。ただし force で守るのは合否だけ：確認の後に変更があれば従来どおり断る。
+    PR の本文に「不合格のまま取り込んだ」旨と確認の結果が残る。
+    根拠: 2026-11-27 利用者「『それでも取り込む』はエキスパート（細かい表示）の中」。導入時（2026-11-22）の
+    「不合格は断る」からの改訂で、上の test_adopt_refuses… が守っていた前提のうち合否だけを管理者に預ける。"""
+    run_check(box.name, report=FAIL_REPORT, passed=False)
+    with pytest.raises(workspaces.AdoptRefused, match="不合格"):
+        workspaces.adopt(box.name, "admin")
+    result = workspaces.adopt(box.name, "admin", force=True)
+    assert result["pr_url"].endswith("/pull/7")
+    create = [call for call in external["gh"] if call[:2] == ["pr", "create"]][0]
+    body = create[create.index("--body") + 1]
+    assert "不合格のまま取り込みました" in body and "[不合格] テスト" in body
+    # 既存の PR を再利用して「それでも取り込む」たびに、コメントでも記録を残す（作り直した本文は付かないため）
+    again = workspaces.adopt(box.name, "admin", force=True)
+    assert again["pr_url"] == result["pr_url"], "同じ作業場では PR を重ねて作らない"
+    comments = [call for call in external["gh"] if call[:2] == ["pr", "comment"]]
+    assert len(comments) == 1, external["gh"]
+    assert comments[0][2] == result["pr_url"], "番号だけでなく URL で渡す（cwd のリポジトリに依らない）"
+    assert "不合格のまま再取り込み" in comments[0][comments[0].index("--body") + 1]
+    # 確認の後に変更があれば force でも断る（確認で確かめた内容と取り込む内容が違うため）
+    workspaces._update_meta(box.name, adopted=None)
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "確認の後")
+    run_check(box.name, report=FAIL_REPORT, passed=False)
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "さらに後")
+    with pytest.raises(workspaces.AdoptRefused, match="流し直して"):
+        workspaces.adopt(box.name, "admin", force=True)
+
+
 def test_adopt_controldeck_pushes_from_export_repo_and_opens_pr_without_merging(box, monkeypatch, external):
     run_check(box.name)
     result = workspaces.adopt(box.name, "admin")
@@ -332,6 +362,36 @@ def test_api_controldeck_adopt_needs_settings_manage(box, api, monkeypatch, exte
     monkeypatch.setattr(deps, "user_permissions", lambda user: {"terminal.use", "settings.manage"})
     assert api.post(f"/api/v1/opencode/workspaces/{box.name}/adopt", json={"confirm": True},
                     headers=CSRF_HEADERS).status_code == 200
+
+
+def test_api_force_adopt_over_a_failed_check_needs_settings_manage(box, api, monkeypatch, external):  # noqa: F811
+    """目的: API の「それでも取り込む」（force）は管理者（settings.manage）だけで使えることを守る。
+    根拠: 2026-11-27 利用者依頼の「それでも取り込む」。通常の取り込み（terminal.use）より強い操作なので
+    権限を分け、監査ログに force と確認の合否を残す。"""
+    import json as json_
+
+    from app.database import SessionLocal
+    from app.models import AuditLog
+    from app.security import deps
+
+    run_check(box.name, report=FAIL_REPORT, passed=False)
+    base = f"/api/v1/opencode/workspaces/{box.name}"
+    monkeypatch.setattr(deps, "user_permissions", lambda user: {"terminal.use", "settings.manage"})
+    workspaces._update_meta(box.name, adopted=None)
+    r = api.post(f"{base}/adopt", json={"confirm": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 409 and "不合格" in r.json()["detail"], "force 無しは従来どおり断る"
+    monkeypatch.setattr(deps, "user_permissions", lambda user: {"terminal.use"})
+    r = api.post(f"{base}/adopt", json={"confirm": True, "force": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 403 and "settings.manage" in r.json()["detail"], "force は管理者だけ"
+    assert not external["push"], "断したときは外へ出さない"
+    monkeypatch.setattr(deps, "user_permissions", lambda user: {"terminal.use", "settings.manage"})
+    r = api.post(f"{base}/adopt", json={"confirm": True, "force": True}, headers=CSRF_HEADERS)
+    assert r.status_code == 200 and r.json()["pr_url"].endswith("/pull/7")
+    with SessionLocal() as db:
+        rows = list(db.execute(select(AuditLog).where(
+            AuditLog.action == "opencode.workspace.adopt")).scalars())
+    meta = json_.loads(rows[-1].metadata_json)
+    assert meta["force"] is True and meta["check_passed"] is False
 
 
 def test_suggested_title_skips_autosaves_and_falls_back_to_the_conversation(repo, monkeypatch):  # noqa: F811

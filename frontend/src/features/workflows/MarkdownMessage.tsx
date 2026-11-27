@@ -2,9 +2,10 @@
  *
  * AssistantChat から遅延読み込みする（ライブラリと KaTeX の CSS はアシスタント画面でだけ読む）。
  * 生の HTML は描かない（react-markdown の既定。回答に紛れた <script> などは文字のまま）。 */
-import { Children, isValidElement, memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { IconCheck, IconCopy } from "../../components/icons";
 import { writeClipboard } from "../../lib/clipboard";
+import { RunCommandContext } from "./RunCommandSheet";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -41,24 +42,44 @@ function nodeText(node: ReactNode): string {
 }
 
 /** ``` のコードブロック。上に細い帯を置き、右端にコピーボタン（見た目は小さく、押せる範囲は 44px）。
- * ボタンは横にずらす pre の外にあるので、長いコードを横へ動かしても右上に留まり、文字にも重ならない。 */
+ * ボタンは横にずらす pre の外にあるので、長いコードを横へ動かしても右上に留まり、文字にも重ならない。
+ * 2026-11-27: bash などのシェルの言語（と言語なしでコマンドに見えるもの）は「▶ 実行」も出す。
+ * RunCommandContext の provider がある所（AI アシスタントの会話・管理者）だけ。 */
 function CodeBlock({ children }: { children: ReactNode }) {
   const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+  const onRun = useContext(RunCommandContext);
+  const text = nodeText(children).replace(/\n$/, "");
+  const language = blockLanguage(children);
+  const command = shellCommandOf(text);
+  const runnable = Boolean(onRun) && command.trim() !== ""
+    && (SHELL_LANGUAGES.has(language) || (!language && looksLikeShellCommands(text)));
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   const copy = async () => {
     // 末尾の改行 1 つは markdown の仕組みで付くだけなので落とす。
-    const ok = await writeClipboard(nodeText(children).replace(/\n$/, ""));
+    const ok = await writeClipboard(text);
     setState(ok ? "done" : "failed");
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setState("idle"), 1800);
   };
   return (
     <div className="my-2 max-w-full overflow-hidden rounded-lg bg-zinc-900 text-zinc-100 dark:bg-black/40">
-      <div className="flex h-7 items-center justify-end px-1.5">
+      <div className="flex h-7 items-center justify-end gap-0.5 px-1.5">
         <span role="status" aria-live="polite" className={`mr-1 text-[11px] ${state === "failed" ? "text-red-300" : "text-emerald-300"}`}>
           {state === "done" ? "コピーしました" : state === "failed" ? "コピーできませんでした" : ""}
         </span>
+        {runnable && (
+          <button
+            type="button"
+            aria-label="ターミナルで実行"
+            data-testid="code-run"
+            onClick={() => onRun?.({ command, language })}
+            title="このコマンドを、確認の後に ControlDeck の Terminal で実行します"
+            className="relative flex h-7 items-center gap-1 rounded px-2 text-[11px] text-zinc-300 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-400 before:absolute before:-inset-x-1 before:-inset-y-2 before:content-['']"
+          >
+            ▶ 実行
+          </button>
+        )}
         <button
           type="button"
           aria-label="コードをコピー"
@@ -72,6 +93,40 @@ function CodeBlock({ children }: { children: ReactNode }) {
       <pre className="max-w-full overflow-x-auto px-2.5 pb-2.5 text-[12px] leading-snug [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">{children}</pre>
     </div>
   );
+}
+
+/** 実行できる言語の印（```bash など） */
+const SHELL_LANGUAGES = new Set(["bash", "sh", "shell", "console", "zsh"]);
+
+/** pre の子（code 要素）の className `language-…` から言語の印を取る */
+function blockLanguage(children: ReactNode): string {
+  for (const child of Children.toArray(children)) {
+    if (isValidElement<{ className?: string }>(child)) {
+      const match = /language-([\w#+-]+)/.exec(child.props.className ?? "");
+      if (match) return match[1].toLowerCase();
+    }
+  }
+  return "";
+}
+
+/** 端末へ流す本文: 行頭のプロンプトの印（$・% に続き空白）は外す。`$FOO` のような変数や
+ *  ヒアドキュメントの行は空白を要求することでそのまま残る。# はコメントとしてそのまま（端末で無害） */
+function shellCommandOf(text: string): string {
+  return text.split("\n").map((line) => line.replace(/^[$%][ \t]/, "")).join("\n").trim();
+}
+
+/** 言語なしのブロックをコマンドと見なすか。保守的に: 1〜5 行で、どの行も（$ の印を除いて）
+ *  空白で区切られた語の並びに見えるもの。コードに見える記号（{ } ( ) = ; ` など）があれば出さない。
+ *  誤って出すより見落とし（コピーはいつでもできる） */
+function looksLikeShellCommands(text: string): boolean {
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => line.trim() !== "");
+  if (lines.length === 0 || lines.length > 5) return false;
+  return lines.every((line) => {
+    const body = /^[$%]\s+/.test(line) ? line.replace(/^[$%]\s+/, "") : line.trim();
+    if (!body || body.length > 400) return false;
+    if (/[{}();=`]|->|=>/.test(body)) return false;
+    return body.split(/\s+/).every((word) => /^[\w.,:@/~"'%^\-]+$/.test(word));
+  });
 }
 
 const components: Components = {

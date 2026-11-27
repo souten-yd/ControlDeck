@@ -30,6 +30,7 @@ import { reportClientTiming } from "../../lib/clientTiming";
 import { ConfirmDialog } from "../../components/ui";
 import { RestoreDialog, restoreCode, type RestoreChoice } from "./RestoreDialog";
 import { WS_NEW, WS_PREFIX, WorkspaceBar, selectedWorkspace, workspaceModelPill, workspaceValue, type DevWorkspace, type WorkspaceProgressItem } from "./DevWorkspace";
+import { RunCommandContext, RunCommandSheet, type RunCommandRequest } from "./RunCommandSheet";
 import { LS_CONV, targetInfo, type CapabilityId, type DevTargetState } from "./workspaceTargets";
 import { writeClipboard } from "../../lib/clipboard";
 import {
@@ -145,6 +146,8 @@ export default function AssistantChat() {
   const [routing, setRouting] = useState(false);
   // 生成統計（右下表示）: フェーズ / tok/s / コンテキスト使用量
   const [genStats, setGenStats] = useState<GenStats | null>(null);
+  // 返事の中のコマンドを Terminal で実行する確認のシート（▶ 実行）
+  const [runRequest, setRunRequest] = useState<RunCommandRequest | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -450,6 +453,7 @@ export default function AssistantChat() {
             setGenStats({
               phase: d.phase || "", tokPerSec: d.tok_per_sec ?? 0, genTokens: d.gen_tokens ?? 0,
               promptTokens: d.prompt_tokens ?? null, contextMax: d.context_max ?? null, detail: d.detail || "",
+              usedTokens: d.used_tokens ?? null,
             });
           } else if (d.type === "todos") {
             patchMsg((m) => ({ ...m, todos: d.todos as OpenCodeTodo[] }));
@@ -1825,8 +1829,22 @@ export default function AssistantChat() {
   };
   const canRetry = !busy && !input.trim() && attachments.length === 0;
 
+  // 返事の中のコマンドを Terminal で実行する（2026-11-27 依頼・管理者だけ。
+  // 場所はその会話の作業場か、選んでいなければホーム）
+  const runWorkspace = selectedWorkspace(codeProject, workspaces);
+  const runPlaceValue = runWorkspace?.repo_path ?? null;
+  const runPlaceLabel = runWorkspace ? `作業場 ${runWorkspace.name}` : "ホーム";
+  const ranInTerminal = (sessionId: string, text: string) => {
+    try {
+      sessionStorage.setItem("control-deck:terminal-autorun", JSON.stringify({ sessionId, text }));
+    } catch { /* 受け渡せなくても Terminal は開く（手で貼ればよい） */ }
+    setRunRequest(null);
+    navigate(`/terminal?session=${encodeURIComponent(sessionId)}`);
+  };
+
   return (
     <StopContext.Provider value={runningJob ? () => void stopRunning() : null}>
+    <RunCommandContext.Provider value={can("settings.manage") ? (request) => setRunRequest(request) : null}>
     <DiffAskContext.Provider value={busy || hasContent ? null : (text) => { setCodeAgent("build"); rememberPrefs({ agent: "build" }); void send(text, "build", "code"); }}>
     <section
       data-assistant-shell
@@ -1860,6 +1878,10 @@ export default function AssistantChat() {
           onConfirm={() => void makeSecret()}
           onClose={() => setConfirmSecret(false)}
         />
+      )}
+      {runRequest && (
+        <RunCommandSheet request={runRequest} placeLabel={runPlaceLabel} placeValue={runPlaceValue}
+          onClose={() => setRunRequest(null)} onRan={ranInTerminal} />
       )}
       {deletingConversation && (
         <ConfirmDialog
@@ -2498,6 +2520,7 @@ export default function AssistantChat() {
       </div>
     </section>
     </DiffAskContext.Provider>
+    </RunCommandContext.Provider>
     </StopContext.Provider>
   );
 }

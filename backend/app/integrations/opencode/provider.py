@@ -939,6 +939,16 @@ def _model_limits(model: str) -> dict[str, int] | None:
     return None
 
 
+def model_context_window(model: str) -> int | None:
+    """モデルの窓の大きさ（limit.context と同じ式）。UI の統計（使っている量/全体・2026-11-27 依頼）用。
+    分からなければ None（送らない・表示しない）。"""
+    limits = _model_limits(model)
+    try:
+        return int(limits["context"]) if limits and limits.get("context") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _runtime_config(
     job_id: str,
     base_url: str,

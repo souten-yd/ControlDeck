@@ -32,6 +32,10 @@ const PHASE_LABEL: Record<string, string> = {
   tool: "道具を実行中", background: "裏のエージェント作業中", retry: "再試行待ち", code: "OpenCode 実行中",
 };
 
+/** 生成統計の下の行（入力欄の下）: 状態・秒・tok/s は左、コンテキストの使用量（使っている量/全体）は
+ *  行の右端。2026-11-27 利用者「右下に 5K/20K で常に出す」「数値だけでなく、目でひと目で分かる棒を必ず出す
+ *  （数値の右側）」「80% を超えたら琥珀、95% を超えたら赤（数値と棒の両方）」「生成が終わった後も最後の値を
+ *  次の送信まで出したまま」「幅が狭くても棒は消さない（40px まで縮め、足りなければ左の秒・tok/s を省く）」。 */
 export function GenStatsBadge({ stats, busy }: {
   stats: GenStats | null;
   busy: boolean;
@@ -46,7 +50,7 @@ export function GenStatsBadge({ stats, busy }: {
     const timer = window.setInterval(() => tick((n) => n + 1), 1000);
     return () => window.clearInterval(timer);
   }, [busy]);
-  const row = "num flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap";
+  const row = "num flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden whitespace-nowrap";
   const sep = <span className="text-zinc-300 dark:text-zinc-600">·</span>;
   const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   if (!stats) {
@@ -61,23 +65,37 @@ export function GenStatsBadge({ stats, busy }: {
   const label = done ? "完了" : stats.phase === "tool" && stats.detail ? `${stats.detail} を実行中` : PHASE_LABEL[stats.phase] ?? "生成中";
   const dot = done ? "bg-zinc-400" : stats.phase === "thinking" ? "animate-pulse bg-violet-500"
     : ["loading", "waiting", "prefill", "retry"].includes(stats.phase) ? "animate-pulse bg-amber-500" : "animate-pulse bg-emerald-500";
-  const used = (stats.promptTokens ?? 0) + stats.genTokens;
-  const pct = stats.contextMax ? Math.min(100, (used / stats.contextMax) * 100) : 0;
+  // コンテキストの使用量の分子。OpenCode は used_tokens（直近 step の入力＋その後の生成）を送る:
+  // そこへ全 step の累積 gen_tokens を足すと、前の step の出力が直近 step の入力に既に入っているので
+  // 二重に数える（2026-11-27 レビューで発見）。ふつうのチャットは 1 回の呼び出しなので prompt + gen で正しい。
+  const used = stats.usedTokens ?? (stats.promptTokens !== null ? stats.promptTokens + stats.genTokens : null);
+  const hasContext = used !== null && stats.contextMax !== null && stats.contextMax > 0;
+  const pct = hasContext ? Math.min(100, (used / stats.contextMax!) * 100) : 0;
+  // 80% を超えたら琥珀、95% を超えたら赤（数値と棒の両方）
+  const tone = pct > 95 ? "text-red-600 dark:text-red-400" : pct > 80 ? "text-amber-600 dark:text-amber-400" : "";
+  const bar = pct > 95 ? "bg-red-500" : pct > 80 ? "bg-amber-500" : "bg-accent-500";
   return (
     <span className={`${row} ${done ? "opacity-60" : ""}`} data-gen-phase={done ? "done" : stats.phase} title={stats.detail || undefined}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
-      {label}
-      {!done && <>{sep}{elapsed} 秒</>}
-      {stats.tokPerSec > 0 && <>{sep}{stats.tokPerSec.toFixed(1)} tok/s</>}
-      {stats.contextMax ? (
-        <>{sep}<span className="flex items-center gap-1.5" title={`コンテキスト ${used.toLocaleString()} / ${stats.contextMax.toLocaleString()} トークン`}>
-          <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-            <span className="block h-full rounded-full bg-accent-500 transition-[width] duration-500" style={{ width: `${pct}%` }} />
+      <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+        {label}
+        {/* 幅が狭いときは左の秒・tok/s を省く（棒は消さない。2026-11-27 依頼） */}
+        {!done && <span className="max-[420px]:hidden">{sep}{elapsed} 秒</span>}
+        {stats.tokPerSec > 0 && <span className="max-[420px]:hidden">{sep}{stats.tokPerSec.toFixed(1)} tok/s</span>}
+      </span>
+      {/* コンテキストの使用量は行の右端。数値の右に棒（64px → 狭い画面では 40px） */}
+      {hasContext ? (
+        <span data-testid="gen-context" className="ml-auto flex shrink-0 items-center gap-2 pl-2"
+          title={`コンテキスト ${used!.toLocaleString()} / ${stats.contextMax!.toLocaleString()} トークン`}>
+          <span className={`text-[11px] ${tone}`}>{fmtTok(used!)}/{fmtTok(stats.contextMax!)}</span>
+          <span className="h-[6px] w-16 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-600 max-[420px]:w-10">
+            <span className={`block h-full rounded-full transition-[width] duration-500 ${bar}`} style={{ width: `${pct}%` }} />
           </span>
-          {fmtTok(used)}/{fmtTok(stats.contextMax)}
-        </span></>
+        </span>
       ) : stats.genTokens > 0 ? (
-        <>{sep}<span>{fmtTok(stats.genTokens)} tok</span></>
+        <span data-testid="gen-context" className="ml-auto shrink-0 pl-2 text-[11px]">
+          {sep}{fmtTok(stats.genTokens)} tok
+        </span>
       ) : null}
     </span>
   );

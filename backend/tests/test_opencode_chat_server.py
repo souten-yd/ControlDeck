@@ -302,7 +302,7 @@ def test_code_mode_records_tools_and_permissions_and_answers_them(admin_client, 
 
     hold = asyncio.Event()
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         await on_tool({"id": "call_1", "name": "shell", "status": "running", "input": {"command": "rm -rf build"}, "output": ""})
         await on_permission({"id": "per_1", "action": "shell", "resources": ["rm -rf build"], "save": [],
                              "tool": "call_1", "status": "pending"})
@@ -395,6 +395,149 @@ def test_permission_mode_api_saves_and_applies_to_running_servers(admin_client, 
     assert chat_server.get_mode(chat_server.load(mine.key)) == "ask"
     assert chat_server.get_mode(chat_server.load(other.key)) == "ask"
     admin_client.put("/api/v1/chat/opencode/permission-mode", json={"mode": "auto"}, headers=CSRF_HEADERS)
+
+
+def test_run_turn_token_counts_follow_delta_text_length(monkeypatch, tmp_path):
+    """目的: 進捗の gen_tokens・tok_per_sec が delta の「回数」ではなく文字数の見積もりに従うことを守る。
+    根拠: 2026-11-27 利用者「7 秒・7.5 tok/s・599 tok と出る（599÷7≒85 のはず）」。1 回の delta に
+    複数のトークンが入るのに回数を数えていた。見積もりは ASCII 4 文字で 1、それ以外（日本語）は 1 文字で 1。"""
+    from app.integrations.opencode import chat_server
+
+    sid = "ses_1"
+    # 599 文字の日本語（599）+ 40 文字の ASCII（10）= 見積もり 609。回数を数えると 2 になっていた
+    sequence = [
+        {"type": "session.reasoning.delta", "data": {"sessionID": sid, "delta": "こ" * 599}},
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "x" * 40}},
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    calls: list = []
+    _fake_events(monkeypatch, sequence, calls)
+    statuses = []
+
+    async def collect(item):
+        statuses.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                     on_tool=noop, on_permission=noop, on_status=collect))
+    assert statuses, "進捗が 1 つも届きませんでした"
+    last = statuses[-1]
+    assert last["gen_tokens"] == 609, last                      # 回数 (2) ではなく文字数の見積もり
+    assert abs(last["tok_per_sec"] - 609 / 4) < 0.1, last       # 直近 4 秒の合計 ÷ 4（全部同じ窓の中）
+
+
+def test_run_turn_corrects_token_total_with_step_usage(monkeypatch, tmp_path):
+    """目的: step の完了イベントに使用量（tokens.output・reasoning）があるとき、見積もりの合計を実測で
+    正すことを守る（二重に数えない・step の後の分は見積もりを続ける）。
+    根拠: 2026-11-27 利用者の依頼。使用量は OpenCode v2.4.2 本体で session.step.ended の schema を確認した。"""
+    from app.integrations.opencode import chat_server
+
+    sid = "ses_1"
+    sequence = [
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "a" * 40}},   # 見積もり 10
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "あ" * 10}},   # 見積もり 10
+        {"type": "session.tool.input.started", "data": {"sessionID": sid, "id": "t1", "name": "shell"}},
+        {"type": "session.tool.success", "data": {"sessionID": sid, "id": "t1", "content": []}},
+        # この step の実測: 123 + 4 = 127（それまでの見積もり 20 の代わり）
+        {"type": "session.step.ended", "data": {"sessionID": sid, "tokens": {"output": 123, "reasoning": 4}}},
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "b" * 8}},     # +2（step の後の分）
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    calls: list = []
+    _fake_events(monkeypatch, sequence, calls)
+    statuses = []
+
+    async def collect(item):
+        statuses.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                     on_tool=noop, on_permission=noop, on_status=collect))
+    gens = [s["gen_tokens"] for s in statuses]
+    # 使用量が届いた時点で見積もり (20) は捨てられ、実測 127 に置き換わる
+    assert 127 in gens, gens
+    # step の後に来た delta の分だけ足し、以降は 127 + 2
+    assert gens[-1] == 129, gens
+    assert 20 not in gens[gens.index(127):], gens               # 正された後は見積もりに戻らない
+    last = statuses[-1]
+    # tok/s は見積もりの窓のまま（この step の delta 10 + 10 + 2 = 22 ÷ 4）
+    assert abs(last["tok_per_sec"] - 22 / 4) < 0.1, last
+
+
+def test_run_turn_reports_context_usage_from_step_events(monkeypatch, tmp_path):
+    """目的: OpenCode の会話でも進捗にコンテキストの使用量（prompt_tokens・context_max）が乗ることを守る。
+    画面は統計の行の右端に「使っている量/全体」（5K/20K）を出す（2026-11-27 依頼）。
+    prompt_tokens は step の完了の使用量（input＋cache の読み書き）の直近の値、context_max は provider が
+    OpenCode へ渡す limit.context と同じ式（分からなければ None = 送らない）。"""
+    from app.integrations.opencode import chat_server, provider
+
+    (tmp_path / "opencode.json").write_text(json.dumps({"model": "controldeck/auto"}))
+    monkeypatch.setattr(provider, "model_context_window", lambda model: 20000 if model == "auto" else None)
+    sid = "ses_1"
+    sequence = [
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "x" * 40}},
+        # この step の使用量: 入力 4600 + cache 読み 300・書き 100、生成 99 + 1
+        {"type": "session.step.ended", "data": {"sessionID": sid,
+            "tokens": {"input": 4600, "output": 99, "reasoning": 1, "cache": {"read": 300, "write": 100}}}},
+        {"type": "session.tool.input.started", "data": {"sessionID": sid, "id": "t1", "name": "shell"}},
+        {"type": "session.tool.success", "data": {"sessionID": sid, "id": "t1", "content": []}},
+        # 次の step（失敗の step でも使用量は届く）: 入力 5100
+        {"type": "session.step.failed", "data": {"sessionID": sid, "error": {"message": "rate limit"},
+                                                 "tokens": {"input": 5100, "output": 0}}},
+        # その後の生成: 見積もり 2（used_tokens は直近 step の入力＋その後の分。累積 gen_tokens は足さない）
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "y" * 8}},
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    calls: list = []
+    _fake_events(monkeypatch, sequence, calls)
+    statuses = []
+
+    async def collect(item):
+        statuses.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                     on_tool=noop, on_permission=noop, on_status=collect))
+    assert statuses, "進捗が 1 つも届きませんでした"
+    # 窓の大きさは最初から乗る。入力の分は step の完了から（それまでは None = 嘘の分子を出さない）
+    assert all(s["context_max"] == 20000 for s in statuses), statuses
+    first = next(s for s in statuses if s["phase"] == "answer")
+    assert first["prompt_tokens"] is None
+    stepped = next(s for s in statuses if s["gen_tokens"] == 100)      # 99 + 1 の実測に置き換わった所
+    assert stepped["prompt_tokens"] == 5000                            # 4600 + 300 + 100
+    assert stepped["used_tokens"] == 5000                              # 直近 step の入力（その後の分はまだ無い）
+    # 失敗の step でも使用量は届き、直近の値として出る
+    assert any(s["prompt_tokens"] == 5100 for s in statuses), statuses
+    last = statuses[-1]
+    # used_tokens は直近 step の入力（5100）＋その後の見積もり（2）。全 step の累積 gen_tokens（102）を
+    # 足すと前の step の出力が直近 step の入力に既に入っていて二重になるので、別の値として送る
+    assert last["prompt_tokens"] == 5100 and last["context_max"] == 20000
+    assert last["gen_tokens"] == 102 and last["used_tokens"] == 5102, last
+
+
+def test_run_turn_uses_the_context_max_the_caller_passes(monkeypatch, tmp_path):
+    """目的: チェーンでモデルを切り替えた後、呼び出し元（chat_persist）が渡した窓の大きさが使われること。
+    根拠: 2026-11-28 のレビューで、run_turn の中で context_max を None に書き直していて、渡した値が
+    捨てられ、切り替える前のモデルの窓（20000）が出ていた。"""
+    from app.integrations.opencode import chat_server, provider
+
+    (tmp_path / "opencode.json").write_text(json.dumps({"model": "controldeck/auto"}))
+    monkeypatch.setattr(provider, "model_context_window", lambda model: 20000)
+    sid = "ses_1"
+    sequence = [
+        {"type": "session.text.delta", "data": {"sessionID": sid, "delta": "x" * 40}},
+        {"type": "session.execution.succeeded", "data": {"sessionID": sid}},
+    ]
+    _fake_events(monkeypatch, sequence, [])
+    statuses = []
+
+    async def collect(item):
+        statuses.append(dict(item))
+
+    noop = lambda *_: asyncio.sleep(0)  # noqa: E731
+    asyncio.run(chat_server.run_turn(_server(tmp_path), sid, "x", on_text=noop, on_reasoning=noop,
+                                     on_tool=noop, on_permission=noop, on_status=collect, context_max=128000))
+    assert statuses and all(s["context_max"] == 128000 for s in statuses), statuses
 
 
 def test_run_turn_passes_child_permissions_and_survives_a_reconnect(monkeypatch, tmp_path):

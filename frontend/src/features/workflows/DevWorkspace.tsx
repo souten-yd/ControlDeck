@@ -129,8 +129,15 @@ export function ago(seconds: number): string {
 }
 
 const BTN = "min-h-11 shrink-0 rounded-lg border border-zinc-300 px-3 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800";
+/** 主の操作（1 つだけ・状態で切り替わる）。合格後に押せる「取り込む」と同じ形 */
+const PRIMARY = "min-h-11 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:bg-sky-600/15 disabled:text-sky-700 dark:disabled:text-sky-400";
 
-/** 作業場の結果のカード: 変更の要約・関門・取り込む。OpenCode の回が終わるたびに読み直す。 */
+/** 作業場の結果のカード: 変更の要約・確認（テスト・旧「関門」）・取り込む。OpenCode の回が終わるたびに読み直す。
+ *
+ * 2026-11-27 利用者「関門がわかりにくい」: 文言を「確認（テスト）」にそろえ、状態は 1 つの札
+ * （未確認・確認中…・合格・不合格（n 件））にした。主の操作も状態で 1 つだけ
+ * （未確認→確認してから取り込む・不合格→直させる・合格→取り込む）。「それでも取り込む」は
+ * エキスパート（細かい表示）の中で、管理者だけ。 */
 export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspace; busy: boolean }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
@@ -141,10 +148,14 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const [files, setFiles] = useState(false);
   const [diff, setDiff] = useState(false);
   const [adopting, setAdopting] = useState(false);
+  const [adoptForce, setAdoptForce] = useState(false);
   const [working, setWorking] = useState(false);
   const [asking, setAsking] = useState(false);
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
+  /** 「確認してから取り込む」の待ちの印（押した時刻）。0 = 待っていない。時刻にして、流し損ねたまま
+   * 残っても（running を見逃したとき）後の別の確認に誤って取り込みの確認を開かせない */
+  const adoptAfterCheck = useRef(0);
   const wasBusy = useRef(busy);
   const changesKey = ["workspace-changes", name];
   const { data: info, error } = useQuery({
@@ -181,8 +192,30 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
     wasBusy.current = busy;
   }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (wasRunning.current && !running) void qc.invalidateQueries({ queryKey: changesKey });
+    if (!wasRunning.current || running) {
+      wasRunning.current = running;
+      return;
+    }
     wasRunning.current = running;
+    // 「確認してから取り込む」: 確認が終わったら結果を読み直し、合格のときだけ取り込みの確認へ進む。
+    // 待ちは 15 分で失効（running を見逃して残っていても、後の別の確認に誤って開かせない）
+    const pending = adoptAfterCheck.current && Date.now() - adoptAfterCheck.current < 15 * 60_000;
+    adoptAfterCheck.current = 0;
+    if (!pending) {
+      void qc.invalidateQueries({ queryKey: changesKey });
+      return;
+    }
+    void (async () => {
+      await qc.invalidateQueries({ queryKey: changesKey });
+      const fresh = qc.getQueryData<WorkspaceChanges>(changesKey);
+      if (fresh?.check?.passed && !fresh.check.stale) {
+        setTitle(fresh.suggested_title ?? "");
+        setAdoptForce(false);
+        setAdopting(true);
+      } else {
+        show("確認（テスト）で落ちた項目があります。直させるか、内容を確かめてください", "error");
+      }
+    })();
   }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const check = info?.check ?? null;
@@ -193,15 +226,31 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
   const ready = Boolean(check?.passed && !check.stale) && !adopted && !running && canAdoptHere;
   const target = isBody ? "GitHub に PR を作ります（マージはしません）" : `元のリポジトリに ws/${name} のブランチとして取り込みます`;
 
-  // 最後の関門が「画面の見た目」だけで落ちたか（画像を読むモデルの目の誤検出を、管理者が人の目で確かめて外せる）
+  // 最後の確認が「画面の見た目」だけで落ちたか（画像を読むモデルの目の誤検出を、管理者が人の目で確かめて外せる）
   const onlyVisualFailed = Boolean(check && !check.passed && !check.stale && check.items.some((i) => i.status === "ng")
     && check.items.filter((i) => i.status === "ng").every((i) => i.name.includes("見た目")));
-  const runCheck = async (skipVisual = false) => {
+  const runCheck = async (skipVisual = false, forAdopt = false) => {
+    // 意図の違う確認（見た目の外す・取り込んだ後の再確認）を始めたら「確認してから取り込む」の待ちは消す
+    if (!forAdopt) adoptAfterCheck.current = 0;
     try {
       await api(`${base}/check`, { method: "POST", ...(skipVisual ? { json: { skip_visual: true } } : {}) });
       await qc.invalidateQueries({ queryKey: ["workspace-check", name] });
     } catch (e) {
-      show(e instanceof Error ? e.message : "関門を流せませんでした", "error");
+      adoptAfterCheck.current = 0;
+      show(e instanceof Error ? e.message : "確認（テスト）を流せませんでした", "error");
+    }
+  };
+  // 確認で落ちた内容を、この作業場で動いた同じ会話の OpenCode に直させる（resolve-conflict と同じ流れ）
+  const askFix = async () => {
+    if (asking || working) return;
+    setAsking(true);
+    try {
+      await api(`${base}/fix-check`, { method: "POST" });
+      show("落ちた確認の内容を OpenCode に直させる文を会話へ送りました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "OpenCode に直させる文を送れませんでした", "error");
+    } finally {
+      setAsking(false);
     }
   };
   const askResolve = async () => {
@@ -221,7 +270,8 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
     if (working) return;
     setWorking(true);
     try {
-      await api(`${base}/adopt`, { method: "POST", json: { confirm: true, commit_message: info?.dirty ? message.trim() : "", ...(isBody && title.trim() ? { title: title.trim() } : {}) } });
+      await api(`${base}/adopt`, { method: "POST", json: { confirm: true, force: adoptForce,
+        commit_message: info?.dirty ? message.trim() : "", ...(isBody && title.trim() ? { title: title.trim() } : {}) } });
       await qc.invalidateQueries({ queryKey: changesKey });
       setAdopting(false);
       show(isBody ? "PR を作りました" : `ブランチ ws/${name} として取り込みました`);
@@ -234,9 +284,19 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
     }
   };
 
-  const checkLabel = running ? "関門を流しています…" : !check ? "関門は未実施" : check.stale ? "関門の後に変更あり" : check.passed ? "関門 合格" : "関門 不合格";
-  const checkTone = running || !check || check.stale ? "text-zinc-500 dark:text-zinc-400"
-    : check.passed ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400";
+  // 状態は 1 つの札で（2026-11-27 依頼）: 未確認 / 確認中… / 合格 / 不合格（n 件）
+  const failedItems = check && !check.passed && !check.stale ? check.items.filter((i) => i.status === "ng") : [];
+  const checkStatus: "unchecked" | "running" | "passed" | "failed" =
+    running ? "running" : !check || check.stale ? "unchecked" : check.passed ? "passed" : "failed";
+  const checkLabel = checkStatus === "running" ? "確認中…" : checkStatus === "passed" ? "合格"
+    : checkStatus === "failed" ? `不合格（${failedItems.length} 件）` : "未確認";
+  const checkTone = checkStatus === "passed" ? "text-emerald-700 dark:text-emerald-400"
+    : checkStatus === "failed" ? "text-red-700 dark:text-red-400" : "text-zinc-500 dark:text-zinc-400";
+  const checkNote = checkStatus === "running" ? "テストを流しています。終わったらこの画面が自動で更新されます"
+    : checkStatus === "passed" ? "テストに合格しています。このまま取り込めます"
+      : checkStatus === "failed" ? "テストに落ちています。直させるか、落ちた内容を確かめてください"
+        : check?.stale ? "確認の後に変更があるので、もう一度確かめます"
+          : "取り込む前に、テストを流して壊れていないか確かめます";
   return (
     <div data-testid="workspace-result" className="mb-2 min-w-0 rounded-lg border border-sky-200 bg-white text-xs dark:border-sky-900 dark:bg-zinc-900">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
@@ -312,25 +372,63 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
               {check.items.filter((i) => i.status === "ng").map((i) => <li key={i.name}>{i.name}: {i.message}</li>)}
             </ul>
           )}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => void runCheck()} disabled={running || busy} className={BTN}>
-              {running ? "関門を流しています…" : "関門を流す"}
-            </button>
-            {onlyVisualFailed && can("settings.manage") && !running && (
-              <button type="button" data-testid="workspace-check-skip-visual" onClick={() => void runCheck(true)} disabled={busy}
-                title="画像を読むモデルの指摘を、撮影を見て人が確かめた場合に。この項目だけ外して関門を流し直し、外したことは記録に残ります"
-                className={BTN}>
-                見た目は確かめた（外して流す）
+          {/* 説明は 1 行だけ（2026-11-27 依頼） */}
+          <p data-testid="workspace-check-note" className="text-zinc-500 dark:text-zinc-400">{checkNote}</p>
+          {/* 主の操作は 1 つ。状態で切り替わる（未確認→確認してから取り込む・不合格→直させる・合格→取り込む） */}
+          <div className="flex flex-wrap items-center gap-2">
+            {!adopted && checkStatus === "unchecked" && (
+              <button type="button" data-testid="workspace-check-and-adopt"
+                onClick={() => { adoptAfterCheck.current = Date.now(); void runCheck(false, true); }}
+                disabled={running || busy}
+                title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります（確認は流せます）" : "テストを流して、合格なら取り込みへ進みます"}
+                className={PRIMARY}>
+                確認してから取り込む
               </button>
             )}
-            {info.file_count > 0 && <ReviewButton className="text-sm" />}
-            {!adopted && (
-              <button type="button" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdopting(true); }} disabled={!ready}
-                title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "関門が合格で、その後に変更が無いときに押せます" : ""}
-                className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:bg-sky-600/15 disabled:text-sky-700 dark:disabled:text-sky-400">
+            {!adopted && checkStatus === "running" && (
+              <button type="button" data-testid="workspace-check-and-adopt" disabled className={PRIMARY}>確認中…</button>
+            )}
+            {!adopted && checkStatus === "passed" && (
+              <button type="button" data-testid="workspace-adopt" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdoptForce(false); setAdopting(true); }}
+                disabled={!ready}
+                title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "確認が合格で、その後に変更が無いときに押せます" : ""}
+                className={PRIMARY}>
                 取り込む
               </button>
             )}
+            {!adopted && checkStatus === "failed" && (
+              <button type="button" data-testid="workspace-fix-check" onClick={() => void askFix()} disabled={asking || busy}
+                title="落ちた確認の内容を、この作業場で動いた同じ会話の OpenCode に直させる文として送ります"
+                className={PRIMARY}>
+                {asking ? "送っています…" : "直させる"}
+              </button>
+            )}
+            {adopted && checkStatus === "unchecked" && !running && !busy && (
+              <button type="button" onClick={() => void runCheck()} className={BTN}>
+                確認（テスト）を流す
+              </button>
+            )}
+            {info.file_count > 0 && <ReviewButton className="text-sm" />}
+            {/* エキスパート向けの細かい操作（2026-11-27 依頼: 「それでも取り込む」はここへ） */}
+            <details data-testid="workspace-expert" className="min-w-0 text-zinc-500 dark:text-zinc-400">
+              <summary className="min-h-11 cursor-pointer select-none py-2 text-xs">細かい表示</summary>
+              <div className="flex flex-wrap gap-2 pb-1">
+                {onlyVisualFailed && can("settings.manage") && !running && (
+                  <button type="button" data-testid="workspace-check-skip-visual" onClick={() => void runCheck(true)} disabled={busy}
+                    title="画像を読むモデルの指摘を、撮影を見て人が確かめた場合に。この項目だけ外して確認を流し直し、外したことは記録に残ります"
+                    className={BTN}>
+                    見た目は確かめた（外して流す）
+                  </button>
+                )}
+                {checkStatus === "failed" && !adopted && can("settings.manage") && (
+                  <button type="button" data-testid="workspace-adopt-anyway" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdoptForce(true); setAdopting(true); }}
+                    title="確認（テスト）に不合格でも取り込みます。管理者のみ。監査ログと、PR を作るときは PR の本文（既存ならコメント）に残ります"
+                    className={BTN}>
+                    それでも取り込む
+                  </button>
+                )}
+              </div>
+            </details>
           </div>
           {adopted && (
             <div data-testid="workspace-adopted" className="flex min-w-0 flex-wrap items-center gap-2 text-emerald-700 dark:text-emerald-400">
@@ -347,8 +445,12 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
         </div>
       )}
       {adopting && (
-        <ConfirmDialog title="取り込む" danger={false} message={target} confirmLabel="取り込む" busy={working}
+        <ConfirmDialog title={adoptForce ? "それでも取り込む" : "取り込む"} danger={false} message={target}
+          confirmLabel={adoptForce ? "それでも取り込む" : "取り込む"} busy={working}
           disabled={Boolean(info?.dirty) && !message.trim()} onConfirm={() => void adopt()} onClose={() => setAdopting(false)}>
+          {adoptForce && (
+            <p className="mt-3 text-red-600 dark:text-red-400">確認（テスト）に不合格のまま取り込みます（管理者の操作・監査ログと、PR を作るときは PR の本文にその旨が残ります）。</p>
+          )}
           {isBody && (
             <label className="mt-3 block text-xs text-zinc-600 dark:text-zinc-400">
               PR の題

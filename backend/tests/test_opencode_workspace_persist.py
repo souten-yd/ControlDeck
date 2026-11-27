@@ -49,7 +49,7 @@ def _fake(monkeypatch, tmp_path, turn, *, autosave_results=None, chain=None, swi
         return None
 
     async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission,
-                        agent="build", on_status=None):
+                        agent="build", on_status=None, **_kw):
         calls.setdefault("turns", []).append((sid, text))
         return await turn(on_text)
 

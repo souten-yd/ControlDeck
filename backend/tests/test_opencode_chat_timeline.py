@@ -49,7 +49,7 @@ def _fake_opencode(monkeypatch, tmp_path, resolved: list):
     async def fake_ready(url):
         return None
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         AGENTS.append(agent)
         await on_reasoning("まず")
         await on_reasoning("見る。")
@@ -121,7 +121,7 @@ def test_changing_the_project_starts_a_new_session_and_hands_over(admin_client, 
         created.append(f"ses_{len(created)}")
         return created[-1]
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         turns.append((sid, text))
         await on_text("前の回答です。")
         return {"status": "succeeded", "error": ""}
@@ -172,7 +172,7 @@ def test_changes_are_recorded_and_the_latest_turn_can_be_reverted(admin_client, 
     reverted: list[tuple[str, str]] = []
     count = {"n": 0}
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         count["n"] += 1
         await on_status({"phase": "waiting", "message_id": f"msg_{count['n']}"})
         await on_text("直しました")
@@ -215,7 +215,7 @@ def test_a_queued_request_can_be_told_to_the_running_turn(admin_client, monkeypa
     told: list[str] = []
     release = {"go": False}
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         while not release["go"]:
             await asyncio.sleep(0.02)
         return {"status": "succeeded", "error": ""}
@@ -262,7 +262,7 @@ def test_the_action_list_records_when_it_was_updated_and_the_request_asks_for_up
     _fake_opencode(monkeypatch, tmp_path, [])
     prompts: list[str] = []
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         prompts.append(text)
         await on_tool({"id": "t1", "name": "todowrite", "status": "completed",
                        "input": {"todos": [{"content": "作る", "status": "in_progress"}]}})
@@ -421,7 +421,7 @@ def test_a_conversation_is_titled_when_it_starts_and_todos_keep_their_times(admi
     resolved: list = []
     _fake_opencode(monkeypatch, tmp_path, resolved)
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         await on_status({"phase": "prefill", "detail": "読み込み"})
         await on_tool({"id": "t", "name": "todowrite", "status": "completed", "output": "",
                        "input": {"todos": [{"content": "設計", "status": "completed"}, {"content": "実装", "status": "in_progress"},
@@ -489,7 +489,7 @@ def test_attached_images_are_given_to_opencode_when_its_model_reads_images(admin
     _fake_opencode(monkeypatch, tmp_path, resolved)
     got: list = []
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, files=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, files=None, **_kw):
         got.append(files)
         await on_text("見ました。")
         return {"status": "succeeded", "error": ""}
@@ -547,7 +547,7 @@ def test_telling_is_refused_while_opencode_waits_for_an_answer_to_its_question(a
     release = {"go": False}
     asked = threading.Event()   # 仮の OpenCode が質問を出し終えた（これより先に割り込むと、割り込みが通ってしまい揺れていた）
 
-    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         await on_tool({"id": "call_q", "name": "question", "status": "running", "input": {"questions": []}, "output": ""})
         asked.set()
         while not release["go"]:

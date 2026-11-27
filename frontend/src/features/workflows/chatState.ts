@@ -149,6 +149,9 @@ export interface CompactionNote { tokens_before?: number; tokens_after?: number;
 export interface GenStats {
   phase: string; tokPerSec: number; genTokens: number;
   promptTokens: number | null; contextMax: number | null; detail?: string;
+  /** コンテキストの使用量の分子（OpenCode だけ送る。直近 step の入力＋その後の生成）。
+   *  無いとき（ふつうのチャット）は promptTokens + genTokens で計る。 */
+  usedTokens?: number | null;
 }
 
 export function settledStatus(status: unknown): string {

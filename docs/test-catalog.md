@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 277 ファイル、2859 テスト（目的の未記入 93 ファイル）
-- E2E: 150 spec、342 テスト
+- backend: 277 ファイル、2867 テスト（目的の未記入 93 ファイル）
+- E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
 
@@ -1201,6 +1201,7 @@
 - `test_changes_falls_back_to_revision_when_main_is_unreadable` — 目的: main が読めなくても、結果のカードは元の revision との差で出る（落ちない・黙って 0 にしない）。
 - `test_check_is_saved_with_items_and_goes_stale_after_a_change`
 - `test_adopt_refuses_without_check_failed_check_changes_after_and_uncommitted`
+- `test_adopt_can_be_forced_over_a_failed_check_but_not_over_changes` — 目的: 「それでも取り込む」（管理者の明示操作・2026-11-27 依頼）で、確認（テスト）に落ちていても
 - `test_adopt_controldeck_pushes_from_export_repo_and_opens_pr_without_merging`
 - `test_adopt_can_commit_uncommitted_changes_in_the_box_that_the_check_covered`
 - `test_adopt_needs_gh_and_a_github_origin`
@@ -1208,6 +1209,7 @@
 - `test_hostile_box_git_config_never_runs_on_the_host` — 箱の中の AI が .git/config に仕込んだ実行（fsmonitor・credential.helper・sshCommand・フック）が、ホスト側の
 - `test_api_check_job_changes_and_adopt_with_audit_and_permissions`
 - `test_api_controldeck_adopt_needs_settings_manage`
+- `test_api_force_adopt_over_a_failed_check_needs_settings_manage` — 目的: API の「それでも取り込む」（force）は管理者（settings.manage）だけで使えることを守る。
 - `test_suggested_title_skips_autosaves_and_falls_back_to_the_conversation` — U18: PR の題に「作業途中の保存 #N」を使わない。名前の付いたコミットが無ければ、自動保存に記録された会話の題。
 - `test_suggested_title_without_conversation_uses_workspace_name`
 - `test_check_runs_the_trusted_gate_code_not_the_boxs_copy` — U21: 本体の作業場の関門は、箱のコピーの dev_check ではなく、ホストの main から取り出した版（読み取り専用）で動く。
@@ -1269,6 +1271,7 @@
 - `test_restore_interrupted_marks_generating_messages_of_workspaces`
 - `test_last_conversation_finds_the_latest_of_the_workspace`
 - `test_api_resolve_conflict_sends_the_files_to_the_last_conversation`
+- `test_api_fix_check_sends_the_failures_to_the_last_conversation` — 目的: 確認（テスト）で落ちた項目を、この作業場で動いた同じ会話の OpenCode に「直させる」文として
 - `test_merge_main_shows_the_bundle_to_the_box_only_read_only` — bundle は箱の AI が書ける場所へ置かず、fetch の間だけ readonly で見せる（symlink を辿らされる脅威）。
 - `test_fetch_main_refuses_unsafe_sources` — 実行を伴うリモート補助（ext::・fd::）とオプションに読める先頭の `-` は fetch しない（git も動かさない）。
 - `test_autosave_runs_one_at_a_time_per_workspace` — 2 つのターンの終わり・起動時の立て直しが重なっても、番号が重ならず index.lock を取り合わない。
@@ -2785,6 +2788,10 @@
 - `test_idle_reap_loop_stops_idle_servers_without_a_new_chat` — 最後に使ったサーバーも止める。前は次の会話を始めたとき（ensure）にだけ止めていたので、
 - `test_code_mode_records_tools_and_permissions_and_answers_them`
 - `test_permission_mode_api_saves_and_applies_to_running_servers`
+- `test_run_turn_token_counts_follow_delta_text_length` — 目的: 進捗の gen_tokens・tok_per_sec が delta の「回数」ではなく文字数の見積もりに従うことを守る。
+- `test_run_turn_corrects_token_total_with_step_usage` — 目的: step の完了イベントに使用量（tokens.output・reasoning）があるとき、見積もりの合計を実測で
+- `test_run_turn_reports_context_usage_from_step_events` — 目的: OpenCode の会話でも進捗にコンテキストの使用量（prompt_tokens・context_max）が乗ることを守る。
+- `test_run_turn_uses_the_context_max_the_caller_passes` — 目的: チェーンでモデルを切り替えた後、呼び出し元（chat_persist）が渡した窓の大きさが使われること。
 - `test_run_turn_passes_child_permissions_and_survives_a_reconnect`
 - `test_running_servers_are_not_reaped`
 - `test_code_mode_rejects_a_second_message_while_working_and_never_stays_generating`
@@ -3870,6 +3877,7 @@
 - `test_fallback_pty_lifecycle` — tmux 有無に関わらず、セッション作成→一覧→終了が動作すること。
 - `test_terminal_api_requires_permission`
 - `test_terminal_api_admin`
+- `test_terminal_create_accepts_cwd_for_chat_command_runs` — 目的: チャットの返事のコマンドを「その会話の作業場所」で実行するため、セッション作成に cwd を
 - `test_terminal_v2_websocket_rejects_non_lab_session_before_attach`
 - `test_terminal_v1_websocket_rejects_v2_lab_session_before_attach`
 - `test_terminal_session_metadata_distinguishes_shell_and_program`
@@ -4391,6 +4399,13 @@
 
 - code block copy button copies the whole code (${width}px)
 
+### frontend/e2e/assistant-code-run.spec.ts
+
+目的: 目的: 返事の中のコマンド（bash などのシェルの言語・言語なしでコマンドに見えるブロック）に「▶ 実行」が出て、 確認のシート（内容・場所・危険な内容は赤字で 2 段）を通して ControlDeck の Terminal へ渡ることを守る。 python などシェルでない言語には出ない。場所はその会話の作業場（無ければホーム）。 根拠: 2026-11-27 利用者「返事の中のコマンドを、ボタン 1 つでコンソール（Terminal）で実行する」。 API は既存の POST /terminals（cwd を足した）だけ。新しい危ない API は作っていない。
+
+- code blocks show run button only for shell commands (${width}px)
+- dangerous command needs a red note and two steps, then runs in the workspace
+
 ### frontend/e2e/assistant-dev-targets.spec.ts
 
 目的: 目的: ＋メニューの「開発対象」（普通の開発／ローカル LLM を使うアプリ／ControlDeck 本体）と機能の一覧を確かめる。 作業場を作るときは選べて（作る API に target・capabilities が渡る）、作業場を選んでいるときは表示だけ。 「詳しく」で機能の一覧（gpu は「準備中」で押せない）。モードと権限は半分の幅で左右に並べた 1 行で、既存の動き（PUT permission-mode）は同じ。 メニューはコンパクト（320px で画面の高さの 60% 以下・押せる範囲 44px 以上・はみ出さない）。作業場の札に開発対象が出る。 根拠: 2026-11-22 利用者「開発対象を＋ボタンのところに記載して選択できるように。プラン/ビルド・権限もトグルで、 表示面積を小さくして＋メニューをコンパクトに」。API は page.route で模擬する（箱・OpenCode は動かさない）。 同日の追加依頼: モード・権限はフラットアイコンのみ（svg がある・aria-label が残る）、メニュー幅 288px（≤300px で確かめる）、 機能タイルはアイコンとラベルの横並び 1 行（中心 y が同じ）。
@@ -4409,10 +4424,10 @@
 
 ### frontend/e2e/assistant-dev-workspace-result.spec.ts
 
-目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・関門の結果と流すボタン）。 関門が合格のときだけ「取り込む」が押せ、確認（本体は PR・未コミットならコミットメッセージ）の後に PR のリンクが出る。 関門の後に変更があれば押せない。320px でも横にはみ出さない。 増減は未コミットの変更も数に入れて「N ファイル +A −R（うち未コミット M）」と出す（2026-11-22 の通し。 取り込んだ ref だけ数えて「0 ファイル +0 −0・未コミット」と出ていた）。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。API は page.route で模擬する。
+目的: 目的: 作業場の会話に「作業場の結果」のカードが出る（変更の数と増減・開くと一覧・未コミットの印・確認の結果と主の操作）。 確認（テスト・旧「関門」）の状態は 1 つの札（未確認・確認中…・合格・不合格（n 件））で、 主の操作は状態で 1 つだけ: 未確認→確認してから取り込む（合格なら取り込みの確認へ）・ 不合格→直させる（落ちた内容を同じ会話へ）。「それでも取り込む」は細かい表示（エキスパート）の中で管理者だけ。 320px でも横にはみ出さない。 根拠: 2026-11-22 利用者「作業場の会話に結果のカードと取り込むを足す」（開発の作業場 3 段目）。 2026-11-27 利用者「関門がわかりにくい。確認（テスト）にそろえて」。API は page.route で模擬する。
 
 - workspace result card: check then adopt creates a PR (${width}px)
-- workspace result card: failed check lists the failure and blocks adopt (dark, ${width}px)
+- workspace result card: failed check offers fixing, adopt-anyway is expert (${width}px)
 - workspace result card: visual-only failure can be skipped after a human check (320px)
 
 ### frontend/e2e/assistant-dev-workspace.spec.ts
@@ -4467,12 +4482,14 @@
 
 ### frontend/e2e/assistant-opencode-progress.spec.ts
 
-目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。
+目的: 目的: OpenCode の作業中に、段階（プリフィル・思考・道具など）と時間が入力欄の下に出ること。アクションリストはある ときだけ浮かび、タップで作業中・完了・時刻が見えること。道具を開くと開始・終了の時刻が見えること。 2026-11-27: コンテキストの使用量（使っている量/全体）が行の右端に「数値＋その右の棒」で出て、 終わった後も次の送信まで残ること。320px でも棒は消えず（40px に縮む）、95% を超えたら赤になること。 根拠: 2026-11-18 利用者「ずっと応答待ちと記載されている」「いつ終わるのかわからん」「項目の詳細に時間があれば」。 2026-11-27 利用者「下の統計の行の右端に 5K/20K で常に出す。数値の右に棒。80% 琥珀・95% 赤」。
 
 - an action list that was not updated says so
 - changes open as a diff and the latest turn can be reverted (${width}px)
 - text stays between the work steps and steps share one card (${width}px)
 - progress, action list and tool times are shown (${width}px)
+- context usage sits at the right end and stays after the turn (${width}px)
+- context usage turns red past 95% with the bar kept on a narrow screen
 
 ### frontend/e2e/assistant-plan.spec.ts
 
@@ -4487,6 +4504,13 @@
 - with OpenCode chosen, a question stays in OpenCode
 - in auto, when the model hands the work to OpenCode the answer becomes an OpenCode answer
 - with OpenCode chosen, an attached image is sent to OpenCode, and a model that cannot read images says so
+
+### frontend/e2e/assistant-plus-menu.spec.ts
+
+目的: 目的: ＋のメニューが押した「＋」の近く（入力欄の真上）に出ることを守る。画面からはみ出さない・ 中身が長いときはメニューの中だけがスクロールする・キーボードで殻が縮んでいる間も同じ位置。 根拠: 2026-11-27 利用者「＋のメニューが飛ぶ（iPhone。メニューが画面の上の方に出て、下の入力欄の＋から 離れる）」。原因は window.innerHeight からの位置計算で、iOS の fixed の基準とずれるため。 PlusMenu は fixed の探り要素で基準を実測する直しをした（ここは Chromium で置き方を確かめる。 低い画面ではみ出さない・中だけスクロールは assistant-plan.spec.ts の short screen の試験が見る）。
+
+- plus menu opens right above the button (${width}px)
+- plus menu stays inside the keyboard-shrunk area
 
 ### frontend/e2e/assistant-question-buttons-model-pill.spec.ts
 
