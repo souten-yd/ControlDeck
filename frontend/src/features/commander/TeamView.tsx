@@ -156,8 +156,8 @@ export function TeamView({
       <>
         <LeaderAsk onAsked={(id) => { setSelected(id); refresh(); }} />
         <EmptyState actions={<>
-          {expert && <button onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んでチームを作る</button>}
-          {expert && <button onClick={() => setNewTeamSheet(true)} className={secondaryButtonClass}>空のチームを作る</button>}
+          {expert && <button onClick={() => setNewTeamSheet(true)} className={secondaryButtonClass}>チームを作る</button>}
+          {expert && <button onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んで頼む</button>}
         </>}>
           チームはありません。上の欄に一文で頼むだけで、チームリーダー（調べ・計画し・担い手へ振り・評価・統合・試験する AI）が進めます。
         </EmptyState>
@@ -299,7 +299,7 @@ export function TeamView({
       {showBoard && <>
       {expert && (
         <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
-          <button type="button" data-team-auto-open onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んでチームを作る</button>
+          <button type="button" data-team-auto-open onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んで頼む</button>
           <span data-team-leader className="min-w-0 break-words text-xs text-zinc-600 dark:text-zinc-300">
             <span className="font-semibold">チームリーダー</span> {endpointText(team.leader ?? team.leader_effective)}{team.leader ? "" : "（既定）"}
           </span>

@@ -740,9 +740,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     // チームリーダーが計画して仕事を振った想定（板に待ち・作業中・上限の 3 件）
     const team = state.teams[0];
     team.leader_run = { status: "done", tasks: 3 };
+    team.timeline = [{ at: 1764000000, kind: "progress", text: "計画を立てて 3 件の仕事を振りました" }];
     team.parallel = { running: 1, max: 3, waiting: 1, local_max: 1 };
     team.tasks = [
-      { id: 1, title: "ログイン画面", goal: "", acceptance: "", files: ["src/login.py"], assignee: "", status: "todo", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: ["#2 と src/login.py が重なっています"] },
+      { id: 1, title: "ログイン画面", goal: "", acceptance: "", files: ["src/login.py"], assignee: "", status: "todo", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: ["#2 と src/login.py が重なっています"], leader_managed: true, tier: "implement" },
       { id: 2, title: "API", goal: "", acceptance: "", files: [], assignee: "", status: "doing", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: [], run: { status: "running", last_line: "pytest -q", elapsed: 12, usage: { input_tokens: 100, output_tokens: 20, cost_usd: 0.1 } } },
       { id: 3, title: "試験", goal: "", acceptance: "", files: [], assignee: "", status: "doing", role: "r3", report: null, created_at: 1, updated_at: 1, history: [], warnings: [], limited_at: 1764000000, checks: ["pytest -q"] },
     ];

@@ -217,10 +217,10 @@ export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: T
           ))}
         </section>
       )}
-      {request && (
+      {(request || run?.status === "running") && (
         <section data-team-request className={SECTION}>
           <h3 className={SECTION_TITLE}>依頼</h3>
-          <p className="whitespace-pre-wrap break-words text-sm">{request}</p>
+          {request && <p className="whitespace-pre-wrap break-words text-sm">{request}</p>}
           {run?.status === "running" && (
             <p data-team-leader-run="running" role="status" className="mt-2 flex items-center justify-between gap-2 text-xs font-semibold text-blue-700 dark:text-blue-300">
               <span>チームリーダーが進めています…{expert && run.endpoint ? `（${run.endpoint}）` : ""}</span>
