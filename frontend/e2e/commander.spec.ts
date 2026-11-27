@@ -407,16 +407,12 @@ test.describe("AI Commander", () => {
     await expect(sheet.getByText("ログイン済み", { exact: true })).toBeVisible();
     await expect(sheet.getByRole("radio", { name: /既定のアカウント/ })).toBeChecked();
 
-    // OpenCode は ControlDeck の API で開く（アカウントは既定の 1 つ。付けた名前が出る）
+    // OpenCode は ControlDeck の接続で開く。モデル（接続）の一覧は普段は出さず、Models で選ぶ案内の 1 行だけ
     await sheet.getByRole("radio", { name: /OpenCode/ }).click();
-    await expect(sheet.getByRole("radio", { name: /ControlDeck の API/ })).toBeChecked();
-    await expect(sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ })).toBeVisible();
-    // 長い接続の名前でもシートから横にはみ出さない（2026-11-27 iPhone で、はみ出していた）
-    const sheetBox = await sheet.boundingBox();
-    const longBox = await sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ }).boundingBox();
-    expect(longBox!.x + longBox!.width).toBeLessThanOrEqual(sheetBox!.x + sheetBox!.width + 1);
-    await expect(sheet.getByText(/選んだ接続（OpenCode 画面に登録した API）で開きます/)).toBeVisible();
+    await expect(sheet.locator("[data-opencode-console-note]")).toContainText("モデルは Models のフロンティアモデル");
+    await expect(sheet.getByRole("radio", { name: /DeepSeek V4.1 Flash（openrouter）/ })).toBeHidden();
     await expect(sheet.getByRole("radio", { name: "＋ 新しいアカウント" })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
 
     // codex の新しいアカウントをその場で作る（既定のアカウントは「既定」ではなくログインの名前で出す）
     await sheet.getByRole("radio", { name: /Codex CLI/ }).click();
@@ -555,13 +551,22 @@ test.describe("AI Commander", () => {
     await claudeSection.getByRole("button", { name: "保存" }).click();
     await expect(claudeSection.getByText("仕事用")).toBeVisible();
     expect(state.labelPuts).toEqual([{ cli: "claude", name: "default", label: "仕事用" }]);
-    // OpenCode を選ぶと、OpenCode 画面に登録した接続がアカウントとして並ぶ
+    // OpenCode は、モデル（接続）の一覧を普段は出さず、Models への案内 1 行だけ。接続の行はエキスパートで開く
     await sheet.getByRole("radio", { name: "OpenCode" }).click();
     const opencodeSection = sheet.getByRole("region", { name: "OpenCodeのアカウント" });
-    await expect(opencodeSection).toContainText("ControlDeck の API");
-    await expect(opencodeSection).toContainText("DeepSeek V4.1 Flash（openrouter）");
-    await expect(opencodeSection).toContainText("OpenCode 画面に登録した接続");
-    await expect(opencodeSection.getByLabel("OpenCodeの新しいアカウント名")).toHaveCount(0);
+    await expect(opencodeSection).toContainText("OpenCode は ControlDeck の接続で動きます。モデルは Models のフロンティアモデル");
+    await expect(opencodeSection.getByRole("link", { name: "Models で選ぶ" })).toHaveAttribute("href", /\/models\?tab=frontier/);
+    await expect(opencodeSection).not.toContainText("DeepSeek V4.1 Flash（openrouter）");
+    await expect(opencodeSection.locator("[data-opencode-connections]")).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+    await page.evaluate(() => localStorage.setItem("control-deck:commander-expert", "1"));
+    await page.reload();
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "アカウントの管理" }).click();
+    await page.getByRole("dialog", { name: "アカウントの管理" }).getByRole("radio", { name: "OpenCode" }).click();
+    const expertSection = page.getByRole("dialog", { name: "アカウントの管理" }).getByRole("region", { name: "OpenCodeのアカウント" });
+    await expect(expertSection).toContainText("DeepSeek V4.1 Flash（openrouter）");   // 長い名前は 1 行で省略（はみ出さない）
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
     await expect(sheet.getByRole("region", { name: "Claude Codeのアカウント" })).toHaveCount(0);
     await sheet.getByRole("radio", { name: "Gemini CLI" }).click();
     await expect(sheet.getByRole("region", { name: "Gemini CLIのアカウント" })).toContainText("既定のアカウントだけ使えます");

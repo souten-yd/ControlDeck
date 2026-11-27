@@ -63,7 +63,7 @@ def _queued(db: Session, conv_id: str, statuses: tuple[str, ...] = ("queued",)) 
 
 def _same_way(a: dict, b: dict) -> bool:
     """同じ送り方か（本文・添付を除いて比べる）。"""
-    skip = {"content", "attachments", "mode_choice", "research_depth", "agent_choice"}   # 画面の記録は送り方に関係しない
+    skip = {"content", "attachments", "mode_choice", "research_depth", "agent_choice", "model_choice"}   # 画面の記録は送り方に関係しない
     return {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}
 
 
@@ -105,7 +105,7 @@ async def dispatch_queue(conv_id: str) -> dict | None:
                     # 画面の選択は、待っている間に変わることがあるので記録しない（古い選択で上書きしない）
                     body = cp.SendBody.model_validate({**first, "content": "\n\n".join(i.content for i in group),
                                                     "attachments": attachments, "mode_choice": "",
-                                                    "research_depth": "", "agent_choice": ""})
+                                                    "research_depth": "", "agent_choice": "", "model_choice": ""})
                     result = await cp._start_send(db, conv, body, conv.owner_user_id)
                 except Exception as e:  # noqa: BLE001 - 送れないまとまりは印を付けて次へ
                     db.rollback()

@@ -151,6 +151,8 @@ def set_mode(server: Server, mode: str) -> None:
 _permission_lock = threading.Lock()
 PLAN_SESSIONS_KEPT = 256
 _session_agents: dict[tuple[str, str], str] = {}   # 直近に切り替えたエージェント（同じなら切り替えない）
+# 会話の選択で切り替えたセッションのモデル。エージェントを切り替えても、セッションのモデルに従う役割はこれを保つ
+_session_models: dict[tuple[str, str], str] = {}
 
 
 def _update_permission_file(server: Server, change: Callable[[dict], dict]) -> None:
@@ -287,6 +289,9 @@ def _start(project: Path, owner_user_id: int | None, key: str) -> Server:
         raise ChatServerError("systemd user manager を利用できません")
     endpoint = str(settings["base_url"]).rstrip("/")
     model = str(settings["model"]).strip()
+    default_ref = str(settings.get("default_model") or "")
+    if default_ref.startswith("controldeck/"):    # Models で選んだ OpenCode の既定（ローカル・外部のゲートウェイ経由）
+        model = default_ref.split("/", 1)[1]
     config = provider._runtime_config(
         f"chat-{key}", endpoint, model, owner_user_id=owner_user_id,
         project_id=provider._managed_project_id(project), runtime=runtime, chat_server=True,
@@ -591,7 +596,7 @@ def child_activity(tool: dict | None, now: float) -> bool:
     return True
 
 
-def _agent_model_ref(server: Server, agent: str) -> dict | None:
+def _agent_model_ref(server: Server, agent: str, follow: str = "") -> dict | None:
     """役割（エージェント）のモデル。設定の agents.<agent>.model、無ければ全体の model（`provider/モデル`）。
 
     OpenCode v2 は主のエージェントを切り替えても、セッションのモデルは変えない（2026-11-22 実測: プランに
@@ -606,6 +611,8 @@ def _agent_model_ref(server: Server, agent: str) -> dict | None:
         agents = data.get("agents") or data.get("agent") or {}
         spec = agents.get(agent) if isinstance(agents, dict) else None
         value = str((spec.get("model") if isinstance(spec, dict) else "") or data.get("model") or "")
+        if follow and value == str(data.get("model") or ""):
+            value = follow      # 役割がセッションのモデルに従うなら、会話で選んだモデルのまま（別に指定した役割は変えない）
         provider_id, _, model_id = value.partition("/")
         return {"providerID": provider_id, "id": model_id} if provider_id and model_id else None
     return None
@@ -622,6 +629,9 @@ async def switch_model(server: Server, session_id: str, model: str) -> None:
     if await _call(server, "POST", f"/api/session/{session_id}/model",
                    {"model": {"providerID": provider_id, "id": model_id}}) is None:
         raise ChatServerError("OpenCode のセッションが見つかりません")
+    if len(_session_models) > 1024:
+        _session_models.clear()
+    _session_models[(server.key, session_id)] = str(model)
 
 
 async def switch_agent(server: Server, session_id: str, agent: str) -> None:
@@ -639,7 +649,7 @@ async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     if isinstance(session, dict) and session.get("agent") not in (None, agent):
         raise ChatServerError(f"OpenCode のエージェントを {agent} に切り替えられませんでした")
     # 役割のモデルへ切り替える（無ければそのまま）。失敗しても会話は止めない（今のモデルで続く）
-    ref = await asyncio.to_thread(_agent_model_ref, server, agent)
+    ref = await asyncio.to_thread(_agent_model_ref, server, agent, _session_models.get((server.key, session_id), ""))
     if ref and await _call(server, "POST", f"/api/session/{session_id}/model", {"model": ref}) is None:
         logger.warning("OpenCode のセッションのモデルを %s へ切り替えられませんでした", f"{ref['providerID']}/{ref['id']}")
     if len(_session_agents) > 1024:

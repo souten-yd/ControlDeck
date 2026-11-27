@@ -43,10 +43,11 @@ for (const width of [320, 1280]) {
       const group = sheet.getByRole("heading", { name: "役割とモデル" });
       await group.scrollIntoViewIfNeeded();
 
-      // モデルを選ぶ欄は「既定のモデル」と役割の表だけ（開発担当・相談先の別の欄は無い）
+      // モデルを選ぶ欄は役割の表だけ（既定のモデルは Models の「OpenCode のモデル」へ一本化・開発担当・相談先の別の欄は無い）
       const labels = await sheet.locator("select").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label") ?? ""));
       expect(labels.filter((l) => l.endsWith("のモデル") && l !== "既定のモデル").length).toBe(7);
-      expect(labels).toContain("既定のモデル");
+      expect(labels).not.toContain("既定のモデル");   // 二重に持たない（選ぶのは Models の「OpenCode のモデル」）
+      await expect(sheet.getByRole("link", { name: "Models で OpenCode のモデルを選ぶ" })).toBeVisible();
       expect(labels.some((l) => /OpenCode モデル|開発担当のモデル|相談先のモデル/.test(l))).toBe(false);
       await expect(sheet.getByText("役割でモデルを選ばなければ、このモデルで動きます")).toBeVisible();
       await expect(sheet.getByText("秘密の会話・特許の流れでは、自動でローカルのモデルだけを使います")).toBeVisible();

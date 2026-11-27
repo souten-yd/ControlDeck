@@ -1033,7 +1033,8 @@ def opencode_config(box: Sandbox, *, model: str = "auto", work_model: str = "",
 
     # 箱が届くのはホストの中継だけ（本番のゲートウェイへ直には届かない）。鍵も箱へ渡さない。
     base_url = f"http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1"
-    payload = provider._config_payload(f"sandbox-{box.name}", base_url, model)
+    payload = provider._config_payload(f"sandbox-{box.name}", base_url, model,
+                                       with_local_models=chat_server and "llm" in box.capabilities)
     payload["provider"]["controldeck"]["options"]["apiKey"] = "sandbox"
     if default_model:
         payload["model"] = opencode_model(normalize_model(default_model))
@@ -1199,8 +1200,21 @@ def model_chain(box: Sandbox) -> list[str]:
         chain = [m for m in chain if not m.startswith("opencode")]
     if "llm" not in box.capabilities:
         # ローカル LLM を借りない作業場は、外部のモデルだけ。無ければ空（会話は「使えるモデルがありません」で断る）
-        return [m for m in chain if not m.startswith("controldeck/")]
-    return chain or [LOCAL_MODEL]
+        chain = [m for m in chain if not m.startswith("controldeck/")]
+    else:
+        chain = chain or [LOCAL_MODEL]
+    return _default_first(box, chain)
+
+
+def _default_first(box: Sandbox, chain: list[str]) -> list[str]:
+    """Models で選んだ OpenCode の既定のモデルを、使えるなら順番の先頭へ（無ければ従来の順番）。"""
+    from app.integrations.opencode import model_choice
+
+    default = normalize_model(model_choice.default_model())
+    if not default or model_choice.code_usable(default, secret=False, zen_ok=_zen_available(box),
+                                               llm_ok="llm" in box.capabilities):
+        return chain
+    return [default, *[m for m in chain if m != default]]
 
 
 def is_limit_error(line: dict) -> str:

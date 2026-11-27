@@ -13,6 +13,8 @@ import {
 import { UsageLine } from "./UsageLine";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { useToasts } from "../../stores";
+import { Link } from "react-router-dom";
+import { useExpert } from "./TeamRoles";
 
 function LoginBadge({ logged_in }: { logged_in: boolean | null }) {
   if (logged_in === null) return null;
@@ -129,6 +131,9 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
   const show = useToasts((s) => s.show);
   const [name, setName] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const expert = useExpert();
+  // OpenCode の接続（＝モデルの一覧）は普段は出さない。モデルは Models で選ぶ（エキスパートで接続の行を開く）
+  const opencode = cli.connector === "controldeck-opencode";
   const { data: accounts } = useQuery({
     queryKey: ["commander-accounts", cli.id],
     queryFn: () => fetchAccounts(cli.id),
@@ -159,14 +164,20 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
         <span className="min-w-0 truncate">{cli.name}</span>
         {!cli.installed && <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">未導入</span>}
       </h3>
-      <ul className="mt-2 grid gap-1">
-        {(accounts ?? []).map((a) => (
+      {opencode && (
+        <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300" data-opencode-accounts-note>
+          OpenCode は ControlDeck の接続で動きます。モデルは Models のフロンティアモデル（または会話・チームのモデルの選び手）で選びます。
+          <Link to="/models?tab=frontier" className="ml-1 inline-flex min-h-11 items-center font-medium text-accent-700 underline dark:text-accent-400">Models で選ぶ</Link>
+        </p>
+      )}
+      <ul className="mt-2 grid gap-1" hidden={opencode && !expert} data-opencode-connections={opencode ? "" : undefined}>
+        {(!opencode || expert) && (accounts ?? []).map((a) => (
           <AccountRow key={a.name} cli={cli} account={a} onDelete={() => setDeleting(a.name)} />
         ))}
       </ul>
-      {cli.connector === "controldeck-opencode" ? (
-        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-          OpenCode 画面に登録した接続（ゲートウェイ・OpenRouter など）がアカウントとして並びます。接続を増やす・外すのは OpenCode 画面の設定です。
+      {opencode ? (
+        expert && <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+          OpenCode 画面に登録した接続がアカウントとして並びます。接続を増やす・外すのは OpenCode 画面の設定です。
         </p>
       ) : !cli.multi_account ? (
         <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">

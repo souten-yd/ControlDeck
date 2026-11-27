@@ -534,6 +534,12 @@ class SendBody(BaseModel):
     mode_choice: str = Field(default="", max_length=16)
     research_depth: str = Field(default="", max_length=16)
     agent_choice: str = Field(default="", max_length=16)
+    # 会話のモデルの選び方（model_choice.py）。model_choice＝会話で選んだチャットのモデル・code_model＝OpenCode で
+    # 使うモデル（OpenCode 専用のものを選んでいるとき。空なら会話のモデルを OpenCode でも使う）。画面の記録として発言へ残し、
+    # 会話を開き直す・別の端末でも同じモデルに戻す。model_explicit＝利用者が選んだ（または会話が始まっている）
+    model_choice: str = Field(default="", max_length=200)
+    code_model: str = Field(default="", max_length=200)
+    model_explicit: bool = False
     code_research_depth: str = Field(default="auto", max_length=16)   # 調査の深さ（web・academic なら絞る）
     # OpenCode のエージェント: build（作る・直す）／plan（計画だけ。編集もコマンドの変更もしない）
     code_agent: Literal["build", "plan"] = "build"
@@ -1163,6 +1169,30 @@ async def _run_chat_job(job: jobs.Job, assistant_id: str, conv_id: str,
         return await _run_chat_job_impl(job, assistant_id, conv_id, history, params)
 
 
+def _code_model_choice(server, params: dict):
+    """この回の OpenCode のモデル（会話で選んだもの。使えなければ Models の既定）。同期（to_thread で呼ぶ）。"""
+    from app.integrations.opencode import model_choice, zen
+    from app.maintenance import sandbox as _sandbox
+    from app.security import offline as _offline
+
+    zen_ok, llm_ok = False, True       # ホストの OpenCode は Zen のキーを持たない（作業場の箱だけ）
+    if server.workspace:
+        try:
+            box = _sandbox.load(server.workspace)
+            zen_ok, llm_ok = bool(box.allow_zen and zen.get()), "llm" in box.capabilities
+        except Exception:  # noqa: BLE001 - 箱の状態が読めなければ従来どおり（切り替えない）
+            return model_choice.Choice()
+    try:
+        from app.workflows.router import _model_labels
+
+        labels = _model_labels()
+    except Exception:  # noqa: BLE001 - 表示名が読めなくても選択は止めない
+        labels = {}
+    return model_choice.resolve_code_model(
+        str(params.get("chat_model") or params.get("model") or ""), explicit=bool(params.get("model_explicit")),
+        secret=_offline.in_confidential_scope(), zen_ok=zen_ok, llm_ok=llm_ok, labels=labels)
+
+
 def _is_confidential_conv(conv_id: str) -> bool:
     with SessionLocal() as db:
         conv = db.get(Conversation, conv_id)
@@ -1620,6 +1650,20 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 model_index = await asyncio.to_thread(_previous_model_index, session_id)
             else:
                 model_index = 0
+            # 会話で選んだモデルを OpenCode のセッションへ（Qwen で始めた会話は OpenCode でも Qwen。model_choice.py）。
+            # 順番の次へ進んでいる（使用量の上限で切り替えた）セッションは、その切り替えを保つ
+            choice = await asyncio.to_thread(_code_model_choice, server, params)
+            if choice.note:
+                buf["meta"]["model_note"] = choice.note
+                await on_text(f"（{choice.note}）\n\n")
+            if choice.ref and model_index == 0:
+                buf["meta"]["model_ref"] = choice.ref
+                if chat_server._session_models.get((server.key, session_id)) != choice.ref:
+                    try:
+                        await chat_server.switch_model(server, session_id, choice.ref)
+                    except chat_server.ChatServerError as exc:
+                        logger.warning("OpenCode のモデルを %s へ切り替えられませんでした: %s", choice.ref, exc)
+                        buf["meta"].pop("model_ref", None)
             try:
                 original_query = query
                 resend_note = ("\n\n（注意: 前のモデルでこの依頼を始めていた可能性があります。"
@@ -2549,6 +2593,10 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
         user_meta["research_depth"] = body.research_depth
     if body.agent_choice:
         user_meta["agent_choice"] = body.agent_choice
+    if body.model_choice:
+        user_meta["model_choice"] = body.model_choice
+        if body.code_model:
+            user_meta["code_model"] = body.code_model
     if sent_images:
         # 発言の下に画像を出すため（画像そのものは chat-uploads にある）。
         user_meta["attachments"] = sent_images
@@ -2588,8 +2636,10 @@ async def _start_job(db: Session, conv_id: str, body: SendBody, owner_user_id: i
 
     # ゲートウェイ宛なら実エンドポイントへ解決してからjobへ渡す。以降のcontext上限・
     # thinking・容量待ちはすべてモデル個別設定を引くため、解決済みの値が要る。
+    chat_model = body.code_model or body.model     # OpenCode へ渡す会話のモデル（実エンドポイントへ解決する前の名前）
     body.base_url, body.model = resolve_target(body.base_url, body.model)
     params = {"base_url": body.base_url, "model": body.model, "mode": body.mode, "mode_choice": body.mode_choice,
+              "chat_model": chat_model, "model_explicit": body.model_explicit,
               "engine": body.engine, "searxng_url": body.searxng_url,
               "deep_depth": body.deep_depth, "deep_sources": body.deep_sources,
               # 未指定ならモデル個別設定へ委ねる（共通設定で一律に縛らない）

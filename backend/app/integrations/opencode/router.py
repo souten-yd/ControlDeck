@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.audit import service as audit
 from app.database import get_db
 from app.features import registry
+from app.integrations.opencode import model_choice
 from app.integrations.opencode import provider as opencode
 from app.integrations.opencode import tui_history as opencode_tui_history
 from app.jobs import service as jobs
@@ -96,6 +97,45 @@ def settings(
                  metadata={"base_url": result["base_url"], "model": result["model"],
                            "runtime": result["runtime"]})
     return result
+
+
+class DefaultModelBody(BaseModel):
+    # 空で解除（従来どおり＝作業場は箱の順番）。`provider/モデル`（例: opencode-go/glm-5.3・controldeck/auto）
+    default_model: str = Field(default="", max_length=200)
+
+
+@router.get("/default-model")
+def get_default_model(user: User = Depends(require_permission("workflows.run"))):
+    """Models の「OpenCode のモデル」が読む、OpenCode の既定のモデル。"""
+    return {"default_model": model_choice.default_model()}
+
+
+@router.put("/default-model")
+def put_default_model(
+    body: DefaultModelBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """OpenCode の既定のモデルを保存する（使えないモデルは断る）。AI アシスタントの選び手は同じ一覧を読む。"""
+    value = body.default_model.strip()
+    if value:
+        if not value.startswith((*model_choice.ZEN_PREFIXES, model_choice.LOCAL_PREFIX)):
+            raise HTTPException(status_code=422, detail="opencode-go/・opencode/・controldeck/ のどれかで始めてください")
+        reason = model_choice.code_usable(value, secret=False, zen_ok=_zen_configured(), llm_ok=True)
+        if reason:
+            raise HTTPException(status_code=422, detail=reason)
+    try:
+        opencode.save_settings({"default_model": value})
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "feature.opencode.default_model", user=user, resource_type="feature",
+                 resource_id="opencode", request=request, metadata={"default_model": value})
+    return {"default_model": value}
+
+
+def _zen_configured() -> bool:
+    from app.integrations.opencode import zen
+
+    return zen.configured()
 
 
 @router.get("/projects")
