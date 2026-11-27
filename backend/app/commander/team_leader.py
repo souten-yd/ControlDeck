@@ -201,7 +201,7 @@ def apply_plan(team_id: str, plan: dict) -> dict:
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         team = teams._find_team(all_teams, team_id)  # noqa: SLF001
-        if plan["brief"]:
+        if plan["brief"] and not team.get("brief"):  # 既にある前提は書き換えない（頼み足すとき）
             team["brief"] = plan["brief"]
         for role in team.get("roles", []):
             if role["id"] in plan["roles"]:

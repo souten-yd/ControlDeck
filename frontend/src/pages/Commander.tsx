@@ -8,7 +8,7 @@
 import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { closeConsole, fetchClis, fetchConsoles, type CommanderConsole } from "../api/commander";
+import { closeConsole, fetchClis, fetchConsoles, fetchTeams, type CommanderConsole } from "../api/commander";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skeleton, DropdownMenu } from "../components/ui";
 import { IconDots, IconListRows, IconPlus, IconTilesPreview } from "../components/icons";
@@ -18,6 +18,7 @@ import { TeamView } from "../features/commander/TeamView";
 import { NewConsoleSheet } from "../features/commander/NewConsoleSheet";
 import { AccountsSheet } from "../features/commander/AccountsSheet";
 import { GlobalResumeMessageSheet } from "../features/commander/ResumeMessageSheet";
+import { ExpertSwitch, HandoffSheet, TeamDefaultsSheet, useExpert } from "../features/commander/TeamRoles";
 import { useToasts } from "../stores";
 
 const XtermView = lazy(() => import("../features/terminal/XtermView"));
@@ -67,6 +68,9 @@ export default function CommanderPage() {
   const [newSheet, setNewSheet] = useState(false);
   const [accountsSheet, setAccountsSheet] = useState(false);
   const [resumeSheet, setResumeSheet] = useState(false);
+  const [defaultsSheet, setDefaultsSheet] = useState(false);
+  const [handoffFor, setHandoffFor] = useState<{ teamId: string; taskId: number } | null>(null);
+  const expert = useExpert();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [closing, setClosing] = useState<CommanderConsole | null>(null);
   // 選んでいなければ PC はタイル、モバイルは一覧。
@@ -91,6 +95,17 @@ export default function CommanderPage() {
     queryFn: fetchClis,
   });
   const cliName = (id: string) => clis.find((c) => c.id === id)?.name ?? id;
+  // 引き継ぎ先が無くて止まったタスクの担当コンソール（そのコンソールのカードに「引き継ぎ先を選ぶ」を出す）
+  const { data: teamList } = useQuery({ queryKey: ["commander-teams"], queryFn: fetchTeams, refetchInterval: 15_000 });
+  const stuckOf = (sessionId: string) => {
+    for (const t of teamList ?? []) {
+      const task = t.tasks.find((x) => x.blocked_reason === "no_handoff" && x.assignee === sessionId);
+      if (task) return { teamId: t.id, taskId: task.id, title: task.title };
+    }
+    return null;
+  };
+  const handoffTeam = teamList?.find((t) => t.id === handoffFor?.teamId);
+  const handoffTask = handoffTeam?.tasks.find((t) => t.id === handoffFor?.taskId);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["commander-consoles"] });
 
@@ -134,6 +149,7 @@ export default function CommanderPage() {
           items={[
             { label: "アカウントの管理", onSelect: () => setAccountsSheet(true) },
             { label: "自動再開の文言（全体）", onSelect: () => setResumeSheet(true) },
+            { label: "チームの既定（チームリーダー・保存先）", onSelect: () => setDefaultsSheet(true) },
           ]}
         />
         {section === "consoles" && (
@@ -147,12 +163,15 @@ export default function CommanderPage() {
       <p className="mb-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
         Claude Code・Codex・OpenCode などのコンソールをアカウントごとに開いて、1 つの画面で並べます。
       </p>
-      <SegmentedTabs
-        tabs={[["consoles", "コンソール"], ["team", "チーム"]] as const}
-        value={section}
-        onChange={chooseSection}
-        className="mb-3 max-w-xs"
-      />
+      <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+        <SegmentedTabs
+          tabs={[["consoles", "コンソール"], ["team", "チーム"]] as const}
+          value={section}
+          onChange={chooseSection}
+          className="max-w-xs"
+        />
+        {section === "team" && <ExpertSwitch />}
+      </div>
       {section === "team" ? (
         <TeamView consoles={items} cliName={cliName} onOpenConsole={setExpanded} />
       ) : (<>
@@ -180,6 +199,8 @@ export default function CommanderPage() {
               cliName={cliName(item.commander_cli)}
               onExpand={() => setExpanded(item.id)}
               onClose={() => setClosing(item)}
+              stuck={stuckOf(item.id)}
+              onChooseHandoff={() => { const s = stuckOf(item.id); if (s) setHandoffFor({ teamId: s.teamId, taskId: s.taskId }); }}
             />
           ))}
         </ul>
@@ -192,6 +213,8 @@ export default function CommanderPage() {
               cliName={cliName(item.commander_cli)}
               onOpen={() => setExpanded(item.id)}
               onClose={() => setClosing(item)}
+              stuck={stuckOf(item.id)}
+              onChooseHandoff={() => { const s = stuckOf(item.id); if (s) setHandoffFor({ teamId: s.teamId, taskId: s.taskId }); }}
             />
           ))}
         </ul>
@@ -210,6 +233,15 @@ export default function CommanderPage() {
       {newSheet && <NewConsoleSheet clis={clis} onClose={() => setNewSheet(false)} />}
       {accountsSheet && <AccountsSheet clis={clis} onClose={() => setAccountsSheet(false)} />}
       {resumeSheet && <GlobalResumeMessageSheet onClose={() => setResumeSheet(false)} />}
+      {defaultsSheet && <TeamDefaultsSheet expert={expert} onClose={() => setDefaultsSheet(false)} />}
+      {handoffFor && handoffTeam && handoffTask && (
+        <HandoffSheet
+          teamId={handoffTeam.id} task={handoffTask} expert={expert}
+          roleName={handoffTeam.roles?.find((r) => r.id === handoffTask.role)?.name}
+          onClose={() => setHandoffFor(null)}
+          onDone={() => { qc.invalidateQueries({ queryKey: ["commander-teams"] }); invalidate(); }}
+        />
+      )}
     </div>
   );
 }

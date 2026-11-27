@@ -606,6 +606,16 @@ def test_leader_uses_given_workdir_and_refuses_double_run(env, monkeypatch):
     assert team_leader.recover_interrupted() == 1 and get_team(team["id"])["leader_run"]["status"] == "failed"
 
 
+def test_leader_run_on_existing_team_adds_tasks_and_keeps_brief(env):
+    """「チームリーダーに頼む」: 既存のチームへ頼み足す。前提（brief）は書き換えず、タスクだけ足す。"""
+    leader_fake(env, "claude", [plan()])
+    team = teams.create_team("既存班")
+    teams.update_team(team["id"], {"brief": "元の前提", "auto_run": False})
+    team_leader.start(team["id"], "もう一つ頼む")
+    after = get_team(team["id"])
+    assert after["brief"] == "元の前提" and len(after["tasks"]) == 2 and after["leader_run"]["status"] == "done"
+
+
 def test_leader_starts_dispatcher_when_auto_run(env):
     leader_fake(env, "claude", [plan(roles={"実装": 1}, tasks=[{"title": "t", "goal": "g", "acceptance": "", "files": [],
                                                                   "role": "実装", "checks": []}])])

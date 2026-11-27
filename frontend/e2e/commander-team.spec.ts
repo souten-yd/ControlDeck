@@ -7,12 +7,17 @@
  * 「自動で直せず」（blocked）の印も確かめる。
  * T3a: ヘッドレスのメンバーを足す・実行中の表示（最後の行・経過・使用量）と止める・上限の方針（引き継ぐ／待つ）の切り替え・
  * 候補の順番の並べ替え・同時並列の設定・板の上の「同時に動いている数／上限」・作業場所と履歴（runs）の表示も確かめる。
+ * T3b: 目標からチームを作る（チームリーダーの応答はモック）・役割の欄（自動の振り分け）・担い手の選び手（コンソールとモデルが別・
+ * 考えるレベル）・引き継ぎ先を選ぶ（タスクのカードとコンソールのカード）・チームの既定（チームリーダー・保存先を一度だけ）。
+ * 利用者の決まり（2026-11-27）「不要な表示は隠し、必要ならエキスパートで開く」: 切（既定）と入の両方を撮る。
+ * 既存の T1〜T3a の流れはエキスパートを入にして通す（beforeEach）。タイトルに「エキスパート切」を含む試験だけ切のまま。
  * 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
  */
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 interface Task {
+  role?: string; blocked_reason?: string;
   id: number; title: string; goal: string; acceptance: string; files: string[]; assignee: string;
   status: string; report: null | { summary: string; changed_files: string[]; tests: string; remaining: string };
   created_at: number; updated_at: number; history: unknown[]; warnings: string[];
@@ -32,8 +37,16 @@ interface TeamState {
     id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean;
     on_limit?: string; codex_without_sandbox?: boolean; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
     workdir?: string; workdir_folder?: string; workdir_name?: string; parallel?: Record<string, number>;
+    roles?: Record<string, unknown>[]; leader?: unknown; leader_effective?: unknown; leader_run?: Record<string, unknown>;
     members: Member[]; tasks: Task[];
   }[];
+  settings?: { resume_message: string; default_resume_message: string; default_leader: unknown; default_roles: unknown[]; team_root: string };
+  modelsReqs?: string[];
+  autoPosts?: Record<string, unknown>[];
+  askPosts?: Record<string, unknown>[];
+  rolesPuts?: Record<string, unknown>[][];
+  handoffPosts?: Record<string, unknown>[];
+  defaultsPuts?: Record<string, unknown>[];
   stopped?: number[];
   dispatched: number[];
   collected: number[];
@@ -51,12 +64,24 @@ const CONSOLES = [
     commander_cli: "codex", commander_account: "default", commander_label: "レビュー", commander_state: "working" },
 ];
 
+/** 役割の例: 実装（プライマリが回復待ちでセカンダリで動作中）・レビュー・試験（担い手が未設定）。 */
+const RECOVER_AT = 1_900_000_000;
+const AUTO_ROLES = [
+  { id: "r1", name: "実装", count: 2, note: "コードを書く", running: 1, active_index: 1, on_secondary: true, primary_recovers_at: RECOVER_AT,
+    primary: { kind: "headless", cli: "claude", account: "default", model: "opus", effort: "high" },
+    secondary: [{ kind: "headless", cli: "codex", account: "default", model: "gpt-a", effort: "low" }], last_index: 1 },
+  { id: "r2", name: "レビュー", count: 1, note: "", running: 0, active_index: 0, on_secondary: false, primary_recovers_at: null,
+    primary: { kind: "headless", cli: "claude", account: "default", model: "", effort: "" }, secondary: [] },
+  { id: "r3", name: "試験", count: 1, note: "", running: 0, active_index: null, on_secondary: false, primary_recovers_at: null, primary: null, secondary: [] },
+];
+
 async function mockTeams(page: Page, state: TeamState) {
   await page.route(/\/api\/v1\/commander\//, (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/v1/commander/", "");
     const method = request.method();
     const body = () => request.postDataJSON() as Record<string, unknown>;
+    let m: RegExpMatchArray | null;
     if (path === "clis") return route.fulfill({ json: { clis: [
       { id: "claude", name: "Claude Code", executable: "claude", installed: true, multi_account: true },
       { id: "codex", name: "Codex CLI", executable: "codex", installed: true, multi_account: true },
@@ -65,12 +90,72 @@ async function mockTeams(page: Page, state: TeamState) {
       { name: "default", default: true, logged_in: null, label: "", title: "既定の接続" }] } });
     if (path === "consoles" && method === "GET") return route.fulfill({ json: { consoles: CONSOLES } });
     if (path === "teams" && method === "GET") return route.fulfill({ json: { teams: state.teams } });
+    if (path.startsWith("models") && method === "GET") {
+      const q = new URL(request.url()).searchParams;
+      (state.modelsReqs ??= []).push(`${q.get("cli")}/${q.get("account")}`);
+      const claude = q.get("cli") === "claude";
+      return route.fulfill({ json: {
+        cli: q.get("cli"), account: q.get("account"), free_input: true, default_model: "", source: "mock", note: claude ? "別名のほか、完全なモデルの名前も入力できます" : "",
+        efforts: claude ? ["low", "medium", "high", "xhigh", "max"] : ["low", "high"],
+        models: claude
+          ? ["fable", "opus", "sonnet", "haiku"].map((id) => ({ id, label: id, efforts: ["low", "medium", "high", "xhigh", "max"], default_effort: "" }))
+          : [{ id: "gpt-a", label: "GPT A", efforts: ["low", "high"], default_effort: "low" }],
+      } });
+    }
+    if (path === "settings" && method === "GET") return route.fulfill({ json: state.settings ?? { resume_message: "続けてください", default_resume_message: "続けてください", default_leader: null, default_roles: [], team_root: "" } });
+    if (path === "settings/team-defaults" && method === "PUT") {
+      const fields = body();
+      (state.defaultsPuts ??= []).push(fields);
+      state.settings = { resume_message: "続けてください", default_resume_message: "続けてください", default_leader: null, default_roles: [], team_root: "", ...state.settings };
+      if ("team_root" in fields) state.settings.team_root = String(fields.team_root);
+      if ("default_leader" in fields) state.settings.default_leader = fields.default_leader;
+      if ("default_roles" in fields) state.settings.default_roles = fields.default_roles as unknown[];
+      return route.fulfill({ json: state.settings });
+    }
+    if (path === "teams/auto" && method === "POST") {
+      (state.autoPosts ??= []).push(body());
+      const team = {
+        id: "t0auto001", name: String(body().goal).slice(0, 20), created_at: 1764000000, notify: true, members: [], tasks: [], roles: AUTO_ROLES,
+        leader_effective: { kind: "headless", cli: "claude", account: "default", model: "", effort: "" },
+        leader_run: { status: "running", endpoint: "Claude Code", started_at: 1764000000 },
+      };
+      state.teams.push(team);
+      return route.fulfill({ status: 201, json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/leader\/run$/);
+    if (m && method === "POST") {
+      (state.askPosts ??= []).push(body());
+      const team = state.teams.find((t) => t.id === m![1])!;
+      team.leader_run = { status: "running", endpoint: "Claude Code" };
+      return route.fulfill({ json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/roles$/);
+    if (m && method === "PUT") {
+      const team = state.teams.find((t) => t.id === m![1])!;
+      (state.rolesPuts ??= []).push(body().roles as Record<string, unknown>[]);
+      team.roles = body().roles as Record<string, unknown>[];
+      return route.fulfill({ json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/leader$/);
+    if (m && method === "PUT") {
+      const team = state.teams.find((t) => t.id === m![1])!;
+      team.leader = body().leader;
+      return route.fulfill({ json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/tasks\/(\d+)\/handoff$/);
+    if (m && method === "POST") {
+      const team = state.teams.find((t) => t.id === m![1])!;
+      const task = team.tasks.find((t) => t.id === Number(m![2]))!;
+      (state.handoffPosts ??= []).push(body());
+      task.status = "doing"; task.blocked_reason = undefined;
+      return route.fulfill({ json: task });
+    }
     if (path === "teams" && method === "POST") {
       const team = { id: "t0a1b2c3d", name: String(body().name), created_at: 1764000000, members: [], tasks: [] };
       state.teams.push(team);
       return route.fulfill({ status: 201, json: team });
     }
-    let m = path.match(/^teams\/(\w+)\/notify$/);
+    m = path.match(/^teams\/(\w+)\/notify$/);
     if (m && method === "PUT") {
       const team = state.teams.find((t) => t.id === m![1])!;
       team.notify = body().notify as boolean;
@@ -146,6 +231,12 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
 }
 
+// 既存の T1〜T3a の流れはエキスパートを入にして通す（切のままにするのはタイトルに「エキスパート切」を含む試験だけ）
+test.beforeEach(async ({ page }, info) => {
+  if (info.title.includes("エキスパート切")) return;
+  await page.addInitScript(() => { try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ } });
+});
+
 for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
   test(`AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格`, async ({ page, context }) => {
     test.skip(!hasSession(), "ログイン情報がありません");
@@ -156,7 +247,7 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.goto("/commander?view=team");
 
     // チームが無い → 作る
-    await page.getByRole("button", { name: "チームを作る" }).click();
+    await page.getByRole("button", { name: "チームを作る", exact: true }).click();
     await page.getByLabel(/チームの名前/).fill("開発班");
     await page.getByRole("button", { name: "作る", exact: true }).click();
     await expect(page.locator("[data-team-name]")).toHaveText("開発班");
@@ -228,7 +319,7 @@ test("URL の ?view=team でチームが開き、コンソールの切り替え�
   await establishSession(page, context);
   await mockTeams(page, { teams: [], dispatched: [], collected: [] });
   await page.goto("/commander?view=team");
-  await expect(page.getByRole("button", { name: "チームを作る" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "チームを作る", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "チーム", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "コンソール", exact: true }).click();
   await expect(page).not.toHaveURL(/view=team/);
@@ -565,5 +656,266 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     // 担当の選択肢にも出る（ヘッドレスと分かる）
     await page.getByRole("button", { name: "＋ タスク" }).click();
     await expect(page.getByRole("dialog", { name: "タスクを作る" }).getByLabel("担当", { exact: true }).locator("option", { hasText: "（ヘッドレス）" })).toHaveCount(1);
+  });
+}
+
+
+// ---------------------------------------------------------------- T3b
+
+const ROOT = "/data1tb";
+const EXPERT_SWITCH = { name: "エキスパート" } as const;
+
+/** FilePicker（Nexarch の作業フォルダ API）と端末の WebSocket のモック。 */
+async function mockPickerAndTerminal(page: Page) {
+  await page.route(/\/api\/v1\/commander\/workdir\/roots$/, (route) => route.fulfill({ json: [ROOT] }));
+  await page.route(/\/api\/v1\/commander\/workdir\/list/, (route) => {
+    const listed = new URL(route.request().url()).searchParams.get("path") ?? ROOT;
+    return route.fulfill({
+      json: { path: listed, entries: listed === ROOT ? [{ name: "teams", path: `${ROOT}/teams`, is_dir: true, hidden: false }] : [] },
+    });
+  });
+  await page.routeWebSocket(/\/terminals\/[0-9a-f]+\/connect/, (ws) => {
+    ws.send(JSON.stringify({ type: "history_reset", connectionGeneration: 1 }));
+    ws.send(JSON.stringify({ type: "history_end", connectionGeneration: 1, sequence: 0, historyTotal: 0, historyPosition: 0 }));
+  });
+}
+
+function leaderTeam(extra: Partial<TeamState["teams"][number]> = {}, tasks: Partial<Task>[] = []): TeamState {
+  const full = tasks.map((t, i): Task => ({
+    id: i + 1, title: `タスク${i + 1}`, goal: "目的の文", acceptance: "", files: [], assignee: "", status: "todo", report: null,
+    created_at: 1, updated_at: 1, history: [], warnings: [], assignee_state: "", ...t,
+  }));
+  return {
+    teams: [{
+      id: "t0lead001", name: "ログイン班", created_at: 1, notify: true, members: [], tasks: full, roles: AUTO_ROLES,
+      leader_effective: { kind: "headless", cli: "claude", account: "default", model: "", effort: "" },
+      leader_run: { status: "done", tasks: full.length, dropped: ["役割「魔法使い」は既存の役割にないので捨てました"] },
+      parallel: { running: 1, max: 3, waiting: 1, local_max: 1 },
+      ...extra,
+    }],
+    dispatched: [], collected: [],
+  };
+}
+
+for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
+  test(`AI チーム ${label}px: エキスパート切で目標からチームを作り、板は題・状態・担当だけ → 入で詳細（自動の振り分け）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state: TeamState = { teams: [], dispatched: [], collected: [] };
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    // 目標を 1 行書くだけ（保存先が未設定なので、その場で一度だけ選べる）
+    await page.getByRole("button", { name: "目標からチームを作る", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "目標からチームを作る" });
+    await expect(sheet.locator("[data-team-root]")).toContainText("未設定");
+    await sheet.getByLabel("目標").fill("ログイン機能を作りたい");
+    await sheet.getByRole("button", { name: "チームを作る", exact: true }).click();
+    expect(state.autoPosts).toEqual([{ goal: "ログイン機能を作りたい", workdir: "", name: "" }]);
+    await expect(page.locator('[data-team-leader-run="running"]')).toContainText("チームリーダーが目標を計画しています");
+    await noOverflow(page);
+
+    // チームリーダーが計画を返した想定（板に待ち・作業中・上限の 3 件）
+    const team = state.teams[0];
+    team.leader_run = { status: "done", tasks: 3, dropped: ["役割「魔法使い」は既存の役割にないので捨てました"] };
+    team.parallel = { running: 1, max: 3, waiting: 1, local_max: 1 };
+    team.tasks = [
+      { id: 1, title: "ログイン画面", goal: "", acceptance: "", files: ["src/login.py"], assignee: "", status: "todo", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: ["#2 と src/login.py が重なっています"] },
+      { id: 2, title: "API", goal: "", acceptance: "", files: [], assignee: "", status: "doing", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: [], run: { status: "running", last_line: "pytest -q", elapsed: 12, usage: { input_tokens: 100, output_tokens: 20, cost_usd: 0.1 } } },
+      { id: 3, title: "試験", goal: "", acceptance: "", files: [], assignee: "", status: "doing", role: "r3", report: null, created_at: 1, updated_at: 1, history: [], warnings: [], limited_at: 1764000000, checks: ["pytest -q"] },
+    ];
+    await page.reload();
+
+    // 切: 普段の入口は「チームリーダーに頼む」の一文だけ（手入力のタスク作成は出ない）
+    await expect(page.locator('[data-commander-expert="off"]')).toBeVisible();
+    await expect(page.getByRole("button", { name: "＋ タスク" })).toHaveCount(0);
+    await page.getByLabel("チームリーダーに頼む").fill("パスワードの再設定も作って");
+    await page.getByRole("button", { name: "頼む", exact: true }).click();
+    await expect.poll(() => state.askPosts).toEqual([{ goal: "パスワードの再設定も作って" }]);
+    state.teams[0].leader_run = { status: "done", tasks: 3, dropped: ["役割「魔法使い」は既存の役割にないので捨てました"] };
+    await page.reload();
+    // 切: 札は 1 つ・設定は出さない
+    await expect(page.locator("[data-team-roles-summary]")).toContainText("実装・レビュー・試験");
+    await expect(page.locator("[data-team-roles]")).toHaveCount(0);
+    await expect(page.locator("[data-team-parallel]")).toHaveCount(0);
+    await expect(page.locator("[data-team-leader]")).toHaveCount(0);
+    await expect(page.locator('[data-team-task="2"] [data-team-simple-badge="作業中"]')).toBeVisible();
+    await expect(page.locator('[data-team-task="3"] [data-team-simple-badge="上限で停止"]')).toBeVisible();
+    await expect(page.locator("[data-team-task-role], [data-team-warning], [data-team-run-line], [data-team-checks]")).toHaveCount(0);
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: "候補の順番" })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "チームリーダーを任命" })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "目標からチームを作る" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-expert-off.png`, fullPage: true });
+
+    // 入: 役割の詳細・自動の振り分けの状態・札・並列の数値・設定が出る
+    await page.getByRole("switch", EXPERT_SWITCH).click();
+    await expect(page.locator('[data-commander-expert="on"]')).toBeVisible();
+    const role = page.locator('[data-team-role="実装"]');
+    await expect(role).toContainText("プライマリ: Claude Code・opus・high");
+    await expect(role).toContainText("セカンダリ: Codex・gpt-a・low");
+    await expect(role.locator("[data-team-role-state]")).toContainText("セカンダリで動作中・プライマリは");
+    await expect(role.locator("[data-team-role-state]")).toContainText(/\d\d:\d\d に回復/);
+    await expect(page.locator('[data-team-role="試験"] [data-team-role-state]')).toContainText("担い手が未設定");
+    await expect(page.locator("[data-team-parallel]")).toContainText("1／3");
+    await expect(page.locator("[data-team-leader]")).toContainText("チームリーダー");
+    await expect(page.getByRole("button", { name: "＋ タスク" })).toBeVisible();
+    await expect(page.locator('[data-team-task="1"] [data-team-task-role]')).toContainText("実装");
+    await expect(page.locator('[data-team-task="1"] [data-team-warning]')).toBeVisible();
+    await expect(page.locator('[data-team-task="2"] [data-team-run-line]')).toContainText("pytest -q");
+    await expect(page.locator("[data-team-leader-dropped]")).toContainText("1 件");
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: "候補の順番" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "チームリーダーを任命" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-expert-on.png`, fullPage: true });
+  });
+
+  test(`AI チーム ${label}px: 担い手の選び手（コンソールとモデルが別・考えるレベル）と役割の保存`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = leaderTeam({}, [{ title: "ログイン画面", role: "r1" }]);
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "役割を編集（自動の振り分け）" }).click();
+    const sheet = page.getByRole("dialog", { name: "役割を編集" });
+    await sheet.locator('[data-role-edit="レビュー"]').getByRole("button", { name: "セカンダリを足す" }).click();
+    const picker = sheet.locator("[data-role-endpoint-picker]");
+    // 「コンソール」と「モデル」は別のかたまり
+    await expect(picker.locator("[data-endpoint-console]")).toContainText("コンソール");
+    await expect(picker.locator("[data-endpoint-model]")).toContainText("モデル");
+    await expect(picker.locator("[data-endpoint-console]").getByLabel("種類")).toBeVisible();
+    await expect(picker.locator("[data-endpoint-console]").getByLabel("CLI")).toBeVisible();
+    await expect(picker.locator("[data-endpoint-model]").getByLabel(/モデル（一覧/)).toBeVisible();
+    await expect(picker.locator("[data-endpoint-model]").getByLabel("考えるレベル")).toBeVisible();
+    // codex を選ぶと、そのモデルの一覧と考えるレベルが自動で出る
+    await picker.locator("[data-endpoint-console]").getByLabel("種類").selectOption("console");
+    await picker.locator("[data-endpoint-console]").getByLabel("CLI").selectOption("codex");
+    await expect.poll(() => state.modelsReqs).toContain("codex/default");
+    await picker.getByLabel(/モデル（一覧/).fill("gpt-a");
+    await expect(picker.locator("datalist option")).toHaveCount(1);
+    await expect(picker.getByLabel("考えるレベル").locator("option")).toHaveText(["既定", "low", "high"]);
+    await picker.getByLabel("考えるレベル").selectOption("high");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-endpoint-picker.png`, fullPage: true });
+    await picker.getByRole("button", { name: "セカンダリに足す" }).click();
+    await expect(sheet.locator('[data-role-edit="レビュー"]')).toContainText("Codex・gpt-a・high・画面あり");
+    await sheet.getByRole("button", { name: "保存", exact: true }).click();
+    await expect.poll(() => state.rolesPuts?.length).toBe(1);
+    const review = state.rolesPuts![0].find((r) => r.name === "レビュー") as { secondary: Record<string, string>[] };
+    expect(review.secondary).toEqual([{ kind: "console", cli: "codex", account: "default", model: "gpt-a", effort: "high" }]);
+
+    // チームリーダーの任命（ヘッドレス固定の選び手）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "チームリーダーを任命" }).click();
+    const leader = page.getByRole("dialog", { name: "チームリーダーを任命" });
+    await expect(leader).toContainText("目標を計画してタスクを配る AI");
+    await expect(leader.getByLabel("種類")).toHaveCount(0);
+    await leader.getByLabel("CLI").selectOption("claude");
+    await leader.getByLabel(/モデル（一覧/).fill("opus");
+    await leader.getByLabel("考えるレベル").selectOption("xhigh");
+    await leader.getByRole("button", { name: "任命する" }).click();
+    await expect.poll(() => (state.teams[0].leader as { model?: string } | undefined)?.model).toBe("opus");
+    expect(state.teams[0].leader).toMatchObject({ kind: "headless", cli: "claude", effort: "xhigh" });
+  });
+
+  test(`AI チーム ${label}px: エキスパート切でも引き継ぎ先を選べる（タスクのカードとコンソールのカード）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = leaderTeam({ members: [{ session_id: "aa110001", role: "developer" }] }, [
+      { title: "ログイン画面", role: "r1", assignee: "aa110001", status: "blocked", blocked_reason: "no_handoff", assignee_state: "waiting" },
+    ]);
+    await mockTeams(page, state);
+    await mockPickerAndTerminal(page); // 後に登録したほうが先に効く
+    await page.goto("/commander?view=team");
+
+    // 切: 札は「引き継ぎ先なし」・カードにボタン
+    await expect(page.locator('[data-team-task="1"] [data-team-simple-badge="引き継ぎ先なし"]')).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-no-handoff.png`, fullPage: true });
+    await page.locator('[data-team-handoff-open="1"]').click();
+    const sheet = page.getByRole("dialog", { name: "引き継ぎ先を選ぶ" });
+    await expect(sheet.locator("[data-endpoint-console]")).toBeVisible();
+    await expect(sheet.locator("[data-endpoint-model]")).toContainText("既定の値で動きます");
+    await expect(sheet.getByLabel(/モデル（一覧/)).toHaveCount(0);
+    await sheet.getByLabel("種類").selectOption("console");
+    await sheet.getByLabel("CLI").selectOption("codex");
+    await sheet.getByLabel(/セカンダリにも追加/).check();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-handoff-sheet.png`, fullPage: true });
+    await sheet.getByRole("button", { name: "引き継いで再開" }).click();
+    await expect.poll(() => state.handoffPosts?.length).toBe(1);
+    expect(state.handoffPosts![0]).toEqual({
+      endpoint: { kind: "console", cli: "codex", account: "default", model: "", effort: "" }, add_to_secondary: true,
+    });
+
+    // コンソールのカード（もう一度止まった状態に戻して）
+    state.teams[0].tasks[0].status = "blocked";
+    state.teams[0].tasks[0].blocked_reason = "no_handoff";
+    await page.goto("/commander");
+    const button = page.locator("[data-console-handoff]").first();
+    await expect(button).toBeVisible();
+    await expect(button).toContainText("引き継ぎ先を選ぶ");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-console-handoff.png`, fullPage: true });
+    await button.click();
+    await expect(page.getByRole("dialog", { name: "引き継ぎ先を選ぶ" })).toBeVisible();
+  });
+
+  test(`AI チーム ${label}px: チームの既定（チームリーダー）と保存先を一度だけ選ぶ`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = leaderTeam();
+    await mockTeams(page, state);
+    await mockPickerAndTerminal(page); // 後に登録したほうが先に効く
+    await page.goto("/commander?view=team");
+
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "チームの既定（チームリーダー・保存先）" }).click();
+    const sheet = page.getByRole("dialog", { name: "チームの既定" });
+    // 既定のチームリーダー（コンソールとモデルが別）
+    await expect(sheet.locator("[data-endpoint-console]")).toBeVisible();
+    await sheet.getByLabel("CLI").first().selectOption("codex");
+    await sheet.getByLabel(/モデル（一覧/).first().fill("gpt-a");
+    await sheet.getByRole("button", { name: "既定のチームリーダーにする" }).click();
+    await expect.poll(() => state.defaultsPuts?.length).toBe(1);
+    expect(state.defaultsPuts![0]).toEqual({ default_leader: { kind: "headless", cli: "codex", account: "default", model: "gpt-a", effort: "" } });
+    // 保存先が未設定 → 同じ所で一度だけ選ぶ
+    await expect(sheet.locator("[data-team-root]")).toContainText("未設定");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-team-root-unset.png`, fullPage: true });
+    await sheet.getByRole("button", { name: "保存先を選ぶ" }).click();
+    const picker = page.getByRole("dialog", { name: "チームの保存先を選択" });
+    await picker.getByText("teams", { exact: true }).click();
+    await picker.getByRole("button", { name: "このフォルダを選択" }).click();
+    await expect.poll(() => state.defaultsPuts?.length).toBe(2);
+    expect(state.defaultsPuts![1]).toEqual({ team_root: `${ROOT}/teams` });
+    await expect(sheet.locator("[data-team-root-path]")).toHaveText(`${ROOT}/teams`);
+    // エキスパート入のときだけ「変える」が出る
+    await expect(sheet.locator("[data-team-root]").getByRole("button", { name: "変える" })).toBeVisible();
+    await expect(sheet.locator("[data-default-roles]")).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-team-root-set-expert.png`, fullPage: true });
+    // 切にして開き直すと、決めた保存先の表示だけ（変えるボタンも役割の編集も出ない）
+    await page.keyboard.press("Escape");
+    await page.getByRole("switch", EXPERT_SWITCH).click();
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "チームの既定（チームリーダー・保存先）" }).click();
+    const again = page.getByRole("dialog", { name: "チームの既定" });
+    await expect(again.locator("[data-team-root-path]")).toHaveText(`${ROOT}/teams`);
+    await expect(again.locator("[data-team-root]").getByRole("button", { name: "変える" })).toHaveCount(0);
+    await expect(again.locator("[data-default-roles]")).toHaveCount(0);
+    await expect(again.getByLabel(/モデル（一覧/)).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-team-root-set-off.png`, fullPage: true });
   });
 }
