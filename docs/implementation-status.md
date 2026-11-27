@@ -1,5 +1,8 @@
 # 実装状況
 
+## 2026-11-27 Nexarch の AI チームの設計を追加調査で見直し
+- 利用者「Reddit・GitHub などでさらに良い・柔軟な方法を。ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断で協調させたい」。`docs/PLAN-nexarch-team.md` に追加調査（リーダー任せの委譲は当てにならない・cross-model review・上限での付け替え・検証できる完了報告・担当領域と WIP・通知）と、取り込む 7 項目・段 T2〜T5 の組み直しを書いた。コードはまだ。
+
 ## 2026-11-27 Nexarch: OpenCode も /data1tb・/data2tb の作業フォルダで開ける
 - 利用者「作業フォルダの件対処して」。#682 で Nexarch の作業フォルダは /data1tb・/data2tb になったが、OpenCode だけは files の許可ルートの外を断っていた（tui_command が files.resolve で検証するため）。
 - `provider.tui_command(validated_project=)` を足し、呼び出し側が自分の決まりで検証済みの実体の絶対パス（Nexarch は commander/workdir.py が realpath でルートの中・data_dir と拒否の場所の外を確かめたもの）を渡せるようにした。実体でない（リンク・相対）パスは断る。OpenCode 画面など他の呼び出しは今までどおり files.resolve。
