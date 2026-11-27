@@ -433,6 +433,52 @@ def test_api_resolve_conflict_sends_the_files_to_the_last_conversation(box, api,
     assert api.post(f"{base}/resolve-conflict", headers=CSRF_HEADERS).status_code == 409
 
 
+def test_api_fix_check_sends_the_failures_to_the_last_conversation(box, api, monkeypatch):
+    """目的: 確認（テスト）で落ちた項目を、この作業場で動いた同じ会話の OpenCode に「直させる」文として
+    送る API を守る（resolve-conflict と同じ流れ・監査ログを残す）。
+    根拠: 2026-11-27 利用者「関門を確認（テスト）にそろえ、不合格のときは『直させる』を主の操作に」。
+    確認をまだ流していない・合格しているときは断る（送る内容が無い）。"""
+    from app.database import SessionLocal
+    from app.models import AuditLog, ChatMessage, Conversation, User
+
+    fail_report = "[不合格] テスト: 1 件落ちた\n\n不合格（直すもの）:"
+    base = f"/api/v1/opencode/workspaces/{box.name}"
+    assert api.post(f"{base}/fix-check", headers=CSRF_HEADERS).status_code == 409, "まだ確認を流していない"
+    run_check(box.name)
+    assert api.post(f"{base}/fix-check", headers=CSRF_HEADERS).status_code == 409, "合格している"
+    run_check(box.name, report=fail_report, passed=False)
+    with SessionLocal() as db:
+        me = db.execute(select(User).where(User.username == "admin")).scalar_one()
+        db.add(Conversation(id="convfix0000001", owner_user_id=me.id, title="作業場"))
+        db.flush()
+        db.add(ChatMessage(id="msgfix0000001", conversation_id="convfix0000001", role="assistant",
+                           content="前", status="completed",
+                           meta_json=json.dumps({"mode": "code", "project_path": str(box.repo),
+                                                 "opencode_session": "ses_aaaa"})))
+        db.commit()
+
+    sent = {}
+
+    async def fake_start_send(db_, conv, body, owner_user_id):
+        sent.update(content=body.content, mode=body.mode, project=body.code_project_path, conv=conv.id)
+        return {"assistant_message_id": "newmsg", "opencode_session": "ses_aaaa"}
+
+    monkeypatch.setattr("app.workflows.chat_persist._start_send", fake_start_send)
+    r = api.post(f"{base}/fix-check", headers=CSRF_HEADERS)
+    assert r.status_code == 202, r.text
+    assert sent["mode"] == "code" and sent["project"] == str(box.repo) and sent["conv"] == "convfix0000001"
+    assert "テスト: 1 件落ちた" in sent["content"], "落ちた項目の名前と内容を伝える"
+    assert "直して" in sent["content"] and "コミット" in sent["content"]
+    with SessionLocal() as db:
+        rows = list(db.execute(select(AuditLog).where(
+            AuditLog.action == "opencode.workspace.fix_check")).scalars())
+    assert len(rows) == 1 and json.loads(rows[0].metadata_json)["failures"] == 1
+    # 確認の後にコミットが進んでいたら断る（落ちた内容が古いので。画面は stale で出さないが API の縛りとして）
+    git(box.repo, "commit", "-q", "--allow-empty", "-m", "確認の後")
+    r = api.post(f"{base}/fix-check", headers=CSRF_HEADERS)
+    assert r.status_code == 409 and "流し直して" in r.json()["detail"], r.text
+
+
 # ---- Claude による直し（2026-11-22 レビュー）----
 
 def test_merge_main_shows_the_bundle_to_the_box_only_read_only(box, tmp_path, monkeypatch, external):  # noqa: F811

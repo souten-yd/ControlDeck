@@ -651,6 +651,8 @@ class AdoptBody(BaseModel):
     confirm: bool = False
     commit_message: str = Field(default="", max_length=200)
     title: str = Field(default="", max_length=120)
+    # 確認（テスト）に落ちているときの「それでも取り込む」（エキスパート向け・settings.manage が要る）
+    force: bool = False
 
 
 def _owned_box(name: str, user: User):
@@ -813,11 +815,14 @@ async def workspace_adopt(
     if not body.confirm:
         raise HTTPException(status_code=422, detail="取り込むには確認（confirm）が必要です")
     box = _owned_box(name, user)
+    # 「それでも取り込む」（確認が不合格でも進む）のは管理者だけ。通常の取り込みは従来どおり terminal.use
+    if body.force and "settings.manage" not in user_permissions(user):
+        raise HTTPException(status_code=403, detail="権限がありません: settings.manage")
     if box.adopt_mode == "pr" and "settings.manage" not in user_permissions(user):
         raise HTTPException(status_code=403, detail="権限がありません: settings.manage")
     try:
         result = await asyncio.to_thread(workspaces.adopt, name, user.username,
-                                         commit_message=body.commit_message, title=body.title)
+                                         commit_message=body.commit_message, title=body.title, force=body.force)
     except workspaces.AdoptRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except workspaces.SandboxError as exc:
@@ -825,6 +830,8 @@ async def workspace_adopt(
     audit.record(db, "opencode.workspace.adopt", user=user, resource_type="opencode_workspace",
                  resource_id=name, request=request,
                  metadata={"branch": result["branch"], "pr_url": result["pr_url"], "kind": result["kind"],
+                           "force": body.force,
+                           "check_passed": bool((await asyncio.to_thread(workspaces.check_state, box) or {}).get("passed")),
                            "target": box.target, "capabilities": sorted(box.capabilities)})
     _auto_delete_media(box, user, db, request)
     from app.alerts.events import notify_event
@@ -990,6 +997,56 @@ async def workspace_resolve_conflict(
     audit.record(db, "opencode.workspace.resolve_conflict", user=user, resource_type="opencode_workspace",
                  resource_id=name, request=request,
                  metadata={"conversation_id": conv_id, "files": len(conflict.get("conflicts") or [])})
+    return result
+
+
+@router.post("/workspaces/{name}/fix-check", status_code=202)
+async def workspace_fix_check(
+    name: str, request: Request,
+    user: User = Depends(require_permission("workflows.run")), db=Depends(get_db),
+):
+    """確認（テスト）で落ちた項目を、この作業場で動いた同じ会話の OpenCode に直させる。
+
+    resolve-conflict と同じ流れ（落ちた内容を user メッセージとして会話へ送る・workflows.run・
+    セッションは会話の meta のものを続ける）。落ちた項目は最後の確認の記録（meta の last_check）から読む。
+    確認の後にコミットが進んでいたら（画面は stale で出さないが、API の縛りとして）断る。
+    2026-11-27 依頼: 関門を「確認（テスト）」にそろえ、不合格のときの主の操作をこれにする。"""
+    import asyncio
+
+    from app.maintenance import sandbox as _sandbox
+    from app.maintenance import workspaces
+    from app.models import Conversation
+    from app.workflows import chat_persist
+
+    box = _owned_box(name, user)
+    state = await asyncio.to_thread(workspaces.check_state, box)
+    if state is None or state.get("passed"):
+        raise HTTPException(409, "直させるには、確認（テスト）に落ちた結果が必要です。先に確認を流してください")
+    if state.get("head"):
+        # 確認の後に変更があれば落ちた内容は古い。箱が止まって読めなければ確かめずに続ける（送り先で失敗する）
+        try:
+            head = await asyncio.to_thread(workspaces._box_head, box)
+        except _sandbox.SandboxError:
+            head = ""
+        if head and head[:10] != state.get("head"):
+            raise HTTPException(409, "確認の後に変更があります。確認を流し直してください")
+    failures = [item for item in (state.get("items") or [])
+                 if isinstance(item, dict) and item.get("status") == "ng"]
+    if not failures:
+        raise HTTPException(409, "落ちた項目の記録がありません。もう一度確認を流してください")
+    conv_id = await asyncio.to_thread(workspaces.last_conversation, box)
+    conv = db.get(Conversation, conv_id) if conv_id else None
+    if conv is None or conv.owner_user_id != user.id:
+        raise HTTPException(409, "この作業場で OpenCode が動いた会話が見つかりません")
+    lines = "\n".join(f"- {item.get('name')}: {item.get('message')}" for item in failures[:50])
+    content = ("取り込む前の確認（テスト）で、次の項目が落ちました:\n"
+               f"{lines}\n\n"
+               "落ちた原因を調べて直してください。直したらコミットしてください。")
+    body = chat_persist.SendBody(content=content, mode="code", code_project_path=str(box.repo))
+    result = await chat_persist._start_send(db, conv, body, user.id)
+    audit.record(db, "opencode.workspace.fix_check", user=user, resource_type="opencode_workspace",
+                 resource_id=name, request=request,
+                 metadata={"conversation_id": conv_id, "failures": len(failures)})
     return result
 
 

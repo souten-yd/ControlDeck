@@ -627,12 +627,16 @@ def _trusted_origin() -> str:
     return _host_git("remote", "get-url", "origin", cwd=controldeck_repo())
 
 
-def _require_adoptable(box: Sandbox, commit_message: str) -> dict:
-    """取り込める状態か確かめる（必要なら箱の中でコミットする）。返すのは保存済みの関門の結果。"""
+def _require_adoptable(box: Sandbox, commit_message: str, *, force: bool = False) -> dict:
+    """取り込める状態か確かめる（必要なら箱の中でコミットする）。返すのは保存済みの関門の結果。
+
+    force は「最後の確認（テスト）が不合格でも取り込む」（管理者の明示操作・2026-11-27 依頼の
+    「それでも取り込む」）。それ以外の前提（確認を一度は流した・確認の後に変更していない・
+    未コミットならコミットメッセージ）は force でも守る。"""
     saved = sandbox._read_meta(box.path).get("last_check")
     if not isinstance(saved, dict) or not saved.get("at"):
         raise AdoptRefused("関門をまだ流していません。関門を流してください")
-    if not saved.get("passed"):
+    if not saved.get("passed") and not force:
         raise AdoptRefused("最後の関門が不合格です。直してから関門を流し直してください")
     state = sandbox.probe(box, fresh=True, with_tree=True)
     if state.get("unknown"):
@@ -649,12 +653,25 @@ def _require_adoptable(box: Sandbox, commit_message: str) -> dict:
     return saved
 
 
-def _body_of(summary_: dict, name: str, saved: dict, username: str, box: Sandbox | None = None) -> str:
+def _forced_note(name: str, saved: dict, username: str) -> str:
+    """「それでも取り込む」（確認に落ちているのに取り込んだ）の記録。PR を作り直せないとき
+    （既存の PR を再利用するとき）はコメントとして残す（2026-11-27 依頼）。"""
+    labels = {"ok": "合格", "ng": "不合格", "skip": "未実施"}
+    lines = [f"⚠️ 作業場 {name} を確認（テスト）に不合格のまま再取り込みしました（管理者 {username} の明示操作）。",
+             "マージの前に内容を確認してください。最後の確認の結果:"]
+    lines += [f"- [{labels.get(item['status'], item['status'])}] {item['name']}: {item['message']}"
+              for item in (saved.get("items") or [])]
+    return "\n".join(lines)
+
+
+def _body_of(summary_: dict, name: str, saved: dict, username: str, box: Sandbox | None = None, *, forced: bool = False) -> str:
     labels = {"ok": "合格", "ng": "不合格", "skip": "未実施"}
     lines = ["AI アシスタントの開発の作業場から作りました。", "",
              f"- 作業場: {name}（元: {summary_['base']} から {summary_['commit_count']} コミット）",
              f"- 変更: {summary_['file_count']} ファイル（+{summary_['added']} / -{summary_['removed']}）",
              f"- 利用者: {username}"]
+    if forced:
+        lines += ["", "⚠️ 確認（テスト）に不合格のまま取り込みました（管理者の明示操作）。マージの前に内容を確認してください。"]
     autosaved = int((box.meta if box is not None else {}).get("autosave_count") or 0)
     if autosaved:
         lines.append(f"- 途中の自動保存: {autosaved} 回（ターンの終わりごと）")
@@ -665,8 +682,10 @@ def _body_of(summary_: dict, name: str, saved: dict, username: str, box: Sandbox
     return "\n".join(lines)
 
 
-def adopt(name: str, username: str, *, commit_message: str = "", title: str = "") -> dict:
-    """作業場の結果を取り込む。本体は GitHub に PR（マージしない）、CodeDEV は元のリポジトリへブランチとして。"""
+def adopt(name: str, username: str, *, commit_message: str = "", title: str = "", force: bool = False) -> dict:
+    """作業場の結果を取り込む。本体は GitHub に PR（マージしない）、CodeDEV は元のリポジトリへブランチとして。
+
+    force=True は確認（テスト）が不合格でも取り込む（管理者の明示操作・PR 本文にその旨を書く）。"""
     box = get(name, username)
     source = str(box.meta.get("workspace_source") or "")
     if source != CONTROLDECK and not source.startswith(CODEDEV_PREFIX):
@@ -674,7 +693,7 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
     mode = box.adopt_mode
     if mode == "pr" and source != CONTROLDECK:
         raise AdoptRefused("PR で取り込めるのは、元が ControlDeck 本体の作業場だけです")
-    saved = _require_adoptable(box, commit_message)
+    saved = _require_adoptable(box, commit_message, force=force)
     # main の進み: 取り込みの前に、箱の中で main を取り込む（指示 2026-11-22）。ぶつかったら取り込みを止める
     merged = merge_main(box)
     if merged["conflicts"]:
@@ -699,12 +718,17 @@ def adopt(name: str, username: str, *, commit_message: str = "", title: str = ""
         previous = adopted_state(box)
         if previous and previous.get("pr_url"):
             url = str(previous["pr_url"])
+            if force:
+                # 既存の PR を再利用するときは作り直した本文が付かないので、コメントで記録を残す
+                # （画面は「PR 本文にその旨が残る」と案内している。2026-11-27 の「それでも取り込む」）
+                _gh("pr", "comment", url.rstrip("/").split("/")[-1],
+                    "--body", _forced_note(name, saved, username))
         else:
             summary_ = _diff_summary(box, head)
             subject = commit_message.strip().splitlines()[0] if commit_message.strip() else suggest_title(box)
             url = _gh("pr", "create", "-R", slug, "--base", "main", "--head", branch,
                       "--title", (title.strip() or subject)[:120],
-                      "--body", _body_of(summary_, name, saved, username, box)
+                      "--body", _body_of(summary_, name, saved, username, box, forced=force)
                       ).splitlines()[-1].strip()
         result = {"kind": "pr", "branch": branch, "pr_url": url, "slug": slug}
     else:

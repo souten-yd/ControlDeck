@@ -15,7 +15,13 @@
  * 2026-11-22 利用者「モードと権限は文字ではなくフラットデザインのアイコンで（どれを選んでいるか分かる
  * ように）。全体をコンパクトに・横幅も小さく・スタイリッシュに」「添付と機能タイルの 2 行目を無くして
  * 1 行に」。モード・権限はアイコンだけの 44px ボタン（名前と説明は aria-label・title へ。小さな名前の
- * 行は残す）、添付・操作の行と機能タイルは 1 行、幅は 336px → 288px。＋の隣の札も同じアイコンに揃えた。 */
+ * 行は残す）、添付・操作の行と機能タイルは 1 行、幅は 336px → 288px。＋の隣の札も同じアイコンに揃えた。
+ *
+ * 2026-11-27 利用者「＋のメニューが飛ぶ（iPhone。画面の上の方に出て、入力欄の＋から離れる）」。
+ * 原因: 位置を window.innerHeight から計算していた。iOS ではキーボードや縮んだ描画領域で innerHeight と
+ * position:fixed の基準がずわり、bottom の値が画面の上端寄りになる。直し: fixed の探り要素で基準を実測して
+ * ＋の上端に合わせ、見えている範囲（cd-keyboard-fit の --cd-app-top/--cd-app-height）からはみ出す分だけ
+ * 上下へずらし、それでも足りない分はメニューの中だけスクロールする（画面全体は動かさない）。 */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconChat, IconClipboardList, IconFastForward, IconHammer, IconPaperclip, IconPause, IconPlay, IconPlus, IconSearch, IconSettings, IconSparkle, IconTerminal } from "../../components/icons";
@@ -209,16 +215,41 @@ export function PlusMenu({
   const menu = useRef<HTMLDivElement>(null);
   const place = () => {
     const rect = button.current?.getBoundingClientRect();
-    if (rect) {
-      // メニューの幅は className の 18rem と同じ量を px で測る（根の文字サイズが既定でなくても、位置の計算と実描画がずれない）
-      const width = Math.min(18 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16), window.innerWidth - 24);
-      setPos({
-        left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
-        bottom: window.innerHeight - rect.top + 8,
-        // ステータスバーの下まで（iPhone のホーム画面アプリは画面の最上部から描かれる）
-        maxHeight: `max(44px, calc(${Math.round(rect.top - 20)}px - var(--cd-safe-area-top, env(safe-area-inset-top))))`,
-      });
-    }
+    if (!rect) return;
+    // メニューの幅は className の 18rem と同じ量を px で測る（根の文字サイズが既定でなくても、位置の計算と実描画がずれない）
+    const width = Math.min(18 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16), window.innerWidth - 24);
+    // position:fixed の基準は window.innerHeight と一致するとは限らない（iOS はキーボード・縮んだ描画領域で
+    // ずかる。2026-11-27 の「メニューが飛ぶ」）。fixed の探り要素の下端で実測を合わせる。普通のブラウザでは
+    // この値 = innerHeight なので、従来の innerHeight からの計算と同じになる。
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;inset:0;visibility:hidden;pointer-events:none";
+    document.body.appendChild(probe);
+    const probeRect = probe.getBoundingClientRect();
+    probe.remove();
+    // 見えている範囲は、＋の rect と「同じ座標系」で作る。--cd-app-top/--cd-app-height は layout 基準
+    // （visual viewport の上端のずれ）なので、探り要素の上端（= rect と layout のずれ分）を足して合わせる。
+    // これを足さないと、iOS で viewport が上へずれている間（キーボード）に上へ飛ぶ。
+    const root = document.documentElement;
+    const fit = root.classList.contains("cd-keyboard-fit");
+    const appTop = fit ? parseFloat(root.style.getPropertyValue("--cd-app-top")) || 0 : 0;
+    // --cd-app-height が読めなければ殻は縮んでいないと見なして探り要素の高さを使う
+    const appHeight = fit ? parseFloat(root.style.getPropertyValue("--cd-app-height")) || (probeRect.height - appTop) : 0;
+    const visibleTop = probeRect.top + appTop;
+    const visibleBottom = fit ? visibleTop + appHeight : probeRect.bottom;
+    // 基準は＋の上端の 8px 上。中身がそこに収まらないときは下へずらし、下端も見えている範囲へ。
+    // それでも残る分はメニューの中だけスクロール（maxHeight）。上端はステータスバーに重ねない。
+    const height = menu.current?.offsetHeight ?? 0;
+    let edge = rect.top - 8;
+    if (height && edge - height < visibleTop + 4) edge = visibleTop + 4 + height;
+    if (edge > visibleBottom - 4) edge = visibleBottom - 4;
+    const maxHeight = `max(120px, calc(${Math.round(edge)}px - ${Math.round(visibleTop)}px - 4px - var(--cd-safe-area-top, env(safe-area-inset-top))))`;
+    const next = {
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
+      bottom: Math.max(8, probeRect.bottom - edge),
+      maxHeight,
+    };
+    setPos((current) =>
+      current && current.left === next.left && current.bottom === next.bottom && current.maxHeight === next.maxHeight ? current : next);
   };
   const close = (focus = true) => {
     setOpen(false);
@@ -247,7 +278,8 @@ export function PlusMenu({
     const onScroll = (event: Event) => {
       if (button.current && (event.target as Node).contains?.(button.current)) setOpen(false);
     };
-    // キーボードの開閉は高さだけが変わる。置き直して開いたままにする。回転は閉じる
+    // キーボードの開閉は高さだけが変わる。置き直して開いたままにする。回転は閉じる。
+    // iOS では window の resize が来ないことがある（main.tsx の実測）ので visualViewport も聞く
     const openedWidth = window.innerWidth;
     const onResize = () => {
       if (window.innerWidth !== openedWidth) setOpen(false);
@@ -257,14 +289,24 @@ export function PlusMenu({
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("scroll", onResize);
     menu.current?.querySelector<HTMLButtonElement>("[data-plus-item]:not(:disabled)")?.focus({ preventScroll: true });
     return () => {
       window.removeEventListener("pointerdown", outside);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("scroll", onResize);
     };
   }, [open]);
+  // 描いた後にもう一度測る（中身の高さで上にはみ出す分だけ下へずらす。機能の一覧の開閉でも同じ）
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(frame);
+  }, [open, detail]);
   const toggle = () => {
     place();
     setOpen((current) => !current);

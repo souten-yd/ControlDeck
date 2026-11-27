@@ -91,6 +91,34 @@ def test_terminal_api_admin(admin_client):
     assert invalid.status_code == 422
 
 
+def test_terminal_create_accepts_cwd_for_chat_command_runs(admin_client, tmp_path):
+    """目的: チャットの返事のコマンドを「その会話の作業場所」で実行するため、セッション作成に cwd を
+    指定できることを守る（2026-11-27 依頼の「▶ 実行」）。実在するディレクトリだけを受け、
+    存在しない・ファイルのパスは断る（terminal automation の resolve_working_directory と同じ検証）。"""
+    from tests.conftest import CSRF_HEADERS
+
+    work = tmp_path / "ws"
+    work.mkdir()
+    r = admin_client.post("/api/v1/terminals", json={"cwd": str(work)}, headers=CSRF_HEADERS)
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    try:
+        listed = admin_client.get("/api/v1/terminals").json()["sessions"]
+        created = next(item for item in listed if item["id"] == sid)
+        assert created["cwd"] == _display_path(str(work)), "指定した作業場所でセッションが始まる"
+    finally:
+        admin_client.delete(f"/api/v1/terminals/{sid}", headers=CSRF_HEADERS)
+    missing = admin_client.post("/api/v1/terminals", json={"cwd": str(tmp_path / "ない")}, headers=CSRF_HEADERS)
+    assert missing.status_code == 422
+    afile = tmp_path / "f.txt"
+    afile.write_text("x")
+    assert admin_client.post("/api/v1/terminals", json={"cwd": str(afile)}, headers=CSRF_HEADERS).status_code == 422
+    # 従来どおり cwd 無しでも作れる（ホーム）
+    r = admin_client.post("/api/v1/terminals", headers=CSRF_HEADERS)
+    assert r.status_code == 201
+    admin_client.delete(f"/api/v1/terminals/{r.json()['id']}", headers=CSRF_HEADERS)
+
+
 def test_terminal_v2_websocket_rejects_non_lab_session_before_attach(admin_client, monkeypatch):
     class RejectAttachRegistry:
         def acquire(self, *_args):

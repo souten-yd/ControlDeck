@@ -69,6 +69,8 @@ export default function XtermView({
   onSwitch,
   onAutomation,
   onExit,
+  autoRun = null,
+  onAutoRan,
   embedded = false,
 }: {
   sessionId: string;
@@ -76,6 +78,11 @@ export default function XtermView({
   onSwitch: (id: string) => void;
   onAutomation?: () => void;
   onExit: () => void;
+  /** 開いたときに 1 回だけ流し込む本文（チャットの「▶ 実行」からの受け渡し・2026-11-27）。
+   *  端末に打ち込んだのと同じ扱いで、そのまま見える */
+  autoRun?: { text: string } | null;
+  /** autoRun を流し終えた（呼び出し側が記録を消す） */
+  onAutoRan?: () => void;
   /** タイルなど小さい箱へ収める表示。全画面の固定レイアウト・ヘッダー・portal を外す。 */
   embedded?: boolean;
 }) {
@@ -107,6 +114,29 @@ export default function XtermView({
   const [copyText, setCopyText] = useState("");
   const fullCopyTextRef = useRef("");
   const copySelectionRef = useRef("");
+  // 「▶ 実行」の流し込みを 1 回だけにする鍵（session と長さ。接続のし直しで二重に送らない）
+  const autoRunKey = useRef("");
+  useEffect(() => {
+    if (!autoRun || replaying || status !== "open") return;
+    const key = `${sessionId}:${autoRun.text.length}`;
+    if (autoRunKey.current === key) return;
+    autoRunKey.current = key;
+    const send = inputSenderRef.current;
+    if (!send) return;
+    // 既存の入力の道（端末に打ち込んだのと同じ扱い・画面にそのまま見える）で 1 行ずつ流す。
+    // 途中の行は改行で実行され、最後の行は Enter（\r）で確定する。ヒアドキュメントや \ 継続も
+    // 対話的に打ち込むのと同じ扱いで動く。貼り付けの枠（pasteSenderRef）は使わない:
+    // あちらは確認応答を待つ枠送りで「最後の Enter」の到着順を保証できない（Enter が先に届くと
+    // 未完成の行が実行される）。長すぎる 1 行は端末の入力の上限に当たるのでコピーを案内する。
+    // 接続が切れた場合は再送しない（1 回だけ）。利用者が端末を見て手で直せる。
+    const lines = autoRun.text.split("\n");
+    if (lines.some((line) => line.length > 15_000)) {
+      show("コマンドの行が長すぎるので、コピーして端末へ貼り付けてください");
+    } else {
+      lines.forEach((line, index) => send(line + (index < lines.length - 1 ? "\n" : "\r")));
+    }
+    onAutoRan?.();
+  }, [autoRun, replaying, status, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
   /** シートの中（<pre> の内側）だけの選択。外まで伸びた選択は使わない。 */
   const selectionInCopyView = () => {
     const selection = window.getSelection();

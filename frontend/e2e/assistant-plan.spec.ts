@@ -205,6 +205,8 @@ test("plan with auto plans in OpenCode, and leaving plan stops going to OpenCode
 
 test("the plus menu stays on a short screen, scrolls inside and follows the arrow keys", async ({ page, context }) => {
   // 2026-11-18 利用者「項目が多すぎてはみ出る。スライドも微妙にできない」
+  // 2026-11-27: 位置の直し（window.innerHeight → fixed の探り要素の実測）に合わせて、上へも下へも
+  // はみ出さないことと、下端が＋の上端の近く（収まらないときは見えている範囲の下に合わせる）を見る
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 360 });
   await establishSession(page, context);
@@ -216,6 +218,14 @@ test("the plus menu stays on a short screen, scrolls inside and follows the arro
   await shell.locator("[data-assistant-plus]").click();
   const menu = page.getByRole("menu", { name: "添付・機能・権限" });
   expect((await menu.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  // 上へも下へもはみ出さない（下端は＋の上端の近く、または見えている範囲の下端 − 4px）
+  const boxes = await page.evaluate(() => {
+    const menu = document.querySelector("[role='menu']")!.getBoundingClientRect();
+    const plus = document.querySelector("[data-assistant-plus]")!.getBoundingClientRect();
+    return { menu: { top: menu.top, bottom: menu.bottom }, plus: { top: plus.top }, height: window.innerHeight };
+  });
+  expect(boxes.menu.bottom).toBeLessThanOrEqual(boxes.height);
+  expect(boxes.menu.bottom).toBeGreaterThanOrEqual(Math.min(boxes.plus.top - 24, boxes.height - 10));
   await expect(menu.getByRole("group", { name: "OpenCode の権限" })).toContainText("箱の中は確認なし");   // 選ぶ前に読める
   // 会話の欄の自動スクロールでは閉じない（生成中に触っている最中に消えていた）
   await shell.getByText("作りました").evaluate((el) => el.dispatchEvent(new Event("scroll")));

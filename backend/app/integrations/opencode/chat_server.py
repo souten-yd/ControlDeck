@@ -634,6 +634,15 @@ async def switch_model(server: Server, session_id: str, model: str) -> None:
     _session_models[(server.key, session_id)] = str(model)
 
 
+def context_max_of(server: Server, model: str) -> int | None:
+    """`provider/モデル` の窓の大きさ（統計の 5K/20K の分母）。チェーンでモデルを切り替えた後に
+    呼び出し元が run_turn へ渡すために使う。分からなければ None = 送らない。"""
+    from app.integrations.opencode import provider
+
+    _, _, model_id = str(model).partition("/")
+    return provider.model_context_window(model_id) if model_id else None
+
+
 async def switch_agent(server: Server, session_id: str, agent: str) -> None:
     """このセッションのエージェントを切り替える（build＝作る・直す、plan＝計画だけで何も変えない）。"""
     if agent not in AGENTS:
@@ -667,6 +676,47 @@ async def _required(server: Server, method: str, path: str, body: dict | None = 
     if result is None:
         raise ChatServerError("OpenCode のセッションが見つかりません")
     return result
+
+
+def estimate_delta_tokens(text: str) -> int:
+    """delta の文字列からトークン数を見積もる。ASCII は 4 文字で 1、それ以外（日本語など）は 1 文字で 1。
+
+    根拠: 2026-11-27 利用者「7 秒・7.5 tok/s・599 tok と出る（599÷7≒85 のはず）」。届いた delta の
+    「回数」をトークン数としていたが、1 回の delta に複数のトークンが入る。chat_compaction の見積もりは
+    文書の予算用（意図的に高く・メッセージ dict 単位）で単位が違い、ここでは使えない。"""
+    if not text:
+        return 0
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+    return ascii_chars // 4 + (len(text) - ascii_chars)
+
+
+def step_used_tokens(usage: dict | None) -> int | None:
+    """step 完了イベントの使用量から、その step で生成した分（output + reasoning）を数える。
+
+    OpenCode v2.4.2 の session.step.ended / session.step.failed は tokens {input, output, reasoning,
+    cache…} を持つ（本体の schema で確認。reasoning は output とは別枠）。無い・読めなければ None。"""
+    if not isinstance(usage, dict):
+        return None
+    try:
+        values = [int(v) for v in (usage.get("output"), usage.get("reasoning")) if v is not None]
+    except (TypeError, ValueError):
+        return None
+    return sum(values) if values else None
+
+
+def step_prompt_tokens(usage: dict | None) -> int | None:
+    """step 完了イベントの使用量から、その step の入力（プロンプト）の分を数える。
+
+    input + cache の読み書き（OpenCode v2.4.2 の schema: tokens {input, …, cache: {read, write}}）。
+    UI の「使っている量/全体」（2026-11-27 依頼）の分子。無い・読めなければ None。"""
+    if not isinstance(usage, dict):
+        return None
+    cache = usage.get("cache") if isinstance(usage.get("cache"), dict) else {}
+    try:
+        values = [int(v) for v in (usage.get("input"), cache.get("read"), cache.get("write")) if v is not None]
+    except (TypeError, ValueError):
+        return None
+    return sum(values) if values else None
 
 
 # 途中で伝えた要望が、まだ届いていないかもしれないセッション
@@ -710,11 +760,14 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                    on_text: Callable[[str], Awaitable[None]],
                    on_reasoning: Callable[[str], Awaitable[None]],
                    on_tool: Callback, on_permission: Callback, agent: str = "build",
-                   on_status: Callback | None = None, files: list[dict] | None = None) -> dict:
+                   on_status: Callback | None = None, files: list[dict] | None = None,
+                   context_max: int | None = None) -> dict:
     """1 回分の発言を送り、終わるまでイベントを呼び出し元へ渡す。中断されたら OpenCode も止める。
 
     子エージェント（このセッションから作られた別セッション）の許可の問い合わせも渡す
     （答えないと親の発言が止まり続けるため）。許可には sessionID を添える（返答先）。
+    context_max は呼び出し元が分かっているときだけ渡す（チェーンでモデルを切り替えた後など。
+    無ければセッションの設定のモデルから読む）。
     戻り値: {"status": "succeeded" | "failed" | "interrupted", "error": str}
     """
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -755,20 +808,36 @@ async def run_turn(server: Server, session_id: str, text: str, *,
     resumed = False
     needs_break = False
     phase = ""
-    deltas: deque[float] = deque()
+    phase_detail = ""
+    deltas: deque[tuple[float, int]] = deque()   # (届いた時刻, 見積もりのトークン) — 直近 4 秒の tok/s 用
     last_status = 0.0
-    total_deltas = 0
+    actual_tokens = 0      # step 完了イベントの使用量の合計（正しい値が届いた分）
+    pending_estimated = 0  # 最後の step 完了以降に delta から見積もった分
+    prompt_tokens: int | None = None   # step 完了イベントから届いた入力の分（直近の値。届くまでは None）
+    context_max: int | None = None     # セッションのモデルの窓（provider が OpenCode へ渡す limit.context と同じ式）
+
+    def count_delta(text: str) -> None:
+        nonlocal pending_estimated
+        estimated = estimate_delta_tokens(text)
+        pending_estimated += estimated
+        deltas.append((time.monotonic(), estimated))
 
     async def status(next_phase: str, detail: str = "", *, force: bool = False) -> None:
-        nonlocal phase, last_status
+        nonlocal phase, phase_detail, last_status
         now = time.monotonic()
-        while deltas and now - deltas[0] > 4.0:
+        while deltas and now - deltas[0][0] > 4.0:
             deltas.popleft()
         if on_status is None or (next_phase == phase and not force and now - last_status < 1.0):
             return
-        phase, last_status = next_phase, now
-        await on_status({"phase": next_phase, "detail": detail, "tok_per_sec": round(len(deltas) / 4.0, 1),
-                         "gen_tokens": total_deltas})
+        phase, phase_detail, last_status = next_phase, detail, now
+        await on_status({"phase": next_phase, "detail": detail,
+                         "tok_per_sec": round(sum(tokens for _, tokens in deltas) / 4.0, 1),
+                         "gen_tokens": actual_tokens + pending_estimated,
+                         # コンテキストの使用量（使っている量/全体）。chat_persist（ふつうのチャット）と同じ形。
+                         # used_tokens は分子: 直近 step の入力＋その step の後に出た分。全 step の gen_tokens
+                         # を足すと前の step の出力が直近 step の入力に既に入っていて二重になるため、別に送る
+                         "prompt_tokens": prompt_tokens, "context_max": context_max,
+                         "used_tokens": (prompt_tokens + pending_estimated) if prompt_tokens is not None else None})
 
     def finished_waiting() -> bool:
         return not background and not parent_running and time.monotonic() >= follow_up_until
@@ -820,6 +889,14 @@ async def run_turn(server: Server, session_id: str, text: str, *,
         await asyncio.wait_for(ready.wait(), timeout=15)
         # 毎回そろえる（前の発言がプランでも、今回がビルドならビルドで動く）
         await switch_agent(server, session_id, agent)
+        # セッションのモデルの窓（コンテキストの上限。分からなければ None = 送らない）。1 回だけ読む。
+        # チェーンでモデルを切り替えた後は呼び出し元が渡した値を使う
+        if context_max is None:
+            ref = await asyncio.to_thread(_agent_model_ref, server, agent)
+            if ref and ref.get("id"):
+                from app.integrations.opencode import provider
+
+                context_max = await asyncio.to_thread(provider.model_context_window, str(ref["id"]))
         # 画像は data: の URI で発言に添付する（OpenCode が読み、画像を受け取れるモデルにそのまま渡す）
         prompted = await _call(server, "POST", f"/api/session/{session_id}/prompt",
                                {"text": text, **({"files": files} if files else {})})
@@ -890,15 +967,26 @@ async def run_turn(server: Server, session_id: str, text: str, *,
                 if needs_break:
                     needs_break = False
                     await on_text("\n\n")
-                deltas.append(time.monotonic())
-                total_deltas += 1
+                count_delta(str(data.get("delta") or ""))
                 await on_text(str(data.get("delta") or ""))
                 await status("answer")
             elif kind == "session.reasoning.delta":
-                deltas.append(time.monotonic())
-                total_deltas += 1
+                count_delta(str(data.get("delta") or ""))
                 await on_reasoning(str(data.get("delta") or ""))
                 await status("thinking")
+            elif kind in ("session.step.ended", "session.step.failed"):
+                # step の完了に使用量があれば、それまでの見積もりを捨てて実測に置き換える（二重に数えない）。
+                # 段階も説明も変えずに出し直す（GenStatsBadge は phase と detail が変わると秒数を戻すため）。
+                # 入力（プロンプト）の分は直近の step の値をそのまま出す（コンテキストの使用量の分子）
+                used = step_used_tokens(data.get("tokens"))
+                prompt = step_prompt_tokens(data.get("tokens"))
+                if prompt is not None:
+                    prompt_tokens = prompt
+                if used is not None:
+                    actual_tokens += used
+                    pending_estimated = 0
+                if used is not None or prompt is not None:
+                    await status(phase, phase_detail, force=True)
             elif kind == "session.tool.input.started" and data.get("id"):
                 tools[data["id"]] = {"id": data["id"], "name": data.get("name", ""), "status": "running",
                                      "input": {}, "output": "", "started_at": time.time()}

@@ -33,7 +33,23 @@ export default function TerminalPage() {
   const terminalLabV2 = searchParams.get("terminalLab") === "v2";
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [active, setActive] = useState<string | null>(null);
+  // チャットの返事の「▶ 実行」から遷移してきたとき: ?session= で開くセッションと、流し込む本文の受け渡し
+  // （sessionStorage。XtermView が接続した後で、既存の入力の道を通して端末にそのまま見える）
+  const [autoRun, setAutoRun] = useState<{ text: string } | null>(() => {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem("control-deck:terminal-autorun") || "null");
+      if (stored && typeof stored.sessionId === "string" && typeof stored.text === "string"
+        && stored.sessionId === searchParams.get("session")) {
+        return { text: stored.text };
+      }
+    } catch { /* 壊れた記録は無視 */ }
+    return null;
+  });
+  const clearAutoRun = () => {
+    setAutoRun(null);
+    try { sessionStorage.removeItem("control-deck:terminal-autorun"); } catch { /* 消せなくても再実行は鍵で防ぐ */ }
+  };
+  const [active, setActive] = useState<string | null>(searchParams.get("session"));
   const [killing, setKilling] = useState<string | null>(null);
   const [automationOpen, setAutomationOpen] = useState(false);
   const [automationSession, setAutomationSession] = useState<string | null>(null);
@@ -101,24 +117,27 @@ export default function TerminalPage() {
 
   // 接続中は全画面ターミナル
   if (active) {
-    const TerminalView = terminalLabV2 && v2LabSessions.includes(active) ? XtermViewV2 : XtermView;
+    const shared = {
+      sessionId: active,
+      sessions: visibleSessions,
+      onSwitch: setActive,
+      onAutomation: () => {
+        setAutomationSession(active);
+        setAutomationOpen(true);
+      },
+      onExit: () => {
+        setAutomationOpen(false);
+        setActive(null);
+        qc.invalidateQueries({ queryKey: ["terminals"] });
+      },
+    };
     return (
       <>
         <Suspense fallback={<div className="grid h-full place-items-center text-sm text-zinc-400">ターミナルを読み込み中...</div>}>
-          <TerminalView
-            sessionId={active}
-            sessions={visibleSessions}
-            onSwitch={setActive}
-            onAutomation={() => {
-              setAutomationSession(active);
-              setAutomationOpen(true);
-            }}
-            onExit={() => {
-              setAutomationOpen(false);
-              setActive(null);
-              qc.invalidateQueries({ queryKey: ["terminals"] });
-            }}
-          />
+          {/* ▶ 実行 から来たのは常に安定版（v1）のセッション。autoRun を v2 には渡さない */}
+          {terminalLabV2 && v2LabSessions.includes(active)
+            ? <XtermViewV2 {...shared} />
+            : <XtermView {...shared} autoRun={autoRun} onAutoRan={clearAutoRun} />}
           {automationOpen && <TerminalAutomationPanel
             sessions={data?.sessions ?? []}
             initialSessionId={automationSession}

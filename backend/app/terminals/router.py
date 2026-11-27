@@ -9,6 +9,7 @@ from fastapi import (
     APIRouter, Depends, File, HTTPException, Query, Request, UploadFile,
     WebSocket, WebSocketDisconnect,
 )
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
@@ -40,15 +41,37 @@ def list_terminals(user: User = Depends(require_permission("terminal.use"))):
     return {"tmux": tmux_available(), "sessions": manager.list_sessions()}
 
 
+class TerminalCreateBody(BaseModel):
+    """POST /terminals の本体。engine は従来どおり Query（既存の呼び出し側を壊さない）。"""
+    cwd: str = Field(default="", max_length=4096)
+
+
 @router.post("", status_code=201)
 def create_terminal(
     request: Request,
     engine: str = Query("v1"),
+    body: TerminalCreateBody | None = None,
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
+    """tmux のセッションを作る。cwd で作業場所を指定できる（チャットの返事のコマンドをその会話の作業場で
+    実行するため・2026-11-27 依頼）。検証は terminal automation の resolve_working_directory と同じ
+    （存在するディレクトリだけ。terminal.use の利用者は端末で cd でも同じ所へ行けるので、ここでの範囲は
+    「実在するディレクトリ」まで）。"""
+    cwd = None
+    if body is not None and (body.cwd or "").strip():
+        from app.terminals.automation import resolve_working_directory
+
+        try:
+            cwd = str(resolve_working_directory(body.cwd))
+        except HTTPException:
+            raise
+        except (OSError, ValueError) as exc:
+            # files.resolve は FileNotFoundError（実在しない）・FileAccessError（許可の外）を出す。
+            # そのまま返すと 500 になるので 422 にまとめる
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        session = manager.create_session(engine=engine) if engine != "v1" else manager.create_session()
+        session = manager.create_session(cwd=cwd, engine=engine)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except RuntimeError as e:
@@ -56,8 +79,10 @@ def create_terminal(
     audit.record(
         db, "terminal.start", user=user, resource_type="terminal",
         resource_id=session["id"], request=request,
+        metadata={"cwd": cwd} if cwd else None,
     )
     return session
+
 
 
 @router.post("/attachments", status_code=201)

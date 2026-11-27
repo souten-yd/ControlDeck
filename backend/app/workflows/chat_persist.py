@@ -1314,9 +1314,12 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 return
             _latest_stats[assistant_id] = {"type": "stats", "phase": item["phase"], "detail": item.get("detail", ""),
                                            "tok_per_sec": item.get("tok_per_sec", 0), "gen_tokens": item.get("gen_tokens", 0),
-                                           "prompt_tokens": None, "context_max": None}
+                                           "prompt_tokens": item.get("prompt_tokens"), "context_max": item.get("context_max"),
+                                           "used_tokens": item.get("used_tokens")}
             job.log("stats", phase=item["phase"], detail=item.get("detail", ""), tok_per_sec=item.get("tok_per_sec", 0),
-                    gen_tokens=item.get("gen_tokens", 0), prompt_tokens=None, context_max=None)
+                    gen_tokens=item.get("gen_tokens", 0),
+                    prompt_tokens=item.get("prompt_tokens"), context_max=item.get("context_max"),
+                    used_tokens=item.get("used_tokens"))
 
         def _previous_todos() -> dict[str, dict]:
             """前の回答のリストの時刻を引き継ぐ（続きのターンで完了時刻が今に書き換わらないように）。"""
@@ -1668,11 +1671,14 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                 original_query = query
                 resend_note = ("\n\n（注意: 前のモデルでこの依頼を始めていた可能性があります。"
                               "git status・git log で今の状態を確かめて、重複した適用を避けて続けてください。）")
+                # チェーンで切り替えた後のモデルの窓（統計の 5K/20K の分母が実際のモデルに追随する）
+                chain_context_max: int | None = None
                 while True:
                     result = await chat_server.run_turn(server, session_id, query, on_text=on_text,
                                                         on_reasoning=on_reasoning, on_tool=on_tool,
                                                         on_permission=on_permission,
                                                         agent=params.get("code_agent", "build"), on_status=on_status,
+                                                        context_max=chain_context_max,
                                                         **({"files": image_files} if image_files else {}))
                     if result["status"] != "failed" or not chain or model_index + 1 >= len(chain):
                         break
@@ -1689,6 +1695,7 @@ async def _run_chat_job_impl(job: jobs.Job, assistant_id: str, conv_id: str,
                         model_index -= 1
                         break            # 切り替えられなければ元の失敗のまま
                     buf["meta"]["model_index"] = model_index
+                    chain_context_max = await asyncio.to_thread(chat_server.context_max_of, server, next_model)
                     query = original_query + resend_note   # 元の文から作り直す（注記が積まないように）
                     await on_text(f"\n\n（{previous.split('/', 1)[-1]} が使えなくなったので "
                                   f"{next_model.split('/', 1)[-1]} で続けます（{error_text[:80]}））\n\n")
