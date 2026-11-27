@@ -372,6 +372,13 @@ class _TeamName(BaseModel):
     name: str = Field(max_length=200)
 
 
+class _TeamUpdate(BaseModel):
+    """チームの名前・前提（brief）・送る前のリセット。送った欄だけ変える（検証は teams.py）。"""
+    name: str | None = Field(default=None, max_length=200)
+    brief: str | None = Field(default=None, max_length=20000)
+    reset_before_dispatch: bool | None = None
+
+
 class _TeamMembers(BaseModel):
     members: list[dict[str, Any]] = Field(max_length=50)
 
@@ -386,6 +393,7 @@ class _TaskBody(BaseModel):
     goal: str | None = Field(default=None, max_length=20000)
     acceptance: str | None = Field(default=None, max_length=20000)
     files: list[str] | None = Field(default=None, max_length=200)
+    checks: list[str] | None = Field(default=None, max_length=100)
     assignee: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
 
@@ -427,12 +435,13 @@ def create_team(
 
 
 @router.put("/teams/{team_id}")
-def rename_team(
-    team_id: str, body: _TeamName, request: Request,
+def update_team(
+    team_id: str, body: _TeamUpdate, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    team = _team_call(teams.rename_team, team_id, body.name)
-    _team_audit(db, user, request, "rename", team_id, name=team["name"])
+    team = _team_call(teams.update_team, team_id, body.model_dump())
+    _team_audit(db, user, request, "update", team_id, name=team["name"], brief_length=len(team.get("brief") or ""),
+                reset_before_dispatch=team.get("reset_before_dispatch", True))
     return team
 
 

@@ -3,6 +3,8 @@
  * 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る →
  * 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。
  * T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。
+ * T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・
+ * 「自動で直せず」（blocked）の印も確かめる。
  * 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -13,12 +15,15 @@ interface Task {
   status: string; report: null | { summary: string; changed_files: string[]; tests: string; remaining: string };
   created_at: number; updated_at: number; history: unknown[]; warnings: string[];
   assignee_state?: string; report_ready?: boolean; unverified?: boolean; stalled_at?: number; limited_at?: number;
+  checks?: string[]; attempts?: number;
+  checks_result?: { status: string; ran_at: number; results: { cmd: string; exit_code: number; seconds: number; tail: string }[]; message?: string };
 }
 interface TeamState {
-  teams: { id: string; name: string; created_at: number; notify?: boolean; members: { session_id: string; role: string }[]; tasks: Task[] }[];
+  teams: { id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean; members: { session_id: string; role: string }[]; tasks: Task[] }[];
   dispatched: number[];
   collected: number[];
   notifyCalls?: boolean[];
+  teamPuts?: Record<string, unknown>[];
 }
 
 const CONSOLES = [
@@ -54,6 +59,15 @@ async function mockTeams(page: Page, state: TeamState) {
       (state.notifyCalls ??= []).push(team.notify);
       return route.fulfill({ json: team });
     }
+    m = path.match(/^teams\/(\w+)$/);
+    if (m && method === "PUT") {
+      const team = state.teams.find((t) => t.id === m![1])!;
+      const fields = body();
+      (state.teamPuts ??= []).push(fields);
+      if (typeof fields.brief === "string") team.brief = fields.brief;
+      if (typeof fields.reset_before_dispatch === "boolean") team.reset_before_dispatch = fields.reset_before_dispatch;
+      return route.fulfill({ json: team });
+    }
     m = path.match(/^teams\/(\w+)\/members$/);
     if (m && method === "PUT") {
       const team = state.teams.find((t) => t.id === m![1])!;
@@ -69,7 +83,7 @@ async function mockTeams(page: Page, state: TeamState) {
         .flatMap((t) => files.filter((f) => t.files.includes(f)).map((f) => `#${t.id} と ${f} が重なっています`));
       const task: Task = {
         id: team.tasks.length + 1, title: fields.title!, goal: fields.goal ?? "", acceptance: fields.acceptance ?? "",
-        files, assignee: fields.assignee ?? "", status: "todo", report: null, created_at: 1, updated_at: 1, history: [], warnings,
+        files, checks: fields.checks ?? [], assignee: fields.assignee ?? "", status: "todo", report: null, created_at: 1, updated_at: 1, history: [], warnings,
         assignee_state: fields.assignee ? "waiting" : "",
       };
       team.tasks.push(task);
@@ -253,6 +267,96 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.getByRole("button", { name: "チームの操作" }).click();
     await expect(page.getByRole("menuitem", { name: /通知: オフ/ })).toBeVisible();
     await page.keyboard.press("Escape");
+    await noOverflow(page);
+  });
+}
+
+for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
+  test(`AI チーム ${label}px: チームの前提・リセットの切り替え・確認のコマンドと結果・自動で直せず`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = seededTeam([
+      { status: "review", title: "確認が通った", checks: ["pytest -q", "ruff check ."], unverified: false,
+        report: { summary: "作った", changed_files: [], tests: "ok", remaining: "なし" },
+        checks_result: { status: "passed", ran_at: 1764000000, results: [
+          { cmd: "pytest -q", exit_code: 0, seconds: 3.2, tail: "12 passed" },
+          { cmd: "ruff check .", exit_code: 0, seconds: 0.4, tail: "All checks passed!" }] } },
+      { status: "doing", title: "確認が落ちて再挑戦", checks: ["pytest -q"], attempts: 1,
+        checks_result: { status: "failed", ran_at: 1764000000, results: [
+          { cmd: "pytest -q", exit_code: 1, seconds: 2.5, tail: "FAILED tests/test_a.py::test_x - assert 1 == 2" }] } },
+      { status: "blocked", title: "自動で直せなかった", checks: ["pytest -q"], attempts: 2,
+        checks_result: { status: "failed", ran_at: 1764000000, results: [
+          { cmd: "pytest -q", exit_code: 1, seconds: 2.5, tail: "FAILED tests/test_a.py::test_x" }] } },
+      { status: "review", title: "確認の実行中", checks: ["pytest -q"], unverified: false,
+        report: { summary: "作った", changed_files: [], tests: "ok", remaining: "なし" },
+        checks_result: { status: "running", ran_at: 1764000000, results: [] } },
+    ]);
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    // 印: 合格・不合格・実行中・自動で直せず（blocked は「待ち」の列に赤い印）
+    await expect(page.locator('[data-team-task="1"] [data-team-checks="passed"]')).toContainText("確認: 合格");
+    await expect(page.locator('[data-team-task="2"] [data-team-checks="failed"]')).toContainText("確認: 不合格");
+    await expect(page.locator('[data-team-task="4"] [data-team-checks="running"]')).toContainText("確認: 実行中");
+    await expect(page.locator('[data-team-column="todo"] [data-team-task="3"] [data-team-blocked]')).toContainText("自動で直せず");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2b-board.png`, fullPage: true });
+
+    // 詳細: コマンドごとの ✓／✗・終了コード・出力の最後（折りたたみ）
+    await page.locator('[data-team-task="1"]').click();
+    let detail = page.getByRole("dialog", { name: "#1 確認が通った" });
+    await expect(detail.locator("[data-team-check-row]")).toHaveCount(2);
+    await expect(detail.locator("[data-team-check-row]").first()).toContainText("✓");
+    await expect(detail.locator("[data-team-check-row]").first()).toContainText("終了 0");
+    await detail.locator("summary").first().click();
+    await expect(detail.getByText("12 passed")).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2b-checks.png`, fullPage: true });
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    await page.locator('[data-team-task="3"]').click();
+    detail = page.getByRole("dialog", { name: "#3 自動で直せなかった" });
+    await expect(detail.locator("[data-team-task-status]")).toContainText("確認が通らず、自動で直せませんでした");
+    await expect(detail.locator("[data-team-check-row]").first()).toContainText("✗");
+    await expect(detail.locator("[data-team-check-row]").first()).toContainText("終了 1");
+    await expect(detail).toContainText("自動で直させた回数 2/2");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2b-blocked.png`, fullPage: true });
+
+    // 確認のコマンドの編集（詳細）
+    await detail.getByRole("button", { name: "編集" }).click();
+    await detail.getByLabel("確認のコマンド（1 行に 1 つ）").fill("pytest -q\nruff check .");
+    await detail.getByRole("button", { name: "確認のコマンドを保存" }).click();
+    await expect.poll(() => state.teams[0].tasks[2].checks).toEqual(["pytest -q", "ruff check ."]);
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // チームの前提（シート）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "チームの前提" }).click();
+    const brief = page.getByRole("dialog", { name: "チームの前提" });
+    await brief.getByLabel("前提").fill("pytest で試験する。\n本番には触らない。");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2b-brief.png`, fullPage: true });
+    await brief.getByRole("button", { name: "保存" }).click();
+    await expect.poll(() => state.teams[0].brief).toBe("pytest で試験する。\n本番には触らない。");
+
+    // 送る前のリセットの切り替え（既定オン → オフ → オン）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: /会話をリセット: オン/ }).click();
+    await expect.poll(() => state.teams[0].reset_before_dispatch).toBe(false);
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /会話をリセット: オフ/ })).toBeVisible();
+    await page.getByRole("menuitem", { name: /会話をリセット: オフ/ }).click();
+    await expect.poll(() => state.teams[0].reset_before_dispatch).toBe(true);
+
+    // タスクの作成で確認のコマンドを入力
+    await page.getByRole("button", { name: "＋ タスク" }).click();
+    const sheet = page.getByRole("dialog", { name: "タスクを作る" });
+    await sheet.getByLabel("タイトル（必須）").fill("新しいタスク");
+    await sheet.getByLabel("確認のコマンド（1 行に 1 つ）").fill("pytest -q\nnpm run build");
+    await sheet.getByRole("button", { name: "作る", exact: true }).click();
+    await expect.poll(() => state.teams[0].tasks[4]?.checks).toEqual(["pytest -q", "npm run build"]);
     await noOverflow(page);
   });
 }

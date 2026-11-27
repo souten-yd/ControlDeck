@@ -51,6 +51,7 @@ class FakeManager:
 @pytest.fixture()
 def fake(monkeypatch):
     fm = FakeManager()
+    monkeypatch.setattr(teams, "RESET_WAIT", 0)
     for module in (consoles, teams, team_watch):
         monkeypatch.setattr(module, "manager", fm)
     return fm

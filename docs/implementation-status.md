@@ -2,6 +2,14 @@
 
 ## 2026-11-27 Nexarch の AI チームを「勝手に完成する」形へ（設計）
 - 利用者「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」。`docs/PLAN-nexarch-team.md` の冒頭に目標（目標 1 行だけ・人の確認は既定で自動・合否はコード・上限で付け替え・自動で合流・聞くのは決まりで承認が要るものと直せないものだけ）を書き、段を T2b〜T5 に組み直した。
+## 2026-11-27 Nexarch の AI チーム T2b: 確認のコマンドの自動実行・落ちたら自動で直させる・チームの前提と会話のリセット
+- 利用者の方針「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」。合否はコードが確かめる・タスクごとに新しい会話・チームの前提を毎回渡す・落ちたら自動で直させる。
+- チームの前提（`brief`・8000 字まで）を送り込みの文面の先頭へ「【チームの前提】」で付ける。`reset_before_dispatch`（既定オン）なら送る前に担当の CLI のリセット（claude・gemini は `/clear`、codex・opencode は `/new`）を送り、3 秒待ってから本文（待つのは同期 endpoint のスレッドの中。CLI 不明なら飛ばす）。`PUT /commander/teams/{id}` が name・brief・reset_before_dispatch を任意で受ける。画面はチームの「…」メニューの「チームの前提」と「送る前に会話をリセット」。
+- 確認のコマンド（`checks`・10 個まで・1 つ 500 字・制御文字不可）: 報告が入ったとき（自動の取り込み・「報告を取り込む」・手入力）、`backend/app/commander/team_checks.py` が専用スレッドで、担当のコンソールの作業フォルダ（`manager.session_cwd` の実体を `workdir.resolve_dir` で検証）で 1 つずつ実行する。`shell=True` なし（shlex.split。パイプ・&& は使えない）・環境変数は PATH・HOME・LANG だけ・1 つ 600 秒・落ちたコマンドで止める。結果は `checks_result`（running / passed / failed / error・各コマンドの終了コードと出力の最後 2000 字）。作業フォルダが分からなければ実行せず error。監査ログ `commander.team.checks` はコマンドと終了コードだけ（出力は入れない）。
+- 落ちたら自動で直させる: failed なら担当へ「【Nexarch タスク #N 再挑戦 k/2】…」を自動で再送（リセットしない）して doing に戻し、`attempts` を数える。3 回目も落ちたら新しい状態 `blocked`（画面は「待ち」の列に赤い「自動で直せず」）にして通知（種類 blocked）。見張りは再挑戦の文面より後ろの画面だけから報告を読む。人が「担当へ送る」を押せば attempts と結果を消して送り直せる。T3 で別のモデルへの付け替えを足す前提。
+- 画面: 詳細に確認のコマンドの編集・コマンドごとの ✓／✗・終了コード・出力の最後（折りたたみ）、カードに「確認: 合格／不合格／実行中」。
+- 確かめたこと: `backend/tests/test_commander_team_t2b.py`（25 件）と既存の commander の試験、E2E（commander 12 件・320px と 1280px）。
+- 指示書に無い判断: `session_cwd` を Terminal の manager に足した（一覧の cwd は ~ へ縮めてあるため）。実行は `app.jobs` でなく専用スレッド。確認が error（作業フォルダ不明）のときは再挑戦も blocked もせず review のまま。
 
 ## 2026-11-27 Nexarch の AI チーム T2a: 見張り・通知・検証できる完了報告
 - 利用者「ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断で協調して開発を進めたい」。`docs/PLAN-nexarch-team.md` の T2 のうち、MCP の道具を除く部分（MCP は T2b）。

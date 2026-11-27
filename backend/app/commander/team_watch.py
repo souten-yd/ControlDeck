@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 from app.commander import consoles, status, teams
@@ -30,19 +31,21 @@ DISPATCH_GRACE = 90
 KIND_REPORT = "report"
 KIND_STALLED = "stalled"
 KIND_LIMITED = "limited"
+KIND_BLOCKED = "blocked"
 _KIND_TEXT = {
     KIND_REPORT: "の報告が来ました",
     KIND_STALLED: "が報告なしで止まりました",
     KIND_LIMITED: "の担当が上限で止まりました",
+    KIND_BLOCKED: "は確認が通らず、自動で直せませんでした",
 }
 _ROLE_TEXT = {"leader": "リーダー", "developer": "開発", "reviewer": "レビュー", "researcher": "調査", "member": "メンバー"}
 _CLI_TEXT = {"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode"}
 
 
 def _screen_for(task: dict, text: str) -> str:
-    marker = f"【Nexarch タスク #{task['id']}】"
-    index = text.rfind(marker)
-    return text[index:] if index >= 0 else text
+    # 再挑戦の文面（【Nexarch タスク #N 再挑戦 k/2】）も送った文面として数える
+    found = list(re.finditer(rf"【Nexarch タスク #{task['id']}(?: 再挑戦 \d+/\d+)?】", text))
+    return text[found[-1].start():] if found else text
 
 
 def _console_label(team: dict, row: dict) -> str:
@@ -78,6 +81,7 @@ def tick(now: float | None = None) -> list[dict]:
             return events
         screens: dict[str, str | None] = {}
         dirty = False
+        to_check: list[tuple[str, int]] = []
 
         def notify(team: dict, task: dict, kind: str, row: dict) -> None:
             notified = task.setdefault("notified", {})
@@ -137,6 +141,9 @@ def tick(now: float | None = None) -> list[dict]:
                     task["status"] = "review"
                     task.pop("stalled_at", None)
                     teams._event(task, "報告を取り込み（自動で取り込み）", "見張り")
+                    teams.mark_checks_running(task)
+                    if task.get("checks"):
+                        to_check.append((team["id"], task["id"]))
                     notify(team, task, KIND_REPORT, row)
                     dirty = True
                 elif not task.get("stalled_at"):
@@ -146,6 +153,10 @@ def tick(now: float | None = None) -> list[dict]:
                     dirty = True
         if dirty:
             teams._save(all_teams)
+    if to_check:
+        from app.commander import team_checks
+        for team_id, task_id in to_check:
+            team_checks.schedule(team_id, task_id)
     return events
 
 

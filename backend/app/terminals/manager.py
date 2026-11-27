@@ -413,6 +413,25 @@ class TerminalManager:
         text = bytes(session.buffer[-64_000:]).decode("utf-8", errors="replace")
         return "\n".join(re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).splitlines()[-lines:])
 
+    def session_cwd(self, sid: str) -> str:
+        """セッションの作業フォルダの実体のパス（一覧の cwd は ~ へ縮めてあるので別に取る）。読めなければ空文字列。"""
+        if tmux_available():
+            try:
+                result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", _target(sid), "#{pane_current_path}"],
+                    capture_output=True, text=True, errors="replace", timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired, KeyError):
+                return ""
+            return result.stdout.strip() if result.returncode == 0 else ""
+        session = self._fallback.get(sid)
+        if session is None:
+            return ""
+        try:
+            return os.readlink(Path("/proc") / str(session.pid) / "cwd")
+        except OSError:
+            return ""
+
     def tag_session(self, sid: str, marks: dict[str, str]) -> None:
         """セッションへ印（tmux の user option @cd-commander-<key>）を付ける。
 

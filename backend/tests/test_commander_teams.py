@@ -63,6 +63,7 @@ def fake(monkeypatch):
     fm = FakeManager()
     monkeypatch.setattr(consoles, "manager", fm)
     monkeypatch.setattr(teams, "manager", fm)
+    monkeypatch.setattr(teams, "RESET_WAIT", 0)
     return fm
 
 
@@ -178,7 +179,8 @@ def test_dispatch_text_transitions_and_refusals(admin_client, fake):
     r = _post(admin_client, f"/{tid}/tasks/{task['id']}/dispatch")
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "doing"
-    sid, text, submit = fake.injected[0]
+    assert fake.injected[0][1] == "/clear"  # 既定は送る前に会話をリセット
+    sid, text, submit = fake.injected[-1]
     assert sid == "aa000001" and submit is True
     assert text.splitlines()[0] == "【Nexarch タスク #1】ログイン画面"
     assert "目的: 作る" in text
