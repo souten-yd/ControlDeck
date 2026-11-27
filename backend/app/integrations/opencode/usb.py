@@ -105,6 +105,9 @@ def notes_text(items: list[dict]) -> str:
               "（自分でインストールしないでください）。",
               "- シリアルは上のパスを直接指定します（例: esptool --port <パス>、pio run -t upload --upload-port <パス>）。番号は差し直すと変わります。",
               "- 渡された機器以外には触れません。書き込み・消去は利用者が頼んだときだけ行ってください。"]
+    from app.features import android_sdk
+
+    lines += android_sdk.notes_lines()
     return "\n".join(lines) + "\n"
 
 

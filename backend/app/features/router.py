@@ -32,6 +32,11 @@ class FeatureJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     backends: list[Literal["rocm", "vulkan"]] | None = None
+    # Android SDK だけ: 画面でライセンスへの同意にチェックを入れたときだけ true（同意なしでは取得しない）
+    accept_licenses: bool = False
+    # Android SDK だけ: 目録（android_sdk.CATALOG）の範囲の中から選ぶ。空なら既定
+    android_platform: str | None = Field(default=None, max_length=8)
+    android_build_tools: str | None = Field(default=None, max_length=16)
 
 
 class MayaSetupBody(BaseModel):
@@ -164,6 +169,16 @@ async def install_job(
     if kind == "gpu-runtime" and body.backends is not None and not body.backends:
         raise HTTPException(status_code=422, detail="導入するバックエンドを1つ以上指定してください")
     options = {"backends": body.backends} if body.backends is not None else {}
+    if kind == "android-sdk" and not body.accept_licenses:
+        raise HTTPException(status_code=422, detail="Android SDK のライセンスへの同意が必要です")
+    if kind == "android-sdk":
+        from app.features import android_sdk
+
+        try:
+            android_sdk.check_choice(body.android_platform or android_sdk.CATALOG["defaults"]["platform"],
+                                     body.android_build_tools or android_sdk.CATALOG["defaults"]["build_tools"])
+        except android_sdk.AndroidSdkError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     async def run(job: jobs.Job) -> dict:
         if kind == "speech-engine":
@@ -184,6 +199,16 @@ async def install_job(
             return {**registry.status(feature_id), **state}
         message = "検証済みrelease bundleを取得・検証中" if kind == "release-bundle" else "パッケージを導入中"
         job.set_progress(message, 0, 1)
+        if kind == "android-sdk":
+            job.set_progress("Android SDK を取得して導入中（Google の公式・数分かかります）", 0, 1)
+            try:
+                state = await asyncio.to_thread(
+                    lambda: registry.install(feature_id, accept_licenses=body.accept_licenses,
+                                             platform=body.android_platform, build_tools=body.android_build_tools))
+            except registry.FeatureError as exc:
+                raise RuntimeError(str(exc)) from exc
+            job.set_progress("完了", 1, 1)
+            return state
         state = await asyncio.to_thread(registry.install, feature_id)
         job.set_progress("完了", 1, 1)
         return state

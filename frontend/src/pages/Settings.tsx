@@ -775,7 +775,7 @@ const FEATURE_CATEGORIES: [string, string, string][] = [
 
 interface AddonState {
   id: string; name: string; summary: string;
-  kind: "npm" | "npm-global" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm"; route_gated: boolean;
+  kind: "npm" | "npm-global" | "pip" | "python-lib" | "managed-script" | "system-browser" | "release-bundle" | "gpu-runtime" | "opencode-plugin" | "opencode-mcp" | "speech-engine" | "playwright-browsers" | "system-packages" | "cpu-llm" | "android-sdk"; route_gated: boolean;
   /** 用途の分類（opencode / runtime / addon / tools）。 */
   category?: string;
   /** 派生（例: Sly-Radiance → radiance）。独立したカードにせず、親のカードの中の切り替えで出す。 */
@@ -791,10 +791,66 @@ interface AddonState {
   runtime?: GpuRuntimeDetail;
   /** OS のパッケージ（sudo が要る）。足りないものだけのコマンドをコピーさせる。ボタンで sudo は実行しない。 */
   install_command?: string; missing_packages?: string[];
+  /** Android SDK（コマンドライン）。入っているもの・目録の選択肢・ライセンスの案内。 */
+  android_sdk?: AndroidSdkDetail;
   /** Playwright のブラウザ。版ごとの置き場と、入っているもの・足りないもの。 */
   components?: PlaywrightComponent[];
   /** ニュースの画像生成: 精度の段（小・中・大）ごとのモデルの導入状況。 */
   model_tiers?: ImagegenTier[];
+}
+
+/** Android SDK の導入欄。ライセンスの同意を画面で見せ、チェックしたときだけ導入を押せる（取得は押したときだけ）。 */
+function AndroidSdkPanel({ detail, busy, installing, onInstall }: {
+  detail: AndroidSdkDetail; busy: boolean; installing: boolean; onInstall: (body: Record<string, unknown>) => void;
+}) {
+  const [agree, setAgree] = useState(false);
+  const [platform, setPlatform] = useState(detail.catalog.defaults.platform);
+  const [buildTools, setBuildTools] = useState(detail.catalog.defaults.build_tools);
+  const field = "min-h-11 rounded-lg border border-zinc-300 bg-transparent px-2 text-sm dark:border-zinc-700";
+  return (
+    <div data-testid="android-sdk-panel" className="mt-2 space-y-2 rounded-lg bg-zinc-50 p-3 text-xs dark:bg-zinc-800/50">
+      {detail.installed ? (
+        <p data-testid="android-sdk-installed" className="break-all text-zinc-600 dark:text-zinc-300">
+          入っているもの: platform-tools・Android {detail.platforms.join("・") || "—"}・build-tools {detail.build_tools.join("・") || "—"}
+          <span className="block font-mono text-[11px] text-zinc-400">{detail.root}</span>
+        </p>
+      ) : (
+        <p className="text-zinc-600 dark:text-zinc-300">
+          Google の公式から取得します（約 0.5GB）。「導入」を押したときだけ通信し、自動では取得しません。
+          {!detail.java && <span className="block text-amber-700 dark:text-amber-300">Java（JDK 17 以上）が見つかりません。先に sudo apt install openjdk-21-jdk-headless</span>}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1">Android
+          <select aria-label="Android のバージョン" className={field} value={platform} onChange={(e) => setPlatform(e.target.value)}>
+            {detail.catalog.platforms.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1">build-tools
+          <select aria-label="build-tools のバージョン" className={field} value={buildTools} onChange={(e) => setBuildTools(e.target.value)}>
+            {detail.catalog.build_tools.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </label>
+      </div>
+      <label className="flex min-h-11 items-start gap-2">
+        <input type="checkbox" className="mt-1" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
+        <span>
+          Android SDK のライセンス（Android Software Development Kit License Agreement）に同意します。
+          内容は <a href={detail.catalog.license_url} target="_blank" rel="noreferrer" className="text-accent-600 underline dark:text-accent-400">{detail.catalog.license_url}</a> で確かめられます。
+        </span>
+      </label>
+      <button type="button" disabled={!agree || busy || !detail.java}
+        onClick={() => onInstall({ accept_licenses: true, android_platform: platform, android_build_tools: buildTools })}
+        className="min-h-11 rounded-lg bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-40">
+        {installing ? "導入中…" : detail.installed ? "入れ直す（修復）" : "導入"}
+      </button>
+    </div>
+  );
+}
+
+interface AndroidSdkDetail {
+  installed: boolean; root: string; cmdline_tools: string; platforms: string[]; build_tools: string[]; licenses_accepted: boolean; java: boolean;
+  catalog: { platforms: string[]; build_tools: string[]; defaults: { platform: string; build_tools: string }; license_url: string };
 }
 
 interface PlaywrightComponent {
@@ -1215,9 +1271,9 @@ function AddonsSection() {
     }
   };
 
-  const install = async (addon: AddonState) => {
+  const install = async (addon: AddonState, body: Record<string, unknown> = {}) => {
     try {
-      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: {} });
+      const r = await api<{ job_id: string }>(`/features/${addon.id}/install-jobs`, { method: "POST", json: body });
       setJobKind("install");
       setJobAddon(addon.id);
       setJobId(r.job_id);
@@ -1307,6 +1363,8 @@ function AddonsSection() {
     if (addon.kind === "system-browser") {
       return addon.installed ? null : <span className="text-xs text-zinc-500">Chrome が見つかりません</span>;
     }
+    // Android SDK は、ライセンスへの同意が要るので、カードの下の専用の欄から導入する
+    if (addon.kind === "android-sdk") return null;
     if (!addon.installed) {
       return <button onClick={() => void install(addon)} disabled={!addon.available || busy || addon.requires_installed === false}
         title={addon.requires_installed === false ? `先に ${requiresName(addon)} を導入してください` : undefined}
@@ -1465,6 +1523,10 @@ function AddonsSection() {
                         )}
                       </div>
                     ))}
+                    {addon.kind === "android-sdk" && addon.android_sdk && (
+                      <AndroidSdkPanel detail={addon.android_sdk} busy={busy || mine(addon)} installing={mine(addon) && jobKind === "install"}
+                        onInstall={(body) => void install(addon, body)} />
+                    )}
                     {addon.kind === "system-packages" && !addon.installed && addon.install_command && (
                       <p className="mt-2 break-all rounded-lg bg-zinc-100 px-2 py-1.5 font-mono text-[11px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{addon.install_command}</p>
                     )}
@@ -1512,6 +1574,7 @@ function AddonsSection() {
                               <button onClick={() => void update(addon)} disabled={busy}
                                 title={addon.kind === "gpu-runtime" ? `${addon.repo ?? "配布元"} の最新リリースへ更新します` : ["pip", "python-lib"].includes(addon.kind) ? "PyPI の最新版へ更新します"
                                   : addon.kind === "managed-script" ? "配布元の最新のソースへ更新します"
+                                  : addon.kind === "android-sdk" ? "入れてある SDK の部品を sdkmanager --update で更新します"
                                   : "npmの最新版へ更新します"}
                                 className={`${btn} border border-zinc-200 text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}>
                                 {mine(addon) && jobKind === "update" ? "更新中…" : "更新"}

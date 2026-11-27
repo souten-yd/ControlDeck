@@ -474,6 +474,10 @@ def _tool_dirs() -> list[Path]:
         browsers = _data_dir() / "cache" / store
         if browsers.is_dir():
             dirs.append(browsers)
+    # Android SDK（設定の機能から入れたときだけ。読み取り専用で見せる）
+    android = _data_dir() / "tools" / "android-sdk"
+    if (android / "platform-tools").is_dir():
+        dirs.append(android)
     return dirs
 
 
@@ -495,7 +499,10 @@ BASE_READONLY = (Path("/usr"), Path("/etc"), Path("/opt"))
 
 def tool_path() -> str:
     """箱の中の PATH。管理領域の道具（OpenCode・ast-grep など）を先に置く。"""
+    from app.features import android_sdk
+
     return ":".join([*(str(p / "node_modules" / ".bin") for p in _tool_dirs() if (p / "node_modules" / ".bin").is_dir()),
+                     *android_sdk.path_entries(_data_dir() / "tools" / "android-sdk"),
                      "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin"])
 
 
@@ -717,6 +724,13 @@ def ensure_gateway(box: Sandbox) -> None:
                        f"{gateway_unit(box)} を見てください）")
 
 
+def _android_env() -> dict[str, str]:
+    """Android SDK が入っているときだけ ANDROID_HOME などを足す（入っていなければ空＝argv は変わらない）。"""
+    from app.features import android_sdk
+
+    return android_sdk.box_env(_data_dir() / "tools" / "android-sdk")
+
+
 def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, name: str = "",
                 detach: bool = False, env: dict[str, str] | None = None, env_file: Path | None = None,
                 need_serve_port: bool = False, readonly: list[Path] = ()) -> list[str]:
@@ -741,6 +755,7 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
             # キーは意味の無い値（本物は渡さない。中継が上流へ通すだけ）
             "OPENAI_BASE_URL": f"http://127.0.0.1:{box.gateway_port}/api/v1/llm/v1", "OPENAI_API_KEY": "sandbox",
         } if "llm" in box.capabilities else {}),
+        **_android_env(),
         **(env or {}),
     }
     gh = Path.home() / ".config" / "gh"

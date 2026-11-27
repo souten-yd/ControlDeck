@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-27 OpenCode の箱で Android の開発（Android SDK の機能・ホストの adb の案内）
+- 利用者「Android とかにも対応してね」（M5・iOS・Android の開発を OpenCode で）。箱へ USB の adb・fastboot は渡せていたが、ホストに fastboot・Android SDK・Gradle が無かった。
+- 機能と拡張に「Android SDK（コマンドライン）」（`features/android_sdk.py`・種類 `android-sdk`・CLI の並び）。入れ先は `data/tools/android-sdk`（ユーザー空間・root 不要）。取得は Google の公式の cmdline-tools の zip だけで、URL・sha256 は目録 `CATALOG` に固定（最新を勝手に取らない）。**取得は設定の画面で「導入」を押し、ライセンスへの同意にチェックを入れたときだけ**（API は同意なしだと 422・自動更新と一括導入の対象外）。sha256 の照合後、zip のパスの逃げ出し・リンク・不正な名前を拒否して展開し、`sdkmanager`（argv・shell なし）で `platform-tools`・`platforms;android-NN`・`build-tools;NN` を入れる（選べるのは目録の範囲）。ライセンスの yes は同意したときだけ渡す。更新は `sdkmanager --update`、修復は入れ直し、削除は管理領域だけ。Java（JDK 17 以上）が無ければ取得の前に止める。
+- 箱へ: 入っていれば `data/tools/android-sdk` を読み取り専用で bind（`sandbox._tool_dirs`）、`ANDROID_HOME`・`ANDROID_SDK_ROOT`・PATH（platform-tools・cmdline-tools/latest/bin・最新の build-tools）を渡す（プロジェクトの箱 `provider._launch` と作業場 `sandbox.podman_argv` の両方）。入っていなければ何も足さない。fastboot は platform-tools のもの。Gradle 本体は入れない（プロジェクトの gradlew）。`controldeck-usb.md` に Android の道具の場所・`adb devices`・sudo 不要・Gradle の注意を足した。
+- 機器のシート（`ProjectUsb.tsx`）: Android の機器を渡す設定でホストの adb のサーバー（`/proc` の adb プロセス・5037 番の待ち受け）が動いていれば「ホストの adb が機器を使っています」＋「ホストの adb を止める」（`POST /opencode/devices/host-adb/stop`・管理者・監査 `opencode.host_adb_stop`・`adb kill-server` を argv で）。Android SDK が無ければ「設定で入れる」リンク。
+- 箱からの依存の取得（Maven）: プロジェクトの箱（`provider._launch`）は host network なので通る。**作業場の箱は pod で通信が中継だけなので通らない**（npm・pip も offline）。シートと文書に書いた。通信を広げる設定は足していない。
+- 試験: `backend/tests/test_android_sdk.py`（23 件）、E2E `settings-android-sdk.spec.ts`（390px・1280px）。地図に 3 ルート（`ext-android-sdk`・`sbx-android-sdk`・`sbx-host-adb-stop`）。
+
 ## 2026-11-27 Nexarch の AI チーム T3b（チームリーダー・役割・プライマリ／セカンダリ・モデルと考えるレベル・チームの保存先）
 - 利用者「チームはチームリーダーが自動で作成。ロールの設定をできるようにして、それに基づいて必要数を呼び出す。プライマリとセカンダリーも。期限切れでセカンダリに移行しても回復後にはプライマリに戻れると良い」「トークンが尽きた場合、引き継ぎ先の設定が無い場合は止まるが、そのコンソールの設定を押すと引き継ぎ先を選べる」「コンソールとモデルを個別に設定。モデルは自動でリストアップし、考えるレベルも選べるように」「UI/UX は不要な表示を隠し、必要ならエキスパートで開く」「チームの保存先は、AI アシスタントから呼ぶときは OpenCode（開発フォルダ）と同じ、それ以外はチームリーダーを任命する際に一度だけ設定」。呼び名は最終的に「チームリーダー」（コード・API は `leader`。T1 のメンバーの役割「リーダー」とは別物）。
 - 担い手の指定（endpoint）`{kind: headless|console, cli, account, model, effort}`（`commander/team_roles.py`）。モデルの自動の一覧 `GET /api/v1/commander/models?cli=&account=`（`commander/models.py`・5 分覚える）: claude は別名（fable・opus・sonnet・haiku）＋自由入力・レベル low〜max、codex はアカウントの `models_cache.json` の slug と reasoning レベルだけ（鍵のファイルは読まない）、opencode はゲートウェイのモデル＋接続の既定（レベルは variant の自由入力）。引数へは headless（`team_runner.build_launch`）と console（`consoles._command_for`）の両方で反映（claude `--model --effort`・codex `-m -c model_reasoning_effort=`・opencode `--model …#variant`）。値は英数と `._:/#-`（先頭は英数）だけに検証。

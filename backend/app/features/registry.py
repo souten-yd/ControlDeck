@@ -207,6 +207,16 @@ FEATURES: dict[str, dict] = {
         "summary": "画面の試験（./deck.sh e2e）、Workflow のブラウザ操作、画面確認係の録画で使うブラウザ。版ごとに別の置き場（data/cache/ms-playwright・"
                    "ms-playwright-py・ms-playwright-mcp）へ入れ、互いを消さない。全部で約 1GB（chromium・webkit など）",
     },
+    # Android SDK（コマンドライン）。OpenCode の箱で Android アプリのビルド・adb・fastboot を使うための管理領域の道具。
+    # 外部（Google の公式）から取得するので、導入は利用者のボタン操作（ライセンスへの同意つき）のときだけ（自動更新にも入れない）。
+    "android-sdk": {
+        "name": "Android SDK（コマンドライン）",
+        "kind": "android-sdk",
+        "category": "cli",
+        "route_gated": False,
+        "summary": "Android の開発用（adb・fastboot・sdkmanager・build-tools）。data/tools/android-sdk へ入れ、OpenCode の箱へ読み取り専用で渡す。"
+                   "Java（JDK 17 以上）が必要。取得は Google の公式（約 0.5GB）で、ライセンスへの同意が要る",
+    },
     "pyinstaller": {
         "name": "アプリビルド環境（単一バイナリ）",
         "kind": "pip",
@@ -490,6 +500,10 @@ def executable(feature_id: str) -> Path | None:
         return cpu_llm.model_path() if cpu_llm.model_ready() else None   # モデルのファイル（置いてあれば導入済み）
     if spec["kind"] in ("playwright-browsers", "system-packages"):
         return None   # 実行ファイルを持たない（置き場・OS のパッケージを状態で見る）
+    if spec["kind"] == "android-sdk":
+        from app.features import android_sdk
+
+        return android_sdk.adb_path() if android_sdk.installed() else None
     if spec["kind"] == "speech-engine":
         from app.speech import supertonic
 
@@ -624,6 +638,18 @@ def _playwright_browsers_status(feature_id: str, spec: dict) -> dict:
     )
 
 
+def _android_sdk_status(feature_id: str, spec: dict) -> dict:
+    from app.features import android_sdk
+
+    detail = android_sdk.status()
+    note = "" if detail["java"] else "Java（JDK 17 以上）が見つかりません。sudo apt install openjdk-21-jdk-headless"
+    return _plain_status(
+        feature_id, spec, installed=detail["installed"], available=detail["java"], managed=detail["installed"],
+        version=detail["cmdline_tools"] if detail["installed"] else "", error=note if not detail["installed"] else "",
+        executable=str(android_sdk.adb_path()) if detail["installed"] else "", android_sdk=detail,
+    )
+
+
 def _system_packages_status(feature_id: str, spec: dict) -> dict:
     from app.features import system_packages
 
@@ -660,6 +686,8 @@ def status(feature_id: str) -> dict:
         return _playwright_browsers_status(feature_id, spec)
     if spec["kind"] == "system-packages":
         return _system_packages_status(feature_id, spec)
+    if spec["kind"] == "android-sdk":
+        return _android_sdk_status(feature_id, spec)
     state = _read_state().get(feature_id, {})
     binary = executable(feature_id)
     # この PC の Chrome は ControlDeck の管理ではない（更新・削除のボタンを出さない）
@@ -884,8 +912,19 @@ def _tail(result: subprocess.CompletedProcess[str]) -> str:
     return f"（{lines[-1][-200:]}）" if lines else ""
 
 
-def install(feature_id: str) -> dict:
+def install(feature_id: str, *, accept_licenses: bool = False, platform: str | None = None,
+            build_tools: str | None = None) -> dict:
     name = FEATURES[_known(feature_id)]["name"]
+    if FEATURES[feature_id]["kind"] == "android-sdk":
+        from app.features import android_sdk
+
+        try:
+            android_sdk.install(accept_licenses=accept_licenses, platform=platform, build_tools=build_tools)
+        except android_sdk.AndroidSdkError as exc:
+            invalidate_feature_cache()
+            raise FeatureError(str(exc)) from exc
+        invalidate_feature_cache()
+        return status(feature_id)
     if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine"):
         # 取得がネットワークI/Oのため、routerがasyncのまま gpu_runtime / speech を直接呼ぶ。
         raise FeatureError(f"{name}の導入は非同期ジョブから実行してください")
@@ -1013,6 +1052,16 @@ def update(feature_id: str) -> dict:
         raise FeatureError(f"{name}は開発が終了しているため更新はありません（保管庫の版を使います）")
     if FEATURES[feature_id]["kind"] == "cpu-llm":
         raise FeatureError(f"{name}は版を固定しています（更新はありません）")
+    if FEATURES[feature_id]["kind"] == "android-sdk":
+        from app.features import android_sdk
+
+        previous = status(feature_id)["version"]
+        try:
+            android_sdk.update()
+        except android_sdk.AndroidSdkError as exc:
+            raise FeatureError(str(exc)) from exc
+        invalidate_feature_cache()
+        return {**status(feature_id), "previous_version": previous}
     if FEATURES[feature_id]["kind"] == "playwright-browsers":
         previous = status(feature_id)["version"]
         return {**_install_playwright_browsers(), "previous_version": previous}
@@ -1037,7 +1086,7 @@ def update(feature_id: str) -> dict:
 
 def enable(feature_id: str) -> dict:
     current = status(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm", "android-sdk"):
         # route_gated ではないので導入＝有効。切り替えるべき状態を持たない。
         return current
     if FEATURES[feature_id]["kind"] == "release-bundle" and current["installed"]:
@@ -1167,7 +1216,7 @@ def restore_enabled_services() -> None:
 
 def disable(feature_id: str) -> dict:
     _known(feature_id)
-    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm"):
+    if FEATURES[feature_id]["kind"] in ("gpu-runtime", "speech-engine", "cpu-llm", "android-sdk"):
         return status(feature_id)
     state = _read_state()
     state[feature_id] = {**state.get(feature_id, {}), "enabled": False}
@@ -1187,6 +1236,15 @@ def uninstall(feature_id: str) -> dict:
         # ブラウザの置き場は E2E・箱・Workflow が共有で使う。OS のパッケージは ControlDeck の管理ではない
         raise FeatureError(f"{FEATURES[feature_id]['name']}は機能と拡張からはアンインストールできません")
     disable(feature_id)
+    if FEATURES[_known(feature_id)]["kind"] == "android-sdk":
+        from app.features import android_sdk
+
+        try:
+            android_sdk.uninstall()    # data/tools/android-sdk だけ（ホストの adb・箱の ~/.gradle は消さない）
+        except android_sdk.AndroidSdkError as exc:
+            raise FeatureError(str(exc)) from exc
+        invalidate_feature_cache()
+        return status(feature_id)
     if FEATURES[_known(feature_id)]["kind"] == "cpu-llm":
         from app.news import cpu_llm
 

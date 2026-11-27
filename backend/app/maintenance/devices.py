@@ -15,11 +15,14 @@
 import re
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 SYS_ROOT = Path("/sys")
 DEV_ROOT = Path("/dev")
 USBMUXD_SOCKET = Path("/var/run/usbmuxd")
+PROC_ROOT = Path("/proc")
+ADB_PORT = 5037
 
 KINDS = ("serial", "adb", "fastboot", "ios")
 SERIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+@-]{0,200}$")
@@ -37,8 +40,8 @@ GUESS = {("1a86", "55d4"): "M5Stack など（CH9102）", ("1a86", "7523"): "M5St
 # 箱の中で使う道具（無ければ画面に出す。自動では入れない）
 TOOLS = (("esptool", ("esptool", "esptool.py"), "pip install esptool（ESP32・M5Stack の書き込み）"),
          ("platformio", ("pio", "platformio"), "pip install platformio（M5・Arduino のビルドと書き込み）"),
-         ("adb", ("adb",), "sudo apt install adb（Android）"),
-         ("fastboot", ("fastboot",), "sudo apt install fastboot（Android の書き込み）"),
+         ("adb", ("adb",), "設定の機能で Android SDK を入れる（または sudo apt install adb）"),
+         ("fastboot", ("fastboot",), "設定の機能で Android SDK を入れる（platform-tools に入っています）"),
          ("libimobiledevice", ("idevice_id",), "sudo apt install libimobiledevice-utils（iOS）"))
 
 
@@ -263,3 +266,48 @@ def resolve(entries: list[dict]) -> tuple[list[str], list[str]]:
 def auto_entries() -> list[dict]:
     """「自動」: つながっている開発向けの機器（シリアル・adb・fastboot・渡せる ios）を全部。"""
     return [{"kind": i["kind"], "id": i["id"]} for i in list_devices() if i["available"]]
+
+
+def _listening_on_adb_port() -> bool:
+    """ホストが 127.0.0.1:5037（adb のサーバー）を待ち受けているか。/proc/net/tcp(6) の LISTEN（状態 0A）を読むだけ。"""
+    needle = f":{ADB_PORT:04X}"
+    for name in ("tcp", "tcp6"):
+        try:
+            lines = (PROC_ROOT / "net" / name).read_text(encoding="utf-8", errors="replace").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) > 3 and parts[3] == "0A" and parts[1].upper().endswith(needle):
+                return True
+    return False
+
+
+def _adb_pids() -> list[int]:
+    """名前が adb のプロセス（/proc/<pid>/comm）。adb のサーバーも `adb fork-server` も comm は adb。"""
+    found = []
+    try:
+        entries = list(PROC_ROOT.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if entry.name.isdigit() and _read(entry / "comm") == "adb":
+            found.append(int(entry.name))
+    return sorted(found)
+
+
+def host_adb_status() -> dict:
+    """ホストの adb のサーバーが動いているか。動いているとホスト側が機器をつかみ、箱の中の adb から使えない。読むだけ。"""
+    pids = _adb_pids()
+    listening = _listening_on_adb_port()
+    return {"running": bool(pids) or listening, "pids": pids[:8], "listening": listening}
+
+
+def kill_host_adb(extra_path: str | None = None, *, run=subprocess.run) -> dict:
+    """ホストの adb のサーバーを止める（`adb kill-server`・利用者の権限・shell なし）。adb が無ければ止められない。
+    箱の PATH ではなくホストの PATH で adb を探す（箱へ渡す SDK の adb でも kill-server はできる）。"""
+    adb = shutil.which("adb") or (extra_path if extra_path and Path(extra_path).is_file() else None)
+    if not adb:
+        raise FileNotFoundError("adb が見つかりません")
+    result = run([adb, "kill-server"], capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+    return {"ok": result.returncode == 0, "status": host_adb_status()}
