@@ -275,9 +275,9 @@ ROUTES: tuple[Route, ...] = (
     Route("nx-team-leader-mcp", "mcp_bridge", "board", "mcp",
           "チームリーダーが nexarch_team の道具で Nexarch の板を動かす（計画・振り分け・待つ・結果・確認・統合・質問・終わり）。token は実行ごと・チームに縛る・期限つき・loopback だけ",
           ("auth", "loopback", "audit", "no_secrets"), _o("commander/leader_mcp.py", "integrations/opencode/addon_mcp_bridge.py"), "nexarch",
-          "別のチームは触れない。再開後は古い token が使えない。呼び出しの履歴は道具の名前と成否だけ。担い手は段（tier）からコードが決める",
-          tools=("team_status", "write_plan", "research", "delegate", "wait", "read_result", "run_checks", "integrate",
-                 "ask_user", "wait_answer", "report", "finish")),
+          "道具は team_status・write_plan・research・delegate・wait・read_result・run_checks・integrate・ask_user・wait_answer・report・finish"
+          "（別の MCP サーバー nexarch_team の道具で、agent_mcp の control_deck.* ではない）。別のチームは触れない。再開後は古い token が使えない。"
+          "呼び出しの履歴は道具の名前と成否だけ。担い手は段（tier）からコードが決める"),
     Route("nx-team-leader-research-web", "mcp_bridge", "web", "egress",
           "チームリーダーの research(web): 既存の調査の道具（検索・ページを読む）。チームの設定 web_research が false なら断る",
           ("auth", "confidential", "ssrf_guard"), _o("commander/leader_mcp.py", "workflows/research_tools.py"), "nexarch",

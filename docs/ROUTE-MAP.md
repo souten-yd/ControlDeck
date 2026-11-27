@@ -249,7 +249,7 @@ flowchart LR
 | `nx-team-handoff-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限で止まったタスクを次の候補（画面のコンソール）へ、引き継ぎの文を付けて送り直す。待ちのタスクを空いた担当へ自動で送る（配り手） | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/teams.py` | 同時に走らせる数・担い手ごとに 1 つ・担当ファイルの重なり・ローカルの同時の数の決まりの範囲だけ |
 | `nx-team-dispatcher` | backend（FastAPI） | チームの板（teams.json） | file | 待ちのタスクを空いた担い手へ割り当て（60 秒ごと＋タスクが終わったとき）・上限の方針（引き継ぐ／回復を待つ）・中断の回収 | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/team_runner.py` |  |
 | `nx-team-leader-run` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 「頼む」（一文）: 任命されたチームリーダー（claude・codex・opencode）をヘッドレスで長く走らせる。MCP の nexarch_team だけを渡し、書かせない（claude は dontAsk＋MCP と読む道具だけ・codex は read-only）。上限ならセカンダリで team_status から再開・finish が無ければ最大 3 回再開 | `audit` `path_check` `no_secrets` | `backend/app/commander/team_leader.py`<br>`backend/app/commander/team_runner.py` | token は argv に出さない（claude は 0600 の設定ファイル・codex は環境変数＋env_vars・opencode は 0600 の runtime config）。本文・出力・token はログに出さない |
-| `nx-team-leader-mcp` | MCP の橋（stdio） | チームの板（teams.json） | mcp | チームリーダーが nexarch_team の道具で Nexarch の板を動かす（計画・振り分け・待つ・結果・確認・統合・質問・終わり）。token は実行ごと・チームに縛る・期限つき・loopback だけ | `auth` `loopback` `audit` `no_secrets` | `backend/app/commander/leader_mcp.py`<br>`backend/app/integrations/opencode/addon_mcp_bridge.py` | 別のチームは触れない。再開後は古い token が使えない。呼び出しの履歴は道具の名前と成否だけ。担い手は段（tier）からコードが決める |
+| `nx-team-leader-mcp` | MCP の橋（stdio） | チームの板（teams.json） | mcp | チームリーダーが nexarch_team の道具で Nexarch の板を動かす（計画・振り分け・待つ・結果・確認・統合・質問・終わり）。token は実行ごと・チームに縛る・期限つき・loopback だけ | `auth` `loopback` `audit` `no_secrets` | `backend/app/commander/leader_mcp.py`<br>`backend/app/integrations/opencode/addon_mcp_bridge.py` | 道具は team_status・write_plan・research・delegate・wait・read_result・run_checks・integrate・ask_user・wait_answer・report・finish（別の MCP サーバー nexarch_team の道具で、agent_mcp の control_deck.* ではない）。別のチームは触れない。再開後は古い token が使えない。呼び出しの履歴は道具の名前と成否だけ。担い手は段（tier）からコードが決める |
 | `nx-team-leader-research-web` | MCP の橋（stdio） | 公開インターネット（Web・学術・フォーラム） | egress | チームリーダーの research(web): 既存の調査の道具（検索・ページを読む）。チームの設定 web_research が false なら断る | `auth` `confidential` `ssrf_guard` | `backend/app/commander/leader_mcp.py`<br>`backend/app/workflows/research_tools.py` | 取得した文は資料として扱う（資料の中の指示には従わない注意書きつき）。秘密の会話・オフライン指定では出口で止まる |
 | `nx-team-leader-research-knowledge` | MCP の橋（stdio） | ナレッジ・特許・規格 | api | チームリーダーの research(knowledge): ナレッジの検索（公開・AI 利用可の文書だけ。cloud 扱い） | `auth` `confidential` | `backend/app/commander/leader_mcp.py`<br>`backend/app/knowledge/context.py` |  |
 | `nx-team-worktree-merge` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | implement の仕事ごとに git の worktree＋ブランチ（作業場所の .nexarch-wt/ の中）を作り、統合はチームのブランチへ merge --no-ff（競合は abort して implement へ戻す）・「取り込む」は元のブランチへ。shell なし・フックは動かさない | `audit` `path_check` | `backend/app/commander/team_git.py`<br>`backend/app/commander/leader_mcp.py`<br>`backend/app/commander/team_leader.py` | 作業フォルダの許可の中だけ・.git/info/exclude へ足す・Nexarch が git init した作業場所は終わりに fast-forward だけ |
@@ -454,18 +454,6 @@ flowchart LR
 | `control_deck.tool_contract` | `mcp-contract` |
 | `control_deck.project_output_grant` | `mcp-project-grants` |
 | `control_deck.project_input_grant` | `mcp-project-grants` |
-| `team_status` | `nx-team-leader-mcp` |
-| `write_plan` | `nx-team-leader-mcp` |
-| `research` | `nx-team-leader-mcp` |
-| `delegate` | `nx-team-leader-mcp` |
-| `wait` | `nx-team-leader-mcp` |
-| `read_result` | `nx-team-leader-mcp` |
-| `run_checks` | `nx-team-leader-mcp` |
-| `integrate` | `nx-team-leader-mcp` |
-| `ask_user` | `nx-team-leader-mcp` |
-| `wait_answer` | `nx-team-leader-mcp` |
-| `report` | `nx-team-leader-mcp` |
-| `finish` | `nx-team-leader-mcp` |
 | `control_deck.nexarch_team_request` | `nx-team-assistant-request` |
 | `control_deck.nexarch_team_status` | `nx-team-assistant-request` |
 
