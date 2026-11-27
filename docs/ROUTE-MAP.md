@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 90 本、ノード: 39 個
+- ルート: 93 本、ノード: 41 個
 
 ## 守りの印（guards）
 
@@ -185,12 +185,14 @@ flowchart LR
 | `mcp-project-grants` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Project のファイルを Add-on へ渡す・Add-on の出力を受ける（許可の付与） | `auth` `path_check` `approval` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py` |  |
 | `mcp-addon-tools` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Add-on が宣言した道具（動的）。名前は Add-on ごと | `auth` `approval` `audit` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py`<br>`backend/app/addons/registry.py` |  |
 
-### Nexarch（AI Commander・チーム）（10 本）
+### Nexarch（AI Commander・チーム）（13 本）
 
 ```mermaid
 flowchart LR
   backend["backend（FastAPI）"]
   console["Nexarch のコンソール（Claude・Codex・OpenCode の CLI）"]
+  workdir["作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中）"]
+  codedev["CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有）"]
   terminal["Terminal（tmux・PTY）"]
   board["チームの板（teams.json）"]
   usage_files["使用率のファイル（usage・Codex の記録）"]
@@ -199,6 +201,9 @@ flowchart LR
   console -->|"nx-console-read (tmux)"| backend
   backend -->|"nx-resume-inject (tmux)"| console
   backend -->|"nx-team-inject (tmux)"| console
+  backend -->|"nx-team-checks (subprocess)"| workdir
+  backend -->|"nx-team-retry-inject (tmux)"| console
+  backend -->|"ws-auto-project (file)"| codedev
   backend -->|"nx-automation-inject (tmux)"| terminal
   backend -->|"nx-team-board (file)"| board
   console -->|"nx-team-watch (tmux)"| board
@@ -213,6 +218,9 @@ flowchart LR
 | `nx-console-read` | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | backend（FastAPI） | tmux | 画面の読み取り（capture_text）。状態の判定・報告の取り込み | `auth` | `backend/app/commander/status.py`<br>`backend/app/commander/consoles.py`<br>`backend/app/commander/team_watch.py`<br>`backend/app/commander/teams.py`<br>`backend/app/commander/resume.py`<br>`backend/app/terminals/manager.py` | LLM を使わず正規表現で読む |
 | `nx-resume-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限からの自動再開「続けてください」を送る（inject_input） | `audit` `approval` | `backend/app/commander/resume.py`<br>`backend/app/commander/settings.py` | 送る直前に画面を読み直し、止まったままのときだけ。回数・間隔に歯止め。コンソールごとに止められる |
 | `nx-team-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | チームのタスクを担当のコンソールへ送る（短い文） | `auth` `audit` | `backend/app/commander/teams.py` |  |
+| `nx-team-checks` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | チームのタスクの確認のコマンドを担当の作業フォルダで実行し、合否と出力の最後を板へ（LLM なし） | `audit` `path_check` `no_secrets` | `backend/app/commander/team_checks.py` | shell なし・最小の環境（PATH・HOME・LANG）・600 秒・出力は一時ファイル（上限 50MB）。監査ログはコマンドと終了コードだけ |
+| `nx-team-retry-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 確認のコマンドが落ちたとき、失敗の出力を付けて担当へ自動で再挑戦を送る（2 回まで。直せなければ blocked と通知） | `audit` | `backend/app/commander/team_checks.py` |  |
+| `ws-auto-project` | backend（FastAPI） | CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有） | file | 作業場所の自動作成（nexarch-/team-/chat-日時のフォルダ・git init）と表示名・作成元（.controldeck/project.json） | `auth` `audit` `path_check` | `backend/app/integrations/opencode/projects.py`<br>`backend/app/commander/consoles.py`<br>`backend/app/workflows/chat_persist.py`<br>`backend/app/project_lab/service.py` | フォルダ名は変えない（OpenCode の会話の履歴がパスに結び付く）。表示名だけ変えられる |
 | `nx-automation-inject` | backend（FastAPI） | Terminal（tmux・PTY） | tmux | Terminal の automation が対象のセッションへコマンドを送る | `auth` `audit` `approval` | `backend/app/terminals/automation_worker.py`<br>`backend/app/terminals/automation.py`<br>`backend/app/terminals/manager.py` |  |
 | `nx-team-board` | backend（FastAPI） | チームの板（teams.json） | file | タスク板の保存（teams.json・0600・置き換えで書く） | `auth` `no_secrets` | `backend/app/commander/teams.py` |  |
 | `nx-team-watch` | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | チームの板（teams.json） | tmux | 作業中のタスクの担当を 60 秒ごとに見て、報告の取り込み・止まった・上限の印を板へ | `audit` | `backend/app/commander/team_watch.py` |  |
@@ -446,6 +454,8 @@ flowchart LR
 | `sandbox_relay` | 箱の中継（sandbox_gateway） |
 | `terminal` | Terminal（tmux・PTY） |
 | `console` | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） |
+| `workdir` | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） |
+| `codedev` | CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有） |
 | `board` | チームの板（teams.json） |
 | `usage_files` | 使用率のファイル（usage・Codex の記録） |
 | `cli_accounts` | CLI アカウントのフォルダ（ログインの鍵が入る） |
