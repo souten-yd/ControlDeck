@@ -321,7 +321,10 @@ def test_a_deleted_last_project_is_not_reopened(admin_client, monkeypatch, tmp_p
     second = admin_client.post(f"/api/v1/chat/conversations/{conv_id}/send", headers=CSRF_HEADERS,
                                json={"content": "続けて", "mode": "code", "model": "test"})
     _wait_done(admin_client, conv_id, second.json()["assistant_message_id"])
-    assert resolved[1] == ("", "")                    # 作り直さない（既定のプロジェクトの扱いへ）
+    # 消えたプロジェクト（gone）は作り直さない。代わりに、この会話の新しい作業場所を自動で作る
+    # （2026-11-27 作業場所の自動作成。設定の既定の作業場所が空のとき）
+    assert resolved[1][0].startswith("chat-") and resolved[1][1] == ""
+    assert not (tmp_path / "gone").exists()
 
 
 def test_each_project_box_gets_its_own_tmp_that_outlives_the_box(monkeypatch, tmp_path):

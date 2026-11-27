@@ -28,7 +28,9 @@ from tests.conftest import CSRF_HEADERS
 def codedev(tmp_path, monkeypatch) -> Path:
     root = tmp_path / "CodeDEV"
     root.mkdir()
-    monkeypatch.setattr(projects, "codedev_dir", lambda: root)
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "codedev_root", lambda: root)
     monkeypatch.setattr(service, "project_root", lambda: root.resolve())
     return root.resolve()
 
@@ -192,7 +194,6 @@ def test_chat_workspace_per_conversation(codedev, monkeypatch):
     from app.models import ChatMessage, Conversation, utcnow
 
     monkeypatch.setattr(provider, "get_settings", lambda: {"project_path": ""})
-    monkeypatch.setattr(provider, "codedev_root", lambda: codedev)
     a = cp._auto_chat_workspace("これは会話のタイトルです" * 10)
     b = cp._auto_chat_workspace("新しい会話")
     assert a and b and a != b and a.startswith("chat-")

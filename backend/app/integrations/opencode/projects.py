@@ -14,8 +14,6 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from app.config import codedev_dir
-
 KINDS = ("nexarch", "team", "chat")
 MAX_NAME = 80
 MAX_MANIFEST_BYTES = 256 * 1024
@@ -26,9 +24,10 @@ class ProjectError(ValueError):
 
 
 def _root() -> Path:
-    root = codedev_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    return root.resolve()
+    # 置き場の決定は provider.codedev_root（config）に一本化する（Project Lab・OpenCode と同じ場所）
+    from app.integrations.opencode import provider
+
+    return provider.codedev_root().resolve()
 
 
 def _inside(path: Path, root: Path) -> bool:
