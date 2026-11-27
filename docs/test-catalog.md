@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 264 ファイル、2601 テスト（目的の未記入 93 ファイル）
+- backend: 264 ファイル、2602 テスト（目的の未記入 93 ファイル）
 - E2E: 145 spec、319 テスト
 
 ## backend（backend/tests）
@@ -695,6 +695,7 @@
 - `test_cli_list_reports_installed_state` — /clis は導入済みか・アカウントを分けられるかを返す（gemini は分けられない）。
 - `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
 - `test_account_labels_including_the_default_account` — アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
+- `test_login_name_from_claude_metadata_and_codex_status` — 既定のアカウントの見せ方を、ログインしている名前にする（Claude はメール、Codex はログインの方法）。
 
 ### backend/tests/test_commander_consoles.py
 
