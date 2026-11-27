@@ -1537,6 +1537,7 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         "CONTROL_DECK_OPENCODE_BOX": "1",
         # 管理領域の道具（ast-grep など）は箱の PATH に入っている。ホストの PATH は持ち込まない。
         "PATH": sandbox.tool_path(),
+        **sandbox._android_env(),  # noqa: SLF001 - Android SDK が入っているときだけ（入っていなければ空）
     }
     # プロジェクトごとの「USB 機器」（既定は off）。渡すのは今の /sys・/dev から解決した実体だけ
     from app.integrations.opencode import usb

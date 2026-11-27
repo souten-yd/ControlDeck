@@ -5,6 +5,7 @@
  *  反映は箱を起こすとき。常駐の会話サーバーが動いていれば「起こし直す」で今の設定を反映する。 */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { BottomSheet } from "../../components/ui";
 import { useAuth, useToasts } from "../../stores";
@@ -13,7 +14,11 @@ type Kind = "serial" | "adb" | "fastboot" | "ios";
 type Entry = { kind: Kind; id: string };
 type Mode = "off" | "auto" | "selected";
 type UsbDevice = Entry & { label: string; path: string; vendor: string; serial_tail: string; guess: string; available: boolean; note: string };
-type DevicesResponse = { devices: UsbDevice[]; usbmuxd: boolean; tools: { name: string; ok: boolean; hint: string }[] };
+type HostAdb = { running: boolean; pids: number[]; listening: boolean };
+type DevicesResponse = {
+  devices: UsbDevice[]; usbmuxd: boolean; tools: { name: string; ok: boolean; hint: string }[];
+  android_sdk?: { installed: boolean }; host_adb?: HostAdb;
+};
 type Setting = { mode: Mode; selected: Entry[]; restart_needed?: boolean };
 
 const KIND_LABEL: Record<Kind, string> = { serial: "シリアル", adb: "Android（adb）", fastboot: "Android（fastboot）", ios: "iOS" };
@@ -52,6 +57,14 @@ function UsbSheet({ project, data, onClose }: { project: string; data?: DevicesR
     onSuccess: () => { void qc.invalidateQueries({ queryKey: key }); show("会話サーバーを止めました。次のメッセージで今の設定の機器を渡して起き直します"); },
     onError: (e) => show(e instanceof Error ? e.message : "止められませんでした", "error"),
   });
+  const stopAdb = useMutation({
+    mutationFn: () => api<{ ok: boolean; status: HostAdb }>("/opencode/devices/host-adb/stop", { method: "POST" }),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ["opencode-usb-devices"] });
+      show(r.ok && !r.status.running ? "ホストの adb を止めました" : "ホストの adb がまだ動いています", r.ok && !r.status.running ? undefined : "error");
+    },
+    onError: (e) => show(e instanceof Error ? e.message : "止められませんでした", "error"),
+  });
   const mode = setting?.mode ?? "off";
   const selected = setting?.selected ?? [];
   const has = (e: Entry) => selected.some((s) => s.kind === e.kind && s.id === e.id);
@@ -60,6 +73,12 @@ function UsbSheet({ project, data, onClose }: { project: string; data?: DevicesR
     selected: (has(e) ? selected.filter((s) => !(s.kind === e.kind && s.id === e.id)) : [...selected, e]).map(({ kind, id }) => ({ kind, id })),
   });
   const missing = (data?.tools ?? []).filter((t) => !t.ok);
+  const android = (data?.devices ?? []).filter((d) => d.kind === "adb" || d.kind === "fastboot");
+  // Android の機器を渡す設定のとき（自動なら Android の機器があれば、選ぶなら選んだものに含まれれば）だけ、ホストの adb の案内を出す
+  const androidGiven = mode === "auto" ? android.length > 0 : mode === "selected" && android.some((d) => has(d));
+  const hostAdbBusy = !!data?.host_adb?.running && androidGiven;
+  const needSdk = !!data && data.android_sdk?.installed === false && (android.length > 0 || missing.some((t) => t.name === "adb" || t.name === "fastboot"));
+  const canManage = useAuth((s) => s.can)("settings.manage");
   return (
     <BottomSheet title="USB 機器" onClose={onClose}>
       <div data-testid="usb-sheet" className="space-y-3 text-sm">
@@ -76,6 +95,14 @@ function UsbSheet({ project, data, onClose }: { project: string; data?: DevicesR
           このプロジェクトに渡す: {MODES.find((m) => m.id === mode)?.hint}
           箱の中の AI は、渡した機器へ書き込み・消去・任意の通信ができます。信頼できる機器だけをつないでください。
         </p>
+        {hostAdbBusy && (
+          <div data-testid="usb-host-adb" role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+            <p className="font-medium">ホストの adb が機器を使っています</p>
+            <p>ホストの adb サーバーが動いていると、箱の中の adb から機器が見えません。止めてから箱を起こし直してください（次に adb を使うと箱の側で起動します）。</p>
+            <button type="button" data-testid="usb-host-adb-stop" disabled={stopAdb.isPending} onClick={() => stopAdb.mutate()}
+              className="mt-1.5 min-h-11 rounded-lg border border-amber-400 bg-white px-3 dark:border-amber-600 dark:bg-transparent">ホストの adb を止める</button>
+          </div>
+        )}
         <ul className="space-y-1">
           {(data?.devices ?? []).map((d) => (
             <li key={`${d.kind}:${d.id}`} className="flex min-h-11 min-w-0 items-center gap-2">
@@ -96,6 +123,13 @@ function UsbSheet({ project, data, onClose }: { project: string; data?: DevicesR
             <button type="button" onClick={() => restart.mutate()} disabled={restart.isPending}
               className="mt-1.5 min-h-11 rounded-lg border border-zinc-300 px-3 dark:border-zinc-600">会話サーバーを起こし直す</button>
           </div>
+        )}
+        {needSdk && canManage && (
+          <p data-testid="usb-sdk-link" className="text-xs text-zinc-600 dark:text-zinc-300">
+            Android の道具（adb・fastboot・ビルド用の SDK）が箱にありません。{" "}
+            <Link to="/settings/features#feature-android-sdk" className="font-medium text-accent-600 underline dark:text-accent-400">設定で入れる</Link>
+            <span className="block text-[11px] text-zinc-500">Android のビルドは依存の取得に外への通信が要ります（プロジェクトの箱は通信できます。通信が中継だけの作業場の箱では取れません）。</span>
+          </p>
         )}
         {missing.length > 0 && (
           <details className="text-xs text-zinc-500 dark:text-zinc-400">

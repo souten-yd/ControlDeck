@@ -67,3 +67,12 @@
 - 箱のコンテナは機器を持ったまま動くので、機器を外す・差し替えるには箱を起こし直す。
 - ホストの利用者が dialout・plugdev に入っていない、udev で権限が無い機器は箱から開けない（keep-groups が効かないとき）。実機の確認は Opus が行う。
 - ツールチェーンはまだ箱に入っていない（第 2 段）。
+
+## 8. Android の開発（2026-11-27）
+
+利用者「Android とかにも対応してね」。
+- **道具**: 設定の機能と拡張の「Android SDK（コマンドライン）」（`features/android_sdk.py`）。`data/tools/android-sdk` へ入れる（root 不要）。cmdline-tools は Google の公式の zip を目録で固定（URL・sha256）。取得は利用者が「導入」を押し、ライセンス（https://developer.android.com/studio/terms）への同意にチェックを入れたときだけ。試験・自動更新では取得しない。`sdkmanager` で platform-tools・platforms;android-NN・build-tools;NN を入れる（目録の範囲だけ）。Java（JDK 17 以上）はホストのものを使う。
+- **箱へ**: 読み取り専用で bind、`ANDROID_HOME`・`ANDROID_SDK_ROOT`・PATH を渡す。入っていなければ何も足さない。fastboot は platform-tools のもの。Gradle 本体は入れず、プロジェクトの `./gradlew` を使う（キャッシュは箱の HOME の `~/.gradle`）。エージェントへは `controldeck-usb.md` に道具の場所・`adb devices`・sudo 不要を書く。
+- **ホストの adb サーバー**: ホストで動いていると機器をつかみ、箱の中の adb から見えない（§2）。機器のシートに、Android の機器を渡す設定のときだけ「ホストの adb が機器を使っています」と「ホストの adb を止める」（`adb kill-server`・利用者の権限・shell なし・管理者・監査）を出す。
+- **ビルドの依存の取得（Maven）には外への通信が要る**: プロジェクトの箱は host network なので通る。作業場の箱は pod で通信が中継だけなので通らない（npm・pip と同じ。取れないときは利用者へ伝える）。通信を広げる設定は作っていない（広げるなら中継へ宛先を 1 つずつ許す方式を別に設計する。§6 の第 3 段）。
+- **adb の Wi-Fi 接続（adb connect）は箱からは通らない**（箱の通信が中継だけのため）。USB だけ。

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 273 ファイル、2798 テスト（目的の未記入 93 ファイル）
+- backend: 274 ファイル、2818 テスト（目的の未記入 93 ファイル）
 - E2E: 148 spec、335 テスト
 
 ## backend（backend/tests）
@@ -358,6 +358,31 @@
 - `test_presets_restore_auto_and_custom_keeps_explicit_clocks`
 - `test_apply_profile_uses_fixed_helper_argv`
 - `test_privileged_helper_validates_and_writes_only_gpu_attributes`
+
+### backend/tests/test_android_sdk.py
+
+目的: Android SDK（コマンドライン）の機能と、箱への受け渡し、ホストの adb の案内。 目的: - 取得元の目録（URL・sha256）が固定で、公式のホスト（dl.google.com・https）以外へ行かないこと。取得は偽物に差し替える（本物を落とさない）。 - sha256 が違えば取り込まず止まること。zip の中のパスの逃げ出し（.. ・絶対パス・リンク）を拒否すること。 - sdkmanager は argv（shell なし）で呼び、ライセンスの yes はライセンスに同意したときだけ渡すこと。同意なしでは何も取得しない。 - 選べる platforms / build-tools は目録の範囲だけ。入っていなければ箱へ何も足さない（argv・PATH・環境変数が変わらない）。 入っていれば読み取り専用で bind し、ANDROID_HOME・ANDROID_SDK_ROOT・PATH（platform-tools など）を渡し、エージェントへの前置きに道具の場所を書く。 - ホストの adb サーバー（adb のプロセス・5037 番の待ち受け）の検出と、kill-server（偽の実行・shell なし）。 - 機能の API は同意なしでは 422、同意があればジョブになること。自動更新の対象にならないこと。 根拠: 2026-11-27 利用者「Android とかにも対応してね」（M5・iOS・Android の開発を OpenCode で）。 本物の SDK・npm・pip・apt は取得しない（取得は fetch・run を差し替える）。
+
+- `test_catalog_is_pinned_to_google_official`
+- `test_real_fetch_refuses_hosts_outside_catalog`
+- `test_install_without_consent_fetches_nothing`
+- `test_install_runs_sdkmanager_with_argv_and_licenses_only_when_accepted`
+- `test_sha256_mismatch_stops_before_extract`
+- `test_zip_path_escape_is_rejected`
+- `test_zip_symlink_member_is_rejected`
+- `test_unexpected_zip_layout_is_rejected`
+- `test_failed_sdkmanager_does_not_mark_installed`
+- `test_missing_java_stops_before_fetch`
+- `test_update_needs_recorded_consent_and_uninstall_stays_inside`
+- `test_nothing_added_to_box_when_not_installed`
+- `test_installed_sdk_goes_to_box_readonly_with_env_and_path`
+- `test_usb_notes_include_android_only_when_installed`
+- `test_host_adb_detected_by_process_or_port`
+- `test_kill_host_adb_uses_argv_without_shell`
+- `test_feature_is_registered_and_never_auto_updated`
+- `test_install_api_requires_consent`
+- `test_devices_api_reports_host_adb_only_with_android_device`
+- `test_stop_host_adb_api_runs_kill_server`
 
 ### backend/tests/test_api_rate_limit.py
 

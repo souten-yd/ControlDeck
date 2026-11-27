@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 107 本、ノード: 42 個
+- ルート: 110 本、ノード: 43 個
 
 ## 守りの印（guards）
 
@@ -252,7 +252,7 @@ flowchart LR
 | `nx-codex-usage` | 使用率のファイル（usage・Codex の記録） | backend（FastAPI） | file | Codex の sessions の記録（rollout）の最後の rate_limits を読む | `no_secrets` | `backend/app/commander/usage.py` | auth.json など鍵のファイルは読まない |
 | `nx-accounts` | backend（FastAPI） | CLI アカウントのフォルダ（ログインの鍵が入る） | file | CLI アカウントのフォルダを作る・消す・ログイン済みかをファイルの有無だけで判定 | `auth` `audit` `no_secrets` | `backend/app/commander/accounts.py`<br>`backend/app/commander/router.py` | 中身（auth.json・.credentials.json）は読まない・返さない |
 
-### 外部への通信の出口（15 本）
+### 外部への通信の出口（16 本）
 
 ```mermaid
 flowchart LR
@@ -265,6 +265,7 @@ flowchart LR
   news["ニュース機能"]
   knowledge["ナレッジ・特許・規格"]
   pkg_registry["PyPI・npm"]
+  google_sdk["Google の公式配布（dl.google.com。Android SDK の cmdline-tools と sdkmanager の取得先）"]
   news_hub["QNAP ニュースハブ"]
   gateway["LLM ゲートウェイ（/api/v1/llm/v1）"]
   workflows -->|"ext-research-search (egress)"| web
@@ -276,6 +277,7 @@ flowchart LR
   knowledge -->|"ext-knowledge-sources (egress)"| web
   backend -->|"ext-package-updates (egress)"| pkg_registry
   backend -->|"ext-release-update (egress)"| github
+  backend -->|"ext-android-sdk (egress)"| google_sdk
   backend -->|"ext-feature-install (subprocess)"| pkg_registry
   backend -->|"ext-news-hub-link (egress)"| news_hub
   knowledge -->|"ext-hub-expand (egress)"| news_hub
@@ -295,6 +297,7 @@ flowchart LR
 | `ext-knowledge-sources` | ナレッジ・特許・規格 | 公開インターネット（Web・学術・フォーラム） | egress | 特許・論文の公開データ（EPO・USPTO・特許庁）の取り込み | `ssrf_guard` `no_secrets` | `backend/app/knowledge/sources.py` | キーは暗号化して保存。取り込んだ文書は既定で confidential |
 | `ext-package-updates` | backend（FastAPI） | PyPI・npm | egress | pip・npm の更新の確認（公開情報を読むだけ） | `ssrf_guard` | `backend/app/features/package_updates.py` |  |
 | `ext-release-update` | backend（FastAPI） | GitHub | egress | ControlDeck・Strata・機能の Release の確認と取得（許可したホストだけ・署名・ハッシュの検証） | `ssrf_guard` `audit` `approval` | `backend/app/features/release_bundle.py`<br>`backend/app/maintenance/self_update.py`<br>`backend/app/maintenance/auto_update.py`<br>`backend/app/models_mgmt/strata.py` | 本番の更新は承認待ち・Job 待ちがある |
+| `ext-android-sdk` | backend（FastAPI） | Google の公式配布（dl.google.com。Android SDK の cmdline-tools と sdkmanager の取得先） | egress | Android SDK（コマンドライン）の取得: 利用者が設定の「導入」を押し、ライセンスへの同意にチェックを入れたときだけ。目録で固定した公式の zip（sha256 照合）と、sdkmanager が取る SDK の部品 | `auth` `audit` `approval` `path_check` `confidential` | `backend/app/features/android_sdk.py`<br>`backend/app/features/router.py`<br>`backend/app/features/registry.py` | 自動更新・自動取得はしない。https と host（dl.google.com）を固定し、取得の直前に ensure_external_allowed。zip は sha256 を照合し、パスの逃げ出し・リンクを拒否して展開。sdkmanager は argv（shell=True 禁止）、ライセンスの yes は同意したときだけ |
 | `ext-feature-install` | backend（FastAPI） | PyPI・npm | subprocess | 機能の導入（pip・npm をユーザー空間へ。shell=True 禁止・sudo 不要） | `auth` `audit` `path_check` | `backend/app/features/registry.py`<br>`backend/app/features/cli.py`<br>`backend/app/features/playwright_browsers.py` |  |
 | `ext-news-hub-link` | backend（FastAPI） | QNAP ニュースハブ | egress | ニュースハブとのペアリング・差分の同期・仕事の貸し出し（LAN。リダイレクトを辿らない） | `auth` `no_secrets` `audit` | `backend/app/news/hub_link.py`<br>`backend/app/news/hub_sync.py`<br>`backend/app/news/hub_jobs.py`<br>`backend/app/news/hub_discovery.py` | 指紋の目視確認が済むまで同期しない。トークン・秘密鍵は暗号化して保存 |
 | `ext-hub-expand` | ナレッジ・特許・規格 | QNAP ニュースハブ | egress | 検索の語の拡張（問いの文をハブの検索 API へ送り、別名・上位下位の語をもらう。特許・Web 調査・RAG。LAN・読むだけ・LLM なし） | `confidential` `no_secrets` | `backend/app/knowledge/hub_expand.py`<br>`backend/app/workflows/rag.py`<br>`backend/app/patents/service.py`<br>`backend/app/workflows/research_tools.py` | 設定（news.hub.features.expand_*）で入り切り。特許は秘密の区分として問い、ハブのつなぎが許さなければ空で元の語だけ。インターネットへは何も送らない（広げた語を Web 検索に使うときの出口は既存の ensure_external_allowed） |
@@ -346,16 +349,19 @@ flowchart LR
 | `notify-webpush` | 通知の入口（notify_event） | Web Push（Apple・Google の push service） | egress | Web Push（RFC 8291 暗号化・VAPID）。利用者ごとの設定・お休みモードを通ってから | `approval` `ssrf_guard` `no_secrets` | `backend/app/alerts/events.py`<br>`backend/app/alerts/webpush.py` | 送り先は既知の push service だけ。通知の文は Apple・Google の中継を通るので短く、秘密を載せない |
 | `notify-channels` | backend（FastAPI） | Discord・Slack・メール | egress | 通知チャンネル（Discord・Slack・メール）への送信 | `approval` `no_secrets` | `backend/app/alerts/notify.py` | 送り先の URL・認証は暗号化して保存 |
 
-### 箱（開発用の作業場）とホストの中継（5 本）
+### 箱（開発用の作業場）とホストの中継（7 本）
 
 ```mermaid
 flowchart LR
   sandbox_box["箱の OpenCode（sandbox）"]
+  backend["backend（FastAPI）"]
+  frontend["画面（frontend / React）"]
+  host_systemd["systemd・Podman・ホストの CLI"]
   sandbox_relay["箱の中継（sandbox_gateway）"]
   mcp["ControlDeck の MCP サーバー"]
-  backend["backend（FastAPI）"]
-  host_systemd["systemd・Podman・ホストの CLI"]
   host_usb["ホストの USB 機器（/sys と /dev）と usbmuxd のソケット"]
+  sandbox_box -->|"sbx-android-sdk (file)"| backend
+  frontend -->|"sbx-host-adb-stop (subprocess)"| host_systemd
   sandbox_box -->|"sbx-relay-llm (relay)"| sandbox_relay
   sandbox_box -->|"sbx-relay-mcp (relay)"| mcp
   backend -->|"sbx-lifecycle (subprocess)"| host_systemd
@@ -365,6 +371,8 @@ flowchart LR
 
 | id | from | to | channel | 流れるもの | guards | owner | 備考 |
 |---|---|---|---|---|---|---|---|
+| `sbx-android-sdk` | 箱の OpenCode（sandbox） | backend（FastAPI） | file | 入っている Android SDK（data/tools/android-sdk）を箱へ読み取り専用で bind し、ANDROID_HOME・ANDROID_SDK_ROOT・PATH を渡す（入っていなければ何も足さない） | `path_check` | `backend/app/features/android_sdk.py`<br>`backend/app/maintenance/sandbox.py`<br>`backend/app/integrations/opencode/provider.py`<br>`backend/app/integrations/opencode/usb.py` | 箱からは書き換えられない（読み取り専用）。Gradle のキャッシュは箱の HOME。作業場の箱は通信が中継だけなので依存の取得は通らない |
+| `sbx-host-adb-stop` | 画面（frontend / React） | systemd・Podman・ホストの CLI | subprocess | ホストの adb サーバーを止める（adb kill-server。利用者の権限・shell なし。機器のシートの「ホストの adb を止める」） | `auth` `audit` `approval` | `backend/app/maintenance/devices.py`<br>`backend/app/integrations/opencode/router.py` | 管理者だけ（settings.manage・監査 opencode.host_adb_stop）。止めるのは adb のサーバーだけで、機器・ほかのプロセスには触れない |
 | `sbx-relay-llm` | 箱の OpenCode（sandbox） | 箱の中継（sandbox_gateway） | relay | 箱の OpenCode が本番のゲートウェイへ届く唯一の道（models・chat・load の 3 つだけ。受けた頭は上流へ渡さない） | `loopback` `approval` `confidential` | `backend/app/maintenance/sandbox_gateway.py` | 起動の引数で機能を許す（--allow-llm・--allow-load）。許さない機能のパスは 403。cloud: は --allow-cloud のときだけ |
 | `sbx-relay-mcp` | 箱の OpenCode（sandbox） | ControlDeck の MCP サーバー | relay | 箱から呼べる ControlDeck の道具（MCP_ALLOWED_TOOLS だけ）。MCP のトークンは箱の外の中継だけが持つ | `auth` `approval` `no_secrets` | `backend/app/maintenance/sandbox_gateway.py` | 箱から来た Authorization は捨てる。更新後のトークンも箱へ返さない |
 | `sbx-lifecycle` | backend（FastAPI） | systemd・Podman・ホストの CLI | subprocess | 箱（作業場）の作成・起動・停止・取り込み・マージ（systemd・podman・git） | `auth` `audit` `path_check` `approval` | `backend/app/maintenance/sandbox.py`<br>`backend/app/maintenance/workspaces.py`<br>`backend/app/maintenance/dev_check.py`<br>`backend/app/maintenance/change_policy.py` |  |
@@ -498,6 +506,7 @@ flowchart LR
 | `github` | GitHub |
 | `hf` | Hugging Face |
 | `pkg_registry` | PyPI・npm |
+| `google_sdk` | Google の公式配布（dl.google.com。Android SDK の cmdline-tools と sdkmanager の取得先） |
 | `news_hub` | QNAP ニュースハブ |
 | `secret_store` | 鍵の保存（暗号化・0600） |
 | `host_systemd` | systemd・Podman・ホストの CLI |

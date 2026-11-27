@@ -316,8 +316,32 @@ def list_usb_devices(user: User = Depends(require_permission("settings.manage"))
     """ホストにつながっている、箱へ渡せる USB 機器（シリアル・adb・fastboot・iOS）と、書き込みの道具の有無。読むだけ。管理者だけ。"""
     from app.maintenance import devices, sandbox
 
-    return {"devices": devices.list_devices(), "usbmuxd": devices.usbmuxd_running(),
-            "tools": devices.tool_status(sandbox.tool_path())}
+    from app.features import android_sdk
+
+    items = devices.list_devices()
+    # ホストの adb のサーバーは、Android（adb）の機器を扱うときだけ案内に使う（機器が無ければ見せない）
+    android = any(item["kind"] in ("adb", "fastboot") for item in items)
+    return {"devices": items, "usbmuxd": devices.usbmuxd_running(),
+            "tools": devices.tool_status(sandbox.tool_path()),
+            "android_sdk": {"installed": android_sdk.installed()},
+            "host_adb": devices.host_adb_status() if android else {"running": False, "pids": [], "listening": False}}
+
+
+@router.post("/devices/host-adb/stop")
+def stop_host_adb(request: Request, user: User = Depends(require_permission("settings.manage")), db=Depends(get_db)):
+    """ホストの adb のサーバーを止める（adb kill-server を利用者の権限で。shell なし）。管理者だけ。"""
+    from app.features import android_sdk
+    from app.maintenance import devices
+
+    try:
+        result = devices.kill_host_adb(str(android_sdk.adb_path()))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="adb を実行できませんでした") from exc
+    audit.record(db, "opencode.host_adb_stop", user=user, resource_type="host_adb", request=request,
+                 metadata={"ok": result["ok"]})
+    return result
 
 
 class ProjectUsbBody(BaseModel):
