@@ -55,7 +55,7 @@ export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string
     <form data-team-ask className="mb-3 min-w-0" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !busy && !(addToThis && running)) void submit(); }}>
       <div className="flex min-w-0 gap-2">
         <input
-          aria-label="チームリーダーに頼む" value={text} maxLength={4000} placeholder="チームリーダーに頼む（一文で）"
+          aria-label="チームリーダーに頼む" value={text} maxLength={20000} placeholder="チームリーダーに頼む（一文で）"
           onChange={(e) => setText(e.target.value)} className={`${inputClass} min-w-0 flex-1`}
         />
         <button type="submit" data-team-ask-submit disabled={!text.trim() || busy || (addToThis && running)} className={`${primaryButtonClass} shrink-0`}>頼む</button>

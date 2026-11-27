@@ -1,5 +1,11 @@
 # 実装状況
 
+## 2026-11-28 AI チームの実行が CLI の記録ファイルで落ちる（SIGXFSZ）・依頼の上限
+- 本番で AI チームに ControlDeck の開発を頼んだら、チームリーダーの Codex が 1 秒で落ちた（終了コード -25）。子のプロセスに `RLIMIT_FSIZE`（50MB）を掛けていて、Codex が自分の記録（`~/.codex/logs_2.sqlite` 66MB・`thread_history_1.sqlite` 1GB）を書いた瞬間に SIGXFSZ で止まった。Claude の会話記録・試験の DB・ビルドの成果物でも同じことが起きる。
+- **直し**: 子に上限を掛けない。実行（`team_runner._execute`）と確認のコマンド（`team_checks._run_one`）の両方で、出力のファイルだけを見張り、上限を超えたら止めて「出力が 50MB を超えたので止めました」と出す。シグナルで落ちたときは理由にシグナルの名前を添える（`failure_reason`）。
+- **依頼の上限**: チームリーダーへの依頼は 4000 字で切っていたが、API の入口は 20000 字だった。5638 字の仕様が断られたので 20000 字にそろえた（画面の入力欄も）。
+- 実機: 本番の設定で、直した実行の形で Codex が答えた（終了コード 0）。
+- 試験: `backend/tests/test_commander_team_output_limit.py`（6 件）。
 ## 2026-11-28 AI チームの担い手に OpenCode（Zen・Go）の GLM などを使える
 - 本番の Nexarch で ControlDeck の開発を AI チームに回そうとしたところ（`docs/ROADMAP.md` 方針 3）、実装の担い手に OpenCode の GLM（opencode-go/glm-5.3）を当てられなかった。選択肢に出ず、起動も常に `controldeck/<モデル>`（ゲートウェイ）だった。利用者「ローカル LLM と OpenCode の GLM と OpenRouter の DS を使って良い」。
 - **一覧**: Zen の鍵があるときだけ、OpenCode のモデルに `model_choice.ZEN_MODELS`（GLM-5.3・HY4 Flash・DeepSeek V4.1 Flash）を足す（`commander/models.py`）。
