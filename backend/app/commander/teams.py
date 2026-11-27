@@ -2,11 +2,11 @@
 
 チーム = Nexarch のコンソール（役割つき）の集まり + タスク板。状態の正本はこの板（モデルの記憶に
 頼らない）。担当のコンソールへは Terminal の inject_input（自動再開と同じ送り方）で短い文を渡し、
-終わった報告は画面の「完了報告:」の 4 行を正規表現で読む（LLM なし）。
+終わった報告は画面の「完了報告:」の 5 行（古い 4 行も可）を正規表現で読む（LLM なし）。
 
 - 保存: `data/ai-commander/teams.json`（0600・tmp → os.replace・プロセス内は RLock）。DB は使わない。
 - 壊れた JSON は空として扱う（落とさない）。
-- 自動の取り込み・リーダーへの通知は T2。ここは一覧のときの見張り（担当の状態・報告の有無）だけ。
+- 自動の取り込み・止まった／上限の印・通知は team_watch.py（T2a）。ここは一覧のときの担当の状態・報告の有無・未検証の印。
 根拠: docs/PLAN-nexarch-team.md T1。
 """
 from __future__ import annotations
@@ -176,7 +176,7 @@ def create_team(name: str) -> dict:
         teams = _load()
         team = {
             "id": "t" + secrets.token_hex(4), "name": name, "created_at": _now(),
-            "members": [], "tasks": [], "next_task_id": 1,
+            "members": [], "tasks": [], "next_task_id": 1, "notify": True,
         }
         teams.append(team)
         _save(teams)
@@ -263,8 +263,29 @@ def _check_assignee(team: dict, assignee: object) -> str:
     return assignee
 
 
+def is_unverified(task: dict) -> bool:
+    """報告があり、確認（verify）が空、または試験が空・「なし」「未実施」「-」なら未検証。"""
+    report = task.get("report")
+    if not isinstance(report, dict):
+        return False
+    verify = str(report.get("verify") or "").strip()
+    tests = str(report.get("tests") or "").strip().lower()
+    return not verify or tests in _NONE_WORDS
+
+
 def _task_view(team: dict, task: dict) -> dict:
-    return {**task, "warnings": _warnings(team, task)}
+    return {**task, "warnings": _warnings(team, task), "unverified": is_unverified(task)}
+
+
+def set_notify(team_id: str, enabled: object) -> dict:
+    if not isinstance(enabled, bool):
+        raise TeamError("通知の入り切りは真偽で指定してください")
+    with _lock:
+        teams = _load()
+        team = _find_team(teams, team_id)
+        team["notify"] = enabled
+        _save(teams)
+    return team
 
 
 def create_task(team_id: str, fields: dict, by: str) -> dict:
@@ -339,10 +360,11 @@ def dispatch_text(task: dict) -> str:
         f"目的: {task.get('goal') or '（なし）'}\n"
         f"受け入れ条件: {task.get('acceptance') or '（なし）'}\n"
         f"担当ファイル: {files}\n"
-        "終わったら最後に次の 4 行で報告してください:\n"
+        "終わったら最後に次の 5 行で報告してください:\n"
         "完了報告: <何をしたか 1 行>\n"
         "変更ファイル: <パスを , で>\n"
         "試験: <実行した試験と結果>\n"
+        "確認: <実行したコマンドと、その結果の要点>\n"
         "残り: <残っていること。無ければ なし>"
     )
 
@@ -380,6 +402,8 @@ def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
         team = _find_team(teams, team_id)
         task = _find_task(team, task_id)
         task["status"] = "doing"
+        for key in ("stalled_at", "limited_at", "closed_noted", "notified"):
+            task.pop(key, None)  # 新しい作業として見張りを数え直す
         _event(task, "担当へ送信", by)
         _save(teams)
         return _task_view(team, task)
@@ -390,14 +414,15 @@ _REPORT_RE = {
     "summary": re.compile(_PREFIX + r"完了報告\s*[:：]\s*(.*?)\s*$"),
     "changed_files": re.compile(_PREFIX + r"変更ファイル\s*[:：]\s*(.*?)\s*$"),
     "tests": re.compile(_PREFIX + r"試験\s*[:：]\s*(.*?)\s*$"),
+    "verify": re.compile(_PREFIX + r"確認\s*[:：]\s*(.*?)\s*$"),
     "remaining": re.compile(_PREFIX + r"残り\s*[:：]\s*(.*?)\s*$"),
 }
 _PLACEHOLDER = re.compile(r"^<[^<>]*>$")
-_NONE_WORDS = {"", "なし", "無し", "ない", "-", "none", "n/a"}
+_NONE_WORDS = {"", "なし", "無し", "ない", "未実施", "-", "none", "n/a"}
 
 
 def parse_report(text: str) -> dict | None:
-    """画面の文字から、最後の「完了報告:」で始まる 4 行の塊を読む。無ければ None。
+    """画面の文字から、最後の「完了報告:」で始まる 5 行（確認の行が無い古い 4 行も可）の塊を読む。無ければ None。
 
     送った文面の見本（`完了報告: <何をしたか 1 行>`）が画面に残っているので、`<…>` のままの塊は
     報告とみなさない。
@@ -409,11 +434,14 @@ def parse_report(text: str) -> dict | None:
             continue
         values = {"summary": first.group(1)}
         cursor = start + 1
-        for key in ("changed_files", "tests", "remaining"):
+        for key in ("changed_files", "tests", "verify", "remaining"):
             while cursor < len(lines) and not lines[cursor].strip():
                 cursor += 1  # 空行は読み飛ばす
             matched = _REPORT_RE[key].match(lines[cursor]) if cursor < len(lines) else None
             if not matched:
+                if key == "verify":
+                    values["verify"] = ""  # 古い 4 行の形（確認の行なし）
+                    continue
                 break
             values[key] = matched.group(1)
             cursor += 1
@@ -438,6 +466,7 @@ def _normalize_report(values: dict) -> dict:
         "summary": str(values.get("summary", ""))[:REPORT_FIELD_MAX],
         "changed_files": [str(p)[:FILE_MAX] for p in changed][:FILES_MAX],
         "tests": str(values.get("tests", ""))[:REPORT_FIELD_MAX],
+        "verify": str(values.get("verify", ""))[:REPORT_FIELD_MAX],
         "remaining": str(values.get("remaining", ""))[:REPORT_FIELD_MAX],
     }
 
@@ -461,8 +490,9 @@ def put_report(team_id: str, task_id: int, fields: dict, by: str) -> dict:
     summary = clean_line(fields.get("summary", ""), "完了報告", REPORT_FIELD_MAX)
     changed = clean_files(fields.get("changed_files", []))
     tests = clean_text(fields.get("tests", ""), "試験", REPORT_FIELD_MAX)
+    verify = clean_text(fields.get("verify", ""), "確認", REPORT_FIELD_MAX)
     remaining = clean_text(fields.get("remaining", ""), "残り", REPORT_FIELD_MAX)
-    report = {"summary": summary, "changed_files": changed, "tests": tests, "remaining": remaining}
+    report = {"summary": summary, "changed_files": changed, "tests": tests, "verify": verify, "remaining": remaining}
     return _store_report(team_id, task_id, report, by, "報告を手で入力")
 
 

@@ -376,6 +376,10 @@ class _TeamMembers(BaseModel):
     members: list[dict[str, Any]] = Field(max_length=50)
 
 
+class _TeamNotify(BaseModel):
+    notify: bool
+
+
 class _TaskBody(BaseModel):
     """作成・更新で使う欄。更新は送った欄だけ変える（検証は teams.py）。"""
     title: str | None = Field(default=None, max_length=1000)
@@ -390,6 +394,7 @@ class _ReportBody(BaseModel):
     summary: str = Field(max_length=10000)
     changed_files: list[str] = Field(default_factory=list, max_length=200)
     tests: str = Field(default="", max_length=10000)
+    verify: str = Field(default="", max_length=10000)
     remaining: str = Field(default="", max_length=10000)
 
 
@@ -428,6 +433,16 @@ def rename_team(
 ):
     team = _team_call(teams.rename_team, team_id, body.name)
     _team_audit(db, user, request, "rename", team_id, name=team["name"])
+    return team
+
+
+@router.put("/teams/{team_id}/notify")
+def set_team_notify(
+    team_id: str, body: _TeamNotify, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    team = _team_call(teams.set_notify, team_id, body.notify)
+    _team_audit(db, user, request, "notify", team_id, notify=body.notify)
     return team
 
 

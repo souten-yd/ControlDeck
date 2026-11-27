@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 265 ファイル、2613 テスト（目的の未記入 93 ファイル）
-- E2E: 146 spec、322 テスト
+- backend: 266 ファイル、2625 テスト（目的の未記入 93 ファイル）
+- E2E: 146 spec、323 テスト
 
 ## backend（backend/tests）
 
@@ -734,6 +734,23 @@
 - `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
+
+### backend/tests/test_commander_team_watch.py
+
+目的: Nexarch の AI チームの見張り・通知・検証できる報告（T2a。commander/team_watch.py・teams.py）の試験。 目的: 「作業中のタスクの担当が入力待ちに戻ったら報告を自動で取り込む／報告なしで止まったら印を付ける／ 上限で止まったら印を付ける／閉じたら記録する」を、コード（LLM なし）が 1 回だけ・正しい順に行うこと、 通知が同じ出来事で重ならずチームごとに切れること、5 行（確認つき）・古い 4 行の報告を読めて、確認の無い 報告に「未検証」が付くことを守る。 根拠: 利用者「ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断で協調して開発を進めたい」と docs/PLAN-nexarch-team.md の「設計へ取り込むこと」1（検証できる完了報告）・6（通知）・段 T2。 実際の通知先へは送らず、`team_watch.send` を差し替える。Terminal は FakeManager（tmux は使わない）。
+
+- `test_parse_five_line_and_legacy_four_line_report`
+- `test_unverified_judgement`
+- `test_unverified_in_list_and_manual_report_verify`
+- `test_waiting_with_report_is_collected_and_notified_once`
+- `test_old_report_before_dispatch_marker_is_not_picked`
+- `test_stalled_once_then_cleared_when_working_returns`
+- `test_grace_after_dispatch`
+- `test_limited_marks_and_notifies_once`
+- `test_console_closed_recorded_once`
+- `test_capture_once_per_assignee`
+- `test_notify_toggle_per_team`
+- `test_run_once_sends_through_notification_channels` — send は有効な通知先すべてへ send_notification で送る（宛先の取得と送信の呼び出し）。
 
 ### backend/tests/test_commander_teams.py
 
@@ -4283,10 +4300,11 @@
 
 ### frontend/e2e/commander-team.spec.ts
 
-目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
+目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
 
 - AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格
 - URL の ?view=team でチームが開き、コンソールの切り替えで戻れる
+- AI チーム ${label}px: 未検証の印と合格の確認・止まった／上限の印・通知の切り替え
 
 ### frontend/e2e/commander.spec.ts
 

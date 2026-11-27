@@ -2,6 +2,7 @@
  *
  * 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る →
  * 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。
+ * T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。
  * 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -11,12 +12,13 @@ interface Task {
   id: number; title: string; goal: string; acceptance: string; files: string[]; assignee: string;
   status: string; report: null | { summary: string; changed_files: string[]; tests: string; remaining: string };
   created_at: number; updated_at: number; history: unknown[]; warnings: string[];
-  assignee_state?: string; report_ready?: boolean;
+  assignee_state?: string; report_ready?: boolean; unverified?: boolean; stalled_at?: number; limited_at?: number;
 }
 interface TeamState {
-  teams: { id: string; name: string; created_at: number; members: { session_id: string; role: string }[]; tasks: Task[] }[];
+  teams: { id: string; name: string; created_at: number; notify?: boolean; members: { session_id: string; role: string }[]; tasks: Task[] }[];
   dispatched: number[];
   collected: number[];
+  notifyCalls?: boolean[];
 }
 
 const CONSOLES = [
@@ -45,7 +47,14 @@ async function mockTeams(page: Page, state: TeamState) {
       state.teams.push(team);
       return route.fulfill({ status: 201, json: team });
     }
-    let m = path.match(/^teams\/(\w+)\/members$/);
+    let m = path.match(/^teams\/(\w+)\/notify$/);
+    if (m && method === "PUT") {
+      const team = state.teams.find((t) => t.id === m![1])!;
+      team.notify = body().notify as boolean;
+      (state.notifyCalls ??= []).push(team.notify);
+      return route.fulfill({ json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/members$/);
     if (m && method === "PUT") {
       const team = state.teams.find((t) => t.id === m![1])!;
       team.members = body().members as { session_id: string; role: string }[];
@@ -178,3 +187,72 @@ test("URL の ?view=team でチームが開き、コンソールの切り替え�
   await page.getByRole("button", { name: "コンソール", exact: true }).click();
   await expect(page).not.toHaveURL(/view=team/);
 });
+
+function seededTeam(tasks: Partial<Task>[]): TeamState {
+  const full = tasks.map((t, i): Task => ({
+    id: i + 1, title: `タスク${i + 1}`, goal: "", acceptance: "", files: [], assignee: "aa110001", status: "todo", report: null,
+    created_at: 1, updated_at: 1, history: [], warnings: [], assignee_state: "waiting", ...t,
+  }));
+  return {
+    teams: [{ id: "t0a1b2c3d", name: "開発班", created_at: 1, notify: true, members: [{ session_id: "aa110001", role: "developer" }], tasks: full }],
+    dispatched: [], collected: [],
+  };
+}
+
+for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
+  test(`AI チーム ${label}px: 未検証の印と合格の確認・止まった／上限の印・通知の切り替え`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = seededTeam([
+      { status: "review", title: "未検証の報告", unverified: true,
+        report: { summary: "作った", changed_files: [], tests: "なし", verify: "", remaining: "なし" } },
+      { status: "review", title: "検証済みの報告", unverified: false,
+        report: { summary: "作った", changed_files: [], tests: "pytest 12 件合格", verify: "pytest -q → 12 passed", remaining: "なし" } },
+      { status: "doing", title: "止まった作業", stalled_at: 1764000000 },
+      { status: "doing", title: "上限の作業", limited_at: 1764000000 },
+    ]);
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    await expect(page.locator('[data-team-task="1"] [data-team-unverified]')).toContainText("未検証");
+    await expect(page.locator('[data-team-task="2"] [data-team-unverified]')).toHaveCount(0);
+    await expect(page.locator('[data-team-task="3"] [data-team-stalled]')).toContainText("止まった（報告なし）");
+    await expect(page.locator('[data-team-task="4"] [data-team-limited]')).toContainText("上限で停止");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2a-board.png`, fullPage: true });
+
+    // 検証済みは確認なしで合格
+    await page.locator('[data-team-task="2"]').click();
+    let detail = page.getByRole("dialog", { name: "#2 検証済みの報告" });
+    await expect(detail).toContainText("確認: pytest -q → 12 passed");
+    await detail.getByRole("button", { name: "合格" }).click();
+    await expect(page.getByText("確認の結果がありません。合格にしますか？")).toHaveCount(0);
+    await expect.poll(() => state.teams[0].tasks[1].status).toBe("done");
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // 未検証は確認ダイアログ。やめれば合格にならない・進めれば合格
+    await page.locator('[data-team-task="1"]').click();
+    detail = page.getByRole("dialog", { name: "#1 未検証の報告" });
+    await expect(detail.locator("[data-team-unverified]")).toBeVisible();
+    await detail.getByRole("button", { name: "合格" }).click();
+    await expect(page.getByText("確認の結果がありません。合格にしますか？")).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t2a-confirm.png`, fullPage: true });
+    await page.getByRole("button", { name: "キャンセル" }).click();
+    expect(state.teams[0].tasks[0].status).toBe("review");
+    await detail.getByRole("button", { name: "合格" }).click();
+    await page.getByRole("button", { name: "合格にする" }).click();
+    await expect.poll(() => state.teams[0].tasks[0].status).toBe("done");
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // 通知の切り替え
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: /通知: オン/ }).click();
+    await expect.poll(() => state.notifyCalls).toEqual([false]);
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /通知: オフ/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await noOverflow(page);
+  });
+}

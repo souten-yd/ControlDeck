@@ -18,6 +18,7 @@
 | workspace_gate | 作業場の関門の合格・不合格 | 有効 | `integrations/opencode/router.py` の関門ジョブ |
 | workspace_adopted | 取り込み・マージ | 有効 | 同 adopt・merge |
 | workspace_disk | 空きが少なくて保存できない | 有効（1 時間に 1 回） | `chat_persist.autosave_turn` |
+| team_task | Nexarch の AI チームのタスクの報告・停止 | 有効 | `commander/team_watch.py::tick`（60 秒ごとの見張り） |
 | project_run | Project Lab の実行の終わり | 有効 | `project_lab/runs.py::_announce_finished` |
 | media_done | 画像・音楽・3D などの生成・編集の完了・失敗 | 有効 | `addons/execution.py::create_agent_tool_job` |
 | model_error | モデルの起動の失敗（管理者・10 分に 1 回） | 有効 | `models_mgmt/gateway.py` |

@@ -183,7 +183,7 @@ export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected";
 
 export interface TeamMember { session_id: string; role: TeamRole }
 
-export interface TaskReport { summary: string; changed_files: string[]; tests: string; remaining: string }
+export interface TaskReport { summary: string; changed_files: string[]; tests: string; verify?: string; remaining: string }
 
 export interface TeamTask {
   id: number;
@@ -203,6 +203,12 @@ export interface TeamTask {
   assignee_state?: CommanderState | "closed" | "";
   /** 作業中のタスクで、担当の画面に「完了報告:」がある。 */
   report_ready?: boolean;
+  /** 報告があるが確認の結果が無い（または試験が空・なし）。 */
+  unverified?: boolean;
+  /** 見張りが「報告なしで止まった」と見つけた時刻。 */
+  stalled_at?: number;
+  /** 見張りが「上限で止まった」と見つけた時刻。 */
+  limited_at?: number;
 }
 
 export interface Team {
@@ -211,6 +217,8 @@ export interface Team {
   created_at: number;
   members: TeamMember[];
   tasks: TeamTask[];
+  /** 見張りの通知（既定オン）。 */
+  notify?: boolean;
 }
 
 export interface TaskFields {
@@ -230,6 +238,9 @@ export async function fetchTeams(): Promise<Team[]> {
 }
 export async function createTeam(name: string): Promise<Team> {
   return api<Team>("/commander/teams", { method: "POST", json: { name } });
+}
+export async function setTeamNotify(id: string, notify: boolean): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/notify`, { method: "PUT", json: { notify } });
 }
 export async function deleteTeam(id: string): Promise<void> {
   await api(teamUrl(id), { method: "DELETE" });

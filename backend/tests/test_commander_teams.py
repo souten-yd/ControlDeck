@@ -103,7 +103,8 @@ def _task(client, tid, **kw):
     return r.json()
 
 
-REPORT = "完了報告: 画面を作った\n変更ファイル: src/a.py, src/b.py\n試験: pytest 12 件合格\n残り: なし"
+REPORT = ("完了報告: 画面を作った\n変更ファイル: src/a.py, src/b.py\n試験: pytest 12 件合格\n"
+          "確認: pytest -q → 12 passed\n残り: なし")
 
 
 def test_requires_login(client):
@@ -183,9 +184,10 @@ def test_dispatch_text_transitions_and_refusals(admin_client, fake):
     assert "目的: 作る" in text
     assert "受け入れ条件: 表示される" in text
     assert "担当ファイル: src/a.py, src/b.py" in text
-    assert text.splitlines()[-4:] == [
+    assert text.splitlines()[-5:] == [
         "完了報告: <何をしたか 1 行>", "変更ファイル: <パスを , で>",
-        "試験: <実行した試験と結果>", "残り: <残っていること。無ければ なし>"]
+        "試験: <実行した試験と結果>", "確認: <実行したコマンドと、その結果の要点>",
+        "残り: <残っていること。無ければ なし>"]
     assert r.json()["history"][-1]["event"] == "担当へ送信"
     t2 = _task(admin_client, tid, title="二", files=[])
     _post(admin_client, f"/{tid}/tasks/{t2['id']}/dispatch")
@@ -214,21 +216,21 @@ def test_collect_parses_last_block_and_ignores_template(admin_client, fake):
     task = _task(admin_client, tid)
     url = f"/{tid}/tasks/{task['id']}/collect"
     assert _post(admin_client, url).status_code == 404
-    template = ("終わったら最後に次の 4 行で報告してください:\n完了報告: <何をしたか 1 行>\n"
-                "変更ファイル: <パスを , で>\n試験: <実行した試験と結果>\n残り: <残っていること。無ければ なし>\n")
+    template = ("終わったら最後に次の 5 行で報告してください:\n完了報告: <何をしたか 1 行>\n"
+                "変更ファイル: <パスを , で>\n試験: <実行した試験と結果>\n確認: <実行したコマンドと、その結果の要点>\n残り: <残っていること。無ければ なし>\n")
     fake.screens["aa000001"] = template
     r = _post(admin_client, url)
     assert r.status_code == 404 and "まだ報告がありません" in r.json()["detail"]
     fake.screens["aa000001"] = (
         template + "完了報告: 古い\n変更ファイル: old.py\n試験: なし\n残り: 多い\n\n"
         "● 作業しました\n│ 完了報告: 画面を作った\n│ 変更ファイル: src/a.py, src/b.py\n"
-        "│ 試験: pytest 12 件合格\n│ 残り: なし\n\n> \n? for shortcuts\n")
+        "│ 試験: pytest 12 件合格\n│ 確認: pytest -q → 12 passed\n│ 残り: なし\n\n> \n? for shortcuts\n")
     r = _post(admin_client, url)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "review"
     assert body["report"] == {"summary": "画面を作った", "changed_files": ["src/a.py", "src/b.py"],
-                              "tests": "pytest 12 件合格", "remaining": "なし"}
+                              "tests": "pytest 12 件合格", "verify": "pytest -q → 12 passed", "remaining": "なし"}
     fake.screens["aa000001"] = "完了報告: 途中\n変更ファイル: a.py\n"
     assert _post(admin_client, url).status_code == 404
     assert teams.parse_report("完了報告：調べた\n変更ファイル：なし\n試験：なし\n残り：なし")["changed_files"] == []

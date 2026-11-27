@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchTeams, putTaskReport,
-  ROLE_LABEL, setTeamMembers, STATE_LABEL, TEAM_ROLES, updateTask,
+  ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, TEAM_ROLES, updateTask,
   type CommanderConsole, type CommanderState, type TaskStatus, type Team, type TeamRole, type TeamTask,
 } from "../../api/commander";
 import {
@@ -28,6 +28,8 @@ const COLUMNS: ReadonlyArray<{ id: "todo" | "doing" | "review" | "done"; label: 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   todo: "待ち", doing: "作業中", review: "レビュー待ち", done: "完了", rejected: "差し戻し",
 };
+const UNVERIFIED_CLASS = "rounded-full bg-orange-50 px-2 py-0.5 font-semibold text-orange-700 dark:bg-orange-950/40 dark:text-orange-300";
+const WARN_CLASS = "rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
 const STATE_TEXT: Record<CommanderState | "closed", string> = { ...STATE_LABEL, closed: "コンソールが閉じています" };
 const STATE_COLOR: Record<CommanderState | "closed", string> = {
   working: "text-blue-600 dark:text-blue-400", waiting: "text-emerald-600 dark:text-emerald-400",
@@ -99,6 +101,16 @@ export function TeamView({
     }
     setDeletingTeam(false);
   };
+  const toggleNotify = async () => {
+    const next = team.notify === false;
+    try {
+      await setTeamNotify(team.id, next);
+      refresh();
+      show(next ? "通知をオンにしました" : "通知をオフにしました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const current = team.tasks.find((t) => t.id === openTask);
 
   return (
@@ -121,6 +133,10 @@ export function TeamView({
           trigger={<IconDots />}
           items={[
             { label: "メンバーを選ぶ", onSelect: () => setMembersSheet(true) },
+            {
+              label: team.notify === false ? "通知: オフ（オンにする）" : "通知: オン（オフにする）",
+              onSelect: () => void toggleNotify(),
+            },
             { label: "チームを作る", onSelect: () => setNewTeamSheet(true) },
             { label: "このチームを削除", danger: true, separated: true, onSelect: () => setDeletingTeam(true) },
           ]}
@@ -190,6 +206,9 @@ export function TeamView({
                       </span>
                       <span className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
                         {task.status === "rejected" && <span className="rounded-full bg-red-50 px-2 py-0.5 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">差し戻し</span>}
+                        {task.unverified && <span data-team-unverified className={UNVERIFIED_CLASS}>未検証</span>}
+                        {task.status === "doing" && task.stalled_at && <span data-team-stalled className={WARN_CLASS}>止まった（報告なし）</span>}
+                        {task.status === "doing" && task.limited_at && <span data-team-limited className={WARN_CLASS}>上限で停止</span>}
                         {task.report_ready && <span data-team-report-ready className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">報告あり</span>}
                         <span className="min-w-0 truncate text-zinc-500 dark:text-zinc-400">
                           {task.assignee ? `${roleOf(team, task.assignee) ? ROLE_LABEL[roleOf(team, task.assignee)!] + "・" : ""}${consoleName(task.assignee)}` : "担当なし"}
@@ -378,7 +397,8 @@ function TaskSheet({
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [manual, setManual] = useState(false);
-  const [draft, setDraft] = useState({ summary: "", changed: "", tests: "", remaining: "" });
+  const [confirmPass, setConfirmPass] = useState(false);
+  const [draft, setDraft] = useState({ summary: "", changed: "", tests: "", verify: "", remaining: "" });
 
   const run = async (action: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -391,6 +411,7 @@ function TaskSheet({
     }
     setBusy(false);
   };
+  const pass = () => run(() => updateTask(team.id, task.id, { status: "done" }), "合格にしました");
   const closed = task.assignee_state === "closed";
   const canDispatch = Boolean(task.assignee) && !closed && task.status !== "done";
   const canCollect = Boolean(task.assignee) && !closed && (task.status === "doing" || task.status === "review");
@@ -405,6 +426,9 @@ function TaskSheet({
       <p data-team-task-status className="text-xs font-semibold text-zinc-500">
         {STATUS_LABEL[task.status]}
         {task.report_ready && <span className="ml-2 text-emerald-600 dark:text-emerald-400">報告あり</span>}
+        {task.unverified && <span data-team-unverified className="ml-2 text-orange-700 dark:text-orange-300">未検証</span>}
+        {task.status === "doing" && task.stalled_at && <span data-team-stalled className="ml-2 text-amber-700 dark:text-amber-400">止まった（報告なし）</span>}
+        {task.status === "doing" && task.limited_at && <span data-team-limited className="ml-2 text-amber-700 dark:text-amber-400">上限で停止</span>}
       </p>
       <dl className="mt-2 grid gap-2 text-sm">
         <div><dt className="text-xs text-zinc-500">目的</dt><dd className="whitespace-pre-wrap break-words">{task.goal || "（なし）"}</dd></div>
@@ -437,13 +461,14 @@ function TaskSheet({
           <p className="break-words">{task.report.summary}</p>
           <p className="mt-1 break-all font-mono text-xs text-zinc-500">変更: {task.report.changed_files.join(", ") || "なし"}</p>
           <p className="mt-1 break-words text-xs">試験: {task.report.tests || "（なし）"}</p>
+          <p className="break-words text-xs">確認: {task.report.verify || "（なし）"}</p>
           <p className="break-words text-xs">残り: {task.report.remaining || "なし"}</p>
         </div>
       )}
 
       <div className="sheet-actions sticky bottom-0 -mx-5 mt-4 flex flex-wrap gap-2 border-t border-zinc-200 bg-white px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
         {task.status === "review" && (
-          <button type="button" disabled={busy} onClick={() => void run(() => updateTask(team.id, task.id, { status: "done" }), "合格にしました")}
+          <button type="button" disabled={busy} onClick={() => (task.unverified ? setConfirmPass(true) : void pass())}
             className={primary === "pass" ? primaryButtonClass : secondaryButtonClass}>合格</button>
         )}
         {canCollect && (
@@ -470,12 +495,14 @@ function TaskSheet({
           <textarea id="rep-changed" rows={2} value={draft.changed} onChange={(e) => setDraft({ ...draft, changed: e.target.value })} className={`${textareaClass} font-mono`} />
           <label className={fieldLabel} htmlFor="rep-tests">試験</label>
           <input id="rep-tests" value={draft.tests} onChange={(e) => setDraft({ ...draft, tests: e.target.value })} className={inputClass} />
+          <label className={fieldLabel} htmlFor="rep-verify">確認（実行したコマンドと結果）</label>
+          <input id="rep-verify" value={draft.verify} onChange={(e) => setDraft({ ...draft, verify: e.target.value })} className={inputClass} />
           <label className={fieldLabel} htmlFor="rep-remaining">残り</label>
           <input id="rep-remaining" value={draft.remaining} onChange={(e) => setDraft({ ...draft, remaining: e.target.value })} className={inputClass} />
           <button
             type="button" disabled={busy || !draft.summary.trim()}
             onClick={() => void run(() => putTaskReport(team.id, task.id, {
-              summary: draft.summary.trim(), tests: draft.tests.trim(), remaining: draft.remaining.trim(),
+              summary: draft.summary.trim(), tests: draft.tests.trim(), verify: draft.verify.trim(), remaining: draft.remaining.trim(),
               changed_files: draft.changed.split("\n").map((f) => f.trim()).filter(Boolean),
             }), "報告を保存しました")}
             className={`mt-3 w-full ${secondaryButtonClass}`}
@@ -483,6 +510,16 @@ function TaskSheet({
         </div>
       )}
 
+      {confirmPass && (
+        <ConfirmDialog
+          title="確認の結果がありません。合格にしますか？"
+          message="報告に確認の結果（実行したコマンドと結果）が無い、または試験が空です。"
+          confirmLabel="合格にする"
+          danger={false}
+          onConfirm={() => { setConfirmPass(false); void pass(); }}
+          onClose={() => setConfirmPass(false)}
+        />
+      )}
       {confirmDelete && (
         <ConfirmDialog
           title={`タスク #${task.id} を削除しますか？`}
