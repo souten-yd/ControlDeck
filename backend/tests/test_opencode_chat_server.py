@@ -302,7 +302,7 @@ def test_code_mode_records_tools_and_permissions_and_answers_them(admin_client, 
 
     hold = asyncio.Event()
 
-    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None):
+    async def fake_turn(srv, sid, text, *, on_text, on_reasoning, on_tool, on_permission, agent="build", on_status=None, **_kw):
         await on_tool({"id": "call_1", "name": "shell", "status": "running", "input": {"command": "rm -rf build"}, "output": ""})
         await on_permission({"id": "per_1", "action": "shell", "resources": ["rm -rf build"], "save": [],
                              "tool": "call_1", "status": "pending"})
