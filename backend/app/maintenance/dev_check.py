@@ -42,6 +42,18 @@ class Result:
 
 # ---------------------------------------------------------------- 判定（純粋な関数）
 
+# backend/app のコードを変えたら、import の関係に関わらず必ず流す試験。コードの外側の一覧と突き合わせる地図の試験は、
+# 新しいファイルが何も import されていなくても落とす必要がある（route_map: 地図に無いルートを足すと落ちる）。
+# 「変えたコードを確かめるテストがある」の判定（selected）には数えない（流すだけ）。
+ALWAYS_WITH_APP_CHANGE = ("backend/tests/test_route_map.py",)
+
+
+def always_tests(changed: list[str], test_sources: dict[str, str]) -> list[str]:
+    if not any(p.startswith("backend/app/") and p.endswith(".py") for p in changed):
+        return []
+    return [p for p in ALWAYS_WITH_APP_CHANGE if p in test_sources]
+
+
 def select_tests(changed: list[str], new_tests: list[str], test_sources: dict[str, str]) -> list[str]:
     """変わった backend の module を import している tests/ のファイルと、新しく足した・変えたテストを返す。
 
@@ -479,7 +491,8 @@ def run_all(base: str = "", *, full: bool = False, skip_visual: bool = False, re
     if full:
         results.append(check_tests(selected, code_changed, run_pytest(["backend/tests"], repo), full=True))
     elif selected:
-        results.append(check_tests(selected, code_changed, run_pytest(selected, repo)))
+        to_run = sorted(set(selected) | set(always_tests(diff.changed, test_sources)))
+        results.append(check_tests(selected, code_changed, run_pytest(to_run, repo)))
     else:
         results.append(check_tests(selected, code_changed, None))
     # 2. frontend

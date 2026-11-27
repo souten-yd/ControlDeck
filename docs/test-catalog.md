@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 268 ファイル、2657 テスト（目的の未記入 93 ファイル）
+- backend: 269 ファイル、2667 テスト（目的の未記入 93 ファイル）
 - E2E: 147 spec、326 テスト
 
 ## backend（backend/tests）
@@ -957,6 +957,7 @@
 目的: 開発の関門 `./deck.sh dev-check`（app.maintenance.dev_check）の各検査。 目的: 検査ごとに「見つけるべきものを見つけ、問題の無い差分は通す」ことを確かめる（判定は文字列・辞書だけで決まる関数なので git・pytest・npm を呼ばずに確かめられる）。最後に、小さな git リポジトリで差分の収集と終了の判定を通しで確かめる。 根拠: 開発の作業場 1 段目（2026-11-21）。箱の OpenCode（ローカル LLM・GLM）が Opus の監査に頼らず開発するために、Opus の監査で 見つかった機械的な問題（目録の説明の消失・依存や venv の取得・状態記録の未更新・作者の不定）を、完了の前に自分で検出させる。 秘密や shell=True の見本は、この検査自身に引っかからないよう実行時に組み立てる。
 
 - `test_select_tests_picks_importers_of_changed_modules_and_new_tests`
+- `test_route_map_test_always_runs_with_app_code_changes_but_is_not_counted_as_coverage`
 - `test_check_tests_fails_when_changed_code_has_no_test_and_when_pytest_fails`
 - `test_frontend_build_is_skipped_not_failed_without_node_modules`
 - `test_dependency_changes_are_rejected`
@@ -3289,6 +3290,20 @@
 - `test_oom_profile_counts_incidents_and_never_lowers_requirement_floor`
 - `test_first_token_completes_only_the_latest_pending_load_sample`
 - `test_reset_removes_events_and_profiles`
+
+### backend/tests/test_route_map.py
+
+目的: 情報の伝達ルートの地図（backend/app/route_map.py）がコードの実際と食い違わないこと。 目的: 新しい AI・道具・通知・外部への出口・tmux への送り込みを足したのに地図へ書き忘れると落とし、 docs/ROUTE-MAP.md が地図のデータと一致していることを守る。地図に無いルートを足すと関門で落ちる。 根拠: 2026-11-27 利用者「情報伝達のルートを調査して明確にし、新たに AI を追加したり機能を開発する際は そのルートマップを保守する方法で開発を進めれば迷わないのではないか」。
+
+- `test_map_data_is_well_formed`
+- `test_owner_files_exist_and_ids_are_unique`
+- `test_every_gateway_caller_is_on_the_map`
+- `test_every_mcp_tool_is_on_the_map`
+- `test_sandbox_allowed_tools_are_known_tools`
+- `test_every_notification_kind_is_on_the_map`
+- `test_every_external_egress_file_is_an_egress_owner`
+- `test_every_tmux_injection_file_is_a_tmux_owner`
+- `test_route_map_doc_matches_the_data`
 
 ### backend/tests/test_runtime_policy.py
 
