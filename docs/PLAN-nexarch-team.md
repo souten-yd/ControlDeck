@@ -57,16 +57,38 @@
 - **チームの画面**: 左にタスク板（待ち・作業中・レビュー待ち・完了）、右にメンバーのタイル（状態・使用率・最後の行）。タスクのカードを押すと担当のコンソールが開く。
 - **人が入る場所を 4 つに絞る**: 計画（最初のタスク）の承認・レビューの合否・差し戻し・担当の付け替え。上限の再開は自動。
 
+## 追加調査（2026-11-27 午後: 提供元をまたぐ協調）
+
+利用者「AI チームについて Reddit・GitHub などでさらに良い・柔軟な方法がないか。ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断的に協調させたい」。分かったこと（出典は末尾の追加分）:
+
+- **リーダー任せの委譲は当てにならない**: 実測で、リーダー（Opus）にサブエージェントへの委譲を任せると 7 回中 0 回しか委譲しなかった。委譲は**板が割り当てて送り込む**方式（T1 の形）が確実。
+- **提供元をまたぐ実例の多くは「共有の文書＋git＋人の確認」**: Claude が計画とレビュー、Codex が実装、Gemini が試験、の 3 社の例。最大の失敗は「通ったと言ったが実は通っていない」（環境変数が残った試験）・共有メモを読まないモデル。対策は「仕様を毎回プロンプトに全文」「完了報告にきれいな環境での出力を付ける」。
+- **別の系統のモデルにレビューさせる（cross-model review）**: 同じモデルは同じ見落としをする。実装と違う系統（Claude ↔ Codex ↔ GLM）に「差分と受け入れ条件だけ」を渡して反論させる例が多い。指摘は助言として扱い、重大なものだけ差し戻す。
+- **上限と費用**: 実例は「上限に当たったら次の CLI へ」。Nexarch は上限の検知と自動再開を持つので「回復を待つ」と「別のモデルへ付け替える」を選べるのが強み。自動で付け替える完成品は見つからなかった。同じ Opus でも素の Claude Code より OpenCode 経由の方がキャッシュの扱いで費用が大きく下がった実測がある。
+- **役割と向き**: 計画・設計・レビュー＝Claude、定型の実装＝Codex（`codex exec`）、GLM は 1 関数の中は強く複数ファイルに弱い、ローカルは道具の呼び出しが弱い（1 ファイル・1 関数の下働き・要約に限る）。
+- **協調の失敗の 1 位は同じファイルの同時編集**: 担当領域（レーン）と WIP 制限、worktree、試験を通ったものから 1 本ずつマージ。
+- **人の関わり**: スマホへの通知（止まった・上限・報告あり）と、承認のボタン。tmux を Telegram・ntfy につなぐ OSS が多い（CCGram・Muxflow など）。
+- **他の CLI を道具として呼ぶ MCP**（Chorus・PAL の clink・Codex の公式 Claude プラグイン・cli-orchestrator-mcp）: 「リーダーの CLI が別のモデルに相談する」形。成熟度は低いものが多い。Nexarch の板と並べて使える（後で `ask` の道具として）。
+
+### 設計へ取り込むこと（効果の大きい順）
+
+1. **検証できる完了報告**: 4 行報告に「確認: <実行したコマンドと結果>」を足して 5 行に。確認の行が無い・試験の行が空なら板で「未検証」の印を付け、合格を押す前に目立たせる。
+2. **別の系統によるレビューを標準の段に**: 報告が来たら、実装と違う系統のメンバー（または指定のレビュー役）へ「差分・受け入れ条件・報告」だけを送るレビューのタスクを自動で作る（チームごとに入り切り）。系統は CLI と接続から決める（Claude／Codex／OpenCode の接続ごとのモデル）。
+3. **割り当ては板が決める・上限で付け替え**: タスクに「担当の候補（順位つき）」を持たせる。担当が上限で止まったら、チームの設定で「回復を待つ（自動再開）」か「次の候補へ付け替えて送り直す」。実際にどのコンソール（どのモデル）がやったかを履歴に残す。OpenRouter は月の上限額（既存の cloud の上限）を超えたら候補から外す。
+4. **大きさの目安で既定の担当**: タスクに大きさ（小＝1 ファイル・1 関数／中／大＝複数ファイル・設計）を付け、既定の候補を出す（小はローカルや定額の GLM、大は Claude・Codex）。利用者が変えられる。
+5. **担当領域と WIP**: 担当ファイルが重なる作業中のタスクがあれば、送り込みを止めて確認を出す（警告だけでなく）。メンバーごとの worktree（T4）。
+6. **通知**: 「入力待ちに戻った（止まった）」「上限で止まった」「報告あり」を ControlDeck の通知（スマホの Web Push など既存の通知先）へ。通知から板のタスクを開ける。
+7. **相談の道具（後で）**: MCP に `team_ask(role, question)`。リーダーのコンソールから別の系統へ小さな質問・第二の意見。1〜6 の後、必要が見えたら。
+
 ## 進め方（段）
 
 | 段 | 中身 | 確かめ方 |
 |---|---|---|
-| T1（実装済み 2026-11-27。保存は JSON ファイル） | タスク板（DB・API・画面）と役割の印。人がタスクを書き、担当を選ぶと Nexarch が担当のコンソールへ短い送信で渡す | 2 つのコンソール（開発・レビュー）で小さな課題を回す |
-| T2 | MCP の道具（tasks・claim・report・post）と、報告が来たらリーダーへ知らせるコードの見張り | OpenCode（ローカル LLM）と Claude Code で道具の呼び出しが通るか |
-| T3 | リーダー役（コンソール）の道具（create_task・assign・review）とチームのテンプレート・画面 | リーダーをローカル LLM とフロンティアで入れ替えて同じ課題を比べる |
-| T4 | メンバーごとの worktree・担当ファイルの重なりの警告・自動のリーダー（ループ） | 夜間に人なしで小さな課題を完走できるか |
-
-守ること: 未公開の情報（特許など）を扱うチームは外部モデルを使わない（既存の決まり）。外部モデルのリーダーはトークンを多く使う（チャットの約 15 倍）ので、使用率（C4）を画面に出しておく。
+| T1（実装済み 2026-11-27。保存は JSON ファイル） | タスク板と役割の印。人がタスクを書き、担当を選ぶと Nexarch が担当のコンソールへ送り込む。画面から 4 行の報告を取り込む | 2 つのコンソール（開発・レビュー）で小さな課題を回す |
+| T2 | 見張り（作業中のタスクの担当が入力待ちに戻ったら報告を自動で取り込む・取り込めなければ「止まった」）と通知（上の 6）。検証できる完了報告（上の 1）。MCP の道具（tasks・claim・report・post） | Claude Code・Codex・OpenCode（ローカル）で報告の取り込みと道具の呼び出しが通るか |
+| T3 | 別の系統によるレビューの段（上の 2）。担当の候補・上限での付け替え・実行したモデルの記録（上の 3）。大きさの目安（上の 4） | 同じ課題を「Claude 実装＋Codex レビュー」と「ローカル実装＋Claude レビュー」で回し、見落としと費用を比べる |
+| T4 | リーダー役のコンソールの道具（create_task・assign・review）・テンプレート。担当領域と WIP（上の 5）・メンバーごとの worktree | リーダーをローカル LLM とフロンティアで入れ替えて同じ課題を比べる |
+| T5 | 自動のリーダー（ControlDeck 側の小さなループ、モデルは選択式）・相談の道具（上の 7） | 夜間に人なしで小さな課題を完走できるか |
 
 ## 出典
 
@@ -79,3 +101,10 @@
 - Gemini CLI remote agents: https://geminicli.com/docs/core/remote-agents/
 - Anthropic multi-agent research system: https://www.anthropic.com/engineering/multi-agent-research-system
 - ローカル LLM の道具の失敗: https://arxiv.org/pdf/2510.00229v3 、https://arxiv.org/pdf/2602.18968 、https://dev.to/thlandgraf/four-failure-modes-youll-hit-running-a-local-llm-in-a-multi-step-agentic-loop-3kd9
+- （追加調査）多モデルの実測と委譲 0 回: https://akitaonrails.com/en/2026/04/18/llm-benchmarks-part-2-multi-model/
+- （追加調査）3 社の CLI で 1 つの案件: https://dev.to/wilddog64/i-ran-three-ai-agents-from-three-different-companies-on-one-complex-project-heres-the-909
+- （追加調査）21 エージェントの失敗 3 つ: https://dev.to/seakai/the-3-failure-modes-we-hit-running-21-ai-agents-on-one-codebase-p09
+- （追加調査）cross-model review: https://zackproser.com/blog/codex-reviews-claudes-diffs 、https://claude-codex.fr/en/advanced/cross-model-workflow/
+- （追加調査）Chorus: https://github.com/homilabo/Chorus 、PAL MCP（clink）: https://github.com/beehiveinnovations/zen-mcp-server
+- （追加調査）oh-my-opencode のカテゴリ別の振り分け: https://dev.to/rosgluk/oh-my-opencode-review-honest-results-billing-risks-and-when-its-worth-it-3ea
+- （追加調査）スマホから操作: https://dev.to/alexeiled/ccgram-control-ai-coding-agents-from-your-phone-via-telegram-and-tmux-4jjd
