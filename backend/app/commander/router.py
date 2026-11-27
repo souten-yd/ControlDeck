@@ -210,10 +210,25 @@ async def create_consoles(
             _warm_opencode_llm()
         except Exception:  # noqa: BLE001 - 温めに失敗してもコンソールは開く
             logger.exception("OpenCode の LLM を温められませんでした")
+    cwd = body.cwd
+    workspace: dict | None = None
+    if body.new_workspace is not None:
+        # 作る前に、CodeDEV が Nexarch の作業フォルダのルートの中か確かめる（外なら作らない）
+        from app.integrations.opencode import projects as auto_projects
+
+        try:
+            await asyncio.to_thread(workdir.resolve_dir, str(auto_projects.codedev_root()))
+            workspace = await asyncio.to_thread(
+                auto_projects.create_auto_project, "nexarch", body.new_workspace.name)
+            cwd = workspace["path"]
+        except (PermissionError, FileNotFoundError, NotADirectoryError, auto_projects.ProjectError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="作業場所を作れません") from exc
     try:
         result = await asyncio.to_thread(
             consoles.create_consoles,
-            cli=cli, account=body.account, cwd=body.cwd,
+            cli=cli, account=body.account, cwd=cwd,
             count=body.count, label=body.label, created_by=user.username, user_id=user.id,
         )
     except PermissionError as exc:  # files.resolve の許可の外
@@ -235,10 +250,13 @@ async def create_consoles(
             "account": body.account,
             "count": body.count,
             "opened": len(result["opened"]),
-            "cwd": body.cwd,
+            "cwd": cwd,
             "label": body.label,
+            **({"new_workspace": workspace["folder"]} if workspace else {}),
         },
     )
+    if workspace:
+        result["workspace"] = workspace
     return result
 
 

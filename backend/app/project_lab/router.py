@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -144,6 +145,31 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
         return service.project_detail(project_id)
     except service.ProjectLabError as exc:
         raise _not_found(exc) from exc
+
+
+class _RenameBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.put("/projects/{project_id}/name")
+def rename_project(
+    project_id: str, body: _RenameBody, request: Request,
+    user: User = Depends(require_permission("project_lab.run")), db: Session = Depends(get_db),
+):
+    """表示名を変える。フォルダ名は変えない（OpenCode の会話の履歴がパスに結び付くため）。"""
+    _project_or_404(project_id)
+    try:
+        result = service.rename_project(project_id, body.name)
+    except service.ProjectLabError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="表示名を保存できません") from exc
+    audit.record(
+        db, "project_lab.project.rename", user=user, resource_type="project",
+        resource_id=project_id, request=request, metadata={"name": result["name"]},
+    )
+    return result
 
 
 @router.delete("/projects/{project_id}")

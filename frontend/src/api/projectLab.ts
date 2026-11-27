@@ -19,6 +19,8 @@ export interface ProjectLabSummary {
   id: string;
   name: string;
   description: string;
+  /** どこから作られた作業場所か（自動作成のときだけ）。 */
+  createdBy?: "nexarch" | "team" | "chat" | null;
   modifiedAt: string;
   technologies: string[];
   git: { branch: string; dirty: boolean | null } | null;
@@ -119,6 +121,10 @@ export const projectLabApi = {
   /** フォルダごと削除する。実行中・公開中は 409 で断られる。 */
   remove: (id: string) => api<{ ok: boolean; id: string; name: string; linkOnly?: boolean }>(
     `/project-lab/projects/${encodeURIComponent(id)}`, { method: "DELETE" },
+  ),
+  /** 表示名だけ変える（フォルダ名は変わらない）。 */
+  rename: (id: string, name: string) => api<{ id: string; name: string }>(
+    `/project-lab/projects/${encodeURIComponent(id)}/name`, { method: "PUT", json: { name } },
   ),
   runs: (id: string) => api<ProjectLabRun[]>(`/project-lab/runs?project_id=${encodeURIComponent(id)}`),
   startRun: (id: string, profileId: string, timeoutSeconds = 600) => api<ProjectLabRun>(`/project-lab/projects/${encodeURIComponent(id)}/runs`, {

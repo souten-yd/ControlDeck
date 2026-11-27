@@ -138,7 +138,7 @@ export function ConsoleTile({
             )}
           </span>
           <span className="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400" title={item.cwd}>
-            {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
+            {item.commander_workdir_name || item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
           </span>
           <StateLine item={item} />
           <UsageLine usage={item.commander_usage} className="mt-0.5" />
@@ -206,7 +206,7 @@ export function ConsoleRow({
           {item.commander_label && <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{item.commander_label}</span>}
         </span>
         <span className="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400" title={item.cwd}>
-          {item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
+          {item.commander_workdir_name || item.cwd || "N/A"} · 最終活動 {activityText(item.activity_at || item.created_at)}
         </span>
         <StateLine item={item} />
           <UsageLine usage={item.commander_usage} className="mt-0.5" />

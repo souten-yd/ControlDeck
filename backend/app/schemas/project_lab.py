@@ -132,6 +132,8 @@ class ProjectManifest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
     profiles: list[ProjectProfile] = Field(default_factory=list, max_length=32)
+    # どこから作られた作業場所か（nexarch / team / chat）。自動作成のときだけ入る任意の印
+    created_by: Literal["nexarch", "team", "chat"] | None = None
 
 
 class ProjectRunCreate(BaseModel):

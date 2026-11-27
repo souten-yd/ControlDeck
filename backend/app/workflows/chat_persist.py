@@ -2394,6 +2394,28 @@ def _last_code_project(db: Session, conv_id: str) -> tuple[str, str]:
     return "", ""
 
 
+def _auto_chat_workspace(title: str) -> str:
+    """作業場所の指定が無く、設定の既定の作業場所（project_path）も無いとき、この会話の作業場所を自動で作る。
+
+    会話ごとに別のフォルダ（`chat-日時`）。作ったフォルダは OpenCode が動いた時点で会話の記録
+    （meta.project_path）に残り、次のターンからは _last_code_project が同じフォルダを返す。
+    設定の project_path が明示されている利用者は今までどおりそれを使う（ここでは何もしない）。
+    名前を返す（空なら何もしなかった）。
+    """
+    from app.integrations.opencode import projects as auto_projects, provider as opencode_provider
+
+    if str(opencode_provider.get_settings().get("project_path") or "").strip():
+        return ""
+    name = (title or "").strip()
+    if name in ("", "新しい会話"):
+        name = ""
+    name = "".join(c for c in name[:40] if ord(c) >= 0x20 and ord(c) != 0x7F).strip()
+    try:
+        return auto_projects.create_auto_project("chat", name)["folder"]
+    except (auto_projects.ProjectError, OSError):
+        return ""
+
+
 def _opencode_hand_off_target(conv_id: str, params: dict) -> tuple[str, str] | None:
     """自動の会話で OpenCode に任せられるなら、その作業フォルダ。任せられなければ None。
 
@@ -2459,6 +2481,8 @@ async def _start_send(db: Session, conv: Conversation, body: SendBody, owner_use
         # 作業フォルダの指定が空なら、この会話で最後に OpenCode が動いたプロジェクトで続ける
         # （画面を開き直すと選択が外れていた。2026-11-18 利用者の依頼）
         body.code_project, body.code_project_path = _last_code_project(db, conv_id)
+        if not body.code_project and not body.code_project_path:
+            body.code_project = await asyncio.to_thread(_auto_chat_workspace, conv.title)
     if body.plan is not None and body.mode not in ("auto", body.plan.mode):
         raise HTTPException(status_code=422, detail="モードと調査計画が一致しません")
     # 履歴（system + 過去 + 今回）

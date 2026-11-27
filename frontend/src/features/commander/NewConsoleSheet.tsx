@@ -35,6 +35,9 @@ export function NewConsoleSheet({
   const [account, setAccount] = useState("default");
   const [newAccountName, setNewAccountName] = useState("");
   const [cwd, setCwd] = useState("");
+  // 既定は「新しい作業場所（自動の名前）」。既存のフォルダを使うときだけ cwd を選ぶ
+  const [workMode, setWorkMode] = useState<"new" | "existing">("new");
+  const [workspaceName, setWorkspaceName] = useState("");
   const [picking, setPicking] = useState(false);
   const [count, setCount] = useState(1);
   const [label, setLabel] = useState("");
@@ -52,7 +55,7 @@ export function NewConsoleSheet({
     setNewAccountName("");
   };
 
-  const canOpen = Boolean(cli && cli.installed && cwd) && (account !== "__new__" || /^[a-z0-9][a-z0-9_-]{0,31}$/.test(newAccountName));
+  const canOpen = Boolean(cli && cli.installed && (workMode === "new" || cwd)) && (account !== "__new__" || /^[a-z0-9][a-z0-9_-]{0,31}$/.test(newAccountName));
 
   const open = async () => {
     if (!cli || !canOpen || busy) return;
@@ -63,7 +66,9 @@ export function NewConsoleSheet({
         await createAccount(cliId, newAccountName);
         accountName = newAccountName;
       }
-      const body: OpenConsolesBody = { cli: cliId, account: accountName, cwd, count, label: label.trim() };
+      const body: OpenConsolesBody = workMode === "new"
+        ? { cli: cliId, account: accountName, cwd: "", count, label: label.trim(), new_workspace: { name: workspaceName.trim() } }
+        : { cli: cliId, account: accountName, cwd, count, label: label.trim() };
       const result = await openConsoles(body);
       const openedCount = result.opened.length;
       if (result.not_opened > 0) {
@@ -187,14 +192,53 @@ export function NewConsoleSheet({
 
         <section aria-label="作業フォルダ">
           <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">作業フォルダ</h3>
-          <button
-            type="button"
-            onClick={() => setPicking(true)}
-            className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-left dark:border-zinc-700"
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">{cwd || "フォルダを選ぶ"}</span>
-            <span className="shrink-0 text-xs font-semibold text-accent-600 dark:text-accent-400">選ぶ</span>
-          </button>
+          <ul className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="作業フォルダの選び方">
+            {([
+              ["new", "新しい作業場所（自動の名前）"],
+              ["existing", "既存のフォルダを選ぶ"],
+            ] as const).map(([value, text]) => (
+              <li key={value}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={workMode === value}
+                  onClick={() => setWorkMode(value)}
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm ${
+                    workMode === value
+                      ? "border-accent-500 bg-accent-50 dark:border-accent-500 dark:bg-accent-600/10"
+                      : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{text}</span>
+                  {workMode === value && <span aria-hidden className="text-accent-600 dark:text-accent-400">✓</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+          {workMode === "new" ? (
+            <div className="mt-2">
+              <input
+                value={workspaceName}
+                onChange={(e) => setWorkspaceName(e.target.value)}
+                maxLength={80}
+                placeholder="作業場所の名前（任意。空なら自動）"
+                aria-label="作業場所の名前"
+                className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              />
+              <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                CodeDEV に作り、Project Lab からも見られます。名前は後から Project Lab で変えられます（フォルダ名は変わりません）。
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setPicking(true)}
+              className="mt-2 flex min-h-11 w-full items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-left dark:border-zinc-700"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">{cwd || "フォルダを選ぶ"}</span>
+              <span className="shrink-0 text-xs font-semibold text-accent-600 dark:text-accent-400">選ぶ</span>
+            </button>
+          )}
         </section>
 
         <div className="flex gap-3">

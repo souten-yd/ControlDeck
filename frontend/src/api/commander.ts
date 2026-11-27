@@ -57,6 +57,8 @@ export interface CommanderConsole {
   /** そのアカウントのログインの名前（Claude はメール）。 */
   commander_login_name?: string;
   commander_label?: string;
+  /** cwd が CodeDEV の作業場所なら、その表示名（フォルダ名の代わりに出す）。 */
+  commander_workdir_name?: string;
   commander_role?: string;
   /** C2: 画面の文字から判定した状態（LLM なし）。 */
   commander_state?: CommanderState;
@@ -104,9 +106,12 @@ export interface ConsolesOpenResult {
 export interface OpenConsolesBody {
   cli: string;
   account: string;
+  /** 既存のフォルダ。new_workspace を渡すときは空でよい。 */
   cwd: string;
   count: number;
   label: string;
+  /** 新しい作業場所（自動の名前）を CodeDEV に作って開く。name が空なら自動の名前。 */
+  new_workspace?: { name: string };
 }
 
 export async function fetchClis(): Promise<CommanderCli[]> {

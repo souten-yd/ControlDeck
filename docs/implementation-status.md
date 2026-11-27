@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-27 作業場所の自動作成と名前（Nexarch・AI アシスタント・Project Lab 共通）
+- 利用者「AI アシスタントからの OpenCode もそうだが、作業場所は既定の作業場所に自動で名前を振ってもらって、後で書き換えられるようにし、そこを Project Lab からも見られればよくないか？」。
+- 共通の部品 `backend/app/integrations/opencode/projects.py`: `create_auto_project(kind, 表示名)` が CodeDEV 直下に `<kind>-YYYYMMDD-HHMMSS`（nexarch・team・chat。重なれば `-2`…）を作り、git init、`.controldeck/project.json` に表示名（1〜80 字・制御文字なし・空なら「新しい作業場所 11/27 15:30」）と `created_by` を書く。`set_display_name` は manifest の name だけを書き換える（他の項目・フォルダ名は変えない。OpenCode の会話の履歴がパスに結び付くため）。`display_name` は name かフォルダ名。パスは realpath で CodeDEV の中か確かめる。
+- Project Lab: `PUT /project-lab/projects/{id}/name`（権限 `project_lab.run`・監査 `project_lab.project.rename`）。プロジェクト情報の名前の横の ✏️ でその場で編集。一覧・詳細に `createdBy`、一覧の行に作成元の小さな印（Nexarch・チーム・AI アシスタント）。manifest の型に任意の `created_by` を足した（既存の manifest は壊れない）。
+- Nexarch: 「コンソールを開く」の作業フォルダは「新しい作業場所（自動の名前）」が既定（名前は任意・コンソールの表示名とは別の欄）。`POST /commander/consoles` に任意の `new_workspace: {name}`（このとき `cwd` は不要）。作る前に CodeDEV が Nexarch の作業フォルダのルートの中か確かめ、外なら 400 で何も作らない。タイルの作業フォルダは CodeDEV の中なら表示名（`commander_workdir_name`）。
+- AI アシスタントの OpenCode: プロジェクトの指定が無く、会話にも前の作業場所が無く、OpenCode 設定の `project_path`（既定の作業場所）も空のときは、会話ごとに `chat-…` を自動で作る（名前は会話のタイトルの先頭 40 字）。作った場所は既存の会話の記録（`meta.project_path`）で次のターンから使い回す。`project_path` が設定されている利用者は今までどおりそれを使う（明示の既定を尊重）。明示の指定（project_name・project_path）も今までどおり。
+- 確かめたこと: backend `test_auto_projects.py`、E2E（commander・project-lab-rename、320px と 1280px）。
+
 ## 2026-11-27 Nexarch の AI チームを「勝手に完成する」形へ（設計）
 - 利用者「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」。`docs/PLAN-nexarch-team.md` の冒頭に目標（目標 1 行だけ・人の確認は既定で自動・合否はコード・上限で付け替え・自動で合流・聞くのは決まりで承認が要るものと直せないものだけ）を書き、段を T2b〜T5 に組み直した。
 ## 2026-11-27 Nexarch の AI チーム T2b: 確認のコマンドの自動実行・落ちたら自動で直させる・チームの前提と会話のリセット
