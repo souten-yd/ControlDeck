@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 276 ファイル、2854 テスト（目的の未記入 93 ファイル）
+- backend: 277 ファイル、2859 テスト（目的の未記入 93 ファイル）
 - E2E: 150 spec、342 テスト
 
 ## backend（backend/tests）
@@ -752,6 +752,16 @@
 - `test_opencode_accounts_are_the_registered_api_connections` — OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
 - `test_cli_found_outside_the_service_path_is_opened_by_absolute_path` — service の PATH に無い利用者の bin（~/.local/npm-global/bin など）の CLI も見つけ、絶対パスで開く。
 
+### backend/tests/test_commander_no_api_key.py
+
+目的: Nexarch の Claude・Codex は API キーを使わない（定額のログインだけ）の試験。 目的: 利用者の決定（2026-11-28「クロードとコーデックスは API キーを消してください。基本的にはもう定額でしか 使えません」）を仕組みで守る。コンソール（tmux）とチーム（画面のない実行）の両方で、 - API キーの環境変数（ANTHROPIC_API_KEY・OPENAI_API_KEY など）を CLI へ渡さないこと、 - Claude は --settings で apiKeyHelper を空・forceLoginMethod=claudeai にすること、 - Codex は forced_login_method="chatgpt" を付けること、 を確かめる。 根拠: 2026-11-28 の実機。Claude は forceLoginMethod を付けても ANTHROPIC_API_KEY を使う （"Invalid API key"）ので、環境変数を消すことが要。apiKeyHelper は --settings で空にすると使われない。 Codex は forced_login_method で API キーのログイン・環境変数の鍵を断る。 既存の試験（test_commander_consoles / team_t3a）は argv の形を見るだけで、鍵の除外は見ていない （docs/test-catalog.md で確認）。
+
+- `test_team_launch_drops_api_key_env` — チームの実行の環境に、サービスの環境にある API キーが入らない。
+- `test_team_claude_forces_subscription_login`
+- `test_team_codex_forces_chatgpt_login`
+- `test_console_command_unsets_api_keys` — コンソールは tmux のサーバーの環境を引き継ぐので、コマンドの頭で鍵を消す。
+- `test_codex_login_status_does_not_see_env_keys` — `codex login status` に環境変数の鍵を渡さない（鍵を「ログイン」と取り違えない）。
+
 ### backend/tests/test_commander_resume.py
 
 目的: AI Commander の上限からの自動再開（C3・LLM なし）の試験。 目的: 上限で止まったコンソールを回復の時刻に「続けて」で再開する。空振り（まだ上限）・送りすぎ・ 利用者が続けた後の誤送信を防ぐ歯止めを守る。 根拠: docs/PLAN-ai-commander.md C3。上限の文言は C0 の実機の記録（c1-spec.md）と Codex の表示。 既存の試験に同じ観点は無い（test-catalog で確認。Terminal の automation は条件つきの送信で、上限は扱わない）。
@@ -974,7 +984,7 @@
 目的: Nexarch の 5 時間・週の使用率と回復の時刻（C4 の一部）の試験。 目的: Claude は statusline（Claude Code が渡す rate_limits）、Codex は sessions の記録の rate_limits から、 アカウントごとに使用率と回復の時刻を出す。ログインの鍵は読まない。回復を過ぎた窓は 0 と見なす。 根拠: 2026-11-27 利用者「5 時間制限と週間制限の利用率とリセットまでの時間を追加して」。形は実機 （Claude Code 2.1.332 の statusline の説明・Codex 0.172.0 の rollout）。既存の試験に同じ観点は無い。
 
 - `test_statusline_script_writes_only_limits_and_prints_summary` — statusline のコマンド: 使用率と回復の時刻と model だけを 0600 で書き、短い 1 行を出す。
-- `test_claude_settings_file_points_the_statusline_at_the_account_file` — --settings のファイルは statusline だけで、書き出し先はアカウントごと。
+- `test_claude_settings_file_points_the_statusline_at_the_account_file` — --settings のファイルは statusline と API キーを使わない設定だけで、書き出し先はアカウントごと。
 - `test_claude_usage_reads_and_expires_windows`
 - `test_codex_usage_from_session_records` — Codex は sessions の最新の rollout の最後の rate_limits（primary=5 時間・secondary=週）。
 - `test_account_statusline_toggle_keeps_other_settings_and_never_overwrites` — アカウントの Claude の settings.json に使用率の statusline を足す・外す。ほかの設定は残し、利用者の別の

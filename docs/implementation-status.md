@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-28 Nexarch の Claude・Codex は API キーを使わない（定額のログインだけ）
+- 利用者「クロードとコーデックスは API キーを消してください。基本的にはもう定額でしか使えません」。前の会話で作らせかけた「API キーのアカウント」は入っていない（PR なし）。本番の Claude・Codex はどちらも定額のログイン（Codex は ChatGPT）で、本体の環境変数にも鍵は無かった。その状態を仕組みで守る。
+- **環境変数**: `ANTHROPIC_API_KEY`・`ANTHROPIC_AUTH_TOKEN`・`OPENAI_API_KEY`・`CODEX_API_KEY`・`AZURE_OPENAI_API_KEY`（`accounts.API_KEY_ENV`）を CLI へ渡さない。コンソールは tmux のサーバーの環境を引き継ぐので、コマンドの頭に `env -u …`（`accounts.UNSET_API_KEYS`）。チームは `without_api_keys`。`codex login status` にも渡さない。
+- **Claude**: `--settings` に `apiKeyHelper: ""`・`forceLoginMethod: "claudeai"`（コンソールは statusline の設定ファイル、チームは JSON の文字列）。実機: forceLoginMethod だけでは `ANTHROPIC_API_KEY` を使う（"Invalid API key"）ので、環境変数を消すのが要。設定の apiKeyHelper は空で上書きすると使われない。
+- **Codex**: `-c forced_login_method="chatgpt"`。実機: API キーのログイン・環境変数の鍵は "ChatGPT login is required, but an API key is currently being used. Logging out." で止まり、鍵のログインを消す。アカウントの一覧で API キーのログインは「使えません。ChatGPT でログインし直してください」。
+- 実機（偽の鍵を環境に置いて本物の CLI）: チームの形で Claude は `apiKeySource: none` で応答、Codex も応答。コンソールのコマンドも Codex は "Logged in using ChatGPT"、Claude は応答。
+- 試験: `backend/tests/test_commander_no_api_key.py`（7 件）。既存の consoles・usage・t3b の形の検査を新しい形へ。
 ## 2026-11-27 AI アシスタントと OpenCode のモデルの選び方をそろえる（Models のフロンティアに「OpenCode のモデル」）
 - 利用者「Qwen で会話を始めたが、OpenCode に切り替えた後は GLM が選択されていた。OpenCode のモデルは Models のフロンティアモデルのところで設定し、AI アシスタントなどでローカル LLM と他のモデルを選べるように」。
 - **原因**: OpenCode の回（`chat_persist._run_chat_job_impl` の mode=code）は会話のモデル（params の model）を見ず、作業場は `sandbox.model_chain` の先頭（`opencode-go/glm-5.3`）、ホストは settings の model で動いていた。会話のモデルは調査の下請けにしか使われていなかった。

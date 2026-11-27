@@ -288,6 +288,29 @@ def delete_account(cli: CliDef, name: str) -> None:
         _write_labels(labels)
 
 
+# ---- 定額のログインだけで使う（API キーは使わない。利用者 2026-11-28「基本的にはもう定額でしか使えません」） ----
+#
+# Claude・Codex は API キー（従量課金）で動かさない。次の 3 つで止める（2026-11-28 実機で確かめた）。
+# - API キーの環境変数を CLI へ渡さない。Claude は forceLoginMethod を付けても ANTHROPIC_API_KEY を
+#   使ってしまう（"Invalid API key · Fix external API key"）ので、渡さないことが要。
+# - Claude: --settings で apiKeyHelper を空にし、forceLoginMethod を claudeai にする
+#   （設定ファイルの apiKeyHelper があっても鍵を使わず "Not logged in" になる）。
+# - Codex: -c forced_login_method="chatgpt"（API キーのログイン・環境変数の鍵では
+#   "ChatGPT login is required, but an API key is currently being used. Logging out." で止まり、鍵のログインを消す）。
+API_KEY_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+               "OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY")
+CLAUDE_SUBSCRIPTION_SETTINGS = {"apiKeyHelper": "", "forceLoginMethod": "claudeai"}
+CODEX_SUBSCRIPTION_ARGS = ("-c", 'forced_login_method="chatgpt"')
+
+
+UNSET_API_KEYS = "env " + " ".join(f"-u {name}" for name in API_KEY_ENV)  # コンソールのコマンドの頭に付ける
+
+
+def without_api_keys(env: dict[str, str]) -> dict[str, str]:
+    """API キーの環境変数を除いた写し。"""
+    return {k: v for k, v in env.items() if k not in API_KEY_ENV}
+
+
 def logged_in(cli: CliDef, directory: Path) -> bool | None:
     """「ログイン済み」をファイルの有無だけで判定する。判定できない CLI は None。
 
@@ -336,7 +359,7 @@ def _codex_login(account: str) -> str:
     exe = executable_path(CLIS["codex"])
     if not exe:
         return ""
-    env = {**os.environ}
+    env = without_api_keys(dict(os.environ))   # 環境変数の鍵を「ログイン」と取り違えない
     if account != DEFAULT_ACCOUNT:
         env["CODEX_HOME"] = str(account_dir(CLIS["codex"], validate_name(account)))
     try:
@@ -348,7 +371,7 @@ def _codex_login(account: str) -> str:
     if "ChatGPT" in line:
         return "ChatGPT でログイン"
     if "API key" in line or "API Key" in line:
-        return "API キーでログイン"
+        return "API キーでログイン（使えません。ChatGPT でログインし直してください）"
     return ""
 
 

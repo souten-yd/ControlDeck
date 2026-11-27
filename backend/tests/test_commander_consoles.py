@@ -185,7 +185,8 @@ def test_consoles_api_flow_default_account_and_batch(admin_client, monkeypatch):
     for call in fake.calls:
         # 表の実行ファイル名を見つけた絶対パスだけ（利用者の入力を混ぜない）
         # Claude は使用率を受け取る statusline を --settings で渡す（鍵は読まない）
-        assert call["command"].split(" --settings ")[0] in ("claude", accounts.executable_path(accounts.CLIS["claude"]))
+        head = call["command"].split(" --settings ")[0].removeprefix(accounts.UNSET_API_KEYS + " ")
+        assert head in ("claude", accounts.executable_path(accounts.CLIS["claude"]))
         assert " --settings " in call["command"]
         assert call["cwd"] == _root()
         # 既定のアカウント: アカウントの環境変数は付けない（付くのは CLI の場所の PATH だけ）
@@ -432,5 +433,5 @@ def test_cli_found_outside_the_service_path_is_opened_by_absolute_path(monkeypat
     assert accounts.is_installed(codex) is True
     assert accounts.executable_path(accounts.CLIS["gemini"]) is None
     command, env = consoles._command_for(codex, "/tmp", 1)
-    assert command == str(exe)
+    assert command == f"{accounts.UNSET_API_KEYS} {exe} -c 'forced_login_method=\"chatgpt\"'"
     assert env["PATH"].split(":")[0] == str(bindir)
