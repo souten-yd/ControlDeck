@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-27 Nexarch の AI チーム T2a: 見張り・通知・検証できる完了報告
+- 利用者「ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断で協調して開発を進めたい」。`docs/PLAN-nexarch-team.md` の T2 のうち、MCP の道具を除く部分（MCP は T2b）。
+- 検証できる報告: 送る文面の最後を 5 行（完了報告・変更ファイル・試験・確認・残り）に。取り込みは古い 4 行（確認なし）も受け付け、`verify` は空になる。報告があり `verify` が空、または試験が空・なし・未実施・- なら一覧に `unverified: true`。画面はカードと詳細に橙の「未検証」、合格を押すと確認ダイアログ。
+- 見張り（`backend/app/commander/team_watch.py`・60 秒ごと・LLM なし）: 作業中のタスクの担当が入力待ちに戻ったら画面から報告を自動で取り込み（review・履歴「自動で取り込み」）。報告なしで止まれば `stalled_at`（入力待ちが続く間は 1 回）、作業中に戻れば外す。上限で停止なら `limited_at`（自動再開は C3 のまま）。コンソールが閉じたら履歴に 1 回。誤検知の歯止め: 送って 90 秒は見ない・送った文面より後ろの画面だけから報告を読む・capture は担当ごとに 1 回。
+- 通知: 通知の種類 `team_task` を追加。報告あり・報告なしで止まった・上限で止まったを、タスクごと・種類ごとに 1 回、有効な通知先すべてへ（タイトルだけ）。チームごとに入り切り（`notify`・既定オン・チームの「…」メニュー、`PUT /commander/teams/{id}/notify`）。
+- 確かめたこと: backend の試験（`test_commander_team_watch.py`・`test_commander_teams.py`）、E2E（commander 10 件・320px と 1280px）。
+
 ## 2026-11-27 Nexarch の AI チームの設計を追加調査で見直し
 - 利用者「Reddit・GitHub などでさらに良い・柔軟な方法を。ローカル LLM・Claude・Codex・OpenRouter・OpenCode Go を横断で協調させたい」。`docs/PLAN-nexarch-team.md` に追加調査（リーダー任せの委譲は当てにならない・cross-model review・上限での付け替え・検証できる完了報告・担当領域と WIP・通知）と、取り込む 7 項目・段 T2〜T5 の組み直しを書いた。コードはまだ。
 

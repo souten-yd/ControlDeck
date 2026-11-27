@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
     from app.integrations.opencode.chat_server import idle_reap_loop as opencode_chat_idle_reap_loop
     from app.news.service import news_loop
     from app.commander.resume import resume_loop as commander_resume_loop
+    from app.commander.team_watch import watch_loop as commander_team_watch_loop
     from app.maintenance.watchdog import (
         _loop_ticker,
         notify_ready,
@@ -163,6 +164,8 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(news_loop()),
             # AI Commander: 上限で止まったコンソールを回復の時刻に「続けて」で再開する（LLM なし）。
             asyncio.create_task(commander_resume_loop()),
+            # Nexarch の AI チーム: 作業中のタスクの担当が入力待ちに戻ったら報告を取り込み、止まった・上限を通知する。
+            asyncio.create_task(commander_team_watch_loop()),
         ]
         # SearXNG は基本停止・検索時に自動起動。自動起動分はアイドルで自動停止する
         from app.workflows import searxng
