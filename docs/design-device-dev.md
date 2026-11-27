@@ -3,6 +3,12 @@
 状態: 2026-11-23 設計と第 1 段の実装。
 利用者の要望（2026-11-23）: 「USB につながってる装置（Android 携帯・M5Stack・ラズパイ）を OpenCode から開発できないか。開発環境は作業場の中に構築してよい。USB での書き込みと動作確認、Wi-Fi での動作確認もできるとよい。危険なら USB のみ、または作業場（プロジェクト）を限定して許可する設定でもよい。安全に」。
 
+## 0. 追補（2026-11-27）OpenCode のプロジェクトの箱への USB と、見つけ方の拡張
+
+- 見つけ方は `/sys/class/tty` の「USB の親を持つ tty」へ広げた（`ttyCH343USB*` など by-id が無い機器も出る）。id は by-id があればそれ、無ければ `usb:<vendor>:<product>:<serial>`（無ければ `@<ポートのパス>`）。fastboot（ff/42/03）と iOS（usbmuxd のソケットの bind。動いていなければ案内だけ）を追加。
+- ふつうの OpenCode の会話・プロジェクトの箱にもプロジェクトごとに渡せる（off 既定／auto／selected。`integrations/opencode/usb.py`）。設定は data にあり、箱の AI が書けるプロジェクトの中には置かない。反映は箱を起こすとき（TUI・run は次の実行から、会話サーバーは起こし直し）。
+- 箱へ知らせる: 環境変数 `CONTROLDECK_DEVICES` と instructions の `controldeck-usb.md`。道具（esptool・platformio・adb・fastboot・idevice*）が無ければ画面に出す。自動ではインストールしない。
+
 ## 1. 結論（推奨の方式）
 
 - **ツールチェーン（esptool・PlatformIO・Arduino CLI・Android SDK/adb など）は作業場の中に入れる**（利用者の許可済み）。ホストには入れない。

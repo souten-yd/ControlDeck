@@ -753,15 +753,17 @@ def podman_argv(box: Sandbox, command: list[str], *, interactive: bool = False, 
     tmp = box.path / "tmp"
     tmp.mkdir(mode=0o700, exist_ok=True)
     device_paths: list[str] = []
+    device_binds: list[tuple[Path, Path]] = []
     if box.devices:
         from app.maintenance import devices
 
-        device_paths, warnings = devices.resolve(box.devices)
-        for warning in warnings:
+        planned = devices.plan(box.devices)
+        device_paths, device_binds = planned["devices"], planned["binds"]    # iOS は usbmuxd のソケットを bind
+        for warning in planned["warnings"]:
             log.warning("作業場 %s: %s", box.name, warning)
     argv = container_argv(command, workdir=box.repo, writable=[box.path], readonly=readonly,
                           overlays=overlays, env=environment, interactive=interactive, name=name, detach=detach,
-                          pod=pod, env_file=env_file, binds=[(tmp, Path("/tmp"))], devices=device_paths)
+                          pod=pod, env_file=env_file, binds=[(tmp, Path("/tmp")), *device_binds], devices=device_paths)
     if extra:
         index = argv.index("--rootfs")
         argv[index:index] = extra

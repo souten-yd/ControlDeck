@@ -1538,10 +1538,17 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         # 管理領域の道具（ast-grep など）は箱の PATH に入っている。ホストの PATH は持ち込まない。
         "PATH": sandbox.tool_path(),
     }
+    # プロジェクトごとの「USB 機器」（既定は off）。渡すのは今の /sys・/dev から解決した実体だけ
+    from app.integrations.opencode import usb
+
+    usb_plan = usb.launch_plan(project)
+    if usb_plan is not None:
+        box_env.update(usb_plan["env"])
+        usb.attach_notes(config, usb_plan["notes"])
     argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
                                   env=box_env, interactive=interactive, env_file=env_file,
-                                  binds=[(project_tmp_dir(project), Path("/tmp"))],
-                                  hide=_sibling_projects(project))
+                                  binds=[(project_tmp_dir(project), Path("/tmp")), *(usb_plan["binds"] if usb_plan else [])],
+                                  hide=_sibling_projects(project), devices=usb_plan["devices"] if usb_plan else [])
     return argv, {}
 
 

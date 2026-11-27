@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 272 ファイル、2783 テスト（目的の未記入 93 ファイル）
-- E2E: 147 spec、333 テスト
+- backend: 273 ファイル、2798 テスト（目的の未記入 93 ファイル）
+- E2E: 148 spec、335 テスト
 
 ## backend（backend/tests）
 
@@ -1275,6 +1275,26 @@
 - `test_workspace_progress_states_todo_and_server_from_latest_message` — 目的: Project Lab の「作業場」タブの進み具合（作業中・質問待ち・完了・止まった・ToDo の n/m・最後に動いた時刻）が、
 - `test_workspace_progress_flags_interrupted_turns` — 目的: 進み具合が「中断（interrupted）」と「失敗（failed）」を区別して返す（会話の一覧の「中断」の印の根拠）。
 - `test_workspace_progress_with_no_workspaces` — 目的: 作業場が 1 つも無いとき、進み具合の API は落ちずに空で返る。
+
+### backend/tests/test_devices_usb.py
+
+目的: USB 機器の見つけ方（sysfs ベース）と、OpenCode のプロジェクトの箱への受け渡し。 目的: (1) M5Paper の WCH ドライバ（/dev/ttyCH343USB0・by-id 無し）のように、by-id が無い USB シリアルも /sys/class/tty の「USB の親」から見つかり、抜き差しで番号が変わっても同じ id で解決される。ブロックデバイス・USB でない tty は出ない。 (2) fastboot・iOS（usbmuxd のソケットの有無）が一覧に出る。(3) プロジェクトの箱は既定 off（argv が変わらない）で、 auto / selected のときだけ --device・keep-groups・usbmuxd の bind・環境変数・エージェントへの説明が入る。 入力のパスは --device に渡らない。設定は管理者だけで、監査 opencode.devices に残り、プロジェクトの外（data）に置く。 根拠: 2026-11-27 利用者「OpenCode で開発したソフトが USB 経由で書き込めない（M5Paper）」「M5 や iOS、Android の開発で アクセス・書き込みできるように」。podman は呼ばず argv を見る。sysfs・/dev は一時フォルダの偽物（devices.SYS_ROOT・DEV_ROOT）。
+
+- `test_ch343_without_by_id_is_found_with_synthetic_id`
+- `test_by_id_name_is_used_when_present`
+- `test_id_without_serial_uses_usb_port_path`
+- `test_same_device_resolves_after_replug_with_new_number`
+- `test_non_usb_tty_block_device_and_bad_names_are_not_listed`
+- `test_adb_fastboot_and_ios`
+- `test_valid_entry_shapes`
+- `test_default_off_changes_nothing`
+- `test_auto_passes_device_group_env_and_notes`
+- `test_selected_passes_only_chosen_and_unplugged_is_skipped`
+- `test_auto_ios_binds_usbmuxd_socket`
+- `test_input_path_is_never_passed_to_podman`
+- `test_setting_is_outside_project_and_survives_garbage`
+- `test_api_set_audit_and_restart`
+- `test_api_requires_settings_manage_and_box_relay_hides_it`
 
 ### backend/tests/test_diagnostics.py
 
@@ -4408,6 +4428,13 @@
 目的: 目的: AI アシスタントの上の行（「auto」のボタンの右）にある「秘密の会話」の鍵のボタンを守る。 新しい会話で押す→確認→OK で閉じた鍵・入力欄の 🔒・送ると confidential:true で作られる／既存の会話で押すと API が呼ばれ閉じた鍵／ キャンセルは何も変えない／閉じた鍵は説明だけで解除の操作が出ない／320px で上の行の要素が重ならずはみ出さない（ライト・ダーク）。 根拠: 2026-11-21 利用者「Web 検索などの通信ロックは重要なので、分かりやすいところに置きたい。右上の『auto』の右側に、鍵が開いているマークを」。 撮影: E2E_SHOT_DIR（無ければ playwright の出力先）。
 
 - secret lock button in the top bar (${label}, ${scheme})
+
+### frontend/e2e/assistant-usb-devices.spec.ts
+
+目的: 目的: OpenCode の会話から USB 機器（M5Stack など）をプロジェクトの箱へ渡せること。機器が 1 台以上つながっているときだけ 作業フォルダの横に「USB」の札が出て、押すとシート（機器の一覧・切／自動／選ぶ・道具の有無）が開く。 既定は切で、「自動」を押すと PUT が飛ぶ。返事に Permission denied が出たら、その下に案内が出て同じシートが開く。 つながっている機器が無ければ札は出ない。390px・1280px とも横にはみ出さない。 根拠: 2026-11-27 利用者「OpenCode で開発したソフトが USB 経由で書き込めない（M5Paper）」「M5 や iOS、Android の開発」。 API と WebSocket は模擬する（実機・箱を動かさない）。
+
+- USB chip, sheet and error hint (${width}px)
+- no USB chip when no device is connected
 
 ### frontend/e2e/assistant-voice-modes.spec.ts
 

@@ -46,6 +46,11 @@ def fake_host(tmp_path, monkeypatch):
             (i / key).write_text(value + "\n")
 
     add("1-2", "18d1", "4ee7", "PIXEL12345", "1", "4", adb=True)
+    # シリアルの tty は /sys/class/tty の device が USB のインターフェースを指すものだけ出る（by-id の有無に依らない）
+    for node, port, serial in (("ttyUSB0", "1-6", "0001"), ("ttyUSB1", "1-7", "A1B2C3D4")):
+        add(port, "10c4", "ea60", serial, "1", "9", adb=False)
+        (sysroot / "class" / "tty" / node).mkdir(parents=True)
+        (sysroot / "class" / "tty" / node / "device").symlink_to(usb / port / f"{port}:1.0")
     add("1-3", "0403", "6001", "A1B2C3D4", "1", "5", adb=False)      # adb ではない
     monkeypatch.setattr(devices, "SYS_ROOT", sysroot)
     monkeypatch.setattr(devices, "DEV_ROOT", dev)

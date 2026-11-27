@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -312,10 +313,78 @@ class DevicesBody(BaseModel):
 
 @router.get("/devices")
 def list_usb_devices(user: User = Depends(require_permission("settings.manage"))):
-    """ホストにつながっている、作業場へ渡せる USB 機器（シリアル・adb）。読むだけ。管理者だけ。"""
-    from app.maintenance import devices
+    """ホストにつながっている、箱へ渡せる USB 機器（シリアル・adb・fastboot・iOS）と、書き込みの道具の有無。読むだけ。管理者だけ。"""
+    from app.maintenance import devices, sandbox
 
-    return {"devices": devices.list_devices()}
+    return {"devices": devices.list_devices(), "usbmuxd": devices.usbmuxd_running(),
+            "tools": devices.tool_status(sandbox.tool_path())}
+
+
+class ProjectUsbBody(BaseModel):
+    mode: str = Field(max_length=16)
+    selected: list[dict] = Field(default_factory=list, max_length=8)
+
+
+def _usb_project(name: str):
+    from app.integrations.opencode import projects
+
+    try:
+        return projects.resolve_in_codedev(name)
+    except projects.ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _running_chat_servers(project) -> list:
+    from app.integrations.opencode import chat_server
+
+    return [s for s in chat_server._all()  # noqa: SLF001
+            if not s.workspace and Path(s.project).resolve() == project.resolve()]
+
+
+@router.get("/projects/{name}/usb")
+def get_project_usb(name: str, user: User = Depends(require_permission("settings.manage"))):
+    """プロジェクトの箱へ渡す USB 機器の設定（既定は off）。"""
+    from app.integrations.opencode import usb
+
+    project = _usb_project(name)
+    return {**usb.get(project), "restart_needed": bool(_running_chat_servers(project))}
+
+
+@router.put("/projects/{name}/usb")
+def put_project_usb(
+    name: str, body: ProjectUsbBody, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """プロジェクトの箱へ渡す USB 機器を変える（管理者だけ。箱の中の AI はこの API を呼べない）。反映は次に箱を起こすとき。"""
+    from app.integrations.opencode import usb
+
+    project = _usb_project(name)
+    try:
+        result = usb.put(project, body.mode, body.selected)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record(db, "opencode.devices", user=user, resource_type="opencode_project", resource_id=name,
+                 request=request, metadata={"mode": result["mode"], "before": result["before"]["mode"],
+                                            "devices": [d["id"] for d in result["selected"]]})
+    return {"mode": result["mode"], "selected": result["selected"],
+            "restart_needed": bool(_running_chat_servers(project))}
+
+
+@router.post("/projects/{name}/usb/restart")
+def restart_project_usb(
+    name: str, request: Request,
+    user: User = Depends(require_permission("settings.manage")), db=Depends(get_db),
+):
+    """常駐している会話サーバーを止める（次のメッセージで、今の設定の機器を渡して起き直す。実行中の返事は中断される）。"""
+    from app.integrations.opencode import chat_server
+
+    project = _usb_project(name)
+    servers = _running_chat_servers(project)
+    for server in servers:
+        chat_server.stop(server.key)
+    audit.record(db, "opencode.devices", user=user, resource_type="opencode_project", resource_id=name,
+                 request=request, metadata={"restart": len(servers)})
+    return {"stopped": len(servers)}
 
 
 @router.put("/workspaces/{name}/devices")
