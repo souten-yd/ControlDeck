@@ -141,7 +141,7 @@ function Overlay({
   }[align];
   return createPortal(
     <div
-      className={`fixed inset-0 z-50 flex ${alignCls} bg-black/40 backdrop-blur-[2px]`}
+      className={`cd-overlay fixed inset-0 z-50 flex ${alignCls} bg-black/40 backdrop-blur-[2px]`}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       role="presentation"
     >
