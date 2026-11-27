@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 267 ファイル、2647 テスト（目的の未記入 93 ファイル）
+- backend: 267 ファイル、2648 テスト（目的の未記入 93 ファイル）
 - E2E: 146 spec、324 テスト
 
 ## backend（backend/tests）
@@ -761,6 +761,7 @@
 - `test_watch_auto_collect_runs_checks`
 - `test_watch_does_not_pick_old_report_after_retry_marker`
 - `test_audit_has_commands_and_exit_codes_but_no_output`
+- `test_check_output_does_not_fill_memory` — 確認のコマンドが大量に出力しても、出力は一時ファイルへ書いて最後だけ読む（backend のメモリを膨らませない）。
 
 ### backend/tests/test_commander_team_watch.py
 
