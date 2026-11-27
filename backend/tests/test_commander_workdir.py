@@ -131,16 +131,41 @@ def test_create_consoles_validates_with_workdir_roots(admin_client, area, monkey
                              json={"cli": "claude", "cwd": str(root / "missing")}).status_code == 404
 
 
-def test_opencode_needs_files_allowed_root(admin_client, area, monkeypatch):
-    """作業フォルダのルートの中でも files の許可ルートの外なら、OpenCode は 400 で理由を返す。"""
+def test_opencode_opens_nexarch_workdir_outside_files_roots(admin_client, area, monkeypatch):
+    """Nexarch の作業フォルダ（files の許可ルートの外でも）で OpenCode を開ける。検証済みの実体のパスを渡す。
+
+    根拠: 2026-11-27 利用者「作業フォルダの件対処して」。以前は OpenCode だけ files の許可ルートの外を 400 で断っていた。
+    """
     from app.commander import router as commander_router
+    from app.integrations.opencode import provider
 
     root, _ = area
+    seen = []
+
+    def fake_tui(*, project_path, owner_user_id=None, model="", config_key="", validated_project=None, **_):
+        seen.append(validated_project)
+        return "exec /opt/opencode2", project_path
+
     monkeypatch.setattr(consoles, "manager", FakeManager())
     monkeypatch.setattr(accounts, "is_installed", lambda cli: True)
     monkeypatch.setattr(commander_router, "_warm_opencode_llm", lambda: None)
+    monkeypatch.setattr(provider, "tui_command", fake_tui)
     r = admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
                           json={"cli": "opencode", "cwd": str(root / "proj")})
-    assert r.status_code == 400
-    assert "files の許可ルート" in r.json()["detail"]
-    assert os.path.isdir(root / "proj")
+    assert r.status_code == 201, r.text
+    assert seen and str(seen[0]) == os.path.realpath(root / "proj")
+
+
+def test_tui_command_validated_project_must_be_a_real_absolute_dir(tmp_path, monkeypatch):
+    """tui_command の validated_project は実体の絶対パスだけ（リンク・相対は断る）。"""
+    import pytest
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "active_binary", lambda runtime="": ("v2", Path("/opt/opencode2")))
+    monkeypatch.setattr(provider, "get_settings", lambda: {"base_url": "http://x/v1", "model": "auto"})
+
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path)
+    for bad in (Path("rel"), link):
+        with pytest.raises(provider.CodeAgentError, match="実体の絶対パス"):
+            provider.tui_command(project_path=str(bad), validated_project=bad)

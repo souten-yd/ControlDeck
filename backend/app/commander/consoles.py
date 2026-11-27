@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shlex
 
 from app.commander import accounts, status, usage, workdir
@@ -67,6 +68,8 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
             connection = accounts.opencode_connection(account)
             command, _project = provider.tui_command(
                 project_path=workdir, owner_user_id=user_id, model=connection["model"],
+                # Nexarch の作業フォルダの決まり（/data1tb・/data2tb）で検証済みの実体のパス
+                validated_project=Path(workdir),
                 # 接続ごとに設定フォルダを分ける（並べて開いた別の接続の TUI の設定を書き換えない）
                 config_key="" if account == accounts.DEFAULT_ACCOUNT else account,
             )
@@ -102,12 +105,6 @@ def create_consoles(
     if not cfg.enabled:
         raise RuntimeError("ターミナルは無効化されています")
     work = workdir.resolve_dir(cwd)  # 存在しない・ルートの外は例外（router が 400 へ直す）
-    if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
-        # OpenCode はプロジェクトのパスを files.resolve で検証する。files の許可ルートの外は使えない
-        try:
-            files.resolve(str(work))
-        except (PermissionError, FileNotFoundError) as exc:
-            raise ValueError("OpenCode は files の許可ルートの中の作業フォルダだけ使えます") from exc
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
     command, extra_env = _command_for(cli, str(work), user_id, account)
     if extra_env:
