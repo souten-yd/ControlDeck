@@ -169,6 +169,11 @@ function FolderSummary({ path, onSuggest }: { path: string; onSuggest?: (quant: 
   </div>;
 }
 
+/** backend の SlyRadianceModelBody の項目（これ以外は送らない）。 */
+const SAVE_KEYS = ["alias", "model_path", "drafter_path", "port", "context", "kv_cache", "max_num_seqs",
+  "speculative_tokens", "gpu_memory_utilization", "prefill_chunk", "prefix_cache", "reasoning_effort", "quantization",
+  "engine_settings", "on_demand_start", "idle_exclude", "auto_start"] as const;
+
 export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
   onDone: () => void; initial?: SlyRadianceSettings; running?: boolean;
 }) {
@@ -192,11 +197,13 @@ export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
   const save = async () => {
     setSaving(true);
     try {
-      const body = { ...form, model_path: form.model_path.trim(), drafter_path: form.drafter_path.trim(),
+      // 登録の項目だけを送る。一覧から来た表示用の項目（runtime・base_url・runtime_status・ctx_size など）を
+      // 混ぜると backend（extra="forbid"）が断り、個別設定を保存できなかった（2026-11-27 利用者の iPhone）。
+      const merged = { ...form, model_path: form.model_path.trim(), drafter_path: form.drafter_path.trim(),
         port: Number(form.port), context: Number(form.context), max_num_seqs: Number(form.max_num_seqs),
         speculative_tokens: Number(form.speculative_tokens), gpu_memory_utilization: Number(form.gpu_memory_utilization),
-        engine_settings: textToEnv(envText) };
-      delete body.loaded;
+        engine_settings: textToEnv(envText) } as Record<string, unknown>;
+      const body = Object.fromEntries(SAVE_KEYS.filter((key) => key in merged).map((key) => [key, merged[key]]));
       await api(initial ? `/models/sly-radiance/instances/${encodeURIComponent(initial.alias)}` : "/models/sly-radiance/instances",
         { method: initial ? "PUT" : "POST", json: body });
       await Promise.all([

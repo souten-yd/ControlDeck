@@ -1,5 +1,9 @@
 # 実装状況
 
+## 2026-11-27 Sly-Radiance の個別設定が保存できない不具合
+- 利用者の iPhone:「runtime: Extra inputs are not permitted / role … / base_url … / runtime_status … / ctx_size … / n_parallel …」で保存できなかった。画面が一覧の行（表示用の項目つき）をそのまま送り、backend（extra="forbid"）が断っていた。
+- 直し: 画面は登録の項目（SlyRadianceModelBody の項目）だけを送る。E2E（表示用の項目を持つ登録を開いて保存し、送った中身にそれらが無いこと）を足した。
+
 ## 2026-11-27 作業場所の自動作成と名前（Nexarch・AI アシスタント・Project Lab 共通）
 - 利用者「AI アシスタントからの OpenCode もそうだが、作業場所は既定の作業場所に自動で名前を振ってもらって、後で書き換えられるようにし、そこを Project Lab からも見られればよくないか？」。
 - 共通の部品 `backend/app/integrations/opencode/projects.py`: `create_auto_project(kind, 表示名)` が CodeDEV 直下に `<kind>-YYYYMMDD-HHMMSS`（nexarch・team・chat。重なれば `-2`…）を作り、git init、`.controldeck/project.json` に表示名（1〜80 字・制御文字なし・空なら「新しい作業場所 11/27 15:30」）と `created_by` を書く。`set_display_name` は manifest の name だけを書き換える（他の項目・フォルダ名は変えない。OpenCode の会話の履歴がパスに結び付くため）。`display_name` は name かフォルダ名。パスは realpath で CodeDEV の中か確かめる。
