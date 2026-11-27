@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 264 ファイル、2602 テスト（目的の未記入 93 ファイル）
-- E2E: 145 spec、319 テスト
+- E2E: 145 spec、320 テスト
 
 ## backend（backend/tests）
 
@@ -4410,6 +4410,7 @@
 目的: iPhone: キーボードが出ても、触った入力欄が見える範囲に出る（AI アシスタント以外の画面でも）。 根拠: 2026-11-21 利用者「設定の API キーの入力欄をタップするとキーボードが上がって入力欄が消え、貼り付けられない」。 実機（iOS 18.7、設定の画面）: innerHeight 932 のまま、visual viewport だけ 517 に縮み、殻は 932 のままだった。 殻を見える範囲に合わせる useKeyboardViewportFit を AI アシスタントだけが呼んでいたため。 Chromium はキーボードで visual viewport だけを縮められないので、visualViewport を偽物にして iOS と同じ値を作る。 */
 
 - iPhone: キーボードで visual viewport が縮むと、設定の入力欄が見える範囲に出る
+- iPhone: キーボードが出ると、シートが見える範囲に収まり入力欄が見える（Nexarch のアカウントの管理）
 
 ### frontend/e2e/knowledge-essence-cross.spec.ts
 

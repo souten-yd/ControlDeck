@@ -52,3 +52,45 @@ test("iPhone: キーボードで visual viewport が縮むと、設定の入力�
   await page.evaluate(() => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(932));
   await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-keyboard-fit"))).toBe(false);
 });
+
+/** iPhone: 下から出るシート（BottomSheet）の入力欄も、キーボードで隠れない。
+ *  根拠: 2026-11-27 利用者「アカウント管理の画面で、入力部分がキーボードに隠れて見にくい。画面をスライドしても一定以上上に上がらない」。
+ *  シートは body へ portal するので殻（#root）の外にあり、殻だけ縮めてもシートは満寸のまま隠れていた。 */
+test("iPhone: キーボードが出ると、シートが見える範囲に収まり入力欄が見える（Nexarch のアカウントの管理）", async ({ page, context }) => {
+  test.skip(!hasSession(), "ログイン情報がありません");
+  await page.addInitScript(() => {
+    const target = new EventTarget();
+    const state = { height: 0 };
+    const fake = Object.defineProperties(target, {
+      height: { get: () => state.height || window.innerHeight },
+      width: { get: () => window.innerWidth },
+      offsetTop: { value: 0 }, offsetLeft: { value: 0 }, pageTop: { value: 0 }, pageLeft: { value: 0 }, scale: { value: 1 },
+    });
+    Object.defineProperty(window, "visualViewport", { configurable: true, get: () => fake });
+    (window as unknown as { __keyboard: (h: number) => void }).__keyboard = (h: number) => {
+      state.height = h;
+      target.dispatchEvent(new Event("resize"));
+    };
+  });
+  await page.setViewportSize({ width: 430, height: 932 });
+  await establishSession(page, context);
+  await page.goto("/commander");
+  await page.getByRole("button", { name: "その他の操作" }).click();
+  await page.getByRole("menuitem", { name: "アカウントの管理" }).click();
+  const sheet = page.getByRole("dialog", { name: "アカウントの管理" });
+  await expect(sheet).toBeVisible();
+  const field = sheet.getByLabel("Claude Codeの新しいアカウント名");
+  await field.evaluate((el) => (el as HTMLInputElement).focus({ preventScroll: true }));
+  await page.evaluate(() => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(517));
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-keyboard-fit"))).toBe(true);
+  // シートの下端が見える範囲（517）の中に収まり、入力欄も見える
+  await expect.poll(() => sheet.evaluate((el) => Math.round(el.getBoundingClientRect().bottom))).toBeLessThanOrEqual(517);
+  await expect.poll(() => field.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= 517;
+  })).toBe(true);
+  await field.fill("work2");
+  await expect(field).toHaveValue("work2");
+  await page.evaluate(() => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(932));
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-keyboard-fit"))).toBe(false);
+});

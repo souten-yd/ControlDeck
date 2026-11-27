@@ -162,6 +162,21 @@ html.cd-keyboard-fit #root {
   right: 0;
   height: var(--cd-app-height, 100dvh);
 }
+/* シート・ダイアログ（body へ portal するので #root の外）も、見えている範囲に合わせる。
+   合わせないとシートが満寸のままキーボードの裏に入り、入力欄が隠れて、スクロールしても
+   上がりきらない（2026-11-27 iPhone: Nexarch のアカウントの管理）。シートの高さ（85dvh など）も
+   見えている範囲で頭打ちにし、中のスクロールで入力欄まで届くようにする。 */
+html.cd-keyboard-fit .cd-overlay {
+  top: var(--cd-app-top, 0px);
+  bottom: auto;
+  height: var(--cd-app-height, 100dvh);
+}
+html.cd-keyboard-fit .cd-overlay [role="dialog"] {
+  max-height: calc(var(--cd-app-height, 100dvh) - 8px);
+}
+html.cd-keyboard-fit .cd-overlay [role="dialog"][class*="h-[85dvh]"] {
+  height: calc(var(--cd-app-height, 100dvh) - 8px);
+}
 
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
