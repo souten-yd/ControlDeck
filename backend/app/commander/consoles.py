@@ -12,6 +12,7 @@ from pathlib import Path
 import shlex
 
 from app.commander import accounts, status, usage, workdir
+from app.integrations.opencode import projects
 from app.commander.accounts import CLIS, CliDef
 from app.config import get_config
 from app.files import service as files
@@ -40,6 +41,11 @@ def list_consoles() -> list[dict]:
             if cli_id in CLIS else ""
         if login:
             row["commander_login_name"] = login
+        # CodeDEV 直下の作業場所なら、フォルダ名の代わりに表示名を見せる
+        if row.get("cwd"):
+            shown = projects.display_name_if_codedev(str(row["cwd"]))
+            if shown:
+                row["commander_workdir_name"] = shown
         # C2: 画面の文字から状態と最後の行（LLM なし）
         text = manager.capture_text(str(row["id"]), status.CAPTURE_LINES) if row.get("alive", True) else ""
         judged = status.classify(cli_id, text, alive=bool(row.get("alive", True)),

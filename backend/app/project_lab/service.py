@@ -172,6 +172,18 @@ def delete_project(project_id: str) -> dict[str, Any]:
     return {"id": project_id, "name": name, "path": str(project), "link_only": False}
 
 
+def rename_project(project_id: str, name: str) -> dict[str, Any]:
+    """表示名（manifest の name）だけを書き換える。フォルダ名・他の項目は変えない。"""
+    from app.integrations.opencode import projects as auto_projects
+
+    project = resolve_project(project_id)
+    try:
+        result = auto_projects.set_display_name(str(project), name)
+    except auto_projects.ProjectError as exc:
+        raise ProjectLabError(str(exc)) from exc
+    return {"id": project_id, "name": result["name"]}
+
+
 def resolve_artifact(project: Path, relative_path: str) -> Path:
     normalized = relative_path.replace("\\", "/")
     if not normalized or normalized.startswith(("/", "~")) or ".." in normalized.split("/") or "\x00" in normalized:
@@ -382,6 +394,7 @@ def project_detail(project_id: str) -> dict[str, Any]:
         "id": project_id,
         "name": manifest.name if manifest else project.name,
         "description": manifest.description if manifest else "",
+        "createdBy": manifest.created_by if manifest else None,
         "path": str(project),
         "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
         "technologies": _technologies(project),
@@ -408,6 +421,7 @@ def list_projects() -> list[dict[str, Any]]:
             rows.append({
                 "id": candidate.name, "name": manifest.name if manifest else candidate.name,
                 "description": manifest.description if manifest else "",
+                "createdBy": manifest.created_by if manifest else None,
                 "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "technologies": _technologies(resolved), "git": _git_summary(resolved),
                 "diagnostics": diagnostics,

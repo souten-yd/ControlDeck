@@ -180,6 +180,15 @@ export default function ProjectLabPage() {
     onError: (error) => show(error instanceof Error ? error.message : "削除できません", "error"),
   });
 
+  const renameProject = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => projectLabApi.rename(id, name),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["project-lab"] });
+      show(`名前を「${result.name}」に変えました`);
+    },
+    onError: (error) => show(error instanceof Error ? error.message : "名前を変えられません", "error"),
+  });
+
   const runsQuery = useQuery({
     queryKey: ["project-lab-runs", projectId],
     queryFn: () => projectLabApi.runs(projectId as string),
@@ -322,6 +331,8 @@ export default function ProjectLabPage() {
                   canExport={can("project_lab.export")}
                   canPublish={can("project_lab.publish")}
                   canDelete={can("project_lab.delete")}
+                  canRename={can("project_lab.run")}
+                  onRename={(name) => renameProject.mutateAsync({ id: detail.id, name }).then(() => undefined, () => undefined)}
                   onDelete={() => setDeleting({ id: detail.id, name: detail.name })}
                 />
               )}
@@ -447,6 +458,64 @@ export default function ProjectLabPage() {
 }
 
 
+const CREATED_BY_LABELS: Record<string, string> = { nexarch: "Nexarch", team: "チーム", chat: "AI アシスタント" };
+
+/** どこから作られた作業場所かの小さな印 */
+function CreatedByBadge({ createdBy }: { createdBy: string }) {
+  return (
+    <span data-testid="created-by" className="inline-block shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+      {CREATED_BY_LABELS[createdBy] ?? createdBy}
+    </span>
+  );
+}
+
+/** 表示名をその場で書き換える（フォルダ名は変わらない） */
+function ProjectNameEditor({ name, canRename, onRename }: { name: string; canRename: boolean; onRename: (name: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(name);
+  const [saving, setSaving] = useState(false);
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <p className="min-w-0 flex-1 truncate text-sm font-semibold" data-testid="project-name">{name}</p>
+        {canRename && (
+          <button
+            type="button"
+            aria-label="名前を変える"
+            onClick={() => { setValue(name); setEditing(true); }}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-sm text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            <span aria-hidden>✏️</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+  const trimmed = value.trim();
+  const save = async () => {
+    if (!trimmed || saving) return;
+    setSaving(true);
+    await onRename(trimmed);
+    setSaving(false);
+    setEditing(false);
+  };
+  return (
+    <form className="flex items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+      <input
+        autoFocus
+        value={value}
+        maxLength={80}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }}
+        aria-label="プロジェクトの表示名"
+        className="h-9 min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
+      <button type="submit" disabled={!trimmed || saving} className="h-9 shrink-0 rounded-lg bg-accent-600 px-3 text-xs font-semibold text-white disabled:opacity-40">保存</button>
+      <button type="button" onClick={() => setEditing(false)} className="h-9 shrink-0 rounded-lg px-2 text-xs text-zinc-500">取消</button>
+    </form>
+  );
+}
+
 function ProjectRow({ project, selected, onSelect }: { project: ProjectLabSummary; selected: boolean; onSelect: () => void }) {
   return (
     <button
@@ -461,7 +530,10 @@ function ProjectRow({ project, selected, onSelect }: { project: ProjectLabSummar
         {project.name.slice(0, 1).toUpperCase()}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{project.name}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{project.name}</span>
+          {project.createdBy && <CreatedByBadge createdBy={project.createdBy} />}
+        </span>
         <span className="num block truncate text-[11px] text-zinc-400">
           {project.artifactCount} files
           {project.git ? ` · ${project.git.branch}${project.git.dirty ? " *" : ""}` : ""}
@@ -1054,7 +1126,7 @@ function FilesSheet({
 
 function InfoPanel({
   detail, busy, onRunProfile, allowExternal, onToggleExternal, canExport, canPublish,
-  canDelete, onDelete,
+  canDelete, onDelete, canRename, onRename,
 }: {
   detail: ProjectLabDetail;
   busy: boolean;
@@ -1065,11 +1137,14 @@ function InfoPanel({
   canPublish: boolean;
   canDelete: boolean;
   onDelete: () => void;
+  canRename: boolean;
+  onRename: (name: string) => Promise<void>;
 }) {
   const profiles = detail.manifest?.profiles ?? [];
   return (
     <div className="px-2 pb-2 pt-1">
-      <p className="text-sm font-semibold">{detail.name}</p>
+      <ProjectNameEditor key={detail.id} name={detail.name} canRename={canRename} onRename={onRename} />
+      {detail.createdBy && <p className="mt-1"><CreatedByBadge createdBy={detail.createdBy} /></p>}
       <p className="mt-0.5 break-all font-mono text-[11px] text-zinc-400">{detail.path}</p>
       {detail.description && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{detail.description}</p>}
       <dl className="mt-3 grid grid-cols-2 gap-2">

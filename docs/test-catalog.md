@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 267 ファイル、2648 テスト（目的の未記入 93 ファイル）
-- E2E: 146 spec、324 テスト
+- backend: 268 ファイル、2657 テスト（目的の未記入 93 ファイル）
+- E2E: 147 spec、326 テスト
 
 ## backend（backend/tests）
 
@@ -473,6 +473,20 @@
 - `test_logout`
 - `test_viewer_cannot_edit_apps`
 - `test_login_bruteforce_rate_limited`
+
+### backend/tests/test_auto_projects.py
+
+目的: 作業場所の自動作成と表示名（Nexarch・AI アシスタント・Project Lab 共通）の試験。 目的: CodeDEV 直下に変わらないフォルダ名で作業場所を自動で作り、利用者に見える名前は manifest の name だけにして後から書き換えられること、Project Lab から見られること、 Nexarch の「新しい作業場所」と AI アシスタントの会話ごとの作業場所が同じ部品を使うことを守る。 根拠: 利用者の発言（2026-11-27）「AI アシスタントからの OpenCode もそうだが、作業場所は既定の 作業場所に自動で名前を振ってもらって、後で書き換えられるようにし、そこを Project Lab からも 見られればよくないか？」。フォルダ名を変えないのは、OpenCode の会話の履歴がフォルダのパスに 結び付くため（指示書）。CodeDEV の外は realpath で断る（AGENTS.md のパス検証）。
+
+- `test_create_auto_project_folder_name_manifest_and_collision`
+- `test_default_name_and_name_validation`
+- `test_set_display_name_keeps_other_fields_and_folder`
+- `test_paths_outside_codedev_are_refused`
+- `test_project_lab_rename_api_and_created_by`
+- `test_nexarch_new_workspace_creates_in_codedev_and_opens_there`
+- `test_nexarch_new_workspace_refused_when_codedev_outside_roots`
+- `test_chat_workspace_per_conversation` — 会話ごとに別の作業場所。作った後は _last_code_project が同じ場所を返す（次のターンで使い回す）。
+- `test_chat_workspace_is_created_even_when_default_project_path_is_set` — OpenCode の設定の既定の作業場所があっても、AI アシスタントの会話は会話ごとの作業場所を作る（使い回さない）。
 
 ### backend/tests/test_auto_update.py
 
@@ -4341,6 +4355,7 @@
 
 - モバイル 320px: 一覧から 1 個ずつ開き、閉じる・削除も確認できる
 - ＋ コンソール: 未導入は選べない・アカウント・フォルダ・個数・表示名を選んで開ける（320px）
+- ＋ コンソール: 「新しい作業場所（自動の名前）」が既定で、名前を入れて開ける（${width}px）
 - アカウントの管理: 一覧・作る・消す（確認ダイアログ）（320px）
 - PC 1280px: タイル 2 列で並べ、押すと大きく開く（ライト・ダークの撮影も）
 - 設定: AI の CLI（Nexarch）の分類に 3 つの CLI が出る（320px）
@@ -4712,6 +4727,12 @@
 目的: **未記入**
 
 - persistent login survives restored browser context (${width}px)
+
+### frontend/e2e/project-lab-rename.spec.ts
+
+目的: 目的: Project Lab のプロジェクト情報で、表示名をその場で書き換えられる（✏️ 名前を変える）。 自動で作られた作業場所には「どこから作られたか」の小さな印（Nexarch・チーム・AI アシスタント）が出る。 根拠: 2026-11-27 利用者「作業場所は既定の作業場所に自動で名前を振ってもらって、後で書き換えられるようにし、 そこを Project Lab からも見られればよくないか？」。API は模擬する。320・1280 で横にはみ出さない。
+
+- project lab: 表示名を書き換えられ、作成元の印が出る（${width}px）
 
 ### frontend/e2e/project-lab-web.spec.ts
 

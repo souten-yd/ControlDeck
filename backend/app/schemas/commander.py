@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AccountCreate(BaseModel):
@@ -27,14 +27,29 @@ class WorkdirPath(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
+class NewWorkspace(BaseModel):
+    """自動で作る作業場所の表示名（空なら自動の名前。長さ・制御文字は projects.clean_name が検証）。"""
+
+    name: str = Field(default="", max_length=80)
+
+
 class ConsoleCreate(BaseModel):
     """コンソールを開く（CLI・アカウント・作業フォルダ・個数・表示名）。"""
 
     cli: str = Field(min_length=1, max_length=32)
     account: str = Field(default="default", min_length=1, max_length=32)
-    cwd: str = Field(min_length=1, max_length=4096)
+    # 既存のフォルダを選ぶとき。new_workspace を渡すなら不要（そちらが優先）
+    cwd: str = Field(default="", max_length=4096)
     count: int = Field(default=1, ge=1, le=8)
     label: str = Field(default="", max_length=64)
+    # 「新しい作業場所（自動の名前）」。CodeDEV 直下に作って、そこで開く
+    new_workspace: NewWorkspace | None = None
+
+    @model_validator(mode="after")
+    def need_workdir(self) -> "ConsoleCreate":
+        if self.new_workspace is None and not self.cwd.strip():
+            raise ValueError("作業フォルダか新しい作業場所を指定してください")
+        return self
 
     @field_validator("label")
     @classmethod

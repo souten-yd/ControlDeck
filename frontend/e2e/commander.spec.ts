@@ -424,6 +424,9 @@ test.describe("AI Commander", () => {
     await sheet.getByLabel("新しいアカウント名").fill("sub2");
 
     // 作業フォルダは FilePicker（files API の許可ルート内）
+    // 既定は「新しい作業場所（自動の名前）」。既存のフォルダは下の選択肢
+    await expect(sheet.getByRole("radio", { name: "新しい作業場所（自動の名前）" })).toBeChecked();
+    await sheet.getByRole("radio", { name: "既存のフォルダを選ぶ" }).click();
     await sheet.getByRole("button", { name: /フォルダを選ぶ|選ぶ/ }).first().click();
     const picker = page.getByRole("dialog", { name: "作業フォルダを選択" });
     await expect(picker).toBeVisible();
@@ -458,6 +461,43 @@ test.describe("AI Commander", () => {
     await expect(page.locator("[data-commander-row]")).toHaveCount(4);
     await expect(page.getByText("2 個のコンソールを開きました")).toBeVisible();
   });
+
+  for (const [width, height] of [[320, 700], [1280, 900]] as const) {
+    test(`＋ コンソール: 「新しい作業場所（自動の名前）」が既定で、名前を入れて開ける（${width}px）`, async ({ page, context }) => {
+      test.skip(!hasSession(), "ログイン情報がありません");
+      await page.setViewportSize({ width, height });
+      await establishSession(page, context);
+      const state = initialState();
+      await mockCommander(page, state);
+      await page.goto("/commander");
+
+      await page.getByRole("button", { name: "＋ コンソール" }).click();
+      const sheet = page.getByRole("dialog", { name: "コンソールを開く" });
+      await expect(sheet).toBeVisible();
+      // 既定は新しい作業場所。フォルダを選ばなくても開ける。選ぶ欄はその下の選択肢
+      await expect(sheet.getByRole("radio", { name: "新しい作業場所（自動の名前）" })).toBeChecked();
+      await expect(sheet.getByRole("button", { name: "開く", exact: true })).toBeEnabled();
+      await expect(sheet.getByRole("button", { name: /フォルダを選ぶ/ })).toHaveCount(0);
+      // コンソールの表示名とは別の欄
+      await expect(sheet.getByLabel("作業場所の名前")).toBeVisible();
+      await expect(sheet.getByLabel("コンソールの表示名")).toBeVisible();
+      await page.screenshot({ path: `test-results/commander-new-workspace-${width}.png` });
+
+      // 既存のフォルダに切り替えると、選ぶまで開けない
+      await sheet.getByRole("radio", { name: "既存のフォルダを選ぶ" }).click();
+      await expect(sheet.getByRole("button", { name: "開く", exact: true })).toBeDisabled();
+      await sheet.getByRole("radio", { name: "新しい作業場所（自動の名前）" }).click();
+
+      await sheet.getByLabel("作業場所の名前").fill("夜の調査");
+      await sheet.getByLabel("コンソールの表示名").fill("調査");
+      await sheet.getByRole("button", { name: "開く", exact: true }).click();
+      await expect(sheet).toHaveCount(0);
+      expect(state.consolePosts).toEqual([{
+        cli: "claude", account: "default", cwd: "", count: 1, label: "調査", new_workspace: { name: "夜の調査" },
+      }]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+    });
+  }
 
   test("アカウントの管理: 一覧・作る・消す（確認ダイアログ）（320px）", async ({ page, context }) => {
     test.skip(!hasSession(), "ログイン情報がありません");
