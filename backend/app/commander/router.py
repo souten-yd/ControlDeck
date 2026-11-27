@@ -230,6 +230,7 @@ async def create_consoles(
             consoles.create_consoles,
             cli=cli, account=body.account, cwd=cwd,
             count=body.count, label=body.label, created_by=user.username, user_id=user.id,
+            model=body.model, effort=body.effort,
         )
     except PermissionError as exc:  # files.resolve の許可の外
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -407,6 +408,35 @@ class _TeamMembers(BaseModel):
     members: list[dict[str, Any]] = Field(max_length=50)
 
 
+class _TeamRoles(BaseModel):
+    roles: list[dict[str, Any]] = Field(max_length=20)
+
+
+class _TeamRouter(BaseModel):
+    router: dict[str, Any] | None = None
+
+
+class _AutoTeam(BaseModel):
+    """目標からチームを作る（ルーターが計画する）。作業場所が空なら新しい自動の作業場所。"""
+    goal: str = Field(max_length=20000)
+    name: str = Field(default="", max_length=200)
+    workdir: str = Field(default="", max_length=4096)
+
+
+class _RouterRun(BaseModel):
+    goal: str = Field(max_length=20000)
+
+
+class _HandoffChoice(BaseModel):
+    endpoint: dict[str, Any]
+    add_to_secondary: bool = False
+
+
+class _TeamDefaults(BaseModel):
+    default_router: dict[str, Any] | None = None
+    default_roles: list[dict[str, Any]] | None = Field(default=None, max_length=20)
+
+
 class _TeamNotify(BaseModel):
     notify: bool
 
@@ -420,6 +450,7 @@ class _TaskBody(BaseModel):
     checks: list[str] | None = Field(default=None, max_length=100)
     assignee: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
+    role: str | None = Field(default=None, max_length=16)
 
 
 class _ReportBody(BaseModel):
@@ -469,6 +500,97 @@ def update_team(
                 max_parallel=team.get("max_parallel"), local_parallel=team.get("local_parallel"),
                 auto_run=team.get("auto_run"))
     return team
+
+
+@router.get("/models")
+def list_models(cli: str, account: str = "default", user: User = Depends(require_permission("terminal.use"))):
+    """担い手のモデルと考えるレベルの自動の一覧（claude の別名・codex の models_cache・ゲートウェイ）。"""
+    del user
+    from app.commander import models as model_list
+
+    try:
+        return model_list.list_models(cli, account)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/settings/team-defaults")
+def put_team_defaults(
+    body: _TeamDefaults, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """チームの既定（既定のルーター・既定の役割）。新しいチームはこれを写して始まる。"""
+    from app.commander import settings as commander_settings
+    from app.commander import team_roles
+
+    def work():
+        router_ep = team_roles.clean_endpoint_or_none(body.default_router, "既定のルーター")
+        roles = None if body.default_roles is None else team_roles.clean_roles(body.default_roles)
+        return commander_settings.set_team_defaults({**router_ep, "kind": "headless"} if router_ep else None, roles)
+
+    result = _team_call(work)
+    audit.record(db, "commander.settings", user=user, resource_type="commander", resource_id="team-defaults", request=request)
+    return result
+
+
+@router.post("/teams/auto", status_code=201)
+def create_auto_team(
+    body: _AutoTeam, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """目標からチームを作る。チームを作ってルーターを走らせる（結果は一覧の router_run で見る）。"""
+    from app.commander import team_router
+
+    team = _team_call(team_router.create_and_start, body.goal, body.name, body.workdir)
+    _team_audit(db, user, request, "auto", team["id"], name=team["name"], goal_length=len(body.goal))
+    return team
+
+
+@router.post("/teams/{team_id}/router/run")
+def run_team_router(
+    team_id: str, body: _RouterRun, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """既存のチームへルーターで計画を足す。"""
+    from app.commander import team_router
+
+    team = _team_call(team_router.start, team_id, body.goal)
+    _team_audit(db, user, request, "router.run", team_id, goal_length=len(body.goal))
+    return team
+
+
+@router.put("/teams/{team_id}/roles")
+def set_team_roles(
+    team_id: str, body: _TeamRoles, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    team = _team_call(teams.set_roles, team_id, body.roles)
+    _team_audit(db, user, request, "roles", team_id, roles=[r["name"] for r in team["roles"]])
+    return team
+
+
+@router.put("/teams/{team_id}/router")
+def set_team_router(
+    team_id: str, body: _TeamRouter, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """ルーターを任命する（null なら既定のルーターへ戻す）。"""
+    team = _team_call(teams.set_router, team_id, body.router)
+    _team_audit(db, user, request, "router", team_id, router=team.get("router"))
+    return team
+
+
+@router.post("/teams/{team_id}/tasks/{task_id}/handoff")
+def choose_team_handoff(
+    team_id: str, task_id: int, body: _HandoffChoice, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """引き継ぎ先が無くて止まったタスクへ、選んだ担い手で引き継いで再開する。"""
+    from app.commander import team_roles
+
+    task = _team_call(team_roles.choose_handoff, team_id, task_id, body.endpoint, body.add_to_secondary, user.username)
+    _team_audit(db, user, request, "task.handoff", team_id, task=task_id, add_to_secondary=body.add_to_secondary)
+    return task
 
 
 @router.put("/teams/{team_id}/notify")

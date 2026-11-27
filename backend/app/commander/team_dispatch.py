@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from app.commander import consoles, status, team_runner, team_watch, teams, workdir
+from app.commander import consoles, status, team_roles, team_runner, team_watch, teams, workdir
 from app.terminals.manager import manager
 
 logger = logging.getLogger(__name__)
@@ -179,14 +179,32 @@ def apply_limit_policy(team_id: str, task_id: int, rows: dict[str, dict] | None 
             rows = {} if headless else {str(r["id"]): r for r in consoles.list_consoles()}
         elif not rows and not headless:
             rows = {str(r["id"]): r for r in consoles.list_consoles()}
-        if write_failed and not candidates(team, sid, _limited_members(task), rows):
+        role = team_roles.find_role(team, task.get("role"))
+        role_choice: dict | None = None
+        if role is not None:
+            prev_ep = team_roles.member_endpoint(prev)
+            if prev_ep is not None and not write_failed:  # 上限なら、その担い手は回復の時刻まで使わない（戻りは配り手が判断）
+                team_roles.mark_limited(team, prev_ep, run.get("reset_at") if headless else None, now)
+            if policy == "handoff":
+                role_choice = team_roles.next_after_limit(team, task, role, _limited_endpoint_keys(team, task), now)
+                if role_choice is None and not _fallback_left(team, task, sid):
+                    teams.runs_close(task, "limited")
+                    task["status"] = "blocked"
+                    task["blocked_reason"] = "no_handoff"
+                    for k in ("limited_at", "wait_until", "wait_noted", "handoff_waiting_noted"):
+                        task.pop(k, None)
+                    teams._event(task, "止まった（引き継ぎ先なし）", "Nexarch")  # noqa: SLF001
+                    events += _notify_once(team, task, team_watch.KIND_NO_HANDOFF, member_label(prev, rows.get(sid)))
+                    teams._save(all_teams)  # noqa: SLF001
+                    return events
+        if role_choice is None and write_failed and not candidates(team, sid, _limited_members(task), rows):
             task["status"] = "blocked"
             task.pop("limited_at", None)
             teams._event(task, "書き込みがすべて失敗・引き継ぎ先なし（自動で直せず）", "Nexarch")  # noqa: SLF001
             events += team_runner._blocked_event(team, task)  # noqa: SLF001
             teams._save(all_teams)  # noqa: SLF001
             return events
-        if policy == "wait" or _no_candidate(team, task, sid, rows):
+        if role_choice is None and (policy == "wait" or _no_candidate(team, task, sid, rows)):
             changed = False
             restart = False
             if headless:
@@ -215,7 +233,7 @@ def apply_limit_policy(team_id: str, task_id: int, rows: dict[str, dict] | None 
                 teams._save(all_teams)  # noqa: SLF001
         else:
             restart = False
-            choice = _pick_ready(team, task, sid, rows)
+            choice = role_choice or _pick_ready(team, task, sid, rows)
             if choice is None:
                 if not task.get("handoff_waiting_noted"):
                     task["handoff_waiting_noted"] = True
@@ -258,6 +276,23 @@ def _limited_members(task: dict) -> set[str]:
     return {str(r.get("member")) for r in task.get("runs") or [] if r.get("result") in ("limited", "write_failed")}
 
 
+def _limited_endpoint_keys(team: dict, task: dict) -> set[str]:
+    """このタスクで上限・書き込み失敗で止まった担い手の endpoint の鍵（同じ endpoint へは戻さない）。"""
+    out: set[str] = set()
+    for key in _limited_members(task):
+        member = teams.find_member(team, key)
+        ep = team_roles.member_endpoint(member) if member else None
+        if ep is not None:
+            out.add(team_roles.endpoint_key(ep))
+    return out
+
+
+def _fallback_left(team: dict, task: dict, sid: str) -> bool:
+    """明示した候補の順番（fallback）に、まだ引き継げるメンバーが残っているか。"""
+    skip = _limited_members(task) | {sid}
+    return any(k not in skip and teams.find_member(team, k) is not None for k in team.get("fallback", []))
+
+
 def _pick_ready(team: dict, task: dict, sid: str, rows: dict[str, dict]) -> dict | None:
     for member in candidates(team, sid, _limited_members(task), rows):
         if _ready(member, rows) and not blocker(team, task, member, check_overlap=False):
@@ -286,6 +321,21 @@ def _eligible(team: dict, rows: dict[str, dict]) -> list[dict]:
     return order
 
 
+def _role_pick(team_id: str, task_id: int) -> tuple[str, dict | None]:
+    """役割のタスクの担い手を選ぶ（自動のメンバーを作る・戻りの履歴を残す。保存まで）。"""
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        try:
+            team = teams._find_team(all_teams, team_id)  # noqa: SLF001
+            task = teams._find_task(team, task_id)  # noqa: SLF001
+        except teams.TeamError:
+            return "wait", None
+        mode, member = team_roles.pick_for_task(team, task)
+        if mode == "pick":
+            teams._save(all_teams)  # noqa: SLF001
+        return mode, member
+
+
 def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
     """待ち（todo）のタスクを、決まりの範囲で空いた担い手へ割り当てて走らせる。始めた数を返す。"""
     started = 0
@@ -301,7 +351,20 @@ def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
         live_rows = rows or {}
         chosen: tuple[dict, dict] | None = None
         for task in todo:
-            pool = [teams.find_member(team, str(task["assignee"]))] if task.get("assignee") else _eligible(team, live_rows)
+            if task.get("role") and not task.get("assignee"):
+                mode, role_member = _role_pick(team_id, task["id"])
+                if mode == "wait":
+                    continue
+                if mode == "pick":
+                    team = _fresh(team_id) or team  # 自動のメンバーが増えた
+                    if role_member is not None and not teams.is_headless(role_member):
+                        live_rows = {str(r["id"]): r for r in consoles.list_consoles()}
+                        rows = live_rows
+                    pool = [role_member]
+                else:
+                    pool = _eligible(team, live_rows)
+            else:
+                pool = [teams.find_member(team, str(task["assignee"]))] if task.get("assignee") else _eligible(team, live_rows)
             for member in pool:
                 if member is None or not _ready(member, live_rows):
                     continue

@@ -147,10 +147,28 @@ def _opencode_launch(model: str, cwd: Path, text: str):
     return argv, env, lambda: provider._discard_runtime_config(runtime, config)  # noqa: SLF001
 
 
+ROUTER_TOOLS = "Read,Glob,Grep"
+
+
+def _model_args(member: dict) -> tuple[str, str]:
+    """担い手の model・effort（空なら付けない）。値は画面の入力で検証済みだが、引数に混ぜる前にもう一度確かめる。"""
+    from app.commander import models as model_list
+
+    try:
+        return model_list.clean_model(member.get("model")), model_list.clean_effort(member.get("effort"))
+    except ValueError as exc:
+        raise LaunchError(str(exc)) from exc
+
+
 def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
-                 allow_no_sandbox: bool = True) -> tuple[list[str], dict[str, str], object]:
-    """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。"""
+                 allow_no_sandbox: bool = True, schema: dict | None = None) -> tuple[list[str], dict[str, str], object]:
+    """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。
+
+    model・effort があれば渡す（claude `--model` `--effort`・codex `-m` `-c model_reasoning_effort=`・opencode `--model …#variant`）。
+    schema があればルーターの実行（読むだけ・JSON の出力。claude は `--output-format json --json-schema`、codex は `--output-schema`）。
+    """
     cli_id = str(member.get("cli") or "")
+    model, effort = _model_args(member)
     account = str(member.get("account") or accounts.DEFAULT_ACCOUNT)
     cli = accounts.CLIS.get(cli_id)
     if cli is None or cli_id not in teams.HEADLESS_CLIS:
@@ -160,7 +178,10 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             connection = accounts.opencode_connection(account)
         except FileNotFoundError as exc:
             raise LaunchError(str(exc)) from exc
-        argv, extra_env, cleanup = _opencode_launch(str(connection["model"]), cwd, text)
+        argv, extra_env, cleanup = _opencode_launch(model or str(connection["model"]), cwd, text)
+        if effort and "--model" in argv:  # variant（モデルが持つときだけ効く）
+            at = argv.index("--model") + 1
+            argv[at] = f"{argv[at]}#{effort}"
         return argv, {**_base_env(argv[0]), **extra_env}, cleanup
     exe = accounts.executable_path(cli)
     if not exe:
@@ -170,16 +191,32 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
     except (FileNotFoundError, ValueError) as exc:
         raise LaunchError(str(exc)) from exc
     if cli_id == "claude":
-        argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose",
-                "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", CLAUDE_TOOLS]
+        if schema is not None:
+            argv = [exe, "-p", text, "--output-format", "json", "--json-schema", json.dumps(schema, ensure_ascii=False),
+                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", ROUTER_TOOLS]
+        else:
+            argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose",
+                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", CLAUDE_TOOLS]
+        if model:
+            argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
     else:
-        mode = "workspace-write"
+        mode = "read-only" if schema is not None else "workspace-write"
         if not codex_sandbox_ok():
             if not allow_no_sandbox:
                 raise LaunchError("Codex のサンドボックスがこの機械で使えません")
             mode = "danger-full-access"
-        argv = [exe, "exec", "--json", "-C", str(cwd), "-s", mode, "--skip-git-repo-check",
-                "-o", str(last_file), text]
+        argv = [exe, "exec", "--json", "-C", str(cwd), "-s", mode, "--skip-git-repo-check", "-o", str(last_file)]
+        if model:
+            argv += ["-m", model]
+        if effort:
+            argv += ["-c", f"model_reasoning_effort={effort}"]
+        if schema is not None:
+            schema_file = last_file.with_name("schema.json")
+            schema_file.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+            argv += ["--output-schema", str(schema_file)]
+        argv.append(text)
     return argv, {**_base_env(exe), **account_env}, (lambda: None)
 
 
@@ -264,6 +301,8 @@ class StreamState:
                     self._tool(str(block.get("name") or "tool"), detail)
         elif kind == "result":
             self.final_text = str(event.get("result") or "")
+            if not self.final_text and event.get("structured_output") is not None:  # --json-schema の結果
+                self.final_text = json.dumps(event["structured_output"], ensure_ascii=False)
             if event.get("is_error") or (event.get("subtype") not in (None, "success")):
                 self._error(self.final_text or event.get("subtype"))
             usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
@@ -406,7 +445,8 @@ def _kill(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_sandbox: bool = True) -> dict:
+def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_sandbox: bool = True,
+             schema: dict | None = None) -> dict:
     """CLI を 1 回走らせて結果の dict を返す（同期）。本文・出力は返さずログにも出さない。"""
     cli_id = str(member.get("cli") or "")
     tmp = Path(tempfile.mkdtemp(prefix="nexarch-run-"))
@@ -414,7 +454,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
     try:
         os.chmod(tmp, 0o700)
         out_path, err_path, last_path = tmp / "stdout", tmp / "stderr", tmp / "last"
-        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox)
+        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox, schema=schema)
         out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         err_fd = os.open(err_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -724,6 +764,7 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
             task.pop("write_fail_retries", None)
         task.pop("checks_result", None)
         task.pop("wait_until", None)
+        task.pop("blocked_reason", None)
         for k in ("stalled_at", "limited_at", "closed_noted", "notified"):
             task.pop(k, None)
         now = teams._now()

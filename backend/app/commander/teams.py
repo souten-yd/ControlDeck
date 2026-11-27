@@ -228,22 +228,38 @@ def _make_workdir(name: str) -> dict:
         return {"workdir": "", "workdir_folder": "", "workdir_name": ""}
 
 
+def ensure_workdir_for(team: dict) -> str:
+    """team の dict を直接書き換えて作業場所のパスを返す（保存は呼び出し側）。無い・消えていれば作る。"""
+    current = str(team.get("workdir") or "")
+    if current and Path(current).is_dir():
+        return current
+    team.update(_make_workdir(str(team.get("name") or "team")))
+    return str(team.get("workdir") or "")
+
+
 def ensure_workdir(team_id: str) -> str:
     """チームの作業場所のパス。無い・消えていれば作る（T3a より前に作ったチームのためにも）。"""
     with _lock:
         teams = _load()
         team = _find_team(teams, team_id)
-        current = str(team.get("workdir") or "")
-        if current and Path(current).is_dir():
-            return current
-        team.update(_make_workdir(str(team.get("name") or "team")))
-        _save(teams)
-        return str(team.get("workdir") or "")
+        before = team.get("workdir")
+        path = ensure_workdir_for(team)
+        if team.get("workdir") != before:
+            _save(teams)
+        return path
 
 
-def create_team(name: str) -> dict:
+def create_team(name: str, *, workdir_path: str = "") -> dict:
+    """チームを作る。役割とルーターは Nexarch の設定の既定を写す（T3b）。workdir_path があればそれを作業場所にする。"""
+    from app.commander import team_roles
+
     name = clean_line(name, "チーム名", NAME_MAX)
-    made = _make_workdir(name)
+    if workdir_path:
+        made = {"workdir": workdir_path, "workdir_folder": Path(workdir_path).name, "workdir_name": Path(workdir_path).name}
+    else:
+        made = _make_workdir(name)
+    roles = team_roles.new_team_roles()
+    router = team_roles.new_team_router()
     with _lock:
         teams = _load()
         team = {
@@ -251,6 +267,7 @@ def create_team(name: str) -> dict:
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
             "brief": "", "reset_before_dispatch": True,
             "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
+            "roles": roles, "router": router, "limits": {},
             **made,
         }
         teams.append(team)
@@ -368,7 +385,19 @@ def _clean_headless(item: dict) -> dict:
     label = clean_line(item.get("label") or "", "名前", LABEL_MAX, required=False)
     raw_id = item.get("id")
     ident = raw_id if isinstance(raw_id, str) and HEADLESS_ID_RE.fullmatch(raw_id) else "h" + secrets.token_hex(4)
-    return {"id": ident, "kind": "headless", "cli": cli, "account": account, "role": role, "label": label}
+    from app.commander import models as model_list
+    from app.commander import team_roles
+
+    try:
+        model, effort = model_list.clean_model(item.get("model")), model_list.clean_effort(item.get("effort"))
+    except ValueError as exc:
+        raise TeamError(str(exc)) from exc
+    member = {"id": ident, "kind": "headless", "cli": cli, "account": account, "role": role, "label": label,
+              "model": model, "effort": effort}
+    if item.get("auto") is True and isinstance(item.get("role_id"), str):  # 役割から自動で作った枠（画面では役割の下にまとめる）
+        member.update({"auto": True, "role_id": item["role_id"][:16],
+                       "ep": team_roles.endpoint_key({"kind": "headless", "cli": cli, "account": account, "model": model, "effort": effort})})
+    return member
 
 
 def set_members(team_id: str, members: object) -> dict:
@@ -397,7 +426,14 @@ def set_members(team_id: str, members: object) -> dict:
         if sid in seen:
             raise TeamError("同じコンソールを 2 回入れられません")
         seen.add(sid)
-        cleaned.append({"session_id": sid, "role": role})
+        console_member = {"session_id": sid, "role": role}
+        if item.get("auto") is True and isinstance(item.get("role_id"), str) and isinstance(item.get("ep_def"), dict):
+            from app.commander import team_roles
+
+            ep_def = team_roles.clean_endpoint(item["ep_def"])
+            console_member.update({"auto": True, "role_id": item["role_id"][:16], "ep_def": ep_def,
+                                   "ep": team_roles.endpoint_key(ep_def)})
+        cleaned.append(console_member)
     if sum(1 for m in cleaned if m["role"] == "leader") > 1:
         raise TeamError("リーダーは 1 人までです")
     with _lock:
@@ -422,6 +458,14 @@ def set_members(team_id: str, members: object) -> dict:
 
 
 # ---------------------------------------------------------------- タスク
+
+def _check_role(team: dict, role: object) -> str:
+    if role in (None, ""):
+        return ""
+    if not isinstance(role, str) or not any(r.get("id") == role for r in team.get("roles", [])):
+        raise TeamError("役割はこのチームの役割から選んでください")
+    return role
+
 
 def _check_assignee(team: dict, assignee: object) -> str:
     if assignee in (None, ""):
@@ -492,6 +536,36 @@ def set_notify(team_id: str, enabled: object) -> dict:
     return team
 
 
+def set_roles(team_id: str, roles: object) -> dict:
+    """役割を丸ごと置き換える（名前・数・プライマリ・セカンダリ・説明）。外した役割のタスクは役割なしへ。"""
+    from app.commander import team_roles
+
+    with _lock:
+        teams = _load()
+        team = _find_team(teams, team_id)
+        cleaned = team_roles.clean_roles(roles, previous=team.get("roles", []))
+        ids = {r["id"] for r in cleaned}
+        for task in team.get("tasks", []):
+            if task.get("role") and task["role"] not in ids:
+                task["role"] = ""
+        team["roles"] = cleaned
+        _save(teams)
+    return team
+
+
+def set_router(team_id: str, router: object) -> dict:
+    """ルーターの任命。null なら既定のルーターに戻す。"""
+    from app.commander import team_roles
+
+    ep = team_roles.clean_endpoint_or_none(router, "ルーター")
+    with _lock:
+        teams = _load()
+        team = _find_team(teams, team_id)
+        team["router"] = None if ep is None else {**ep, "kind": "headless"}
+        _save(teams)
+    return team
+
+
 def create_task(team_id: str, fields: dict, by: str) -> dict:
     title = clean_line(fields.get("title", ""), "タイトル", TITLE_MAX)
     goal = clean_text(fields.get("goal", ""), "目的")
@@ -505,6 +579,7 @@ def create_task(team_id: str, fields: dict, by: str) -> dict:
         task = {
             "id": int(team.get("next_task_id") or 1), "title": title, "goal": goal,
             "acceptance": acceptance, "files": files, "checks": checks, "assignee": assignee, "status": "todo",
+            "role": _check_role(team, fields.get("role")),
             "report": None, "created_at": _now(), "updated_at": _now(), "history": [],
         }
         team["next_task_id"] = task["id"] + 1
@@ -535,6 +610,9 @@ def update_task(team_id: str, task_id: int, fields: dict, by: str) -> dict:
         if "checks" in fields:
             task["checks"] = clean_checks(fields["checks"])
             changed.append("確認のコマンド")
+        if "role" in fields and fields["role"] != task.get("role"):
+            task["role"] = _check_role(team, fields["role"])
+            changed.append("役割")
         if "assignee" in fields and fields["assignee"] != task.get("assignee"):
             task["assignee"] = _check_assignee(team, fields["assignee"])
             changed.append("担当")
@@ -644,6 +722,7 @@ def dispatch_task(team_id: str, task_id: int, by: str, handoff: str = "") -> dic
         task.pop("run", None)
         task.pop("wait_until", None)
         task.pop("resume_note", None)
+        task.pop("blocked_reason", None)
         if reset:
             _event(task, f"会話をリセット（{reset}）", by)
         for key in ("stalled_at", "limited_at", "closed_noted", "notified"):
@@ -835,7 +914,11 @@ def list_teams() -> list[dict]:
                 from app.commander import team_runner
                 row["no_sandbox"] = team_runner.member_sandbox_free(m)  # この機械では codex のサンドボックスが使えない
             members.append(row)
+        from app.commander import team_roles
+
         out.append({**team, "members": members, "tasks": tasks, "parallel": parallel_summary(team),
+                    "roles": team_roles.role_views(team), "router": team.get("router"),
+                    "router_effective": team_roles.router_endpoint(team), "limits": team.get("limits", {}),
                     "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),
                     "max_parallel": team.get("max_parallel", 3), "local_parallel": team.get("local_parallel", 1),
                     "auto_run": team.get("auto_run", True),

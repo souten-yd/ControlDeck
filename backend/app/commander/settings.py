@@ -1,4 +1,4 @@
-"""Nexarch（AI Commander）の全体の設定。今は自動再開で送る文言だけ。
+"""Nexarch（AI Commander）の全体の設定。自動再開で送る文言と、チームの既定（T3b: 既定のルーター・既定の役割）。
 
 `data/ai-commander/settings.json`（0600）。コンソールごとの文言（tmux の印 @cd-commander-resume_message）が
 あればそちらが勝ち、無ければここの文言、ここも無ければ DEFAULT_RESUME_MESSAGE。
@@ -41,8 +41,46 @@ def resume_message() -> str:
     return value if isinstance(value, str) and value.strip() else DEFAULT_RESUME_MESSAGE
 
 
+def _write(data: dict) -> None:
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(temp, 0o600)
+    os.replace(temp, path)
+
+
+def default_router() -> dict | None:
+    """既定のルーター（endpoint）。未設定・壊れていれば None。"""
+    value = _read().get("default_router")
+    return value if isinstance(value, dict) and value.get("cli") else None
+
+
+def default_roles() -> list[dict]:
+    """既定の役割（新しいチームがこれを写して始まる）。未設定なら空（組み込みの 3 つを使う）。"""
+    value = _read().get("default_roles")
+    return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
+
+
+def set_team_defaults(router: dict | None, roles: list[dict] | None) -> dict:
+    """既定のルーターと既定の役割を保存する（検証済みの値を渡す。roles が None なら変えない・[] なら組み込みに戻す）。"""
+    data = _read()
+    if router:
+        data["default_router"] = router
+    else:
+        data.pop("default_router", None)
+    if roles is not None:
+        if roles:
+            data["default_roles"] = roles
+        else:
+            data.pop("default_roles", None)
+    _write(data)
+    return get()
+
+
 def get() -> dict:
-    return {"resume_message": resume_message(), "default_resume_message": DEFAULT_RESUME_MESSAGE}
+    return {"resume_message": resume_message(), "default_resume_message": DEFAULT_RESUME_MESSAGE,
+            "default_router": default_router(), "default_roles": default_roles()}
 
 
 def set_resume_message(value: str) -> dict:
@@ -53,12 +91,7 @@ def set_resume_message(value: str) -> dict:
         data["resume_message"] = message
     else:
         data.pop("resume_message", None)
-    path = _path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(temp, 0o600)
-    os.replace(temp, path)
+    _write(data)
     return get()
 
 

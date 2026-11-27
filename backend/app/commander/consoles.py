@@ -62,7 +62,8 @@ def list_consoles() -> list[dict]:
 
 
 def _command_for(cli: CliDef, workdir: str, user_id: int | None,
-                 account: str = accounts.DEFAULT_ACCOUNT) -> tuple[str, dict[str, str] | None]:
+                 account: str = accounts.DEFAULT_ACCOUNT, model: str = "",
+                 effort: str = "") -> tuple[str, dict[str, str] | None]:
     """開くコマンドと環境変数。
 
     ControlDeck の OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API・
@@ -73,7 +74,7 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
         try:
             connection = accounts.opencode_connection(account)
             command, _project = provider.tui_command(
-                project_path=workdir, owner_user_id=user_id, model=connection["model"],
+                project_path=workdir, owner_user_id=user_id, model=model or connection["model"],
                 # Nexarch の作業フォルダの決まり（/data1tb・/data2tb）で検証済みの実体のパス
                 validated_project=Path(workdir),
                 # 接続ごとに設定フォルダを分ける（並べて開いた別の接続の TUI の設定を書き換えない）
@@ -89,6 +90,13 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
     if cli.id == "claude":
         # 5 時間・週の使用率を statusline から受け取る（usage.py。鍵は読まない）
         command += " --settings " + shlex.quote(str(usage.claude_settings_file(account)))
+    # モデル・考えるレベル（空なら付けない。値は models.clean_* で検証済み＝英数と ._:/#- だけ）
+    if model:
+        command += {"claude": " --model ", "codex": " -m "}.get(cli.id, " --model ") + shlex.quote(model)
+    if effort and cli.id == "claude":
+        command += " --effort " + shlex.quote(effort)
+    elif effort and cli.id == "codex":
+        command += " -c " + shlex.quote(f"model_reasoning_effort={effort}")
     if "/" not in path:
         return command, None
     folder = os.path.dirname(path)
@@ -99,7 +107,7 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
 
 def create_consoles(
     *, cli: CliDef, account: str, cwd: str, count: int, label: str, created_by: str,
-    user_id: int | None = None,
+    user_id: int | None = None, model: str = "", effort: str = "",
 ) -> dict:
     """コンソールを count 個開く。
 
@@ -112,7 +120,10 @@ def create_consoles(
         raise RuntimeError("ターミナルは無効化されています")
     work = workdir.resolve_dir(cwd)  # 存在しない・ルートの外は例外（router が 400 へ直す）
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
-    command, extra_env = _command_for(cli, str(work), user_id, account)
+    from app.commander import models as model_list
+
+    model, effort = model_list.clean_model(model), model_list.clean_effort(effort)  # 不正なら ValueError
+    command, extra_env = _command_for(cli, str(work), user_id, account, model, effort)
     if extra_env:
         env = {**extra_env, **(env or {})}
 
