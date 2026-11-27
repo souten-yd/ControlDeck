@@ -196,6 +196,8 @@ export interface TeamMember {
   cli?: string;
   account?: string;
   label?: string;
+  /** codex で、この機械ではサンドボックスが使えない（danger-full-access で動かす）。 */
+  no_sandbox?: boolean;
   role: TeamRole;
 }
 export const memberKey = (m: TeamMember): string => m.key ?? m.id ?? m.session_id ?? "";
@@ -218,6 +220,12 @@ export interface TaskRun {
   tail: string;
   exit_code: number | null;
   reset_at?: number | null;
+  /** "none" = サンドボックスなしで動かした（この機械では使えない）。 */
+  sandbox?: string;
+  failed_ops?: number;
+  /** 例: 「失敗した操作 2 件」。 */
+  failed_note?: string;
+  reason?: string;
 }
 /** 実際にやった担い手の記録（何回目・誰・結果・時間・使用量）。 */
 export interface TaskRunRecord {
@@ -232,6 +240,7 @@ export interface TaskRunRecord {
   seconds: number | null;
   result: string;
   usage: RunUsage | null;
+  sandbox?: string;
 }
 
 export interface TaskReport { summary: string; changed_files: string[]; tests: string; verify?: string; remaining: string }
@@ -300,6 +309,8 @@ export interface Team {
   max_parallel?: number;
   local_parallel?: number;
   auto_run?: boolean;
+  /** codex のサンドボックスがこの機械で使えないとき、サンドボックスなしで動かす（既定 true。false なら止める）。 */
+  codex_without_sandbox?: boolean;
   /** チームの作業場所（CodeDEV の team-日時）。 */
   workdir?: string;
   workdir_folder?: string;
@@ -330,7 +341,7 @@ export async function updateTeam(
   id: string,
   fields: {
     name?: string; brief?: string; reset_before_dispatch?: boolean; on_limit?: OnLimit; fallback?: string[];
-    max_parallel?: number; local_parallel?: number; auto_run?: boolean;
+    max_parallel?: number; local_parallel?: number; auto_run?: boolean; codex_without_sandbox?: boolean;
   },
 ): Promise<Team> {
   return api<Team>(teamUrl(id), { method: "PUT", json: fields });

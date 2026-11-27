@@ -52,7 +52,7 @@ const STATE_DOT: Record<CommanderState, string> = {
 const HEADLESS_CLIS: ReadonlyArray<readonly [string, string]> = [["claude", "Claude Code"], ["codex", "Codex"], ["opencode", "OpenCode"]];
 const RUN_RESULT_LABEL: Record<string, string> = {
   running: "実行中", sent: "送信", ok: "完了", reported: "報告あり", failed: "失敗", limited: "上限で停止", stopped: "止めた",
-  interrupted: "中断", replaced: "入れ替え",
+  interrupted: "中断", replaced: "入れ替え", write_failed: "書き込みがすべて失敗",
 };
 
 function fmtSeconds(value: number | null | undefined): string {
@@ -171,6 +171,16 @@ export function TeamView({
       show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
     }
   };
+  const toggleSandbox = async () => {
+    const next = team.codex_without_sandbox === false;
+    try {
+      await updateTeam(team.id, { codex_without_sandbox: next });
+      refresh();
+      show(next ? "Codex のサンドボックスが使えなければ、サンドボックスなしで動かします" : "Codex のサンドボックスが使えなければ止めます");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const current = team.tasks.find((t) => t.id === openTask);
 
   return (
@@ -201,6 +211,12 @@ export function TeamView({
             {
               label: team.on_limit === "wait" ? "上限で止まったら: 回復を待つ（引き継ぐにする）" : "上限で止まったら: 別の担い手へ引き継ぐ（回復を待つにする）",
               onSelect: () => void toggleOnLimit(),
+            },
+            {
+              label: team.codex_without_sandbox === false
+                ? "Codex のサンドボックスが使えないとき: 止める（サンドボックスなしで動かすにする）"
+                : "Codex のサンドボックスが使えないとき: サンドボックスなしで動かす（止めるにする）",
+              onSelect: () => void toggleSandbox(),
             },
             { label: "候補の順番", onSelect: () => setFallbackSheet(true) },
             { label: "同時並列の設定", onSelect: () => setParallelSheet(true) },
@@ -237,10 +253,14 @@ export function TeamView({
                           <strong className="min-w-0 truncate text-sm">{headlessName(m)}</strong>
                           <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>
                           <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">ヘッドレス</span>
+                          {m.no_sandbox && (
+                            <span data-team-no-sandbox className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">サンドボックスなし</span>
+                          )}
                         </span>
                         <span data-team-member-state={mstate} className={`mt-0.5 block text-[11px] font-semibold ${STATE_COLOR[mstate]}`}>
                           {mstate === "working" ? "実行中" : mstate === "limited" ? "上限で停止" : "待機中（画面なし）"}
                         </span>
+                        {m.no_sandbox && <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
                       </span>
                     </div>
                   </li>
@@ -842,6 +862,8 @@ function TaskSheet({
                   {fmtSeconds(task.run.elapsed ?? (task.run.ended_at ? task.run.ended_at - task.run.started_at : undefined))}
                 </span>
               </p>
+              {task.run.sandbox === "none" && <p data-team-run-sandbox className="mt-0.5 text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</p>}
+              {task.run.failed_note && <p data-team-run-failed className="mt-0.5 text-red-600 dark:text-red-400">{task.run.failed_note}</p>}
               {task.run.last_line && <p data-team-run-line className="mt-0.5 break-words text-zinc-600 dark:text-zinc-300">最後の行: {task.run.last_line}</p>}
               {task.run.usage && fmtUsage(task.run.usage) && <p data-team-run-usage className="mt-0.5 text-zinc-500">使用量: {fmtUsage(task.run.usage)}</p>}
               {task.run.status === "limited" && task.wait_until && <p className="mt-0.5 text-amber-700 dark:text-amber-400">回復を待っています（〜{fmtClock(task.wait_until)}）</p>}
@@ -861,6 +883,7 @@ function TaskSheet({
                   <span className="min-w-0 break-words font-semibold">{r.label || r.cli}</span>
                   <span className="text-zinc-500">{r.kind === "headless" ? "ヘッドレス" : "画面"}・{r.cli}{r.account && r.account !== "default" ? `（${r.account}）` : ""}</span>
                   <span>{RUN_RESULT_LABEL[r.result] ?? r.result}</span>
+                  {r.sandbox === "none" && <span className="text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
                   {r.seconds != null && <span className="text-zinc-500">{fmtSeconds(r.seconds)}</span>}
                   {fmtUsage(r.usage) && <span className="text-zinc-500">{fmtUsage(r.usage)}</span>}
                 </li>

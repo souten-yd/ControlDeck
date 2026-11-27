@@ -250,7 +250,7 @@ def create_team(name: str) -> dict:
             "id": "t" + secrets.token_hex(4), "name": name, "created_at": _now(),
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
             "brief": "", "reset_before_dispatch": True,
-            "on_limit": "handoff", "fallback": [], "max_parallel": 3, "local_parallel": 1, "auto_run": True,
+            "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
             **made,
         }
         teams.append(team)
@@ -294,6 +294,10 @@ def update_team(team_id: str, fields: dict) -> dict:
                 if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
                     raise TeamError(f"{label}は 1〜{top} の整数にしてください")
                 team[key] = value
+        if fields.get("codex_without_sandbox") is not None:
+            if not isinstance(fields["codex_without_sandbox"], bool):
+                raise TeamError("サンドボックスなしの入り切りは真偽で指定してください")
+            team["codex_without_sandbox"] = fields["codex_without_sandbox"]
         if fields.get("auto_run") is not None:
             if not isinstance(fields["auto_run"], bool):
                 raise TeamError("自動の割り当ての入り切りは真偽で指定してください")
@@ -824,11 +828,17 @@ def list_teams() -> list[dict]:
                 ready = captured[sid]
             view["report_ready"] = ready
             tasks.append(view)
-        members = [{**m, "kind": "headless" if is_headless(m) else "console", "key": member_key(m)}
-                   for m in team.get("members", [])]
+        members = []
+        for m in team.get("members", []):
+            row = {**m, "kind": "headless" if is_headless(m) else "console", "key": member_key(m)}
+            if is_headless(m) and m.get("cli") == "codex":
+                from app.commander import team_runner
+                row["no_sandbox"] = team_runner.member_sandbox_free(m)  # この機械では codex のサンドボックスが使えない
+            members.append(row)
         out.append({**team, "members": members, "tasks": tasks, "parallel": parallel_summary(team),
                     "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),
                     "max_parallel": team.get("max_parallel", 3), "local_parallel": team.get("local_parallel", 1),
-                    "auto_run": team.get("auto_run", True), "workdir": team.get("workdir", ""),
+                    "auto_run": team.get("auto_run", True),
+                    "codex_without_sandbox": team.get("codex_without_sandbox", True), "workdir": team.get("workdir", ""),
                     "workdir_folder": team.get("workdir_folder", ""), "workdir_name": team.get("workdir_name", "")})
     return out

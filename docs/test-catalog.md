@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 270 ファイル、2711 テスト（目的の未記入 93 ファイル）
+- backend: 270 ファイル、2719 テスト（目的の未記入 93 ファイル）
 - E2E: 147 spec、329 テスト
 
 ## backend（backend/tests）
@@ -779,7 +779,7 @@
 
 ### backend/tests/test_commander_team_t3a.py
 
-目的: Nexarch の AI チーム T3a（ヘッドレスの担い手・上限の方針・同時並列と配り手・チームの作業場所）の試験。 目的: 利用者（2026-11-27）の要望を仕組みで守る。 - 「勝手に完成している状態を目指して」: ヘッドレスの実行が報告を板へ取り込み、確認・再挑戦へつながり、待ちのタスクを配り手が自動で割り当てる。 - 「チームがトークンが尽きて止まった場合、作業内容を引き継いで自動でルーターが別の CLI を開くか、待つかを設定で選択できるように」: on_limit = handoff（前の報告・進み具合・git の変更を本文に付けて別の担い手へ。同じ担い手は選ばない。候補の既定の順）／ wait（回復の時刻まで待って同じ担当で再実行。読めなければ 30 分）。実際にやった担い手を runs に残す。 - 「同時並列処理の場合はどうするのか」: 同時の上限・担い手ごとに 1 つ・担当ファイルの重なりで待つ・ローカルの上限。 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。 CLI は本物を呼ばない。`accounts.executable_path` を小さな偽の実行ファイル（stream-json・codex の json・opencode の json を出す script） へ差し替える。Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+目的: Nexarch の AI チーム T3a（ヘッドレスの担い手・上限の方針・同時並列と配り手・チームの作業場所）の試験。 目的: 利用者（2026-11-27）の要望を仕組みで守る。 - 「勝手に完成している状態を目指して」: ヘッドレスの実行が報告を板へ取り込み、確認・再挑戦へつながり、待ちのタスクを配り手が自動で割り当てる。 - 「チームがトークンが尽きて止まった場合、作業内容を引き継いで自動でルーターが別の CLI を開くか、待つかを設定で選択できるように」: on_limit = handoff（前の報告・進み具合・git の変更を本文に付けて別の担い手へ。同じ担い手は選ばない。候補の既定の順）／ wait（回復の時刻まで待って同じ担当で再実行。読めなければ 30 分）。実際にやった担い手を runs に残す。 - 「同時並列処理の場合はどうするのか」: 同時の上限・担い手ごとに 1 つ・担当ファイルの重なりで待つ・ローカルの上限。 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。 codex のサンドボックス（bwrap）がこの機械で使えない問題（Ubuntu の apparmor_restrict_unprivileged_userns=1。2026-11-27 実機で 書き込みも shell も全部 failed なのに終了コード 0 で「完了」）: 使えるかを一度だけ調べて覚え、使えなければ danger-full-access＋印、 codex_without_sandbox=false なら止める。codex の `status: failed` の item を失敗として数え、書き込みが全部失敗した実行は 未検証・review へ進めず、同じ担い手で 1 回再挑戦 → 続けて同じなら引き継ぎの方針へ。実際の codex の出力の形を試験に使う。 CLI は本物を呼ばない。`accounts.executable_path` を小さな偽の実行ファイル（stream-json・codex の json・opencode の json を出す script） へ差し替える。Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
 
 - `test_create_team_makes_workdir_and_defaults`
 - `test_workdir_is_recreated_when_missing`
@@ -825,6 +825,14 @@
 - `test_console_task_auto_dispatched_when_ready`
 - `test_watch_ignores_headless_tasks`
 - `test_api_policy_run_and_stop`
+- `test_stream_state_codex_counts_failed_ops_and_fills_progress`
+- `test_codex_sandbox_probe_runs_once_and_remembers`
+- `test_codex_without_sandbox_uses_danger_full_access_and_marks`
+- `test_codex_without_sandbox_off_stops_with_launch_error`
+- `test_sandbox_ok_machine_keeps_workspace_write`
+- `test_all_writes_failed_retries_same_member_once_then_hands_off`
+- `test_all_writes_failed_does_not_reach_review_and_report_is_unverified`
+- `test_all_writes_failed_single_member_blocks`
 
 ### backend/tests/test_commander_team_watch.py
 

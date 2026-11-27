@@ -133,8 +133,8 @@ def _last_work(task: dict, row: dict | None) -> str:
     return "（記録なし）"
 
 
-def handoff_text(prev_label: str, last_work: str, git: str) -> str:
-    text = (f"【引き継ぎ】前の担当（{prev_label}）が上限で止まりました。ここまでの作業: {last_work}。")
+def handoff_text(prev_label: str, last_work: str, git: str, why: str = "上限で止まりました") -> str:
+    text = (f"【引き継ぎ】前の担当（{prev_label}）が{why}。ここまでの作業: {last_work}。")
     if git:
         text += f"\n作業フォルダの変更:\n{git}\n"
     return text + "続きから仕上げて、同じ 5 行で報告してください。"
@@ -173,11 +173,19 @@ def apply_limit_policy(team_id: str, task_id: int, rows: dict[str, dict] | None 
         run = task.get("run") if isinstance(task.get("run"), dict) else {}
         if headless and run.get("status") != "limited":
             return events  # まだ実行中（印だけ残っている）
-        policy = team.get("on_limit", "handoff")
+        write_failed = run.get("reason") == "write_failed"
+        policy = "handoff" if write_failed else team.get("on_limit", "handoff")
         if rows is None:
             rows = {} if headless else {str(r["id"]): r for r in consoles.list_consoles()}
         elif not rows and not headless:
             rows = {str(r["id"]): r for r in consoles.list_consoles()}
+        if write_failed and not candidates(team, sid, _limited_members(task), rows):
+            task["status"] = "blocked"
+            task.pop("limited_at", None)
+            teams._event(task, "書き込みがすべて失敗・引き継ぎ先なし（自動で直せず）", "Nexarch")  # noqa: SLF001
+            events += team_runner._blocked_event(team, task)  # noqa: SLF001
+            teams._save(all_teams)  # noqa: SLF001
+            return events
         if policy == "wait" or _no_candidate(team, task, sid, rows):
             changed = False
             restart = False
@@ -216,7 +224,8 @@ def apply_limit_policy(team_id: str, task_id: int, rows: dict[str, dict] | None 
                 return events
             git_cwd = _workdir_of(team, prev)
             git = team_runner.git_changes(git_cwd) if git_cwd else ""
-            text = handoff_text(member_label(prev, rows.get(sid)), _last_work(task, rows.get(sid)), git)
+            text = handoff_text(member_label(prev, rows.get(sid)), _last_work(task, rows.get(sid)), git,
+                                "書き込みがすべて失敗しました" if write_failed else "上限で止まりました")
             new_key = teams.member_key(choice)
             prev_label = member_label(prev, rows.get(sid))
             new_label = member_label(choice, rows.get(new_key))
@@ -224,7 +233,7 @@ def apply_limit_policy(team_id: str, task_id: int, rows: dict[str, dict] | None 
             task["assignee"] = new_key
             task["status"] = "todo"
             task["resume_note"] = text
-            for k in ("limited_at", "wait_noted", "handoff_waiting_noted", "wait_until", "run"):
+            for k in ("limited_at", "wait_noted", "handoff_waiting_noted", "wait_until", "run", "write_fail_retries"):
                 task.pop(k, None)
             teams._event(task, f"上限で停止 → {new_label}へ引き継ぎ", "Nexarch")  # noqa: SLF001
             teams._save(all_teams)  # noqa: SLF001
@@ -246,7 +255,7 @@ def _no_candidate(team: dict, task: dict, sid: str, rows: dict[str, dict]) -> bo
 
 
 def _limited_members(task: dict) -> set[str]:
-    return {str(r.get("member")) for r in task.get("runs") or [] if r.get("result") == "limited"}
+    return {str(r.get("member")) for r in task.get("runs") or [] if r.get("result") in ("limited", "write_failed")}
 
 
 def _pick_ready(team: dict, task: dict, sid: str, rows: dict[str, dict]) -> dict | None:

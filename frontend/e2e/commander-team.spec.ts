@@ -25,11 +25,12 @@ interface Task {
 }
 interface Member {
   session_id?: string; id?: string; key?: string; kind?: string; cli?: string; account?: string; label?: string; role: string;
+  no_sandbox?: boolean;
 }
 interface TeamState {
   teams: {
     id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean;
-    on_limit?: string; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
+    on_limit?: string; codex_without_sandbox?: boolean; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
     workdir?: string; workdir_folder?: string; workdir_name?: string; parallel?: Record<string, number>;
     members: Member[]; tasks: Task[];
   }[];
@@ -88,6 +89,7 @@ async function mockTeams(page: Page, state: TeamState) {
       if (typeof fields.max_parallel === "number") team.max_parallel = fields.max_parallel;
       if (typeof fields.local_parallel === "number") team.local_parallel = fields.local_parallel;
       if (typeof fields.auto_run === "boolean") team.auto_run = fields.auto_run;
+      if (typeof fields.codex_without_sandbox === "boolean") team.codex_without_sandbox = fields.codex_without_sandbox;
       return route.fulfill({ json: team });
     }
     m = path.match(/^teams\/(\w+)\/members$/);
@@ -406,6 +408,7 @@ function headlessTeam(): TeamState {
         { session_id: "aa110001", key: "aa110001", kind: "console", role: "reviewer" },
         { id: "h0000aaaa", key: "h0000aaaa", kind: "headless", cli: "claude", account: "default", role: "developer", label: "自動係" },
         { id: "h0000bbbb", key: "h0000bbbb", kind: "headless", cli: "opencode", account: "default", role: "member", label: "ローカル" },
+        { id: "h0000cccc", key: "h0000cccc", kind: "headless", cli: "codex", account: "default", role: "member", label: "夜間", no_sandbox: true },
       ],
       tasks: [
         task(1, {
@@ -421,12 +424,15 @@ function headlessTeam(): TeamState {
           title: "上限で引き継ぎ", status: "doing", assignee: "h0000aaaa", assignee_state: "limited", limited_at: now - 60,
           wait_until: now + 1800,
           run: { run_id: "r3", status: "limited", member: "h0000aaaa", cli: "claude", started_at: now - 300, ended_at: now - 60,
-            last_line: "Edit: src/b.py", progress: [], usage: { input_tokens: 5000, output_tokens: 900, cost_usd: 0.8 }, tail: "5-hour limit reached", exit_code: 1 },
+            last_line: "Edit: src/b.py", progress: [], usage: { input_tokens: 5000, output_tokens: 900, cost_usd: 0.8 }, tail: "5-hour limit reached", exit_code: 1,
+          sandbox: "none", failed_ops: 2, failed_note: "失敗した操作 2 件" },
           runs: [
             { n: 1, kind: "headless", member: "h0000bbbb", cli: "opencode", account: "default", label: "ローカル", started_at: now - 900, ended_at: now - 700,
               seconds: 200, result: "limited", usage: { input_tokens: 900, output_tokens: 100, cost_usd: 0 } },
             { n: 2, kind: "headless", member: "h0000aaaa", cli: "claude", account: "default", label: "自動係", started_at: now - 300, ended_at: now - 60,
               seconds: 240, result: "limited", usage: { input_tokens: 5000, output_tokens: 900, cost_usd: 0.8 } },
+            { n: 3, kind: "headless", member: "h0000cccc", cli: "codex", account: "default", label: "夜間", started_at: now - 50, ended_at: now - 20,
+              seconds: 30, result: "write_failed", usage: null, sandbox: "none" },
           ],
         }),
       ],
@@ -445,7 +451,9 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.goto("/commander?view=team");
 
     // ヘッドレスのメンバー・同時に動いている数・作業場所
-    await expect(page.locator('[data-team-member][data-team-member-kind="headless"]')).toHaveCount(2);
+    await expect(page.locator('[data-team-member][data-team-member-kind="headless"]')).toHaveCount(3);
+    await expect(page.locator("[data-team-no-sandbox]")).toHaveCount(1);
+    await expect(page.locator("[data-team-no-sandbox]")).toContainText("サンドボックスなし");
     await expect(page.locator('[data-team-member-kind="headless"]').first()).toContainText("ヘッドレス");
     await expect(page.locator('[data-team-member-kind="headless"]').first()).toContainText("実行中");
     await expect(page.locator("[data-team-parallel]")).toContainText("2／3");
@@ -476,7 +484,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     // 詳細: 担い手の履歴（runs）
     await page.locator('[data-team-task="3"]').click();
     detail = page.getByRole("dialog", { name: "#3 上限で引き継ぎ" });
-    await expect(detail.locator("[data-team-runs] li")).toHaveCount(2);
+    await expect(detail.locator("[data-team-runs] li")).toHaveCount(3);
+    await expect(detail.locator("[data-team-runs] li").nth(2)).toContainText("サンドボックスなし（この機械では使えない）");
+    await expect(detail.locator("[data-team-run-failed]")).toContainText("失敗した操作 2 件");
+    await expect(detail.locator("[data-team-run-sandbox]")).toBeVisible();
     await expect(detail.locator("[data-team-runs] li").first()).toContainText("ローカル");
     await expect(detail.locator("[data-team-runs] li").first()).toContainText("上限で停止");
     await expect(detail.locator("[data-team-run-panel]")).toContainText("回復を待っています");
@@ -498,13 +509,21 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.getByRole("button", { name: "チームの操作" }).click();
     await page.getByRole("menuitem", { name: "候補の順番" }).click();
     const order = page.getByRole("dialog", { name: "候補の順番" });
-    await expect(order.locator("[data-team-fallback-row]")).toHaveCount(3);
+    await expect(order.locator("[data-team-fallback-row]")).toHaveCount(4);
     await order.getByRole("button", { name: /OpenCode・ローカルを上へ/ }).click();
     await order.getByRole("button", { name: /OpenCode・ローカルを上へ/ }).click();
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-t3a-order.png`, fullPage: true });
     await order.getByRole("button", { name: "保存", exact: true }).click();
-    await expect.poll(() => state.teams[0].fallback).toEqual(["h0000bbbb", "aa110001", "h0000aaaa"]);
+    await expect.poll(() => state.teams[0].fallback).toEqual(["h0000bbbb", "aa110001", "h0000aaaa", "h0000cccc"]);
+
+    // Codex のサンドボックスが使えないときの方針（既定: サンドボックスなしで動かす → 止める）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: /Codex のサンドボックスが使えないとき: サンドボックスなしで動かす/ }).click();
+    await expect.poll(() => state.teams[0].codex_without_sandbox).toBe(false);
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /Codex のサンドボックスが使えないとき: 止める/ })).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // 同時並列の設定
     await page.getByRole("button", { name: "チームの操作" }).click();

@@ -7,6 +7,10 @@
   wait（回復の時刻まで待って同じ担当で再実行。読めなければ 30 分）。実際にやった担い手を runs に残す。
 - 「同時並列処理の場合はどうするのか」: 同時の上限・担い手ごとに 1 つ・担当ファイルの重なりで待つ・ローカルの上限。
 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。
+codex のサンドボックス（bwrap）がこの機械で使えない問題（Ubuntu の apparmor_restrict_unprivileged_userns=1。2026-11-27 実機で
+書き込みも shell も全部 failed なのに終了コード 0 で「完了」）: 使えるかを一度だけ調べて覚え、使えなければ danger-full-access＋印、
+codex_without_sandbox=false なら止める。codex の `status: failed` の item を失敗として数え、書き込みが全部失敗した実行は
+未検証・review へ進めず、同じ担い手で 1 回再挑戦 → 続けて同じなら引き継ぎの方針へ。実際の codex の出力の形を試験に使う。
 CLI は本物を呼ばない。`accounts.executable_path` を小さな偽の実行ファイル（stream-json・codex の json・opencode の json を出す script）
 へ差し替える。Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
 """
@@ -61,6 +65,13 @@ if KIND == "claude":
 elif KIND == "codex":
     out({"type": "thread.started", "thread_id": "t1"})
     out({"type": "item.started", "item": {"id": "i1", "type": "command_execution", "command": "ls"}})
+    if MODE == "writefail":
+        out({"type": "item.completed", "item": {"id": "item_1", "type": "file_change",
+             "changes": [{"path": "/x/hello.txt", "kind": "add"}], "status": "failed"}})
+        open(args[args.index("-o") + 1], "w").write(text)
+        out({"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": text}})
+        out({"type": "turn.completed", "usage": {"input_tokens": 200, "output_tokens": 80}})
+        sys.exit(0)
     if MODE == "fail":
         sys.stderr.write("boom-stderr\n"); sys.exit(1)
     if MODE == "limit":
@@ -163,6 +174,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(team_runner, "_spawn", lambda func, *args: func(*args))
     monkeypatch.setattr(team_checks, "_spawn", lambda func, *args: func(*args))
     monkeypatch.setattr(team_runner, "POLL_INTERVAL", 0.02)
+    monkeypatch.setattr(team_runner, "codex_sandbox_ok", lambda: True)
     yield e
     with team_runner._active_lock:
         team_runner._active.clear()
@@ -843,3 +855,119 @@ def test_api_policy_run_and_stop(admin_client, env, monkeypatch):
     assert admin_client.post(f"{API}/{team['id']}/tasks/{task['id']}/run", headers=CSRF_HEADERS).status_code == 409
     assert admin_client.post(f"{API}/{team['id']}/tasks/{task['id']}/stop", headers=CSRF_HEADERS).json() == {"ok": True}
     assert admin_client.post(f"{API}/{team['id']}/tasks/{task['id']}/collect", headers=CSRF_HEADERS).status_code == 409
+
+
+# ---------------------------------------------------------------- codex のサンドボックス・失敗した操作
+
+REAL_CODEX_LINES = [
+    b'{"type":"thread.started","thread_id":"t1"}',
+    b'{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/x/hello.txt","kind":"add"}],"status":"in_progress"}}',
+    b'{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/x/hello.txt","kind":"add"}],"status":"failed"}}',
+    b'{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"cat hello.txt","status":"in_progress"}}',
+    b'{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"cat hello.txt","exit_code":1,"status":"failed"}}',
+    b'{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"done"}}',
+    b'{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
+]
+
+
+def test_stream_state_codex_counts_failed_ops_and_fills_progress():
+    state = team_runner.StreamState("codex")
+    for line in REAL_CODEX_LINES:
+        state.feed(line)
+    assert list(state.tools) == ["edit: /x/hello.txt (add)", "shell: cat hello.txt"]  # 同じ item は 1 回だけ
+    assert state.failed_ops == 2 and state.writes_failed == 1 and state.writes_ok == 0 and state.writes_all_failed
+    assert state.final_text == "done"
+    ok = team_runner.StreamState("codex")
+    ok.feed(b'{"type":"item.completed","item":{"id":"a","type":"file_change","changes":[{"path":"a","kind":"add"}],"status":"completed"}}')
+    assert ok.writes_ok == 1 and not ok.writes_all_failed and ok.failed_ops == 0
+
+
+def test_codex_sandbox_probe_runs_once_and_remembers(monkeypatch, tmp_path):
+    counter = tmp_path / "count"
+    for code, expected in ((0, True), (1, False)):
+        fake = tmp_path / f"bwrap{code}"
+        fake.write_text(f"#!{sys.executable}\nimport sys\nopen({str(counter)!r}, 'a').write('x')\nsys.exit({code})\n")
+        fake.chmod(0o755)
+        team_runner._sandbox_state.clear()
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda name, f=fake: str(f) if name == "bwrap" else None)
+        counter.write_text("")
+        assert team_runner.codex_sandbox_ok() is expected and team_runner.codex_sandbox_ok() is expected
+        assert counter.read_text() == "x"  # 1 回だけ
+    team_runner._sandbox_state.clear()
+
+
+def test_codex_without_sandbox_uses_danger_full_access_and_marks(env, monkeypatch):
+    monkeypatch.setattr(team_runner, "codex_sandbox_ok", lambda: False)
+    team = mk_team([H("codex", label="夜")])
+    argv, _e, _c = team_runner.build_launch({"cli": "codex", "account": "default"}, "x", env.work, env.tmp / "last")
+    assert argv[argv.index("-s") + 1] == "danger-full-access"
+    tid = mk_task(team, keys(team)[0])
+    teams.dispatch_task(team["id"], tid, "t")
+    task = get_task(team["id"], tid)
+    assert task["status"] == "review" and task["run"]["sandbox"] == "none" and task["runs"][0]["sandbox"] == "none"
+    assert env.calls("codex")[0]["argv"][env.calls("codex")[0]["argv"].index("-s") + 1] == "danger-full-access"
+    shown = [t for t in teams.list_teams() if t["id"] == team["id"]][0]
+    assert shown["members"][0]["no_sandbox"] is True and shown["codex_without_sandbox"] is True
+
+
+def test_codex_without_sandbox_off_stops_with_launch_error(env, monkeypatch):
+    monkeypatch.setattr(team_runner, "codex_sandbox_ok", lambda: False)
+    team = mk_team([H("codex")], codex_without_sandbox=False)
+    tid = mk_task(team, keys(team)[0])
+    teams.dispatch_task(team["id"], tid, "t")
+    task = get_task(team["id"], tid)
+    assert task["status"] == "blocked" and "サンドボックスがこの機械で使えません" in task["run"]["tail"] and not env.calls()
+    with pytest.raises(teams.TeamError):
+        teams.update_team(team["id"], {"codex_without_sandbox": "no"})
+
+
+def test_sandbox_ok_machine_keeps_workspace_write(env):
+    argv, _e, _c = team_runner.build_launch({"cli": "codex", "account": "default"}, "x", env.work, env.tmp / "last")
+    assert argv[argv.index("-s") + 1] == "workspace-write"
+    shown = teams.create_team("x")
+    assert shown["codex_without_sandbox"] is True
+
+
+def test_all_writes_failed_retries_same_member_once_then_hands_off(env, sent):
+    env.mode("codex", "writefail")
+    team = mk_team([H("codex", label="主"), H("claude", label="控え")])
+    first, second = keys(team)
+    tid = mk_task(team, first, checks=[])
+    teams.dispatch_task(team["id"], tid, "t")
+    task = get_task(team["id"], tid)
+    assert len(env.calls("codex")) == 2  # 同じ担い手で 1 回だけ再挑戦
+    assert "書き込みがすべて失敗" in prompt_of(env.calls("codex")[1])
+    handoff = prompt_of(env.calls("claude")[0])
+    assert "【引き継ぎ】前の担当（" in handoff and "書き込みがすべて失敗しました" in handoff
+    assert task["assignee"] == second and task["status"] == "review"
+    assert [r["result"] for r in task["runs"]] == ["write_failed", "write_failed", "ok"]
+    assert any("書き込みがすべて失敗" in h["event"] for h in task["history"])
+
+
+def test_all_writes_failed_does_not_reach_review_and_report_is_unverified(env, monkeypatch):
+    env.mode("codex", "writefail")
+    monkeypatch.setattr(team_runner, "_spawn", lambda *a: None)
+    team = mk_team([H("codex")])
+    tid = mk_task(team, keys(team)[0])
+    teams.dispatch_task(team["id"], tid, "t")
+    task = get_task(team["id"], tid)
+    monkeypatch.setattr(team_runner, "_restart", lambda *a: None)  # 再挑戦は始めさせない
+    monkeypatch.setattr(team_dispatch, "kick", lambda *a: 0)
+    # run を 1 回だけ実行して結果を見る（再挑戦は始めさせない）
+    team_runner._worker(team["id"], tid, task["run"]["run_id"], team["members"][0], "本文", env.work)
+    task = get_task(team["id"], tid)
+    assert task["status"] != "review" and task["status"] in ("todo", "doing"), task
+    assert teams.is_unverified({"report": task["report"]}), task
+    assert task["run"].get("failed_ops") == 1, task["run"]
+    assert task["run"]["failed_note"] == "失敗した操作 1 件"
+
+
+def test_all_writes_failed_single_member_blocks(env, sent):
+    env.mode("codex", "writefail")
+    team = mk_team([H("codex")])
+    tid = mk_task(team, keys(team)[0])
+    teams.dispatch_task(team["id"], tid, "t")
+    task = get_task(team["id"], tid)
+    assert task["status"] == "blocked" and len(env.calls("codex")) == 2
+    assert any("自動で直せませんでした" in m for _t, m in sent)

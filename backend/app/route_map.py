@@ -248,6 +248,10 @@ ROUTES: tuple[Route, ...] = (
           ("audit", "path_check", "no_secrets"), _o("commander/team_runner.py"), "nexarch",
           "shell なし・最小の環境（PATH・HOME・LANG など）＋アカウントの設定フォルダ・出力は一時ファイル（上限 50MB）・2 時間で打ち切り・止められる。"
           "本文・出力はログに出さない。監査ログは担当・CLI・終了コード・時間・上限かだけ"),
+    Route("nx-team-sandbox-probe", "backend", "workdir", "subprocess",
+          "codex のサンドボックス（bwrap）がこの機械で使えるかを一度だけ調べて覚える（`bwrap --ro-bind / / --dev /dev true`）。使えなければ codex を danger-full-access で動かす（チームの設定で止めることもできる）",
+          ("no_secrets",), _o("commander/team_runner.py"), "nexarch",
+          "shell なし・引数は固定・10 秒。Ubuntu の kernel.apparmor_restrict_unprivileged_userns=1 では bwrap が落ち、codex は書き込みも shell も全部失敗するのに完了と返す"),
     Route("nx-team-git", "backend", "workdir", "subprocess",
           "上限で止まった担当の作業フォルダの変更（git status --short・git diff --stat）を引き継ぎの本文のために読む",
           ("path_check", "no_secrets"), _o("commander/team_runner.py", "commander/team_dispatch.py"), "nexarch",

@@ -400,6 +400,7 @@ class _TeamUpdate(BaseModel):
     max_parallel: int | None = None
     local_parallel: int | None = None
     auto_run: bool | None = None
+    codex_without_sandbox: bool | None = None
 
 
 class _TeamMembers(BaseModel):

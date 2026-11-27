@@ -8,7 +8,10 @@ CLI を 1 回、新しい会話で走らせ、JSON の行を読んで進み具�
     --permission-prompts none --allowedTools Bash,Edit,Read,Write,Glob,Grep`（許可に無い道具は聞かずに拒否）。
     アカウントは CLAUDE_CONFIG_DIR（既定のアカウントなら付けない）。
   - codex: `codex exec --json -C <作業フォルダ> -s workspace-write --skip-git-repo-check -o <最後の返事のファイル> <本文>`。
-    アカウントは CODEX_HOME。
+    アカウントは CODEX_HOME。この機械で bwrap（サンドボックス）が使えないとき（Ubuntu の
+    kernel.apparmor_restrict_unprivileged_userns=1）は書き込みも shell もすべて失敗するのに「完了」と返すので、
+    使えるかを一度だけ調べて覚え（codex_sandbox_ok）、使えなければ `-s danger-full-access`（チームの codex_without_sandbox が
+    既定 true のとき。false なら LaunchError）。メンバーの表示と runs に「サンドボックスなし」の印を出す。
   - opencode: ControlDeck の OpenCode（v2）を OpenCode 画面と同じ設定（provider の設定フォルダ・ゲートウェイ・箱）で
     `opencode run <本文> --format json --auto --model controldeck/<モデル> --standalone`。作業フォルダは cwd。
 - 作業フォルダはチームの作業場所（teams.ensure_workdir）。commander.workdir.resolve_dir で検証してから使う。
@@ -57,6 +60,9 @@ LIMIT_RE = re.compile(
     r"|too many requests|\b429\b|quota|insufficient[_ ]credits?|credit balance|resource[_ ]exhausted", re.I)
 _EPOCH_RE = re.compile(r"limit reached\|(\d{10})")
 
+_sandbox_state: dict = {}
+_sandbox_lock = threading.Lock()
+SANDBOX_PROBE_TIMEOUT = 10
 _active: dict[tuple[str, int], dict] = {}
 _active_lock = threading.Lock()
 
@@ -67,6 +73,34 @@ class LaunchError(Exception):
 
 def _spawn(func, *args) -> None:
     threading.Thread(target=func, args=args, name="nexarch-run", daemon=True).start()
+
+
+def codex_sandbox_ok() -> bool:
+    """codex のサンドボックス（bwrap）がこの機械で使えるか。一度だけ調べて覚える（shell なし・timeout 付き）。
+
+    bwrap が無ければ調べようがない（codex 自身が持つ）ので使えるものとする。
+    """
+    with _sandbox_lock:
+        if "ok" in _sandbox_state:
+            return bool(_sandbox_state["ok"])
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            ok = True
+        else:
+            try:
+                done = subprocess.run(  # noqa: S603 - shell=False・引数は固定
+                    [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "true"], capture_output=True,
+                    timeout=SANDBOX_PROBE_TIMEOUT, stdin=subprocess.DEVNULL, check=False)
+                ok = done.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+        _sandbox_state["ok"] = ok
+        return ok
+
+
+def member_sandbox_free(member: dict) -> bool:
+    """この担い手は、この機械ではサンドボックスなしで動く（codex で bwrap が使えない）。"""
+    return member.get("cli") == "codex" and not codex_sandbox_ok()
 
 
 # ---------------------------------------------------------------- 起動の組み立て
@@ -113,7 +147,8 @@ def _opencode_launch(model: str, cwd: Path, text: str):
     return argv, env, lambda: provider._discard_runtime_config(runtime, config)  # noqa: SLF001
 
 
-def build_launch(member: dict, text: str, cwd: Path, last_file: Path) -> tuple[list[str], dict[str, str], object]:
+def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
+                 allow_no_sandbox: bool = True) -> tuple[list[str], dict[str, str], object]:
     """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。"""
     cli_id = str(member.get("cli") or "")
     account = str(member.get("account") or accounts.DEFAULT_ACCOUNT)
@@ -138,7 +173,12 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path) -> tuple[l
         argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose",
                 "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", CLAUDE_TOOLS]
     else:
-        argv = [exe, "exec", "--json", "-C", str(cwd), "-s", "workspace-write", "--skip-git-repo-check",
+        mode = "workspace-write"
+        if not codex_sandbox_ok():
+            if not allow_no_sandbox:
+                raise LaunchError("Codex のサンドボックスがこの機械で使えません")
+            mode = "danger-full-access"
+        argv = [exe, "exec", "--json", "-C", str(cwd), "-s", mode, "--skip-git-repo-check",
                 "-o", str(last_file), text]
     return argv, {**_base_env(exe), **account_env}, (lambda: None)
 
@@ -163,6 +203,10 @@ class StreamState:
         self.is_error = False
         self.limit_hint = False
         self.events = 0
+        self.failed_ops = 0          # 失敗した操作（codex の status: failed の item）
+        self.writes_ok = 0
+        self.writes_failed = 0
+        self._seen_items: set[str] = set()
 
     # -- 共通
     def _text(self, text: str) -> None:
@@ -237,13 +281,31 @@ class StreamState:
     def _codex(self, event: dict) -> None:
         kind = str(event.get("type") or "")
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        if kind == "item.completed" and item.get("type") == "agent_message":
+        item_type = item.get("type")
+        failed = str(item.get("status") or "") == "failed"
+        if kind == "item.completed" and item_type == "agent_message":
             self._text(str(item.get("text") or ""))
             self.final_text = str(item.get("text") or "")
-        elif kind in ("item.started", "item.completed") and item.get("type") == "command_execution":
-            self._tool("shell", item.get("command"))
-        elif kind in ("item.started", "item.completed") and item.get("type") == "file_change":
-            self._tool("edit", ", ".join(str(c.get("path")) for c in (item.get("changes") or []) if isinstance(c, dict)))
+        elif kind in ("item.started", "item.completed") and item_type in ("command_execution", "file_change"):
+            if item_type == "command_execution":
+                detail = f"shell: {item.get('command')}"
+            else:
+                changes = [c for c in (item.get("changes") or []) if isinstance(c, dict)]
+                detail = "edit: " + ", ".join(f"{c.get('path')} ({c.get('kind')})" for c in changes)
+            ident = str(item.get("id"))
+            if ident not in self._seen_items:
+                self._seen_items.add(ident)
+                self._tool(detail + (" 失敗" if failed else ""))
+            elif failed:
+                self.last_line = _short(detail + " 失敗", 200)
+            if kind == "item.completed":
+                if failed:
+                    self.failed_ops += 1
+                if item_type == "file_change":
+                    if failed:
+                        self.writes_failed += 1
+                    elif str(item.get("status") or "completed") == "completed":
+                        self.writes_ok += 1
         elif kind == "turn.completed":
             usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
             self._add_usage(usage.get("input_tokens"), usage.get("output_tokens"))
@@ -268,6 +330,11 @@ class StreamState:
         elif kind == "error":
             err = event.get("error")
             self._error(err.get("message") or err.get("name") or err.get("type") if isinstance(err, dict) else (err or event.get("message")))
+
+    @property
+    def writes_all_failed(self) -> bool:
+        """書き込み（file_change）を試みたのに 1 つも成功していない。"""
+        return self.writes_failed > 0 and self.writes_ok == 0
 
     def snapshot(self) -> dict:
         return {"last_line": self.last_line, "progress": list(self.tools), "usage": dict(self.usage)}
@@ -339,7 +406,7 @@ def _kill(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path) -> dict:
+def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_sandbox: bool = True) -> dict:
     """CLI を 1 回走らせて結果の dict を返す（同期）。本文・出力は返さずログにも出さない。"""
     cli_id = str(member.get("cli") or "")
     tmp = Path(tempfile.mkdtemp(prefix="nexarch-run-"))
@@ -347,7 +414,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path) -> dict:
     try:
         os.chmod(tmp, 0o700)
         out_path, err_path, last_path = tmp / "stdout", tmp / "stderr", tmp / "last"
-        argv, env, cleanup = build_launch(member, text, cwd, last_path)
+        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox)
         out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         err_fd = os.open(err_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -443,11 +510,12 @@ def _notify(events: list[dict]) -> None:
             logger.exception("チームの通知を送れませんでした")
 
 
-def _worker(team_id: str, task_id: int, run_id: str, member: dict, text: str, cwd: Path) -> None:
+def _worker(team_id: str, task_id: int, run_id: str, member: dict, text: str, cwd: Path,
+            allow_no_sandbox: bool = True) -> None:
     key = (team_id, task_id)
     try:
         try:
-            result = _execute(key, member, text, cwd)
+            result = _execute(key, member, text, cwd, allow_no_sandbox)
         except LaunchError as exc:
             result = {"launch_error": str(exc)[:300]}
         except Exception:  # noqa: BLE001 - スレッドの失敗で落とさない
@@ -497,6 +565,9 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
             run["last_line"] = state.last_line
             run["progress"] = list(state.tools)
             run["usage"] = usage
+            run["failed_ops"] = state.failed_ops
+            if state.failed_ops:
+                run["failed_note"] = f"失敗した操作 {state.failed_ops} 件"
         code = result.get("exit")
         seconds = float(result.get("seconds") or 0)
         run["exit_code"] = code
@@ -548,6 +619,27 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
                     task["status"] = "blocked"
                     teams._event(task, f"実行が失敗（{why}）・自動で直せず", "Nexarch")
                     events += _blocked_event(team, task)
+            elif state and state.writes_all_failed:
+                # 書き込みがすべて失敗したのに「完了」と返した（サンドボックスなど）。報告は未検証・review へ進めない。
+                run["status"] = "failed"
+                run["reason"] = "write_failed"
+                report = teams.parse_report(str(result.get("final") or "")) or _synth_report(str(result.get("final") or ""))
+                task["report"] = {**report, "tests": "", "verify": ""}
+                teams.runs_close(task, "write_failed", usage=usage, exit_code=code)
+                audit_args = (code, seconds, False, "write_failed")
+                if int(task.get("write_fail_retries") or 0) < 1:
+                    task["write_fail_retries"] = 1
+                    task["resume_note"] = (
+                        f"【Nexarch タスク #{task['id']} 再挑戦】前回の実行は、ファイルの書き込みがすべて失敗していました"
+                        f"（{state.writes_failed} 件）。書き込みが実際にできたかを確かめながら、もう一度作業して同じ 5 行で報告してください。")
+                    task["status"] = "todo"
+                    teams._event(task, "書き込みがすべて失敗 → 同じ担い手で再挑戦", "Nexarch")
+                    followup = lambda: _restart(team_id, task_id)  # noqa: E731
+                else:
+                    run["status"] = "limited"  # 続けて同じ → 上限と同じく引き継ぎの方針へ（候補が無ければ blocked）
+                    task["limited_at"] = now
+                    teams._event(task, "書き込みがすべて失敗（再挑戦しても同じ）→ 引き継ぎの方針へ", "Nexarch")
+                    followup = lambda: _policy_after(team_id, task_id)  # noqa: E731
             else:
                 run["status"] = "finished"
                 teams.runs_close(task, "ok", usage=usage, exit_code=code)
@@ -604,6 +696,8 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         reason = team_dispatch.blocker(team, task, member, check_overlap=False, retry=retry)
         if reason:
             raise teams.TeamError(reason, 409)
+    sandbox_free = member_sandbox_free(member)  # 初回だけ bwrap を調べる（排他の外）
+    allow_no_sandbox = team.get("codex_without_sandbox", True) is not False
     workdir_path = teams.ensure_workdir(team_id)
     try:
         cwd = workdir.resolve_dir(workdir_path)
@@ -627,6 +721,7 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         task["status"] = "doing"
         if not retry:
             task["attempts"] = 0
+            task.pop("write_fail_retries", None)
         task.pop("checks_result", None)
         task.pop("wait_until", None)
         for k in ("stalled_at", "limited_at", "closed_noted", "notified"):
@@ -634,12 +729,15 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         now = teams._now()
         task["run"] = {"run_id": run_id, "status": "running", "member": teams.member_key(member), "cli": member.get("cli"),
                        "started_at": now, "last_line": "", "progress": [], "usage": None, "tail": "", "exit_code": None}
-        teams.runs_open(task, member, kind="headless")
+        entry = teams.runs_open(task, member, kind="headless")
+        if sandbox_free:
+            entry["sandbox"] = "none"
+            task["run"]["sandbox"] = "none"
         teams._event(task, ("再挑戦" if retry else "実行を開始") + f"（{member.get('cli')}・ヘッドレス）"
                      + ("・引き継ぎつき" if note and not retry else ""), by)
         teams._save(all_teams)
         view = teams._task_view(team, task)
-    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd)
+    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd, allow_no_sandbox)
     return view
 
 
