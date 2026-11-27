@@ -263,7 +263,7 @@ CREATED_BY = ("", "nexarch", "assistant")
 
 
 def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> dict:
-    """チームを作る。役割とルーターは Nexarch の設定の既定を写す（T3b）。
+    """チームを作る。役割とチームリーダーは Nexarch の設定の既定を写す（T3b）。
 
     保存先: AI アシスタントから作る（created_by="assistant"）ときは、その会話の OpenCode の作業場所（workdir_path）をそのまま
     使う（新しいフォルダを作らない・必須）。それ以外は workdir_path があればそれ、無ければ Nexarch の設定の保存先
@@ -285,7 +285,7 @@ def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> d
     else:
         made = _make_workdir(name)
     roles = team_roles.new_team_roles()
-    router = team_roles.new_team_router()
+    leader = team_roles.new_team_leader()
     with _lock:
         teams = _load()
         team = {
@@ -293,7 +293,7 @@ def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> d
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
             "brief": "", "reset_before_dispatch": True,
             "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
-            "roles": roles, "router": router, "limits": {}, "created_by": created_by,
+            "roles": roles, "leader": leader, "limits": {}, "created_by": created_by,
             **made,
         }
         teams.append(team)
@@ -579,15 +579,15 @@ def set_roles(team_id: str, roles: object) -> dict:
     return team
 
 
-def set_router(team_id: str, router: object) -> dict:
-    """ルーターの任命。null なら既定のルーターに戻す。"""
+def set_leader(team_id: str, leader: object) -> dict:
+    """チームリーダーの任命。null なら既定のチームリーダーに戻す。"""
     from app.commander import team_roles
 
-    ep = team_roles.clean_endpoint_or_none(router, "ルーター")
+    ep = team_roles.clean_endpoint_or_none(leader, "チームリーダー")
     with _lock:
         teams = _load()
         team = _find_team(teams, team_id)
-        team["router"] = None if ep is None else {**ep, "kind": "headless"}
+        team["leader"] = None if ep is None else {**ep, "kind": "headless"}
         _save(teams)
     return team
 
@@ -943,8 +943,8 @@ def list_teams() -> list[dict]:
         from app.commander import team_roles
 
         out.append({**team, "members": members, "tasks": tasks, "parallel": parallel_summary(team),
-                    "roles": team_roles.role_views(team), "router": team.get("router"),
-                    "router_effective": team_roles.router_endpoint(team), "limits": team.get("limits", {}),
+                    "roles": team_roles.role_views(team), "leader": team.get("leader"),
+                    "leader_effective": team_roles.leader_endpoint(team), "limits": team.get("limits", {}),
                     "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),
                     "max_parallel": team.get("max_parallel", 3), "local_parallel": team.get("local_parallel", 1),
                     "auto_run": team.get("auto_run", True),

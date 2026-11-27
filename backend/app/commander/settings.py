@@ -1,4 +1,4 @@
-"""Nexarch（AI Commander）の全体の設定。自動再開で送る文言と、チームの既定（T3b: 既定のルーター・既定の役割）。
+"""Nexarch（AI Commander）の全体の設定。自動再開で送る文言と、チームの既定（T3b: 既定のチームリーダー・既定の役割）。
 
 `data/ai-commander/settings.json`（0600）。コンソールごとの文言（tmux の印 @cd-commander-resume_message）が
 あればそちらが勝ち、無ければここの文言、ここも無ければ DEFAULT_RESUME_MESSAGE。
@@ -50,9 +50,9 @@ def _write(data: dict) -> None:
     os.replace(temp, path)
 
 
-def default_router() -> dict | None:
-    """既定のルーター（endpoint）。未設定・壊れていれば None。"""
-    value = _read().get("default_router")
+def default_leader() -> dict | None:
+    """既定のチームリーダー（endpoint）。未設定・壊れていれば None。"""
+    value = _read().get("default_leader")
     return value if isinstance(value, dict) and value.get("cli") else None
 
 
@@ -85,20 +85,20 @@ def clean_team_root(value: object) -> str:
         raise ValueError(f"保存先を使えません: {exc}") from exc
 
 
-def set_team_defaults(router: object = _UNSET, roles: list[dict] | None = None, *, team_root: object = _UNSET) -> dict:
-    """既定のルーター・既定の役割・チームの保存先を保存する（検証済みの値を渡す。
-    渡さなかったものは変えない。router・team_root は空なら未設定へ、roles は [] なら組み込みへ戻す）。"""
+def set_team_defaults(leader: object = _UNSET, roles: list[dict] | None = None, *, team_root: object = _UNSET) -> dict:
+    """既定のチームリーダー・既定の役割・チームの保存先を保存する（検証済みの値を渡す。
+    渡さなかったものは変えない。leader・team_root は空なら未設定へ、roles は [] なら組み込みへ戻す）。"""
     data = _read()
     if team_root is not _UNSET:
         if team_root:
             data["team_root"] = team_root
         else:
             data.pop("team_root", None)
-    if router is not _UNSET:
-        if router:
-            data["default_router"] = router
+    if leader is not _UNSET:
+        if leader:
+            data["default_leader"] = leader
         else:
-            data.pop("default_router", None)
+            data.pop("default_leader", None)
     if roles is not None:
         if roles:
             data["default_roles"] = roles
@@ -110,7 +110,7 @@ def set_team_defaults(router: object = _UNSET, roles: list[dict] | None = None, 
 
 def get() -> dict:
     return {"resume_message": resume_message(), "default_resume_message": DEFAULT_RESUME_MESSAGE,
-            "default_router": default_router(), "default_roles": default_roles(), "team_root": team_root()}
+            "default_leader": default_leader(), "default_roles": default_roles(), "team_root": team_root()}
 
 
 def set_resume_message(value: str) -> dict:

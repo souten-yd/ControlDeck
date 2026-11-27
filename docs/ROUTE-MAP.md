@@ -212,7 +212,7 @@ flowchart LR
   backend -->|"nx-team-git (subprocess)"| workdir
   backend -->|"nx-team-handoff-inject (tmux)"| console
   backend -->|"nx-team-dispatcher (file)"| board
-  backend -->|"nx-team-router-run (subprocess)"| workdir
+  backend -->|"nx-team-leader-run (subprocess)"| workdir
   cli_accounts -->|"nx-team-models (file)"| backend
   backend -->|"nx-team-role-console (tmux)"| console
   frontend -->|"nx-team-handoff-choose (api)"| backend
@@ -239,7 +239,7 @@ flowchart LR
 | `nx-team-git` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 上限で止まった担当の作業フォルダの変更（git status --short・git diff --stat）を引き継ぎの本文のために読む | `path_check` `no_secrets` | `backend/app/commander/team_runner.py`<br>`backend/app/commander/team_dispatch.py` | shell なし・引数は固定・15 秒・読むだけ。git が無い・リポジトリでなければ省く |
 | `nx-team-handoff-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限で止まったタスクを次の候補（画面のコンソール）へ、引き継ぎの文を付けて送り直す。待ちのタスクを空いた担当へ自動で送る（配り手） | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/teams.py` | 同時に走らせる数・担い手ごとに 1 つ・担当ファイルの重なり・ローカルの同時の数の決まりの範囲だけ |
 | `nx-team-dispatcher` | backend（FastAPI） | チームの板（teams.json） | file | 待ちのタスクを空いた担い手へ割り当て（60 秒ごと＋タスクが終わったとき）・上限の方針（引き継ぐ／回復を待つ）・中断の回収 | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/team_runner.py` |  |
-| `nx-team-router-run` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 目標からチームを作る: 任命されたルーター（claude・codex・opencode）をヘッドレスで 1 回、読むだけで走らせ、JSON の計画（前提・役割の数・タスク）を受け取る | `audit` `path_check` `no_secrets` | `backend/app/commander/team_router.py`<br>`backend/app/commander/team_runner.py` | 目標・作業場所のファイルの一覧（上位 200 件・shell なし）・役割・スキーマだけを渡す。claude は読む道具だけ（Read・Glob・Grep）、codex は read-only。出力はコードがスキーマで検証（形が違えば 1 回だけ再実行・だめなら止めて通知）。確認のコマンドは許す形だけ。本文・出力はログに出さない |
+| `nx-team-leader-run` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 目標からチームを作る: 任命されたチームリーダー（claude・codex・opencode）をヘッドレスで 1 回、読むだけで走らせ、JSON の計画（前提・役割の数・タスク）を受け取る | `audit` `path_check` `no_secrets` | `backend/app/commander/team_leader.py`<br>`backend/app/commander/team_runner.py` | 目標・作業場所のファイルの一覧（上位 200 件・shell なし）・役割・スキーマだけを渡す。claude は読む道具だけ（Read・Glob・Grep）、codex は read-only。出力はコードがスキーマで検証（形が違えば 1 回だけ再実行・だめなら止めて通知）。確認のコマンドは許す形だけ。本文・出力はログに出さない |
 | `nx-team-models` | CLI アカウントのフォルダ（ログインの鍵が入る） | backend（FastAPI） | file | 担い手のモデルと考えるレベルの一覧: codex の models_cache.json（slug と考えるレベルだけ）・ゲートウェイのモデルの一覧・claude は固定の別名。5 分覚える | `auth` `no_secrets` | `backend/app/commander/models.py`<br>`backend/app/commander/router.py` | auth.json など鍵のファイルは読まない・返さない。外へは何も取りに行かない |
 | `nx-team-role-console` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 役割の担い手が画面ありのとき、Nexarch のコンソールを自動で開く（チームの作業場所・役割のモデルと考えるレベルの引数つき） | `audit` `path_check` | `backend/app/commander/team_roles.py`<br>`backend/app/commander/consoles.py` | 実行ファイル名は CLIS の表だけ・モデルと考えるレベルは英数と ._:/#- だけに検証。開ける数は役割の数まで |
 | `nx-team-handoff-choose` | 画面（frontend / React） | backend（FastAPI） | api | 引き継ぎ先が無くて止まったタスクへ、画面で選んだ担い手（コンソールとモデル別）で引き継いで再開する。選べばその役割のセカンダリへ足せる | `auth` `audit` | `backend/app/commander/router.py`<br>`backend/app/commander/team_roles.py` |  |

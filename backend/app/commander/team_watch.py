@@ -211,8 +211,8 @@ async def watch_loop() -> None:
 
     try:  # 起動時: 前の ControlDeck で走っていた実行は「中断」にする（自動では続けない）
         await asyncio.to_thread(team_runner.recover_interrupted)
-        from app.commander import team_router
-        await asyncio.to_thread(team_router.recover_interrupted)
+        from app.commander import team_leader
+        await asyncio.to_thread(team_leader.recover_interrupted)
     except Exception:  # noqa: BLE001
         logger.exception("中断した実行の回収に失敗しました")
     while True:

@@ -22,7 +22,7 @@ CLI を 1 回、新しい会話で走らせ、JSON の行を読んで進み具�
 - 止める（プロセスのグループごと終わらせる）。ControlDeck を再起動したら走っていた実行は「中断」（recover_interrupted）。
 - 監査ログ commander.team.run: 担当・CLI・終了コード・かかった時間・上限か（本文・出力は入れない）。
 根拠: 利用者（2026-11-27）「勝手に完成している状態を目指して」「チームがトークンが尽きて止まった場合、作業内容を引き継いで
-自動でルーターが別の CLI を開くか、待つかを設定で選択できるように」と docs/PLAN-nexarch-team.md T3。
+自動でチームリーダーが別の CLI を開くか、待つかを設定で選択できるように」と docs/PLAN-nexarch-team.md T3。
 """
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def _opencode_launch(model: str, cwd: Path, text: str):
     return argv, env, lambda: provider._discard_runtime_config(runtime, config)  # noqa: SLF001
 
 
-ROUTER_TOOLS = "Read,Glob,Grep"
+LEADER_TOOLS = "Read,Glob,Grep"
 
 
 def _model_args(member: dict) -> tuple[str, str]:
@@ -165,7 +165,7 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
     """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。
 
     model・effort があれば渡す（claude `--model` `--effort`・codex `-m` `-c model_reasoning_effort=`・opencode `--model …#variant`）。
-    schema があればルーターの実行（読むだけ・JSON の出力。claude は `--output-format json --json-schema`、codex は `--output-schema`）。
+    schema があればチームリーダーの実行（読むだけ・JSON の出力。claude は `--output-format json --json-schema`、codex は `--output-schema`）。
     """
     cli_id = str(member.get("cli") or "")
     model, effort = _model_args(member)
@@ -193,7 +193,7 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
     if cli_id == "claude":
         if schema is not None:
             argv = [exe, "-p", text, "--output-format", "json", "--json-schema", json.dumps(schema, ensure_ascii=False),
-                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", ROUTER_TOOLS]
+                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", LEADER_TOOLS]
         else:
             argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose",
                     "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", CLAUDE_TOOLS]

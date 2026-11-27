@@ -266,9 +266,9 @@ ROUTES: tuple[Route, ...] = (
     Route("nx-team-dispatcher", "backend", "board", "file",
           "待ちのタスクを空いた担い手へ割り当て（60 秒ごと＋タスクが終わったとき）・上限の方針（引き継ぐ／回復を待つ）・中断の回収",
           ("audit",), _o("commander/team_dispatch.py", "commander/team_runner.py"), "nexarch"),
-    Route("nx-team-router-run", "backend", "workdir", "subprocess",
-          "目標からチームを作る: 任命されたルーター（claude・codex・opencode）をヘッドレスで 1 回、読むだけで走らせ、JSON の計画（前提・役割の数・タスク）を受け取る",
-          ("audit", "path_check", "no_secrets"), _o("commander/team_router.py", "commander/team_runner.py"), "nexarch",
+    Route("nx-team-leader-run", "backend", "workdir", "subprocess",
+          "目標からチームを作る: 任命されたチームリーダー（claude・codex・opencode）をヘッドレスで 1 回、読むだけで走らせ、JSON の計画（前提・役割の数・タスク）を受け取る",
+          ("audit", "path_check", "no_secrets"), _o("commander/team_leader.py", "commander/team_runner.py"), "nexarch",
           "目標・作業場所のファイルの一覧（上位 200 件・shell なし）・役割・スキーマだけを渡す。claude は読む道具だけ（Read・Glob・Grep）、codex は read-only。"
           "出力はコードがスキーマで検証（形が違えば 1 回だけ再実行・だめなら止めて通知）。確認のコマンドは許す形だけ。本文・出力はログに出さない"),
     Route("nx-team-models", "cli_accounts", "backend", "file",

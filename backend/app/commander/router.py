@@ -415,18 +415,18 @@ class _TeamRoles(BaseModel):
     roles: list[dict[str, Any]] = Field(max_length=20)
 
 
-class _TeamRouter(BaseModel):
-    router: dict[str, Any] | None = None
+class _TeamLeader(BaseModel):
+    leader: dict[str, Any] | None = None
 
 
 class _AutoTeam(BaseModel):
-    """目標からチームを作る（ルーターが計画する）。作業場所が空なら新しい自動の作業場所。"""
+    """目標からチームを作る（チームリーダーが計画する）。作業場所が空なら新しい自動の作業場所。"""
     goal: str = Field(max_length=20000)
     name: str = Field(default="", max_length=200)
     workdir: str = Field(default="", max_length=4096)
 
 
-class _RouterRun(BaseModel):
+class _LeaderRun(BaseModel):
     goal: str = Field(max_length=20000)
 
 
@@ -436,7 +436,7 @@ class _HandoffChoice(BaseModel):
 
 
 class _TeamDefaults(BaseModel):
-    default_router: dict[str, Any] | None = None
+    default_leader: dict[str, Any] | None = None
     default_roles: list[dict[str, Any]] | None = Field(default=None, max_length=20)
     # チームの保存先（親フォルダ）。渡したときだけ変える・空文字は未設定へ戻す
     team_root: str | None = Field(default=None, max_length=4096)
@@ -524,16 +524,16 @@ def put_team_defaults(
     body: _TeamDefaults, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    """チームの既定（既定のルーター・既定の役割）。新しいチームはこれを写して始まる。"""
+    """チームの既定（既定のチームリーダー・既定の役割）。新しいチームはこれを写して始まる。"""
     from app.commander import settings as commander_settings
     from app.commander import team_roles
 
     def work():
-        router_ep = team_roles.clean_endpoint_or_none(body.default_router, "既定のルーター")
+        leader_ep = team_roles.clean_endpoint_or_none(body.default_leader, "既定のチームリーダー")
         roles = None if body.default_roles is None else team_roles.clean_roles(body.default_roles)
         extra: dict = {}
-        if "default_router" in body.model_fields_set:
-            extra["router"] = {**router_ep, "kind": "headless"} if router_ep else None
+        if "default_leader" in body.model_fields_set:
+            extra["leader"] = {**leader_ep, "kind": "headless"} if leader_ep else None
         if "team_root" in body.model_fields_set:
             try:
                 extra["team_root"] = commander_settings.clean_team_root(body.team_root)
@@ -551,24 +551,24 @@ def create_auto_team(
     body: _AutoTeam, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    """目標からチームを作る。チームを作ってルーターを走らせる（結果は一覧の router_run で見る）。"""
-    from app.commander import team_router
+    """目標からチームを作る。チームを作ってチームリーダーを走らせる（結果は一覧の router_run で見る）。"""
+    from app.commander import team_leader
 
-    team = _team_call(team_router.create_and_start, body.goal, body.name, body.workdir)
+    team = _team_call(team_leader.create_and_start, body.goal, body.name, body.workdir)
     _team_audit(db, user, request, "auto", team["id"], name=team["name"], goal_length=len(body.goal))
     return team
 
 
-@router.post("/teams/{team_id}/router/run")
-def run_team_router(
-    team_id: str, body: _RouterRun, request: Request,
+@router.post("/teams/{team_id}/leader/run")
+def run_team_leader(
+    team_id: str, body: _LeaderRun, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    """既存のチームへルーターで計画を足す。"""
-    from app.commander import team_router
+    """既存のチームへチームリーダーで計画を足す。"""
+    from app.commander import team_leader
 
-    team = _team_call(team_router.start, team_id, body.goal)
-    _team_audit(db, user, request, "router.run", team_id, goal_length=len(body.goal))
+    team = _team_call(team_leader.start, team_id, body.goal)
+    _team_audit(db, user, request, "leader.run", team_id, goal_length=len(body.goal))
     return team
 
 
@@ -582,14 +582,14 @@ def set_team_roles(
     return team
 
 
-@router.put("/teams/{team_id}/router")
-def set_team_router(
-    team_id: str, body: _TeamRouter, request: Request,
+@router.put("/teams/{team_id}/leader")
+def set_team_leader(
+    team_id: str, body: _TeamLeader, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    """ルーターを任命する（null なら既定のルーターへ戻す）。"""
-    team = _team_call(teams.set_router, team_id, body.router)
-    _team_audit(db, user, request, "router", team_id, router=team.get("router"))
+    """チームリーダーを任命する（null なら既定のチームリーダーへ戻す）。"""
+    team = _team_call(teams.set_leader, team_id, body.leader)
+    _team_audit(db, user, request, "leader", team_id, leader=team.get("leader"))
     return team
 
 

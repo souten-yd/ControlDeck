@@ -141,10 +141,10 @@ def new_team_roles() -> list[dict]:
         return builtin_roles()
 
 
-def new_team_router() -> dict | None:
+def new_team_leader() -> dict | None:
     from app.commander import settings as commander_settings
 
-    return commander_settings.default_router()
+    return commander_settings.default_leader()
 
 
 def find_role(team: dict, role_id: object) -> dict | None:
@@ -160,11 +160,11 @@ def chain(role: dict) -> list[dict]:
     return ([role["primary"]] if role.get("primary") else []) + list(role.get("secondary") or [])
 
 
-def router_endpoint(team: dict) -> dict:
-    """ルーターの担い手: チームのルーター → 既定のルーター → 導入済みの最初の CLI（claude・codex・opencode の順）。"""
+def leader_endpoint(team: dict) -> dict:
+    """チームリーダーの担い手: チームのチームリーダー → 既定のチームリーダー → 導入済みの最初の CLI（claude・codex・opencode の順）。"""
     from app.commander import settings as commander_settings
 
-    for ep in (team.get("router"), commander_settings.default_router()):
+    for ep in (team.get("leader"), commander_settings.default_leader()):
         if ep:
             return {**ep, "kind": "headless"}
     for cli in teams.HEADLESS_CLIS:
