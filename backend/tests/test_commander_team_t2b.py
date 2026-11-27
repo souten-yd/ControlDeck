@@ -167,7 +167,8 @@ def test_reset_command_per_cli_then_wait_then_body(admin_client, fake, monkeypat
     def fake_sleep(seconds):
         # time.sleep は process 全体で差し替わるので、他の試験の残りのスレッド（ヘッドレスの実行など）の sleep は数えない
         # （全体の実行でだけ ['', ''] になって落ちた: 2026-11-27）
-        if threading.current_thread().name.startswith("nexarch-"):
+        # 他の試験の残りのスレッド（名前の無いものも）の sleep は数えない。数えるのはリセットの待ち（RESET_WAIT）だけ
+        if threading.current_thread().name.startswith("nexarch-") or seconds != teams.RESET_WAIT:
             real_sleep(seconds)
             return
         sleeps.append(seconds)

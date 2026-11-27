@@ -1,114 +1,48 @@
-"""Nexarch の AI チームのチームリーダー（T3b）: 目標からチームを自動で作る。
+"""Nexarch の AI チームのチームリーダーの実行（T3c。T3b の「1 回だけ計画を返す」を、MCP で Nexarch を動かす長い実行へ置き換えた）。
 
-チームリーダー = 任命された担い手（headless の endpoint）。目標（文）と作業場所のファイルの一覧（上位 200 件・shell なしで列挙）・
-役割の一覧・出力のスキーマを渡して **ヘッドレスで 1 回だけ**走らせ（T3a の team_runner。読むだけ・書かせない）、JSON の計画を受け取る。
+「頼む」（一文＋任意で作業場所）→ チームを作り → チームリーダーの endpoint（T3b で任命）をヘッドレスで長く動かす。
+チームリーダーは MCP の道具 `nexarch_team`（leader_mcp.py）で、調べる・計画を書く・段（explore・implement・review・hard）で仕事を振る・
+待つ・差分と結果を見る・確認を流す・統合する・利用者に聞く・終える。計画・仕事・実行・結果はすべて Nexarch が持つ。
 
-- 出力: `{brief, roles: {役割の名前: 必要数}, tasks: [{title, goal, acceptance, files, role, checks}]}`（tasks は 1〜20）。
-  claude は `--output-format json --json-schema`、codex は `--output-schema`、opencode は本文で JSON を求める。
-- 検証はこのコード（スキーマに頼らない）。形が違えば 1 回だけ「形が違う」と言って再実行し、それでもだめなら止めて通知。
-  役割の名前は既存のものだけ（外は捨てる）・数は 1〜4 に丸める・確認のコマンドは T2b の許す形（1 行・制御文字なし・shlex で割れる・
-  シェルの演算子なし）だけ通し、通らないものは捨てて履歴に残す。
-- 返ったら brief をチームの前提に、tasks を板（待ち）に、roles の数を役割の count に。auto_run なら配り手がそのまま動かす。
-- チームリーダーの実行も team["leader_runs"] に残す（時間・使用量・結果）。本文・出力・鍵はログにも通知にも出さない。
-根拠: 利用者（2026-11-27）「チームはチームリーダーが自動で作成して欲しい」「チームリーダーを任命する感じで」「既定のチームリーダー設定ができると良い」。
+- 起動の引数（`--help` で確かめた 2026-11-27 の版）: claude は `--mcp-config <0600 の設定ファイル> --strict-mcp-config --permission-mode dontAsk
+  --allowedTools mcp__nexarch_team__*,Read,Glob,Grep`、codex は `exec -s read-only -c mcp_servers.nexarch_team.command=… args=… env_vars=…`
+  （token は環境変数で渡し env_vars で橋渡しへ転送する）、opencode は provider の payload["mcp"]（設定の mcp に nexarch_team を足す）。
+  どれも stdio の橋渡し（integrations/opencode/addon_mcp_bridge.py）が token つきで Nexarch の HTTP の口を呼ぶ。
+- 上限: チームリーダーの endpoint が上限なら、チームリーダーのセカンダリ（チームのチームリーダー → hard 役割の primary・secondary の順）で
+  `team_status` から再開（本文に「再開です。team_status を最初に読む」）。止めた endpoint は回復の時刻まで使わない。
+  プロセスが落ちたら 1 回だけ同じ endpoint で再開。finish せずに終わったら「まだ終わっていない」として再開（最大 3 回。超えたら止めて通知）。
+- 終わったら結果（何をしたか・確認の結果・変更ファイルと行数・残り・使用量の合計）を team["result"] へ。元から git の作業場所なら
+  「取り込む」（land）でチームのブランチを元のブランチへ。Nexarch が git init した作業場所は終わりに元のブランチへ fast-forward。
+- 実行の記録（team["leader_runs"]）・監査ログ commander.team.leader（本文・出力・鍵・token は入れない）。
+根拠: 利用者（2026-11-27）「一文リーダーに依頼したら、調査・計画・振り分け・個別の実装と評価・統合して評価・試験してソフトを開発する
+イメージ。従来 Claude がやっている Haiku や Sonnet を使って Opus が作業している流れを模倣。ただし LLM は横断的に。司令塔も Claude だけでなく
+Codex・OpenRouter・OpenCode・ローカル LLM が使えるように」。
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import shlex
 import threading
 import time
 
-from app.commander import team_roles, team_runner, teams, workdir
+from app.commander import leader_mcp, team_git, team_roles, team_runner, teams, workdir
+from app.config import get_config
 
 logger = logging.getLogger(__name__)
 
-TASKS_MAX = 20
-FILES_LISTED = 200
 GOAL_MAX = 4000
-RUNS_KEPT = 10
-SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", ".cache", "target"}
+RUNS_KEPT = 30
+MAX_RESUMES = 3
+MAX_CRASH_RETRIES = 1
+REQUESTS_KEPT = 20
 SHELL_OPERATORS = {"|", "||", "&&", "&", ";", ">", ">>", "<", "<<", "2>", "2>&1"}
-_running_guard = threading.Lock()
 
 
-class PlanError(Exception):
-    """チームリーダーの出力の形が違う。メッセージは再実行の指示に使う（本文は入れない）。"""
+def mcp_url() -> str:
+    return f"http://127.0.0.1:{get_config().server.port}/api/v1/commander/leader-mcp"
 
 
-# ---------------------------------------------------------------- スキーマ・本文
-
-def schema_for(role_names: list[str]) -> dict:
-    """出力のスキーマ。codex の厳密な形（全部必須・additionalProperties なし）に合わせ、役割の名前を固定で並べる。"""
-    task = {
-        "type": "object", "additionalProperties": False,
-        "required": ["title", "goal", "acceptance", "files", "role", "checks"],
-        "properties": {
-            "title": {"type": "string"}, "goal": {"type": "string"}, "acceptance": {"type": "string"},
-            "files": {"type": "array", "items": {"type": "string"}},
-            "role": {"type": "string", "enum": list(role_names)} if role_names else {"type": "string"},
-            "checks": {"type": "array", "items": {"type": "string"}},
-        },
-    }
-    return {
-        "type": "object", "additionalProperties": False, "required": ["brief", "roles", "tasks"],
-        "properties": {
-            "brief": {"type": "string"},
-            "roles": {"type": "object", "additionalProperties": False, "required": list(role_names),
-                      "properties": {n: {"type": "integer", "minimum": 1, "maximum": team_roles.COUNT_MAX} for n in role_names}},
-            "tasks": {"type": "array", "minItems": 1, "maxItems": TASKS_MAX, "items": task},
-        },
-    }
-
-
-def list_files(cwd, limit: int = FILES_LISTED) -> list[str]:
-    """作業場所のファイルの一覧（相対パス・上位 limit 件）。shell なし・.git などは辿らない・シンボリックリンクは辿らない。"""
-    out: list[str] = []
-    root = str(cwd)
-    for current, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
-        for name in sorted(files):
-            if name.startswith("."):
-                continue
-            out.append(os.path.relpath(os.path.join(current, name), root))
-            if len(out) >= limit:
-                return out
-    return out
-
-
-def build_prompt(team: dict, goal: str, files: list[str]) -> str:
-    roles = "\n".join(f"- {r['name']}（最大 {r['count']} 人）: {r.get('note') or '（説明なし）'}" for r in team.get("roles", []))
-    listing = "\n".join(files) if files else "（空の作業場所）"
-    example = {"brief": "チームの前提（目的・守ること）", "roles": {r["name"]: r["count"] for r in team.get("roles", [])},
-               "tasks": [{"title": "短い題", "goal": "目的", "acceptance": "受け入れ条件", "files": ["src/a.py"],
-                          "role": (team.get("roles") or [{"name": ""}])[0]["name"], "checks": ["pytest -q"]}]}
-    return (
-        "あなたは開発チームのチームリーダーです。次の目標を、役割ごとに分担できるタスクに分けてください。"
-        "ファイルは変更せず、読むだけにして、**JSON だけ**を返してください（前後の説明・コードブロックは不要）。\n\n"
-        f"【目標】\n{goal}\n\n【作業場所のファイル（上位 {FILES_LISTED} 件）】\n{listing}\n\n【役割】\n{roles}\n\n"
-        f"【出力の形】brief（チームの前提）・roles（役割の名前→必要な人数 1〜{team_roles.COUNT_MAX}。上の役割の名前だけ）・"
-        f"tasks（1〜{TASKS_MAX} 件。title・goal・acceptance・files・role（上の役割の名前）・checks）。\n"
-        "確認のコマンド（checks）は、この作業場所でそのまま実行できるものだけ（1 行・パイプや && は使えない）。"
-        "実行できるか分からないものは書かない。\n"
-        f"例: {json.dumps(example, ensure_ascii=False)}")
-
-
-# ---------------------------------------------------------------- 出力の検証
-
-def extract_json(text: str) -> object | None:
-    """出力から JSON の本体を取り出す（そのまま・コードブロック・最初の { から最後の }）。読めなければ None。"""
-    text = (text or "").strip()
-    for candidate in (text, text[text.find("{"):text.rfind("}") + 1] if "{" in text else ""):
-        if not candidate:
-            continue
-        try:
-            return json.loads(candidate)
-        except ValueError:
-            continue
-    return None
-
+# ---------------------------------------------------------------- 検証（確認のコマンド）
 
 def valid_check(cmd: object) -> str | None:
     """確認のコマンドが T2b の許す形か。通れば整えた文字列、通らなければ None。"""
@@ -122,220 +56,241 @@ def valid_check(cmd: object) -> str | None:
     return text
 
 
-def _lines(value: object, limit: int, maximum: int) -> list[str]:
-    out: list[str] = []
-    for item in value if isinstance(value, list) else []:
-        try:
-            text = teams.clean_line(item, "項目", maximum, required=False)
-        except teams.TeamError:
-            continue
-        if text and text not in out:
-            out.append(text)
-    return out[:limit]
+# ---------------------------------------------------------------- 本文
+
+PROMPT = """あなたは Nexarch のチームリーダーです。利用者の依頼を、チームを動かして完成させます。
+**自分で大きな実装はしません。** 費用を抑えるため、次の流れ（Opus が Haiku・Sonnet を使う流れ）で進めてください。
+
+【段（tier）】delegate の tier に渡すだけで、担い手は Nexarch が決めます。
+- explore: 探す・読む・調べる（安い担い手。読むだけ）
+- implement: ふつうの実装・試験を書く（worktree とブランチで書く）
+- review: 評価・レビュー（強い担い手。読むだけ）
+- hard: 難しい設計・判断の要る不具合だけ（自分でやるより hard へ）
+
+【進め方】
+1. team_status を最初に呼ぶ（状態・計画・質問が分かる。再開のときも同じ）。
+2. 調べる: 作業場所は Read・Glob・Grep で読める。広い調べものは explore へ振る。Web・資料は research。
+3. write_plan で計画を書く（利用者の画面に出る）。項目ごとに tier・depends_on・files・checks（確認のコマンド。1 行・パイプや && なし）。
+4. delegate で仕事を振る。独立した implement は同時に振ってよい（worktree で隔離される）。wait で結果を待つ。
+5. 結果を確かめる: wait の 5 行の報告と確認の合否・変更ファイル、必要なら read_result(diff)。足りなければ note つきで delegate して直させる。
+6. integrate で終わった implement をチームのブランチへ統合する。競合は implement へ戻す。
+7. run_checks(where="team") で統合後の全体を確かめ、review の担い手に全体を評価させる。
+8. 最後に finish（何をしたか・確認の結果・残りを書く。完成できなければ outcome=blocked）。
+進み具合は report で 1 行ずつ残す。利用者への質問は ask_user（聞かずに進める設定のときは、最善の判断で進めて判断を report に残す）。
+外部からの取得・本番データの変更・秘密に関わることは、設定にかかわらず ask_user(required=true) で聞く。"""
 
 
-def validate_plan(obj: object, team: dict) -> dict:
-    """チームリーダーの出力を検証して整える。形が違えば PlanError。返す dict: brief・roles（id→数）・tasks・dropped（捨てたものの記録）。"""
-    if not isinstance(obj, dict):
-        raise PlanError("全体が JSON のオブジェクトではありません")
-    brief = obj.get("brief")
-    if not isinstance(brief, str):
-        raise PlanError("brief が文字列ではありません")
-    roles_in = obj.get("roles")
-    if not isinstance(roles_in, dict):
-        raise PlanError("roles が {役割の名前: 数} のオブジェクトではありません")
-    tasks_in = obj.get("tasks")
-    if not isinstance(tasks_in, list) or not 1 <= len(tasks_in) <= TASKS_MAX:
-        raise PlanError(f"tasks が 1〜{TASKS_MAX} 件のリストではありません")
-    by_name = {r["name"]: r for r in team.get("roles", [])}
-    dropped: list[str] = []
-    counts: dict[str, int] = {}
-    for name, raw in roles_in.items():
-        role = by_name.get(name)
-        if role is None:
-            dropped.append(f"役割「{str(name)[:20]}」は既存の役割にないので捨てました")
-            continue
-        try:
-            number = int(raw) if not isinstance(raw, bool) else 1
-        except (TypeError, ValueError):
-            raise PlanError(f"roles の「{name}」の数が整数ではありません") from None
-        clamped = max(1, min(team_roles.COUNT_MAX, number))
-        if clamped != number:
-            dropped.append(f"役割「{name}」の数 {number} を {clamped} に丸めました")
-        counts[role["id"]] = clamped
-    tasks: list[dict] = []
-    for index, item in enumerate(tasks_in, 1):
-        if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip() \
-                or not isinstance(item.get("goal"), str):
-            raise PlanError(f"tasks[{index}] に title と goal（文字列）がありません")
-        role_name = item.get("role")
-        role = by_name.get(role_name) if isinstance(role_name, str) else None
-        if role_name not in (None, "") and role is None:
-            dropped.append(f"タスク {index} の役割「{str(role_name)[:20]}」は既存の役割にないので役割なしにしました")
-        checks: list[str] = []
-        for cmd in item.get("checks") if isinstance(item.get("checks"), list) else []:
-            ok = valid_check(cmd)
-            if ok and ok not in checks:
-                checks.append(ok)
-            else:
-                dropped.append(f"タスク {index} の確認のコマンドを捨てました（許す形ではありません）: {str(cmd)[:80]}")
-        tasks.append({
-            "title": " ".join(item["title"].split())[:teams.TITLE_MAX],
-            "goal": _text(item.get("goal")), "acceptance": _text(item.get("acceptance")),
-            "files": _lines(item.get("files"), teams.FILES_MAX, teams.FILE_MAX),
-            "role": role["id"] if role else "", "checks": checks[:teams.CHECKS_MAX],
-        })
-    return {"brief": _text(brief, teams.BRIEF_MAX), "roles": counts, "tasks": tasks, "dropped": dropped}
+def build_prompt(goal: str, *, resume: bool, follow_up: bool) -> str:
+    head = PROMPT + f"\n\n【依頼】\n{goal}"
+    if resume:
+        head += "\n\n【再開です】前の実行が途中で止まりました。team_status を最初に読み、ここまでの計画と状態の続きから進めてください。やり直さないこと。"
+    elif follow_up:
+        head += "\n\n【続きの依頼です】このチームには前の依頼の計画と結果があります。team_status で状態を読んでから、この依頼を足してください。"
+    return head
 
 
-def _text(value: object, maximum: int = teams.TEXT_MAX) -> str:
-    text = value if isinstance(value, str) else ""
-    text = "".join(c for c in text if c in "\n\t" or (ord(c) >= 0x20 and ord(c) != 0x7F)).strip()
-    return text[:maximum]
+# ---------------------------------------------------------------- 状態
+
+def _chain(team: dict) -> list[dict]:
+    """チームリーダーの chain: チームのチームリーダー（無ければ既定）→ hard 役割の primary・secondary（同じものは省く）。"""
+    first = team_roles.leader_endpoint(team)
+    out = [first]
+    hard = team_roles.tier_role(team, "hard")
+    keys = {team_roles.endpoint_key(first)}
+    for ep in team_roles.chain(hard) if hard else []:
+        ep = {**ep, "kind": "headless"}
+        if team_roles.endpoint_key(ep) not in keys:
+            keys.add(team_roles.endpoint_key(ep))
+            out.append(ep)
+    return out
 
 
-# ---------------------------------------------------------------- 計画を板へ
-
-def apply_plan(team_id: str, plan: dict) -> dict:
-    """検証済みの計画を板へ（前提・役割の数・タスク）。作ったタスクの数を返す。"""
+def _begin(team_id: str, goal: str, *, resume: bool, ep: dict, carry: dict | None = None) -> int:
+    """チームリーダーの 1 回の起動を記録して、その番号 n を返す。"""
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         team = teams._find_team(all_teams, team_id)  # noqa: SLF001
-        if plan["brief"] and not team.get("brief"):  # 既にある前提は書き換えない（頼み足すとき）
-            team["brief"] = plan["brief"]
-        for role in team.get("roles", []):
-            if role["id"] in plan["roles"]:
-                role["count"] = plan["roles"][role["id"]]
-        made = 0
-        for item in plan["tasks"]:
-            task = {
-                "id": int(team.get("next_task_id") or 1), **{k: item[k] for k in ("title", "goal", "acceptance", "files", "checks", "role")},
-                "assignee": "", "status": "todo", "report": None, "created_at": teams._now(),  # noqa: SLF001
-                "updated_at": teams._now(), "history": [],  # noqa: SLF001
-            }
-            team["next_task_id"] = task["id"] + 1
-            team.setdefault("tasks", []).append(task)
-            teams._event(task, "作成（チームリーダー）", "チームリーダー")  # noqa: SLF001
-            for note in plan["dropped"]:
-                if note.startswith(f"タスク {plan['tasks'].index(item) + 1} の"):
-                    teams._event(task, note, "チームリーダー")  # noqa: SLF001
-            made += 1
-        _finish_run(team, "done", tasks=made, dropped=plan["dropped"][:10])
+        run = team.get("leader_run") if isinstance(team.get("leader_run"), dict) else {}
+        n = int(run.get("n") or 0) + 1
+        team["leader_run"] = {**run, "status": "running", "n": n, "goal": goal[:GOAL_MAX], "endpoint": team_roles.endpoint_label(ep),
+                              "started_at": run.get("started_at") if resume and run.get("started_at") else teams._now(),  # noqa: SLF001
+                              "attempt_started_at": teams._now(), "resumes": int((carry or run).get("resumes") or 0),  # noqa: SLF001
+                              "crashes": int((carry or run).get("crashes") or 0), "finish": None if not resume else run.get("finish")}
         teams._save(all_teams)  # noqa: SLF001
-    return {"tasks": made}
+    return n
 
 
-# ---------------------------------------------------------------- 実行
+def _record(team_id: str, status: str, ep: dict, seconds: float, usage: dict | None, reason: str = "") -> None:
+    def save(team: dict) -> None:
+        runs = team.setdefault("leader_runs", [])
+        runs.append({"status": status, "started_at": (team.get("leader_run") or {}).get("attempt_started_at"), "ended_at": teams._now(),  # noqa: SLF001
+                     "endpoint": team_roles.endpoint_label(ep), "seconds": seconds, "usage": usage, "reason": reason[:200]})
+        del runs[:-RUNS_KEPT]
 
-def _finish_run(team: dict, result: str, **extra: object) -> None:
-    run = team.get("leader_run") if isinstance(team.get("leader_run"), dict) else {}
-    run.update({"status": result, "ended_at": teams._now(), **extra})  # noqa: SLF001
-    team["leader_run"] = run
-    runs = team.setdefault("leader_runs", [])
-    runs.append({k: run.get(k) for k in ("status", "started_at", "ended_at", "endpoint", "seconds", "usage", "tasks", "reason")})
-    del runs[:-RUNS_KEPT]
-
-
-def _fail(team_id: str, reason: str, *, seconds: float = 0.0, usage: dict | None = None) -> None:
-    with teams._lock:  # noqa: SLF001
-        all_teams = teams._load()  # noqa: SLF001
-        try:
-            team = teams._find_team(all_teams, team_id)  # noqa: SLF001
-        except teams.TeamError:
-            return
-        _finish_run(team, "failed", reason=reason[:200], seconds=seconds, usage=usage)
-        notify = team.get("notify", True) is not False
-        teams._save(all_teams)  # noqa: SLF001
-    if notify:
-        team_runner._notify([{"title": "Nexarch", "message": f"Nexarch: チーム『{team['name'][:40]}』をチームリーダーが作れませんでした（{reason[:80]}）"}])  # noqa: SLF001
+    try:
+        leader_mcp._mutate(team_id, save)  # noqa: SLF001
+    except leader_mcp.ToolError:
+        pass
 
 
-def _attempt(team_id: str, member: dict, text: str, cwd, schema: dict, allow_no_sandbox: bool) -> dict:
+def _set_status(team_id: str, status: str, reason: str = "", notify: str = "") -> None:
+    notify_text = ""
+
+    def save(team: dict) -> None:
+        nonlocal notify_text
+        run = team.setdefault("leader_run", {})
+        run.update({"status": status, "ended_at": teams._now(), "reason": reason[:200]})  # noqa: SLF001
+        if notify and team.get("notify", True) is not False:
+            notify_text = f"Nexarch: チーム『{team['name'][:40]}』{notify}"
+        if status in ("failed", "stopped"):
+            leader_mcp.add_timeline(team, "stop", {"failed": "チームリーダーが止まりました: ", "stopped": "止めました: "}[status] + reason[:100])
+
+    try:
+        leader_mcp._mutate(team_id, save)  # noqa: SLF001
+    except leader_mcp.ToolError:
+        return
+    if notify_text:
+        team_runner._notify([{"title": "Nexarch", "message": notify_text}])  # noqa: SLF001
+
+
+def _attempt(team_id: str, ep: dict, text: str, cwd, token: str, allow_no_sandbox: bool) -> dict:
     key = (team_id, 0)
     with team_runner._active_lock:  # noqa: SLF001
         team_runner._active[key] = {"proc": None, "stop": False, "live": {}, "started": time.monotonic()}  # noqa: SLF001
     try:
-        return team_runner._execute(key, member, text, cwd, allow_no_sandbox, schema)  # noqa: SLF001
+        result = team_runner._execute(key, ep, text, cwd, allow_no_sandbox, mcp={"url": mcp_url(), "token": token},  # noqa: SLF001
+                                      timeout=team_runner.LEADER_TIMEOUT)
     except team_runner.LaunchError as exc:
-        return {"launch_error": str(exc)[:200]}
-    finally:
-        with team_runner._active_lock:  # noqa: SLF001
-            team_runner._active.pop(key, None)  # noqa: SLF001
+        result = {"launch_error": str(exc)[:200]}
+    with team_runner._active_lock:  # noqa: SLF001
+        entry = team_runner._active.pop(key, None)  # noqa: SLF001
+    result["stopped"] = bool(entry and entry.get("stop"))
+    return result
 
 
-def _worker(team_id: str, goal: str) -> None:
+def _finalize(team_id: str) -> None:
+    """finish を受けた後の仕上げ: 結果をまとめる（確認の結果・変更ファイル・残り・使用量）・git の反映・通知。"""
+    notify = ""
+
+    def save(team: dict) -> None:
+        nonlocal notify
+        finish = (team.get("leader_run") or {}).get("finish") or {}
+        info = team.get("git") or {}
+        changes = None
+        if info.get("enabled"):
+            try:
+                changes = team_git.team_numstat(info)
+            except team_git.GitError:
+                changes = None
+        plan_items = (team.get("plan") or {}).get("items", [])
+        remaining = [i["title"] for i in plan_items if i.get("status") not in ("integrated", "done")]
+        landed = False
+        if info.get("enabled") and not info.get("origin_was_git") and finish.get("outcome") == "done":
+            landed = team_git.fast_forward_base(str(team.get("workdir") or ""), info)
+        team["result"] = {
+            "summary": str(finish.get("summary") or ""), "outcome": finish.get("outcome") or "done", "finished_at": teams._now(),  # noqa: SLF001
+            "checks": team.get("last_team_checks"), "changes": changes, "remaining": remaining,
+            "usage": leader_mcp.usage_total(team), "can_land": bool(info.get("enabled") and info.get("origin_was_git")
+                                                                   and finish.get("outcome") == "done" and changes and changes["count"]),
+            "landed": landed, "team_branch": info.get("team_branch") or "", "base_branch": info.get("base_branch") or "",
+        }
+        if team.get("notify", True) is not False:
+            ok = finish.get("outcome") == "done"
+            notify = f"Nexarch: チーム『{team['name'][:40]}』" + ("が完了しました" if ok else "が止まりました（結果を見てください）")
+
+    leader_mcp._mutate(team_id, save)  # noqa: SLF001
+    if notify:
+        team_runner._notify([{"title": "Nexarch", "message": notify}])  # noqa: SLF001
+
+
+def _worker(team_id: str, goal: str, follow_up: bool) -> None:
     try:
-        _run(team_id, goal)
+        _loop(team_id, goal, follow_up)
     except Exception:  # noqa: BLE001 - スレッドの失敗で落とさない
         logger.exception("Nexarch のチームリーダーの実行に失敗しました")
-        _fail(team_id, "内部エラー")
-        return
+        _set_status(team_id, "failed", "内部エラー", "のチームリーダーが内部エラーで止まりました")
     try:
         from app.commander import team_dispatch
 
-        team_dispatch.kick(team_id)  # auto_run なら、そのまま動かし始める
+        team_dispatch.kick(team_id)
     except Exception:  # noqa: BLE001
         logger.exception("配り手を動かせませんでした")
 
 
-def _run(team_id: str, goal: str) -> None:
-    with teams._lock:  # noqa: SLF001
-        team = teams._find_team(teams._load(), team_id)  # noqa: SLF001
-        ep = team_roles.leader_endpoint(team)
+def _loop(team_id: str, goal: str, follow_up: bool) -> None:
+    resume = False
+    crashes = 0
+    resumes = 0
+    while True:
+        team = leader_mcp._read(team_id)  # noqa: SLF001
         allow_no_sandbox = team.get("codex_without_sandbox", True) is not False
-    path = teams.ensure_workdir(team_id)
-    try:
-        cwd = workdir.resolve_dir(path)
-    except (OSError, ValueError) as exc:
-        _fail(team_id, f"作業場所を使えません: {exc}")
-        return
-    with teams._lock:  # noqa: SLF001
-        team = teams._find_team(teams._load(), team_id)  # noqa: SLF001
-    schema = schema_for([r["name"] for r in team.get("roles", [])])
-    base = build_prompt(team, goal, list_files(cwd))
-    started = time.monotonic()
-    usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-    text = base
-    reason = "形が違います"
-    for attempt in (1, 2):
-        result = _attempt(team_id, ep, text, cwd, schema, allow_no_sandbox)
-        state = result.get("state")
-        if state:
-            for k in usage:
-                usage[k] = round(usage[k] + state.usage.get(k, 0), 6)
-        seconds = round(time.monotonic() - started, 1)
-        if "launch_error" in result:
-            _fail(team_id, result["launch_error"], seconds=seconds)
-            return
-        failing = result.get("exit") != 0 or bool(state and state.is_error) or result.get("timed_out")
-        if failing:
-            limited, _reset = team_runner.detect_limit(((state.errors if state else []) + [result.get("stderr", ""), result.get("final", "")]))
-            _fail(team_id, "上限で止まりました" if limited else f"実行が失敗しました（終了コード {result.get('exit')}）",
-                  seconds=seconds, usage=usage)
+        now = time.time()
+        chain = _chain(team)
+        ep = next((e for e in chain if team_roles.cooling_until(team, e, now) is None), None)
+        if ep is None:
+            _set_status(team_id, "failed", "チームリーダーの担い手が全部上限です", "のチームリーダーを動かせる担い手がありません（上限）")
             return
         try:
-            plan = validate_plan(extract_json(str(result.get("final") or "")), team)
-        except PlanError as exc:
-            reason = f"形が違います: {exc}"
-            text = (base + f"\n\n【形が違います】前回の出力は受け取れませんでした（{exc}）。"
-                    "指定の形の JSON だけをもう一度返してください。")
+            cwd = workdir.resolve_dir(teams.ensure_workdir(team_id))
+        except (OSError, ValueError) as exc:
+            _set_status(team_id, "failed", f"作業場所を使えません: {exc}", "の作業場所を使えません")
+            return
+        n = _begin(team_id, goal, resume=resume, ep=ep, carry={"resumes": resumes, "crashes": crashes})
+        text = build_prompt(goal, resume=resume, follow_up=follow_up and n == 1)
+        started = time.monotonic()
+        result = _attempt(team_id, ep, text, cwd, leader_mcp.issue_token(team_id, n), allow_no_sandbox)
+        seconds = round(time.monotonic() - started, 1)
+        state = result.get("state")
+        usage = dict(state.usage) if state else None
+        if "launch_error" in result:
+            _record(team_id, "failed", ep, seconds, usage, result["launch_error"])
+            _audit(team_id, ep, seconds, "launch_error")
+            _set_status(team_id, "failed", result["launch_error"], "のチームリーダーを起動できませんでした")
+            return
+        finish = (leader_mcp._read(team_id).get("leader_run") or {}).get("finish")  # noqa: SLF001
+        if result.get("stopped"):
+            _record(team_id, "stopped", ep, seconds, usage)
+            _audit(team_id, ep, seconds, "stopped")
+            _set_status(team_id, "stopped", "利用者が止めました")
+            return
+        failing = result.get("exit") != 0 or bool(state and state.is_error) or result.get("timed_out")
+        if finish:
+            _record(team_id, "done", ep, seconds, usage)
+            _audit(team_id, ep, seconds, "finished")
+            _finalize(team_id)
+            _set_status(team_id, "done" if finish.get("outcome") == "done" else "blocked")
+            return
+        if failing:
+            limited, reset_at = team_runner.detect_limit(((state.errors if state else []) + [result.get("stderr", ""), result.get("final", "")]))
+            if limited:
+                def mark(t: dict, ep=ep, reset_at=reset_at) -> None:
+                    team_roles.mark_limited(t, ep, reset_at, time.time())
+                    leader_mcp.add_timeline(t, "handoff", f"チームリーダー（{team_roles.endpoint_label(ep)}）が上限で止まりました。次の担い手で再開します")
+
+                leader_mcp._mutate(team_id, mark)  # noqa: SLF001
+                _record(team_id, "limited", ep, seconds, usage, "上限")
+                _audit(team_id, ep, seconds, "limited")
+                resume = True
+                continue  # 次のループで chain の次の endpoint（セカンダリ）が選ばれる。無ければ上で失敗
+            _record(team_id, "failed", ep, seconds, usage, f"終了コード {result.get('exit')}")
+            _audit(team_id, ep, seconds, "crashed")
+            crashes += 1
+            if crashes > MAX_CRASH_RETRIES:
+                _set_status(team_id, "failed", f"実行が落ちました（終了コード {result.get('exit')}）", "のチームリーダーが落ちました")
+                return
+            resume = True
             continue
-        with teams._lock:  # noqa: SLF001
-            all_teams = teams._load()  # noqa: SLF001
-            try:
-                current = teams._find_team(all_teams, team_id)  # noqa: SLF001
-            except teams.TeamError:
-                return  # 実行の間にチームが消された
-            current.setdefault("leader_run", {}).update({"seconds": seconds, "usage": usage})
-            teams._save(all_teams)  # noqa: SLF001
-        apply_plan(team_id, plan)
-        _audit(team_id, ep, seconds, "ok", len(plan["tasks"]))
-        return
-    _fail(team_id, reason, seconds=round(time.monotonic() - started, 1), usage=usage)
-    _audit(team_id, ep, round(time.monotonic() - started, 1), "invalid", 0)
+        _record(team_id, "no_finish", ep, seconds, usage, "finish されずに終わった")
+        _audit(team_id, ep, seconds, "no_finish")
+        resumes += 1
+        if resumes > MAX_RESUMES:
+            _set_status(team_id, "failed", "finish されないまま 3 回再開しました", "のチームリーダーが finish しないまま止まりました")
+            return
+        leader_mcp.timeline(team_id, "resume", f"チームリーダーがまだ終わっていないので再開します（{resumes}/{MAX_RESUMES}）")
+        resume = True
 
 
-def _audit(team_id: str, ep: dict, seconds: float, result: str, tasks: int) -> None:
+def _audit(team_id: str, ep: dict, seconds: float, result: str) -> None:
     try:
         from app.audit import service as audit
         from app.database import SessionLocal
@@ -343,16 +298,20 @@ def _audit(team_id: str, ep: dict, seconds: float, result: str, tasks: int) -> N
         with SessionLocal() as db:
             audit.record(db, "commander.team.leader", username="nexarch", resource_type="commander_team",
                          resource_id=team_id, metadata={"cli": ep.get("cli"), "account": ep.get("account"), "model": ep.get("model"),
-                                                       "effort": ep.get("effort"), "seconds": seconds, "result": result, "tasks": tasks})
+                                                       "effort": ep.get("effort"), "seconds": seconds, "result": result})
     except Exception:  # noqa: BLE001 - 監査の失敗で結果を失わない
         logger.exception("チームリーダーの監査ログを書けませんでした")
 
 
-def start(team_id: str, goal: object) -> dict:
-    """チームリーダーを 1 回、別スレッドで始める（画面は一覧を見て進み具合を知る）。走っている間は断る。"""
-    goal = teams.clean_text(goal, "目標", GOAL_MAX)
-    if not goal:
-        raise teams.TeamError("目標を入力してください")
+# ---------------------------------------------------------------- 入口
+
+def start(team_id: str, goal: object, *, resume: bool = False) -> dict:
+    """チームリーダーを別スレッドで始める（画面は一覧を見て進み具合を知る）。走っている間は断る。
+
+    既にこのチームに計画・結果があれば「続きの依頼」（頼み足し）として、team_status から読ませる。"""
+    text = teams.clean_text(goal, "依頼", GOAL_MAX)
+    if not text:
+        raise teams.TeamError("依頼を入力してください")
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         team = teams._find_team(all_teams, team_id)  # noqa: SLF001
@@ -360,19 +319,25 @@ def start(team_id: str, goal: object) -> dict:
         if isinstance(run, dict) and run.get("status") == "running":
             raise teams.TeamError("チームリーダーは実行中です", 409)
         ep = team_roles.leader_endpoint(team)
-        team["leader_run"] = {"status": "running", "started_at": teams._now(), "endpoint": team_roles.endpoint_label(ep),  # noqa: SLF001
-                              "goal": goal[:300]}
+        follow_up = bool(team.get("plan") or team.get("result"))
+        requests = team.setdefault("requests", [])
+        requests.append({"at": teams._now(), "text": text[:600]})  # noqa: SLF001
+        del requests[:-REQUESTS_KEPT]
+        team["leader_run"] = {"status": "running", "n": int((run or {}).get("n") or 0), "goal": text, "started_at": teams._now(),  # noqa: SLF001
+                              "endpoint": team_roles.endpoint_label(ep), "resumes": 0, "crashes": 0, "finish": None}
+        team.pop("result", None)
+        leader_mcp.add_timeline(team, "request", "依頼: " + text[:200])
         teams._save(all_teams)  # noqa: SLF001
         view = dict(team)
-    team_runner._spawn(_worker, team_id, goal)  # noqa: SLF001
+    team_runner._spawn(_worker, team_id, text, follow_up)  # noqa: SLF001
     return view
 
 
 def create_and_start(goal: object, name: object = "", work_path: object = "") -> dict:
-    """「目標からチームを作る」: チームを作り（役割・チームリーダーは既定を写す）、チームリーダーを走らせる。"""
-    goal_text = teams.clean_text(goal, "目標", GOAL_MAX)
+    """「頼む」: チームを作り（役割・チームリーダーは既定を写す。名前は依頼から短く）、チームリーダーを走らせる。"""
+    goal_text = teams.clean_text(goal, "依頼", GOAL_MAX)
     if not goal_text:
-        raise teams.TeamError("目標を入力してください")
+        raise teams.TeamError("依頼を入力してください")
     title = name if isinstance(name, str) and name.strip() else " ".join(goal_text.split())[:teams.NAME_MAX]
     path = ""
     if work_path not in (None, ""):
@@ -386,17 +351,67 @@ def create_and_start(goal: object, name: object = "", work_path: object = "") ->
     return start(team["id"], goal_text)
 
 
+def create_for_assistant(goal: object, work_path: str) -> dict:
+    """AI アシスタントの会話の OpenCode の作業場所でチームを作って頼む（保存先は会話の作業場所そのまま）。"""
+    goal_text = teams.clean_text(goal, "依頼", GOAL_MAX)
+    if not goal_text:
+        raise teams.TeamError("依頼を入力してください")
+    team = teams.create_team(" ".join(goal_text.split())[:teams.NAME_MAX], workdir_path=work_path, created_by="assistant")
+    return start(team["id"], goal_text)
+
+
+def stop(team_id: str) -> bool:
+    """チームリーダー（と走っている仕事）を止める。"""
+    teams._find_team(teams._load(), team_id)  # noqa: SLF001
+    return team_runner.stop_run(team_id, 0)
+
+
+def land(team_id: str) -> dict:
+    """「取り込む」: チームのブランチを元のブランチへ（元から git の作業場所だけ）。"""
+    with teams._lock:  # noqa: SLF001
+        team = teams._find_team(teams._load(), team_id)  # noqa: SLF001
+        result = team.get("result")
+        info = team.get("git") or {}
+        path = str(team.get("workdir") or "")
+    if not isinstance(result, dict) or not result.get("can_land") or result.get("landed"):
+        raise teams.TeamError("取り込めるチームのブランチがありません（元から git の作業場所で、完了した結果だけ）", 409)
+    with leader_mcp._git_lock:  # noqa: SLF001
+        done = team_git.land(path, info)
+    if not done["ok"]:
+        raise teams.TeamError(done["message"], 409)
+
+    def save(t: dict) -> None:
+        t["result"]["landed"] = True
+        t["result"]["can_land"] = False
+        leader_mcp.add_timeline(t, "land", "チームのブランチを元のブランチへ取り込みました")
+
+    leader_mcp._mutate(team_id, save)  # noqa: SLF001
+    return leader_mcp._read(team_id)  # noqa: SLF001
+
+
 def recover_interrupted() -> int:
-    """ControlDeck の再起動で止まった（running のままの）チームリーダーの実行を失敗にする。"""
+    """ControlDeck の再起動で止まった（running のままの）チームリーダーの実行を失敗にする（画面の「再開」で続けられる）。"""
     count = 0
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         for team in all_teams:
             run = team.get("leader_run")
             if isinstance(run, dict) and run.get("status") == "running" and not team_runner.is_active(team["id"], 0):
-                _finish_run(team, "failed", reason="ControlDeck の再起動で中断されました")
+                run.update({"status": "failed", "ended_at": teams._now(), "reason": "ControlDeck の再起動で中断されました"})  # noqa: SLF001
+                leader_mcp.add_timeline(team, "stop", "ControlDeck の再起動でチームリーダーが中断されました（再開できます）")
                 count += 1
         if count:
             teams._save(all_teams)  # noqa: SLF001
     return count
 
+
+def resume(team_id: str) -> dict:
+    """止まったチームリーダーを、今の状態（team_status）から再開する。"""
+    team = leader_mcp._read(team_id)  # noqa: SLF001
+    run = team.get("leader_run") or {}
+    if run.get("status") == "running":
+        raise teams.TeamError("チームリーダーは実行中です", 409)
+    goal = str(run.get("goal") or "")
+    if not goal:
+        raise teams.TeamError("再開する依頼がありません", 409)
+    return start(team_id, goal + "\n（再開: team_status の状態の続きから）")

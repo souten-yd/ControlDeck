@@ -208,8 +208,8 @@ def test_console_command_gets_model_and_effort(env):
 
 def test_new_team_gets_default_roles_and_leader_copy(env):
     team = teams.create_team("班")
-    assert [(r["name"], r["count"]) for r in team["roles"]] == [("実装", 2), ("レビュー", 1), ("試験", 1)]
-    assert team["leader"] is None and all(r["primary"] is None and r["secondary"] == [] for r in team["roles"])
+    assert [(r["name"], r["count"]) for r in team["roles"]] == [("explore", 2), ("implement", 3), ("review", 1), ("hard", 1)]
+    assert team["leader"] is None and all(r["secondary"] == [] for r in team["roles"])
     # 既定の設定を写す（id は新しい・設定は後から変えても既存のチームに響かない）
     ep = team_roles.clean_endpoint(EP("claude", model="sonnet"))
     cleaned = team_roles.clean_roles([role("設計", 3, primary=ep)])
@@ -217,9 +217,9 @@ def test_new_team_gets_default_roles_and_leader_copy(env):
     copy = teams.create_team("写し")
     assert [r["name"] for r in copy["roles"]] == ["設計"] and copy["roles"][0]["id"] != cleaned[0]["id"]
     assert copy["roles"][0]["primary"]["model"] == "sonnet" and copy["leader"]["model"] == "sonnet"
-    assert [r["name"] for r in get_team(team["id"])["roles"]] == ["実装", "レビュー", "試験"]
+    assert [r["name"] for r in get_team(team["id"])["roles"]] == ["explore", "implement", "review", "hard"]
     settings.set_team_defaults(None, [])
-    assert [r["name"] for r in teams.create_team("戻し")["roles"]] == ["実装", "レビュー", "試験"]
+    assert [r["name"] for r in teams.create_team("戻し")["roles"]] == ["explore", "implement", "review", "hard"]
 
 
 def test_set_roles_validation(env):
@@ -411,170 +411,6 @@ def test_explicit_fallback_used_after_chain(env):
     assert task["status"] == "review" and task["assignee"] == spare
 
 
-# ---------------------------------------------------------------- チームリーダー
-
-LEADER_SCRIPT = r'''#!@@PY@@
-import sys, json, os
-REC = "@@REC@@"
-STATE = "@@STATE@@"
-args = sys.argv[1:]
-n = int(open(STATE).read() or 0) if os.path.exists(STATE) else 0
-open(STATE, "w").write(str(n + 1))
-outs = json.load(open("@@OUTS@@"))
-text = outs[min(n, len(outs) - 1)]
-with open(REC, "a") as f:
-    f.write(json.dumps({"kind": "@@KIND@@", "argv": args, "cwd": os.getcwd()}) + "\n")
-if "@@KIND@@" == "claude":
-    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
-                      "total_cost_usd": 0.1, "usage": {"input_tokens": 10, "output_tokens": 5}}))
-else:
-    open(args[args.index("-o") + 1], "w").write(text)
-    print(json.dumps({"type": "item.completed", "item": {"id": "i", "type": "agent_message", "text": text}}))
-    print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}}))
-'''
-
-
-def leader_fake(env: Env, cli: str, outputs: list[str]) -> None:
-    outs = env.tmp / f"outs-{cli}.json"
-    outs.write_text(json.dumps(outputs, ensure_ascii=False), encoding="utf-8")
-    state = env.tmp / f"state-{cli}"
-    if state.exists():
-        state.unlink()
-    path = env.tmp / f"fake-{cli}"
-    path.write_text(LEADER_SCRIPT.replace("@@PY@@", sys.executable).replace("@@REC@@", str(env.rec))
-                    .replace("@@STATE@@", str(state)).replace("@@OUTS@@", str(outs)).replace("@@KIND@@", cli), encoding="utf-8")
-    path.chmod(0o755)
-    env.scripts[cli] = str(path)
-
-
-def plan(**over) -> str:
-    base = {"brief": "ログイン機能を作る", "roles": {"実装": 3, "レビュー": 1},
-            "tasks": [{"title": "画面", "goal": "ログイン画面", "acceptance": "表示される", "files": ["src/login.py"],
-                       "role": "実装", "checks": ["pytest -q"]},
-                      {"title": "確認", "goal": "見る", "acceptance": "", "files": [], "role": "レビュー", "checks": []}]}
-    base.update(over)
-    return json.dumps(base, ensure_ascii=False)
-
-
-def auto_team(goal: str = "ログイン機能を作りたい") -> dict:
-    created = team_leader.create_and_start(goal)
-    return get_team(created["id"])
-
-
-def test_leader_makes_team_from_goal(env, sent):
-    leader_fake(env, "claude", [plan()])
-    settings.set_team_defaults(EP("claude", model="sonnet", effort="high"), None)
-    team = auto_team()
-    assert team["leader_run"]["status"] == "done" and team["leader_run"]["tasks"] == 2
-    assert team["brief"] == "ログイン機能を作る"
-    counts = {r["name"]: r["count"] for r in team["roles"]}
-    assert counts["実装"] == 3 and counts["レビュー"] == 1 and counts["試験"] == 1
-    by_role = {r["id"]: r["name"] for r in team["roles"]}
-    assert [(t["title"], t["status"], by_role[t["role"]]) for t in team["tasks"]] == [("画面", "todo", "実装"), ("確認", "todo", "レビュー")]
-    assert team["tasks"][0]["checks"] == ["pytest -q"] and team["tasks"][0]["files"] == ["src/login.py"]
-    argv = env.calls("claude")[0]["argv"]
-    assert argv[argv.index("--output-format") + 1] == "json" and "--json-schema" in argv
-    assert argv[argv.index("--allowedTools") + 1] == "Read,Glob,Grep"  # 読むだけ
-    assert argv[argv.index("--model") + 1] == "sonnet" and argv[argv.index("--effort") + 1] == "high"
-    schema = json.loads(argv[argv.index("--json-schema") + 1])
-    assert set(schema["properties"]["roles"]["properties"]) == {"実装", "レビュー", "試験"}
-    prompt = argv[argv.index("-p") + 1]
-    assert "ログイン機能を作りたい" in prompt and "【役割】" in prompt and "実装" in prompt
-    assert team["leader_runs"][-1]["status"] == "done" and team["leader_run"]["usage"]["output_tokens"] == 5
-
-
-def test_leader_prompt_lists_workdir_files_without_shell(env):
-    leader_fake(env, "claude", [plan()])
-    created = teams.create_team("先に作る")
-    (env.work / "x").mkdir(exist_ok=True)
-    work = Path(created["workdir"])
-    (work / "src").mkdir()
-    (work / "src" / "a.py").write_text("x", encoding="utf-8")
-    (work / ".git" / "config").write_text("secret", encoding="utf-8")
-    for i in range(250):
-        (work / f"f{i:03}.txt").write_text("x", encoding="utf-8")
-    team_leader.start(created["id"], "目標")
-    prompt = prompt_of_call(env.calls("claude")[0])
-    listed = [ln for ln in prompt.split("【作業場所のファイル（上位 200 件）】\n")[1].split("\n\n【役割】")[0].splitlines()]
-    assert len(listed) == 200 and ".git/config" not in listed
-
-
-def prompt_of_call(call: dict) -> str:
-    argv = call["argv"]
-    return argv[argv.index("-p") + 1]
-
-
-def test_leader_drops_unknown_roles_clamps_counts_and_bad_checks(env):
-    bad_plan = plan(roles={"実装": 99, "魔法使い": 2, "レビュー": 0},
-                    tasks=[{"title": "t", "goal": "g", "acceptance": "a", "files": [], "role": "魔法使い",
-                            "checks": ["pytest -q", "cd x && make", "echo a | grep b", "", "python -c 'x", "ls\nrm -rf /", "pytest -q"]}])
-    leader_fake(env, "claude", [bad_plan])
-    team = auto_team()
-    counts = {r["name"]: r["count"] for r in team["roles"]}
-    assert counts["実装"] == 4 and counts["レビュー"] == 1 and "魔法使い" not in counts
-    task = team["tasks"][0]
-    assert task["role"] == "" and task["checks"] == ["pytest -q"]
-    events = [h["event"] for h in task["history"]]
-    assert sum("確認のコマンドを捨てました" in e for e in events) >= 4 and any("役割なし" in e for e in events)
-    assert any("丸めました" in n for n in team["leader_run"]["dropped"]) and any("魔法使い" in n for n in team["leader_run"]["dropped"])
-
-
-def test_leader_retries_once_when_shape_is_wrong(env):
-    leader_fake(env, "claude", ['{"oops": 1}', plan()])
-    team = auto_team()
-    assert team["leader_run"]["status"] == "done" and len(env.calls("claude")) == 2
-    assert "形が違います" in prompt_of_call(env.calls("claude")[1]) and "形が違います" not in prompt_of_call(env.calls("claude")[0])
-
-
-def test_leader_accepts_json_in_code_fence_and_noise(env):
-    leader_fake(env, "claude", ["説明です\n```json\n" + plan() + "\n```\n以上"])
-    assert auto_team()["leader_run"]["status"] == "done"
-
-
-def test_leader_fails_after_second_bad_output_and_notifies(env, sent):
-    leader_fake(env, "claude", ["これは JSON ではない", json.dumps({"brief": "x", "roles": {}, "tasks": []})])
-    team = auto_team()
-    assert team["leader_run"]["status"] == "failed" and "形が違います" in team["leader_run"]["reason"]
-    assert team["tasks"] == [] and len(env.calls("claude")) == 2
-    assert any("チームリーダーが作れませんでした" in m for _t, m in sent)
-    assert "これは JSON" not in json.dumps(sent)
-
-
-@pytest.mark.parametrize("bad", [
-    {"brief": 1, "roles": {}, "tasks": [{"title": "t", "goal": "g"}]},
-    {"brief": "", "roles": [], "tasks": [{"title": "t", "goal": "g"}]},
-    {"brief": "", "roles": {}, "tasks": []},
-    {"brief": "", "roles": {}, "tasks": [{"title": "t", "goal": "g"}] * 21},
-    {"brief": "", "roles": {}, "tasks": [{"goal": "g"}]},
-    {"brief": "", "roles": {"実装": "x"}, "tasks": [{"title": "t", "goal": "g"}]},
-    [],
-])
-def test_validate_plan_rejects_wrong_shape(env, bad):
-    team = teams.create_team("班")
-    with pytest.raises(team_leader.PlanError):
-        team_leader.validate_plan(bad, team)
-
-
-def test_leader_run_fails_on_cli_error_and_limit(env, sent):
-    env.mode("claude", "limit")
-    team = auto_team()
-    assert team["leader_run"]["status"] == "failed" and "上限" in team["leader_run"]["reason"]
-    env.mode("claude", "fail")
-    assert auto_team("別の目標")["leader_run"]["status"] == "failed"
-    settings.set_team_defaults(EP("claude"), None)
-    env.scripts.pop("claude")
-    assert "見つかりません" in auto_team("さらに別")["leader_run"]["reason"]
-
-
-def test_leader_codex_uses_output_schema_and_readonly(env):
-    leader_fake(env, "codex", [plan()])
-    created = teams.create_team("codex 班")
-    teams.set_leader(created["id"], EP("codex", model="gpt-a", effort="high"))
-    team_leader.start(created["id"], "目標")
-    argv = env.calls("codex")[0]["argv"]
-    assert argv[argv.index("-s") + 1] == "read-only" and "--output-schema" in argv
-    assert argv[argv.index("-m") + 1] == "gpt-a" and argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
-    assert get_team(created["id"])["leader_run"]["status"] == "done"
 
 
 def test_leader_resolution_team_then_default_then_installed(env):
@@ -590,48 +426,13 @@ def test_leader_resolution_team_then_default_then_installed(env):
         teams.set_leader(team["id"], {"cli": "zzz"})
 
 
-def test_leader_uses_given_workdir_and_refuses_double_run(env, monkeypatch):
-    hold(monkeypatch)
-    folder = env.tmp / "root" / "mine"
-    folder.mkdir()
-    team = team_leader.create_and_start("目標", "", str(folder))
-    assert team["workdir"] == str(folder) and team["leader_run"]["status"] == "running"
-    with pytest.raises(teams.TeamError) as exc:
-        team_leader.start(team["id"], "もう一度")
-    assert exc.value.status_code == 409
-    with pytest.raises(teams.TeamError):
-        team_leader.create_and_start("目標", "", "/etc")
-    with pytest.raises(teams.TeamError):
-        team_leader.create_and_start("  ")
-    assert team_leader.recover_interrupted() == 1 and get_team(team["id"])["leader_run"]["status"] == "failed"
-
-
-def test_leader_run_on_existing_team_adds_tasks_and_keeps_brief(env):
-    """「チームリーダーに頼む」: 既存のチームへ頼み足す。前提（brief）は書き換えず、タスクだけ足す。"""
-    leader_fake(env, "claude", [plan()])
-    team = teams.create_team("既存班")
-    teams.update_team(team["id"], {"brief": "元の前提", "auto_run": False})
-    team_leader.start(team["id"], "もう一つ頼む")
-    after = get_team(team["id"])
-    assert after["brief"] == "元の前提" and len(after["tasks"]) == 2 and after["leader_run"]["status"] == "done"
-
-
-def test_leader_starts_dispatcher_when_auto_run(env):
-    leader_fake(env, "claude", [plan(roles={"実装": 1}, tasks=[{"title": "t", "goal": "g", "acceptance": "", "files": [],
-                                                                  "role": "実装", "checks": []}])])
-    env.mode("codex", "ok")
-    settings.set_team_defaults(None, team_roles.clean_roles([role("実装", 1, EP("codex"))]))
-    team = auto_team()
-    task = team["tasks"][0]
-    assert task["status"] == "review" and task["runs"][-1]["cli"] == "codex"
-
 
 # ---------------------------------------------------------------- API
 
 def test_api_roles_leader_auto_handoff_and_defaults(admin_client, env, monkeypatch):
     base = "/api/v1/commander"
     team = admin_client.post(API, headers=CSRF_HEADERS, json={"name": "班"}).json()
-    assert len(team["roles"]) == 3
+    assert len(team["roles"]) == 4
     r = admin_client.put(f"{API}/{team['id']}/roles", headers=CSRF_HEADERS,
                          json={"roles": [role("実装", 2, EP("claude", model="opus"), [EP("codex")])]})
     assert r.status_code == 200 and r.json()["roles"][0]["primary"]["model"] == "opus"

@@ -32,12 +32,17 @@ ROLE_NAME_MAX = 20
 ROLE_NOTE_MAX = 200
 ROLE_ID_MAX = 16
 RECOVER_UNKNOWN = 30 * 60   # 回復の時刻が読めないときの待ち（秒）
+# 段（tier。T3c）: 役割の名前がそのまま段の名前。チームリーダーは delegate に tier を渡すだけで、担い手は Nexarch が決める。
+TIERS = ("explore", "implement", "review", "hard")
 BUILTIN_ROLES = (
-    {"name": "実装", "count": 2, "note": "コードを書く・直す"},
-    {"name": "レビュー", "count": 1, "note": "差分を読み、問題点を指摘する"},
-    {"name": "試験", "count": 1, "note": "試験を書く・流して確かめる"},
+    {"name": "explore", "count": 2, "note": "探す・読む・調べる（安い担い手。読むだけ）"},
+    {"name": "implement", "count": 3, "note": "ふつうの実装・試験を書く（worktree で書く）"},
+    {"name": "review", "count": 1, "note": "評価・レビュー（強い・別の系列が望ましい。読むだけ）"},
+    {"name": "hard", "count": 1, "note": "難しい設計・判断の要る不具合（チームリーダー自身が既定）"},
 )
-MEMBER_ROLE_OF_NAME = {"レビュー": "reviewer"}
+# 既定の割り当ての例（導入済みの CLI だけ・hard は未設定＝チームリーダー自身）
+SUGGESTED = {"explore": {"cli": "opencode"}, "implement": {"cli": "claude", "model": "sonnet"}, "review": {"cli": "codex"}}
+MEMBER_ROLE_OF_NAME = {"review": "reviewer", "explore": "researcher"}
 
 
 # ---------------------------------------------------------------- 担い手の指定
@@ -129,13 +134,34 @@ def builtin_roles() -> list[dict]:
     return clean_roles([{**r, "primary": None, "secondary": []} for r in BUILTIN_ROLES])
 
 
+def suggested_roles() -> list[dict]:
+    """組み込みの 4 段に、導入済みの CLI の既定の割り当て（例）を入れたもの。入れられない段は未設定のまま。"""
+    out = []
+    for r in BUILTIN_ROLES:
+        primary = None
+        want = SUGGESTED.get(r["name"])
+        if want:
+            try:
+                if accounts.is_installed(accounts.CLIS[want["cli"]]):
+                    primary = clean_endpoint({"kind": "headless", "cli": want["cli"], "model": want.get("model", "")})
+            except Exception:  # noqa: BLE001 - 接続の一覧を取れない等。未設定のまま
+                primary = None
+        out.append({**r, "primary": primary, "secondary": []})
+    return clean_roles(out)
+
+
+def tier_role(team: dict, tier: str) -> dict | None:
+    """段（tier）の役割。名前が段の名前の役割。"""
+    return find_role_by_name(team, tier)
+
+
 def new_team_roles() -> list[dict]:
     """新しいチームの役割 = Nexarch の設定の既定の役割（無ければ組み込みの 3 つ）。id は新しく振る。"""
     from app.commander import settings as commander_settings
 
     source = commander_settings.default_roles()
     try:
-        return clean_roles([{**r, "id": None, "last_index": 0} for r in source]) if source else builtin_roles()
+        return clean_roles([{**r, "id": None, "last_index": 0} for r in source]) if source else suggested_roles()
     except teams.TeamError:
         logger.warning("既定の役割が正しくないので組み込みの役割を使います")
         return builtin_roles()

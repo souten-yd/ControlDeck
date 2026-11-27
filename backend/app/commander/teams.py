@@ -294,6 +294,7 @@ def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> d
             "brief": "", "reset_before_dispatch": True,
             "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
             "roles": roles, "leader": leader, "limits": {}, "created_by": created_by,
+            "git_init": True, "web_research": True, "autonomy": "high",
             **made,
         }
         teams.append(team)
@@ -341,6 +342,15 @@ def update_team(team_id: str, fields: dict) -> dict:
             if not isinstance(fields["codex_without_sandbox"], bool):
                 raise TeamError("サンドボックスなしの入り切りは真偽で指定してください")
             team["codex_without_sandbox"] = fields["codex_without_sandbox"]
+        for key, label in (("git_init", "git の初期化"), ("web_research", "Web の調査")):
+            if fields.get(key) is not None:
+                if not isinstance(fields[key], bool):
+                    raise TeamError(f"{label}の入り切りは真偽で指定してください")
+                team[key] = fields[key]
+        if fields.get("autonomy") is not None:
+            if fields["autonomy"] not in ("high", "ask"):
+                raise TeamError("自律の度合いは high か ask にしてください")
+            team["autonomy"] = fields["autonomy"]
         if fields.get("auto_run") is not None:
             if not isinstance(fields["auto_run"], bool):
                 raise TeamError("自動の割り当ての入り切りは真偽で指定してください")
@@ -379,6 +389,12 @@ def delete_team(team_id: str) -> dict:
         team_runner.stop_team(team_id)
     except Exception:  # noqa: BLE001 - チームの削除は止めない
         logger.exception("チームの実行を止められませんでした")
+    if (team.get("git") or {}).get("enabled") and team.get("workdir"):
+        try:  # worktree とブランチを片付ける（T3c）
+            from app.commander import team_git
+            team_git.cleanup(str(team["workdir"]), team_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("チームの worktree を片付けられませんでした")
     return team
 
 
@@ -940,9 +956,9 @@ def list_teams() -> list[dict]:
                 from app.commander import team_runner
                 row["no_sandbox"] = team_runner.member_sandbox_free(m)  # この機械では codex のサンドボックスが使えない
             members.append(row)
-        from app.commander import team_roles
+        from app.commander import leader_mcp, team_roles
 
-        out.append({**team, "members": members, "tasks": tasks, "parallel": parallel_summary(team),
+        out.append({**team, "usage_total": leader_mcp.usage_total(team), "members": members, "tasks": tasks, "parallel": parallel_summary(team),
                     "roles": team_roles.role_views(team), "leader": team.get("leader"),
                     "leader_effective": team_roles.leader_endpoint(team), "limits": team.get("limits", {}),
                     "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),

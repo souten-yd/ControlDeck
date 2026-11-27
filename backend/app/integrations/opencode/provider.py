@@ -929,8 +929,11 @@ def _runtime_config(
     project_id: str | None = None,
     runtime: str = "v2",
     chat_server: bool = False,
+    extra_mcp: dict | None = None,
 ) -> Path:
     """OpenCode v2 のセッション設定を書き、XDG_CONFIG_HOME にするディレクトリを返す。
+
+    `extra_mcp` は設定の mcp へ足すサーバー（{名前: 指定}。Nexarch のチームリーダーの nexarch_team）。
 
     `runtime` は旧呼び出し互換のためだけに受け取る（v1 は撤去済みで常に v2）。
     `chat_server` は AI アシスタント用の常駐サーバー（chat_server.py）の設定にする:
@@ -941,6 +944,8 @@ def _runtime_config(
                               owner_user_id=owner_user_id, project_id=project_id)
     if chat_server:
         payload["_chat_server"] = True
+    if extra_mcp:
+        payload.setdefault("mcp", {}).update(extra_mcp)
     return _write_v2_config(safe_job_id, payload)
 
 

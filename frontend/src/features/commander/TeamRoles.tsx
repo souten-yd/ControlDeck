@@ -363,7 +363,7 @@ export function LeaderSheet({ team, expert, onClose, onSaved }: { team: Team; ex
   return (
     <BottomSheet title="チームリーダーを任命" onClose={onClose}>
       <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-        目標を計画してタスクを配る AI です。目標からチームを作るとき、画面なし（ヘッドレス）で 1 回だけ動きます。任命しなければ既定のチームリーダーを使います（今: {endpointText(team.leader_effective)}）。
+        目標を計画してタスクを配る AI です。一文で頼まれると、画面なし（ヘッドレス）で長く動き、MCP の道具で調べ・計画し・段ごとに担い手へ振ります。任命しなければ既定のチームリーダーを使います（今: {endpointText(team.leader_effective)}）。
       </p>
       <EndpointPicker value={value} onChange={setValue} expert={expert} withKind={false} idPrefix="leader" />
       <TeamRootBlock expert={expert} />
@@ -476,7 +476,7 @@ export function AutoTeamSheet({ expert, onClose, onCreated }: { expert: boolean;
     try {
       const team = await createAutoTeam(goal.trim(), workdir);
       onCreated(team.id);
-      show("チームリーダーがチームを計画しています");
+      show("チームリーダーに頼みました");
       onClose();
     } catch (e) {
       show(e instanceof Error ? e.message : "作れませんでした", "error");
@@ -484,12 +484,12 @@ export function AutoTeamSheet({ expert, onClose, onCreated }: { expert: boolean;
     }
   };
   return (
-    <BottomSheet title="目標からチームを作る" onClose={onClose}>
+    <BottomSheet title="作業場所を選んで頼む" onClose={onClose}>
       <label className={fieldLabel} htmlFor="auto-goal">目標</label>
       <textarea id="auto-goal" rows={5} value={goal} maxLength={4000} onChange={(e) => setGoal(e.target.value)} className={textareaClass}
         placeholder="例: ログイン機能を作って、試験まで通す" />
       <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-        チームリーダー（{endpointText(data?.default_leader)}）が役割とタスクに分けて板へ入れます。そのまま自動で動き始めます。
+        チームリーダー（{endpointText(data?.default_leader)}）が調べ・計画し、段ごとに担い手へ振って、統合・試験まで進めます。
       </p>
       {data && !data.team_root && <TeamRootBlock expert={expert} />}
       {expert && (

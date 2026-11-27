@@ -90,7 +90,7 @@ def blocker(team: dict, task: dict, member: dict, *, check_overlap: bool, retry:
         local = sum(1 for t in others if (m := teams.find_member(team, str(t.get("assignee") or ""))) and teams.member_is_local(m))
         if local >= int(team.get("local_parallel") or 1):
             return "ローカルの担い手の同時の数の上限です（GPU を共有）"
-    if check_overlap and task.get("files"):
+    if check_overlap and task.get("files") and not task.get("cwd"):  # worktree の仕事は隔離されているので重なっても並べる
         for other in others:
             if any(teams._overlaps(a, b) for a in task["files"] for b in other.get("files", [])):  # noqa: SLF001
                 return f"#{other['id']} と担当ファイルが重なっています（終わるまで待ち）"
@@ -341,9 +341,12 @@ def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
     started = 0
     for _ in range(32):
         team = _fresh(team_id)
-        if team is None or team.get("auto_run", True) is False:
+        if team is None:
             return started
-        todo = sorted((t for t in team.get("tasks", []) if t.get("status") == "todo"), key=lambda t: t["id"])
+        auto = team.get("auto_run", True) is not False
+        # チームリーダーが振った仕事（leader_managed）は、auto_run が切でも配る（T3c）
+        todo = sorted((t for t in team.get("tasks", []) if t.get("status") == "todo" and (auto or t.get("leader_managed"))),
+                      key=lambda t: t["id"])
         if not todo:
             return started
         if rows is None and any(not teams.is_headless(m) for m in team.get("members", [])):
