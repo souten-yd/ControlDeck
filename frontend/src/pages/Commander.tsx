@@ -7,12 +7,14 @@
  * 主操作は「＋ コンソール」1 個、アカウントの管理はその他メニュー（UI ルール: 全ボタンを並べない）。 */
 import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { closeConsole, fetchClis, fetchConsoles, type CommanderConsole } from "../api/commander";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { ConfirmDialog, EmptyState, IconButton, Skeleton, DropdownMenu } from "../components/ui";
+import { ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skeleton, DropdownMenu } from "../components/ui";
 import { IconDots, IconListRows, IconPlus, IconTilesPreview } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ConsoleRow, ConsoleTile } from "../features/commander/ConsoleTile";
+import { TeamView } from "../features/commander/TeamView";
 import { NewConsoleSheet } from "../features/commander/NewConsoleSheet";
 import { AccountsSheet } from "../features/commander/AccountsSheet";
 import { GlobalResumeMessageSheet } from "../features/commander/ResumeMessageSheet";
@@ -55,6 +57,13 @@ export default function CommanderPage() {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const section: "consoles" | "team" = searchParams.get("view") === "team" ? "team" : "consoles";
+  const chooseSection = (value: "consoles" | "team") => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "team") next.set("view", "team"); else next.delete("view");
+    setSearchParams(next, { replace: true });
+  };
   const [newSheet, setNewSheet] = useState(false);
   const [accountsSheet, setAccountsSheet] = useState(false);
   const [resumeSheet, setResumeSheet] = useState(false);
@@ -127,15 +136,26 @@ export default function CommanderPage() {
             { label: "自動再開の文言（全体）", onSelect: () => setResumeSheet(true) },
           ]}
         />
-        <IconButton variant="primary" label="＋ コンソール" onClick={() => setNewSheet(true)}>
-          <IconPlus />
-        </IconButton>
+        {section === "consoles" && (
+          <IconButton variant="primary" label="＋ コンソール" onClick={() => setNewSheet(true)}>
+            <IconPlus />
+          </IconButton>
+        )}
       </>} />
 
       <p className="mb-1 text-[11px] font-semibold tracking-[0.18em] text-accent-600 dark:text-accent-400">AI COMMAND SYSTEM</p>
       <p className="mb-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
         Claude Code・Codex・OpenCode などのコンソールをアカウントごとに開いて、1 つの画面で並べます。
       </p>
+      <SegmentedTabs
+        tabs={[["consoles", "コンソール"], ["team", "チーム"]] as const}
+        value={section}
+        onChange={chooseSection}
+        className="mb-3 max-w-xs"
+      />
+      {section === "team" ? (
+        <TeamView consoles={items} cliName={cliName} onOpenConsole={setExpanded} />
+      ) : (<>
       {items.length > 0 && (
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">{items.length} 個</span>
@@ -176,6 +196,7 @@ export default function CommanderPage() {
           ))}
         </ul>
       )}
+      </>)}
 
       {closing && (
         <ConfirmDialog

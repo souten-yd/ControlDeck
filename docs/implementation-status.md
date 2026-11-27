@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-27 Nexarch の AI チーム T1: タスク板と、担当のコンソールへの送り込み
+- 利用者「AI チームを作りたい。情報の橋渡し、リーダーはローカル LLM もフロンティアも自由に。使いやすい形で」。設計は docs/PLAN-nexarch-team.md、これはその T1。
+- 作ったもの: `backend/app/commander/teams.py`（保存は `data/ai-commander/teams.json` 0600・DB なし）と `/commander/teams` の API（権限 terminal.use・変更は監査ログ `commander.team.*`）。チーム・メンバー（Nexarch のコンソールだけ・役割・リーダーは 1 人まで・役割は tmux の印にも付く）・タスク（担当ファイルの重なりは断らず警告）。
+- 担当へ送る（dispatch）は Terminal の inject_input で固定の文面を送る。担当が終了・閉じている・作業中なら 409 で送らない。報告の取り込み（collect）は画面の最後の「完了報告:」の 4 行を正規表現で読む（LLM なし・送った文面の見本 `<…>` は報告とみなさない）。手入力の報告も可。一覧は担当の状態と report_ready（作業中のタスクの画面に報告があるか）を添える。
+- 画面: Nexarch に「コンソール｜チーム」の切り替え（`?view=team`）。メンバー・タスク板（待ち・作業中・レビュー待ち・完了。差し戻しは待ちに印つき。モバイルは縦並び）・タスクの詳細（送る・取り込む・合格・差し戻し・削除）。
+- 試験: backend/tests/test_commander_teams.py、frontend/e2e/commander-team.spec.ts（320px・1280px の撮影）。
+- 次: T2（MCP の道具・報告が来たらリーダーへ知らせる見張り）。
+
 ## 2026-11-27 iPhone: 下から出るシートの入力欄がキーボードに隠れる
 - 利用者「アカウント管理の画面で、入力部分がキーボードに隠れて見にくい。スライドしても一定以上上に上がらない」。
 - 原因: キーボードが出ると殻（#root）は見えている範囲に合わせていた（useKeyboardViewportFit）が、シート・ダイアログは body へ portal するので殻の外にあり、満寸（85dvh）のままキーボードの裏に入っていた。

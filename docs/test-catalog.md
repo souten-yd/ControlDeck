@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 264 ファイル、2602 テスト（目的の未記入 93 ファイル）
-- E2E: 145 spec、320 テスト
+- backend: 265 ファイル、2612 テスト（目的の未記入 93 ファイル）
+- E2E: 146 spec、322 テスト
 
 ## backend（backend/tests）
 
@@ -734,6 +734,21 @@
 - `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
+
+### backend/tests/test_commander_teams.py
+
+目的: Nexarch の AI チーム（app/commander/teams.py・/commander/teams API）の試験。 目的: 「タスク板（ControlDeck が正本）＋担当のコンソールへの構造化した送り込み＋画面の 「完了報告:」の取り込み」を守る。保存（0600・壊れた JSON）・検証・メンバーは Nexarch の コンソールだけ・リーダー 1 人・担当ファイルの重なりの警告・dispatch の文面と断り・collect の正規表現・ 手入力の報告・監査ログ・権限。 根拠: 利用者の依頼（2026-11-27）「AI チームを作りたい。情報の橋渡し、リーダーはローカル LLM も フロンティアも自由に。使いやすい形で」と docs/PLAN-nexarch-team.md の T1。弱いモデルでも動くよう 状態の判断と取り込みは LLM でなくコードが持つので、文面の固定と正規表現を機械的に確かめる。 Terminal は FakeManager で置き換える（tmux は使わない）。
+
+- `test_requires_login`
+- `test_storage_mode_and_broken_json`
+- `test_name_and_text_validation`
+- `test_members_only_consoles_one_leader_and_role_marks`
+- `test_overlap_warnings`
+- `test_dispatch_text_transitions_and_refusals`
+- `test_collect_parses_last_block_and_ignores_template`
+- `test_manual_report_review_and_report_ready`
+- `test_history_is_capped`
+- `test_audit_log`
 
 ### backend/tests/test_commander_usage.py
 
@@ -4264,6 +4279,13 @@
 - uses getRandomValues when randomUUID is unavailable
 - works without crypto and satisfies the backend contract
 - generates 1000 unique identifiers without crypto
+
+### frontend/e2e/commander-team.spec.ts
+
+目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
+
+- AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格
+- URL の ?view=team でチームが開き、コンソールの切り替えで戻れる
 
 ### frontend/e2e/commander.spec.ts
 

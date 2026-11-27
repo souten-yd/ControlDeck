@@ -8,6 +8,7 @@
 - GET    /commander/consoles                コンソールの一覧
 - POST   /commander/consoles                コンソールを個数ぶん開く
 - DELETE /commander/consoles/{session_id}   コンソールを閉じる
+- /commander/teams ...                      AI チーム（タスク板・送り込み。commander/teams.py）
 
 アカウントの作成・削除とコンソールの作成・削除は監査ログへ残す
 （アカウントのフォルダにはログインの情報が入るため）。
@@ -19,11 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
-from app.commander import accounts, consoles, workdir
+from app.commander import accounts, consoles, teams, workdir
 from app.database import get_db
 from app.models import User
 from app.schemas.commander import (
@@ -360,3 +364,150 @@ def delete_console(
         },
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- AI チーム（T1）。保存と検証は commander/teams.py
+
+class _TeamName(BaseModel):
+    name: str = Field(max_length=200)
+
+
+class _TeamMembers(BaseModel):
+    members: list[dict[str, Any]] = Field(max_length=50)
+
+
+class _TaskBody(BaseModel):
+    """作成・更新で使う欄。更新は送った欄だけ変える（検証は teams.py）。"""
+    title: str | None = Field(default=None, max_length=1000)
+    goal: str | None = Field(default=None, max_length=20000)
+    acceptance: str | None = Field(default=None, max_length=20000)
+    files: list[str] | None = Field(default=None, max_length=200)
+    assignee: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+
+
+class _ReportBody(BaseModel):
+    summary: str = Field(max_length=10000)
+    changed_files: list[str] = Field(default_factory=list, max_length=200)
+    tests: str = Field(default="", max_length=10000)
+    remaining: str = Field(default="", max_length=10000)
+
+
+def _team_call(func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except teams.TeamError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def _team_audit(db, user, request, action: str, team_id: str, **meta) -> None:
+    audit.record(db, f"commander.team.{action}", user=user, resource_type="commander_team",
+                 resource_id=team_id, request=request, metadata=meta or None)
+
+
+@router.get("/teams")
+def list_teams(user: User = Depends(require_permission("terminal.use"))):
+    del user
+    return {"teams": teams.list_teams()}
+
+
+@router.post("/teams", status_code=201)
+def create_team(
+    body: _TeamName, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    team = _team_call(teams.create_team, body.name)
+    _team_audit(db, user, request, "create", team["id"], name=team["name"])
+    return team
+
+
+@router.put("/teams/{team_id}")
+def rename_team(
+    team_id: str, body: _TeamName, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    team = _team_call(teams.rename_team, team_id, body.name)
+    _team_audit(db, user, request, "rename", team_id, name=team["name"])
+    return team
+
+
+@router.delete("/teams/{team_id}")
+def delete_team(
+    team_id: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    _team_call(teams.delete_team, team_id)
+    _team_audit(db, user, request, "delete", team_id)
+    return {"ok": True}
+
+
+@router.put("/teams/{team_id}/members")
+def set_team_members(
+    team_id: str, body: _TeamMembers, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    team = _team_call(teams.set_members, team_id, body.members)
+    _team_audit(db, user, request, "members", team_id, count=len(team["members"]))
+    return team
+
+
+@router.post("/teams/{team_id}/tasks", status_code=201)
+def create_team_task(
+    team_id: str, body: _TaskBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    task = _team_call(teams.create_task, team_id, body.model_dump(exclude_none=True), user.username)
+    _team_audit(db, user, request, "task.create", team_id, task=task["id"])
+    return task
+
+
+@router.put("/teams/{team_id}/tasks/{task_id}")
+def update_team_task(
+    team_id: str, task_id: int, body: _TaskBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    task = _team_call(teams.update_task, team_id, task_id, body.model_dump(exclude_none=True), user.username)
+    _team_audit(db, user, request, "task.update", team_id, task=task_id, status=task["status"])
+    return task
+
+
+@router.delete("/teams/{team_id}/tasks/{task_id}")
+def delete_team_task(
+    team_id: str, task_id: int, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    _team_call(teams.delete_task, team_id, task_id)
+    _team_audit(db, user, request, "task.delete", team_id, task=task_id)
+    return {"ok": True}
+
+
+@router.post("/teams/{team_id}/tasks/{task_id}/dispatch")
+def dispatch_team_task(
+    team_id: str, task_id: int, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """担当のコンソールへタスクの文面を送る（終了・作業中なら 409）。"""
+    task = _team_call(teams.dispatch_task, team_id, task_id, user.username)
+    _team_audit(db, user, request, "task.dispatch", team_id, task=task_id, assignee=task["assignee"])
+    return task
+
+
+@router.post("/teams/{team_id}/tasks/{task_id}/collect")
+def collect_team_task(
+    team_id: str, task_id: int, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """担当の画面から「完了報告:」の 4 行を読んで報告にする（無ければ 404）。"""
+    task = _team_call(teams.collect_report, team_id, task_id, user.username)
+    _team_audit(db, user, request, "task.collect", team_id, task=task_id)
+    return task
+
+
+@router.put("/teams/{team_id}/tasks/{task_id}/report")
+def put_team_task_report(
+    team_id: str, task_id: int, body: _ReportBody, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    task = _team_call(teams.put_report, team_id, task_id, body.model_dump(), user.username)
+    _team_audit(db, user, request, "task.report", team_id, task=task_id)
+    return task
