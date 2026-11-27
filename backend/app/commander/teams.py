@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.commander import consoles, status
+from app.commander import consoles, status, workdir
 from app.config import data_dir
 from app.terminals.manager import manager
 
@@ -217,11 +217,21 @@ def _console_ids() -> dict[str, dict]:
 
 
 def _make_workdir(name: str) -> dict:
-    """チームの作業場所（CodeDEV の team-日時。git init・Project Lab にも出る）。作れなければ空（実行のときに作り直す）。"""
+    """チームの作業場所。保存先（settings の team_root）があればその下の `<名前>-日時`、無ければ CodeDEV の team-日時
+    （どちらも git init・manifest つき。CodeDEV の中なら Project Lab にも出る）。作れなければ空（実行のときに作り直す）。"""
     try:
+        from app.commander import settings as commander_settings
         from app.integrations.opencode import projects
 
-        made = projects.create_auto_project("team", name)
+        made = None
+        root = commander_settings.team_root()
+        if root:
+            try:
+                made = projects.create_project_in(workdir.resolve_dir(root), name)
+            except (OSError, ValueError) as exc:  # 保存先が消えた・外れた → 今の動き（CodeDEV）へ
+                logger.warning("チームの保存先を使えません（CodeDEV に作ります）: %s", exc)
+        if made is None:
+            made = projects.create_auto_project("team", name)
         return {"workdir": made["path"], "workdir_folder": made["folder"], "workdir_name": made["name"]}
     except (OSError, ValueError, ImportError) as exc:
         logger.warning("チームの作業場所を作れませんでした: %s", exc)
@@ -249,13 +259,29 @@ def ensure_workdir(team_id: str) -> str:
         return path
 
 
-def create_team(name: str, *, workdir_path: str = "") -> dict:
-    """チームを作る。役割とルーターは Nexarch の設定の既定を写す（T3b）。workdir_path があればそれを作業場所にする。"""
+CREATED_BY = ("", "nexarch", "assistant")
+
+
+def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> dict:
+    """チームを作る。役割とルーターは Nexarch の設定の既定を写す（T3b）。
+
+    保存先: AI アシスタントから作る（created_by="assistant"）ときは、その会話の OpenCode の作業場所（workdir_path）をそのまま
+    使う（新しいフォルダを作らない・必須）。それ以外は workdir_path があればそれ、無ければ Nexarch の設定の保存先
+    （team_root）の下に自動で作る（未設定なら CodeDEV に自動の作業場所）。workdir_path は作業フォルダの検証を通す。
+    """
     from app.commander import team_roles
 
     name = clean_line(name, "チーム名", NAME_MAX)
+    if created_by not in CREATED_BY:
+        raise TeamError("作成元が正しくありません")
+    if created_by == "assistant" and not workdir_path:
+        raise TeamError("AI アシスタントから作るときは、会話の作業場所（workdir）が必要です")
     if workdir_path:
-        made = {"workdir": workdir_path, "workdir_folder": Path(workdir_path).name, "workdir_name": Path(workdir_path).name}
+        try:
+            resolved = workdir.resolve_dir(workdir_path)
+        except (OSError, ValueError) as exc:
+            raise TeamError(f"作業場所を使えません: {exc}") from exc
+        made = {"workdir": str(resolved), "workdir_folder": resolved.name, "workdir_name": resolved.name}
     else:
         made = _make_workdir(name)
     roles = team_roles.new_team_roles()
@@ -267,7 +293,7 @@ def create_team(name: str, *, workdir_path: str = "") -> dict:
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
             "brief": "", "reset_before_dispatch": True,
             "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
-            "roles": roles, "router": router, "limits": {},
+            "roles": roles, "router": router, "limits": {}, "created_by": created_by,
             **made,
         }
         teams.append(team)

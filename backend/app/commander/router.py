@@ -389,6 +389,9 @@ def delete_console(
 
 class _TeamName(BaseModel):
     name: str = Field(max_length=200)
+    # AI アシスタントから作るときは created_by="assistant" と、その会話の作業場所（workdir。検証は teams.py）
+    workdir: str = Field(default="", max_length=4096)
+    created_by: str = Field(default="", max_length=20)
 
 
 class _TeamUpdate(BaseModel):
@@ -435,6 +438,8 @@ class _HandoffChoice(BaseModel):
 class _TeamDefaults(BaseModel):
     default_router: dict[str, Any] | None = None
     default_roles: list[dict[str, Any]] | None = Field(default=None, max_length=20)
+    # チームの保存先（親フォルダ）。渡したときだけ変える・空文字は未設定へ戻す
+    team_root: str | None = Field(default=None, max_length=4096)
 
 
 class _TeamNotify(BaseModel):
@@ -484,8 +489,8 @@ def create_team(
     body: _TeamName, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    team = _team_call(teams.create_team, body.name)
-    _team_audit(db, user, request, "create", team["id"], name=team["name"])
+    team = _team_call(teams.create_team, body.name, workdir_path=body.workdir, created_by=body.created_by)
+    _team_audit(db, user, request, "create", team["id"], name=team["name"], created_by=body.created_by)
     return team
 
 
@@ -526,7 +531,15 @@ def put_team_defaults(
     def work():
         router_ep = team_roles.clean_endpoint_or_none(body.default_router, "既定のルーター")
         roles = None if body.default_roles is None else team_roles.clean_roles(body.default_roles)
-        return commander_settings.set_team_defaults({**router_ep, "kind": "headless"} if router_ep else None, roles)
+        extra: dict = {}
+        if "default_router" in body.model_fields_set:
+            extra["router"] = {**router_ep, "kind": "headless"} if router_ep else None
+        if "team_root" in body.model_fields_set:
+            try:
+                extra["team_root"] = commander_settings.clean_team_root(body.team_root)
+            except ValueError as exc:
+                raise teams.TeamError(str(exc)) from exc
+        return commander_settings.set_team_defaults(roles=roles, **extra)
 
     result = _team_call(work)
     audit.record(db, "commander.settings", user=user, resource_type="commander", resource_id="team-defaults", request=request)

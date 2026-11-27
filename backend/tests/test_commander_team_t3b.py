@@ -30,6 +30,9 @@ from tests.test_commander_team_t3a import (  # noqa: F401 - fixture
 )
 
 
+_REAL_MAKE_WORKDIR = teams._make_workdir  # T3a の env が差し替える前の本物
+
+
 def EP(cli: str, kind: str = "headless", **kw) -> dict:
     return {"kind": kind, "cli": cli, "account": "default", "model": "", "effort": "", **kw}
 
@@ -661,3 +664,105 @@ def test_api_consoles_accept_model_and_effort(admin_client, env, monkeypatch):
     r = admin_client.post("/api/v1/commander/consoles", headers=CSRF_HEADERS,
                           json={"cli": "claude", "cwd": str(env.work), "model": "opus", "effort": "high"})
     assert r.status_code == 201 and seen["model"] == "opus" and seen["effort"] == "high"
+
+
+# ---------------------------------------------------------------- チームの保存先（team_root）と AI アシスタントから作るチーム
+# 根拠: 利用者（2026-11-27）「チームの保存先は、AI アシスタントから呼び出すときは OpenCode（＝開発フォルダ）と同じで、
+# それ以外の場合は、ルーターを Nexarch で指定する際に一度だけ設定すると、適切な位置にフォルダを設定すること」。
+
+@pytest.fixture()
+def real_workdir(env, monkeypatch):
+    """T3a の偽の作業場所の代わりに、本物の _make_workdir（team_root・CodeDEV）を使う。"""
+    from app.integrations.opencode import provider
+
+    codedev = env.tmp / "root" / "CodeDEV"
+    codedev.mkdir()
+    monkeypatch.setattr(provider, "codedev_root", lambda: codedev)
+    monkeypatch.setattr(teams, "_make_workdir", _REAL_MAKE_WORKDIR)
+    return codedev
+
+
+def test_team_root_validation(env, real_workdir):
+    parent = env.tmp / "root" / "teams"
+    parent.mkdir()
+    assert settings.clean_team_root(str(parent)) == str(parent.resolve())
+    assert settings.clean_team_root("") == "" and settings.clean_team_root(None) == ""
+    for bad in ("/etc", "relative/dir", str(env.tmp / "root" / "missing"), 5):
+        with pytest.raises(ValueError):
+            settings.clean_team_root(bad)
+    link = env.tmp / "root" / "link"
+    link.symlink_to("/etc")
+    with pytest.raises(ValueError):
+        settings.clean_team_root(str(link))  # realpath で外へ出るものは断る
+    from app.config import data_dir
+    with pytest.raises(ValueError):
+        settings.clean_team_root(str(data_dir()))
+
+
+def test_team_root_creates_named_folder_with_manifest(env, real_workdir):
+    import re
+
+    parent = env.tmp / "root" / "teams"
+    parent.mkdir()
+    settings.set_team_defaults(team_root=settings.clean_team_root(str(parent)))
+    team = teams.create_team("My Team 開発")
+    folder = Path(team["workdir"])
+    assert folder.parent == parent.resolve() and (folder / ".git").is_dir()
+    assert re.fullmatch(r"My-Team-\d{8}-\d{6}", folder.name)
+    manifest = json.loads((folder / ".controldeck" / "project.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "My Team 開発" and manifest["created_by"] == "team" and manifest["schemaVersion"] == 1
+    again = teams.create_team("日本語だけ")  # 英数が無ければ team
+    assert re.fullmatch(r"team-\d{8}-\d{6}(-\d+)?", Path(again["workdir"]).name) and Path(again["workdir"]) != folder
+    assert settings.get()["team_root"] == str(parent.resolve())
+
+
+def test_without_team_root_uses_codedev_as_before(env, real_workdir):
+    team = teams.create_team("班")
+    assert Path(team["workdir"]).parent == real_workdir.resolve() and Path(team["workdir"]).name.startswith("team-")
+
+
+def test_vanished_team_root_falls_back_to_codedev(env, real_workdir):
+    parent = env.tmp / "root" / "gone"
+    parent.mkdir()
+    settings.set_team_defaults(team_root=str(parent.resolve()))
+    parent.rmdir()
+    team = teams.create_team("班")
+    assert Path(team["workdir"]).parent == real_workdir.resolve()
+
+
+def test_assistant_team_uses_given_workdir_as_is(env, real_workdir):
+    parent = env.tmp / "root" / "teams"
+    parent.mkdir()
+    settings.set_team_defaults(team_root=str(parent.resolve()))
+    chat = env.tmp / "root" / "CodeDEV" / "chat-20261127-100000"
+    chat.mkdir()
+    before = sorted(p.name for p in real_workdir.iterdir())
+    team = teams.create_team("会話のチーム", workdir_path=str(chat), created_by="assistant")
+    assert team["workdir"] == str(chat.resolve()) and team["created_by"] == "assistant"
+    assert sorted(p.name for p in real_workdir.iterdir()) == before and list(parent.iterdir()) == []  # 新しいフォルダは作らない
+    for bad in ({"workdir_path": "", "created_by": "assistant"}, {"workdir_path": "/etc", "created_by": "assistant"},
+                {"workdir_path": str(env.tmp / "root" / "nope"), "created_by": "assistant"}, {"created_by": "someone"}):
+        with pytest.raises(teams.TeamError):
+            teams.create_team("x", **bad)
+
+
+def test_api_team_root_and_assistant_create(admin_client, env, real_workdir):
+    base = "/api/v1/commander"
+    parent = env.tmp / "root" / "teams"
+    parent.mkdir()
+    r = admin_client.put(f"{base}/settings/team-defaults", headers=CSRF_HEADERS, json={"team_root": str(parent)})
+    assert r.status_code == 200 and r.json()["team_root"] == str(parent.resolve())
+    assert admin_client.put(f"{base}/settings/team-defaults", headers=CSRF_HEADERS, json={"team_root": "/etc"}).status_code == 400
+    assert admin_client.get(f"{base}/settings").json()["team_root"] == str(parent.resolve())
+    made = admin_client.post(API, headers=CSRF_HEADERS, json={"name": "班"}).json()
+    assert Path(made["workdir"]).parent == parent.resolve()
+    chat = env.tmp / "root" / "CodeDEV" / "chat-1"
+    chat.mkdir()
+    ok = admin_client.post(API, headers=CSRF_HEADERS, json={"name": "会話", "workdir": str(chat), "created_by": "assistant"})
+    assert ok.status_code == 201 and ok.json()["workdir"] == str(chat.resolve())
+    for body in ({"name": "x", "created_by": "assistant"}, {"name": "x", "workdir": "/etc"}, {"name": "x", "created_by": "zzz"}):
+        assert admin_client.post(API, headers=CSRF_HEADERS, json=body).status_code == 400
+    # ルーターだけ変えても保存先は消えない・保存先を空で消すと今の動きへ戻る
+    assert admin_client.put(f"{base}/settings/team-defaults", headers=CSRF_HEADERS,
+                            json={"default_router": EP("claude")}).json()["team_root"] == str(parent.resolve())
+    assert admin_client.put(f"{base}/settings/team-defaults", headers=CSRF_HEADERS, json={"team_root": ""}).json()["team_root"] == ""

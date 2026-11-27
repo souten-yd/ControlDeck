@@ -62,13 +62,43 @@ def default_roles() -> list[dict]:
     return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
 
 
-def set_team_defaults(router: dict | None, roles: list[dict] | None) -> dict:
-    """既定のルーターと既定の役割を保存する（検証済みの値を渡す。roles が None なら変えない・[] なら組み込みに戻す）。"""
+_UNSET = object()
+
+
+def team_root() -> str:
+    """チームの保存先（親フォルダ）。未設定なら空（CodeDEV に自動の作業場所を作る今の動き）。"""
+    value = _read().get("team_root")
+    return value if isinstance(value, str) else ""
+
+
+def clean_team_root(value: object) -> str:
+    """保存先の検証（作業フォルダの決まり: /data1tb・/data2tb の中・realpath・data_dir などの禁止）。空は「未設定へ戻す」。"""
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("保存先は文字列で指定してください")
+    from app.commander import workdir
+
+    try:
+        return str(workdir.resolve_dir(value))
+    except (OSError, ValueError) as exc:  # PermissionError・FileNotFoundError・NotADirectoryError を含む
+        raise ValueError(f"保存先を使えません: {exc}") from exc
+
+
+def set_team_defaults(router: object = _UNSET, roles: list[dict] | None = None, *, team_root: object = _UNSET) -> dict:
+    """既定のルーター・既定の役割・チームの保存先を保存する（検証済みの値を渡す。
+    渡さなかったものは変えない。router・team_root は空なら未設定へ、roles は [] なら組み込みへ戻す）。"""
     data = _read()
-    if router:
-        data["default_router"] = router
-    else:
-        data.pop("default_router", None)
+    if team_root is not _UNSET:
+        if team_root:
+            data["team_root"] = team_root
+        else:
+            data.pop("team_root", None)
+    if router is not _UNSET:
+        if router:
+            data["default_router"] = router
+        else:
+            data.pop("default_router", None)
     if roles is not None:
         if roles:
             data["default_roles"] = roles
@@ -80,7 +110,7 @@ def set_team_defaults(router: dict | None, roles: list[dict] | None) -> dict:
 
 def get() -> dict:
     return {"resume_message": resume_message(), "default_resume_message": DEFAULT_RESUME_MESSAGE,
-            "default_router": default_router(), "default_roles": default_roles()}
+            "default_router": default_router(), "default_roles": default_roles(), "team_root": team_root()}
 
 
 def set_resume_message(value: str) -> dict:
