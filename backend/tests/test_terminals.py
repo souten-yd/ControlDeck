@@ -1,3 +1,4 @@
+from pathlib import Path
 import asyncio
 import json
 import os
@@ -97,8 +98,16 @@ def test_terminal_create_accepts_cwd_for_chat_command_runs(admin_client, tmp_pat
     存在しない・ファイルのパスは断る（terminal automation の resolve_working_directory と同じ検証）。"""
     from tests.conftest import CSRF_HEADERS
 
-    work = tmp_path / "ws"
+    import uuid
+
+    from app.config import get_config
+
+    # 許可されたディレクトリ（files.allowed_roots）の中だけを受ける。外は 422
+    root = Path(get_config().files.allowed_roots[0]).resolve()
+    work = root / f"term-cwd-{uuid.uuid4().hex[:8]}"
     work.mkdir()
+    outside = admin_client.post("/api/v1/terminals", json={"cwd": str(tmp_path)}, headers=CSRF_HEADERS)
+    assert outside.status_code == 422, "許可されたディレクトリの外は断る"
     r = admin_client.post("/api/v1/terminals", json={"cwd": str(work)}, headers=CSRF_HEADERS)
     assert r.status_code == 201, r.text
     sid = r.json()["id"]
@@ -108,9 +117,9 @@ def test_terminal_create_accepts_cwd_for_chat_command_runs(admin_client, tmp_pat
         assert created["cwd"] == _display_path(str(work)), "指定した作業場所でセッションが始まる"
     finally:
         admin_client.delete(f"/api/v1/terminals/{sid}", headers=CSRF_HEADERS)
-    missing = admin_client.post("/api/v1/terminals", json={"cwd": str(tmp_path / "ない")}, headers=CSRF_HEADERS)
+    missing = admin_client.post("/api/v1/terminals", json={"cwd": str(root / "ない-dir")}, headers=CSRF_HEADERS)
     assert missing.status_code == 422
-    afile = tmp_path / "f.txt"
+    afile = work / "f.txt"
     afile.write_text("x")
     assert admin_client.post("/api/v1/terminals", json={"cwd": str(afile)}, headers=CSRF_HEADERS).status_code == 422
     # 従来どおり cwd 無しでも作れる（ホーム）
