@@ -159,7 +159,7 @@ def workdir_list(path: str, user: User = Depends(require_permission("terminal.us
     del user
     try:
         return workdir.list_dirs(path)
-    except (PermissionError, FileNotFoundError, NotADirectoryError) as exc:
+    except (PermissionError, FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise _workdir_http(exc) from exc
 
 
@@ -172,7 +172,7 @@ def workdir_mkdir(
 ):
     try:
         created = workdir.make_directory(body.path)
-    except (PermissionError, FileNotFoundError, NotADirectoryError) as exc:
+    except (PermissionError, FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise _workdir_http(exc) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail="同じ名前があります") from exc
