@@ -208,7 +208,9 @@ test("the plus menu stays on a short screen, scrolls inside and follows the arro
   // 2026-11-27: 位置の直し（window.innerHeight → fixed の探り要素の実測）に合わせて、上へも下へも
   // はみ出さないことと、下端が＋の上端の近く（収まらないときは見えている範囲の下に合わせる）を見る
   test.skip(!hasSession(), "E2E credentials required");
-  await page.setViewportSize({ width: 390, height: 360 });
+  // 2026-11-27: メニューは約 290px。位置の直しで 360px の高さには「収まる」ようになった（下へずらす）ので、
+  // 「収まらないとき中だけスクロールする」を見るには、メニューより低い 240px にする
+  await page.setViewportSize({ width: 390, height: 240 });
   await establishSession(page, context);
   await mock(page);
   await page.evaluate(() => localStorage.setItem("cd-chat-conversation", "p1"));

@@ -37,6 +37,13 @@ const msg = (id: string, role: "user" | "assistant", content: string, meta: Reco
 
 async function openAssistant(page: Page) {
   const created: Record<string, unknown>[] = [];
+  // 作業場の一覧は OpenCode が使えるときだけ読む（機能を有効にしないと場所はホームのままになる）
+  await page.route(/\/api\/v1\/meta$/, async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    meta.enabled_features = [...(meta.enabled_features ?? []), "opencode-v2"];
+    return route.fulfill({ response, json: meta });
+  });
   await page.route(/\/api\/v1\/opencode\/workspaces$/, (route) => route.fulfill({ json: { workspaces: [{
     name: NAME, source: "controldeck", source_label: "ControlDeck 本体", origin: "", branch: `sandbox/${NAME}`,
     dirty: false, unpushed: 0, created_at: 1, last_used: Date.now() / 1000 - 60, repo_path: REPO }] } }));

@@ -389,7 +389,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
               <button type="button" data-testid="workspace-check-and-adopt" disabled className={PRIMARY}>確認中…</button>
             )}
             {!adopted && checkStatus === "passed" && (
-              <button type="button" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdoptForce(false); setAdopting(true); }}
+              <button type="button" data-testid="workspace-adopt" onClick={() => { setTitle(info?.suggested_title ?? ""); setAdoptForce(false); setAdopting(true); }}
                 disabled={!ready}
                 title={!canAdoptHere ? "本体へ取り込むには設定の権限（settings.manage）が要ります" : !ready ? "確認が合格で、その後に変更が無いときに押せます" : ""}
                 className={PRIMARY}>

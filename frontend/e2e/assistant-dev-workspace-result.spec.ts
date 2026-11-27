@@ -105,7 +105,8 @@ for (const width of [320, 1280]) {
     await expect(card.getByTestId("workspace-check-and-adopt")).toHaveText("確認中…");   // 4 つの状態の札: 確認中…
     await expect(card.getByTestId("workspace-check-note")).toContainText("テストを流しています");
     await expect(card.getByTestId("workspace-check-label")).toHaveText("合格", { timeout: 15_000 });
-    expect((await card.getByTestId("workspace-check-and-adopt").boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
+    // 合格後の主の操作は「取り込む」（確認してから取り込むは消える）。押せる大きさ（44px）を守る
+    expect((await card.getByTestId("workspace-adopt").boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
     // 合格したら取り込みの確認が自動で開く（合格の主の操作は「取り込む」）
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("GitHub に PR を作ります");
