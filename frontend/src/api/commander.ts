@@ -170,3 +170,88 @@ export async function openConsoles(body: OpenConsolesBody): Promise<ConsolesOpen
 export async function closeConsole(id: string): Promise<{ ok: boolean }> {
   return api<{ ok: boolean }>(`/commander/consoles/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+// ---- AI チーム（T1）: タスク板と、担当のコンソールへの送り込み ----
+
+export type TeamRole = "leader" | "developer" | "reviewer" | "researcher" | "member";
+export const TEAM_ROLES: ReadonlyArray<readonly [TeamRole, string]> = [
+  ["leader", "リーダー"], ["developer", "開発"], ["reviewer", "レビュー"], ["researcher", "調査"], ["member", "メンバー"],
+];
+export const ROLE_LABEL: Record<TeamRole, string> = Object.fromEntries(TEAM_ROLES) as Record<TeamRole, string>;
+
+export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected";
+
+export interface TeamMember { session_id: string; role: TeamRole }
+
+export interface TaskReport { summary: string; changed_files: string[]; tests: string; remaining: string }
+
+export interface TeamTask {
+  id: number;
+  title: string;
+  goal: string;
+  acceptance: string;
+  files: string[];
+  assignee: string;
+  status: TaskStatus;
+  report: TaskReport | null;
+  created_at: number;
+  updated_at: number;
+  history: { at: number; event: string; by: string }[];
+  /** 担当ファイルが他の未完了のタスクと重なる警告。 */
+  warnings: string[];
+  /** 担当のコンソールの状態。"closed" は閉じている、"" は担当なし。 */
+  assignee_state?: CommanderState | "closed" | "";
+  /** 作業中のタスクで、担当の画面に「完了報告:」がある。 */
+  report_ready?: boolean;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  created_at: number;
+  members: TeamMember[];
+  tasks: TeamTask[];
+}
+
+export interface TaskFields {
+  title?: string;
+  goal?: string;
+  acceptance?: string;
+  files?: string[];
+  assignee?: string;
+  status?: TaskStatus;
+}
+
+const teamUrl = (id: string) => `/commander/teams/${encodeURIComponent(id)}`;
+const taskUrl = (id: string, task: number) => `${teamUrl(id)}/tasks/${task}`;
+
+export async function fetchTeams(): Promise<Team[]> {
+  return (await api<{ teams: Team[] }>("/commander/teams")).teams;
+}
+export async function createTeam(name: string): Promise<Team> {
+  return api<Team>("/commander/teams", { method: "POST", json: { name } });
+}
+export async function deleteTeam(id: string): Promise<void> {
+  await api(teamUrl(id), { method: "DELETE" });
+}
+export async function setTeamMembers(id: string, members: TeamMember[]): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/members`, { method: "PUT", json: { members } });
+}
+export async function createTask(id: string, fields: TaskFields): Promise<TeamTask> {
+  return api<TeamTask>(`${teamUrl(id)}/tasks`, { method: "POST", json: fields });
+}
+export async function updateTask(id: string, task: number, fields: TaskFields): Promise<TeamTask> {
+  return api<TeamTask>(taskUrl(id, task), { method: "PUT", json: fields });
+}
+export async function deleteTask(id: string, task: number): Promise<void> {
+  await api(taskUrl(id, task), { method: "DELETE" });
+}
+export async function dispatchTask(id: string, task: number): Promise<TeamTask> {
+  return api<TeamTask>(`${taskUrl(id, task)}/dispatch`, { method: "POST" });
+}
+export async function collectTask(id: string, task: number): Promise<TeamTask> {
+  return api<TeamTask>(`${taskUrl(id, task)}/collect`, { method: "POST" });
+}
+export async function putTaskReport(id: string, task: number, report: TaskReport): Promise<TeamTask> {
+  return api<TeamTask>(`${taskUrl(id, task)}/report`, { method: "PUT", json: report });
+}
