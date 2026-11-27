@@ -120,6 +120,13 @@ def _opencode_models(account: str) -> tuple[list[dict], str]:
                 for i in provider._cloud_models_for_opencode() if i.get("id")]  # noqa: SLF001
     except Exception:  # noqa: BLE001
         logger.warning("外部モデルの一覧を読めませんでした")
+    try:  # OpenCode（Zen・Go）のモデル。キーがあるときだけ（チームの画面のない実行で使える。コンソールは断る）
+        from app.integrations.opencode import model_choice, zen
+
+        if zen.configured():
+            ids += [(model_id, f"{name}（OpenCode）") for model_id, (name, _note) in model_choice.ZEN_MODELS.items()]
+    except Exception:  # noqa: BLE001
+        logger.warning("OpenCode Zen のモデルの一覧を読めませんでした")
     seen: set[str] = set()
     out: list[dict] = []
     for model_id, label in ids:

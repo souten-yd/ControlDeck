@@ -70,7 +70,11 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
     job ごとの設定フォルダ・箱）で開く。ほかは CLIS の実行ファイルをアカウントの環境変数で開く。
     """
     if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
-        from app.integrations.opencode import provider
+        from app.integrations.opencode import model_choice, provider
+
+        if model_choice.is_zen(model):
+            # TUI の設定はゲートウェイのモデルだけを持つ（Zen の鍵を渡す道が無い）。チームの画面のない実行で使う
+            raise ValueError("OpenCode（Zen・Go）のモデルはコンソールでは使えません。AI チームの担い手で選んでください")
         try:
             connection = accounts.opencode_connection(account)
             command, _project = provider.tui_command(

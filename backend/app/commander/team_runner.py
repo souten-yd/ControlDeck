@@ -127,14 +127,26 @@ def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False
     """OpenCode（v2）の argv・環境・後片付け。OpenCode 画面と同じ設定（provider）で作る。
 
     readonly は読み取りの agent（plan）で動かす。extra_mcp は設定の mcp へ足すサーバー（チームリーダーの nexarch_team）。"""
-    from app.integrations.opencode import provider
+    from app.integrations.opencode import model_choice, provider
 
+    # OpenCode（Zen・Go）のモデル（opencode-go/glm-5.3 など）はゲートウェイを通らず、OpenCode が opencode.ai へ
+    # 直接つなぐ（鍵は OPENCODE_API_KEY）。設定のモデルはゲートウェイの既定のまま作り、--model だけ Zen を指す。
+    # 2026-11-28: 本番の Nexarch で AI チームに GLM を当てようとして、選択肢に出ない・動かせないと分かった。
+    zen = model_choice.is_zen(model)
+    zen_key = ""
+    if zen:
+        from app.integrations.opencode import zen as zen_store
+
+        zen_key = zen_store.get()
+        if not zen_key:
+            raise LaunchError("OpenCode Zen のキーがありません（OpenCode 画面の設定で入れてください）")
     try:
         runtime, binary = provider.active_binary()
         settings = provider.get_settings()
         endpoint = str(settings["base_url"]).rstrip("/")
+        config_model = str(settings.get("model") or "auto") if zen else model
         config = provider._runtime_config(  # noqa: SLF001 - 設定フォルダの作り方を OpenCode 画面と同じにする
-            f"team-{secrets.token_hex(4)}", endpoint, model,
+            f"team-{secrets.token_hex(4)}", endpoint, config_model,
             project_id=provider._managed_project_id(cwd), runtime=runtime, extra_mcp=extra_mcp)  # noqa: SLF001
     except provider.CodeAgentError as exc:
         raise LaunchError(str(exc)) from exc
@@ -144,11 +156,42 @@ def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False
         asyncio.run(local_llm.ensure_ready_by_base_url(endpoint))
     except Exception:  # noqa: BLE001 - 起動の保証に失敗しても実行は試す
         logger.warning("OpenCode のモデルの起動を保証できませんでした")
-    argv = provider._run_argv(runtime, binary, text, model, cwd)  # noqa: SLF001
+    argv = provider._run_argv(runtime, binary, text, config_model, cwd)  # noqa: SLF001
+    if zen:
+        argv[argv.index("--model") + 1] = model
     if readonly:
         argv += ["--agent", "plan"]
-    argv, env = provider._launch(runtime, argv, cwd, config, interactive=False)  # noqa: SLF001
-    return argv, env, lambda: provider._discard_runtime_config(runtime, config)  # noqa: SLF001
+    env_file: Path | None = None
+    extra_env: dict[str, str] = {}
+    if zen and provider.isolation_mode() == "box":
+        env_file = _secret_env_file({"OPENCODE_API_KEY": zen_key})   # 箱へは --env-file で（argv に値を出さない）
+    elif zen:
+        extra_env = {"OPENCODE_API_KEY": zen_key}                    # ホストでは子の環境変数だけ（argv に出さない）
+    try:
+        argv, env = provider._launch(runtime, argv, cwd, config, interactive=False,  # noqa: SLF001
+                                     extra_env=extra_env, env_file=env_file)
+    except Exception:
+        if env_file:
+            env_file.unlink(missing_ok=True)
+        raise
+
+    def cleanup() -> None:
+        if env_file:
+            env_file.unlink(missing_ok=True)
+        provider._discard_runtime_config(runtime, config)  # noqa: SLF001
+
+    return argv, env, cleanup
+
+
+def _secret_env_file(values: dict[str, str]) -> Path:
+    """秘密の値を渡す --env-file（0600・XDG_RUNTIME_DIR の一時ファイル）。使い終わったら消す。"""
+    import tempfile
+
+    directory = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    fd, name = tempfile.mkstemp(prefix="cd-team-", suffix=".env", dir=directory)   # mkstemp は 0600
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.writelines(f"{key}={value}\n" for key, value in values.items())
+    return Path(name)
 
 
 LEADER_MCP_NAME = "nexarch_team"

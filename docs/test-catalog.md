@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 277 ファイル、2867 テスト（目的の未記入 93 ファイル）
+- backend: 278 ファイル、2872 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -963,6 +963,16 @@
 - `test_capture_once_per_assignee`
 - `test_notify_toggle_per_team`
 - `test_run_once_sends_through_notification_channels` — send は有効な通知先すべてへ send_notification で送る（宛先の取得と送信の呼び出し）。
+
+### backend/tests/test_commander_team_zen.py
+
+目的: AI チームの担い手に OpenCode（Zen・Go）のモデル（GLM-5.3 など）を使える、の試験。 目的: 2026-11-28 に本番の Nexarch で、チームの実装の担い手に OpenCode の GLM を当てようとしたら、選択肢に出ず、 起動も常に `controldeck/<モデル>`（ゲートウェイ）なので動かせないと分かった（利用者「ローカル LLM と OpenCode の GLM と OpenRouter の DS を使って良い」）。次を守る: - Zen の鍵があればモデルの一覧に Zen のモデルが出る（無ければ出ない）。 - 担い手が Zen のモデルなら `--model opencode-go/...` で起動し、設定のモデルはゲートウェイの既定のまま。 - 鍵は argv に出ない。箱なら 0600 の --env-file（後片付けで消える）、ホストなら子の環境変数。 - 鍵が無ければ起動の前に断る。コンソール（TUI）では断る。 根拠: 箱の作業場の Zen の渡し方（maintenance/sandbox.py の zen_env_file）と同じ形。既存の試験（t3a）は _opencode_launch を偽物に置き換えていて、ここは見ていない（docs/test-catalog.md で確認）。
+
+- `test_zen_model_runs_with_its_own_model_and_key_outside_argv`
+- `test_gateway_model_is_unchanged`
+- `test_zen_without_key_is_refused_before_launch`
+- `test_zen_models_listed_only_with_a_key`
+- `test_console_refuses_zen_model`
 
 ### backend/tests/test_commander_teams.py
 
