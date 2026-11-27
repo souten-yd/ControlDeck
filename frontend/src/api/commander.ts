@@ -146,7 +146,61 @@ export async function setConsoleAutoResume(id: string, enabled: boolean): Promis
   return api(`/commander/consoles/${encodeURIComponent(id)}/autoresume`, { method: "PUT", json: { enabled } });
 }
 
-export interface CommanderSettings { resume_message: string; default_resume_message: string }
+/** 担い手の指定。コンソール（kind・cli・account）とモデル（model・effort）を別々に持つ。空の model・effort は CLI の既定。 */
+export interface Endpoint {
+  kind: "headless" | "console";
+  cli: string;
+  account: string;
+  model: string;
+  effort: string;
+}
+export const emptyEndpoint = (): Endpoint => ({ kind: "headless", cli: "claude", account: "default", model: "", effort: "" });
+
+/** 役割（実装・レビューなど）。count は同時に呼ぶ最大数（1〜4）。chain は画面用（primary → secondary の順の今の状態）。 */
+export interface TeamRoleDef {
+  id: string;
+  name: string;
+  count: number;
+  note: string;
+  primary: Endpoint | null;
+  secondary: Endpoint[];
+  last_index?: number;
+  chain?: { key: string; label: string; recovers_at: number | null }[];
+  /** 今使える最初の endpoint の位置（0 = プライマリ）。全部回復待ちなら null。 */
+  active_index?: number | null;
+  running?: number;
+  on_secondary?: boolean;
+  primary_recovers_at?: number | null;
+}
+
+export interface ModelInfo { id: string; label: string; efforts: string[]; default_effort: string }
+export interface ModelsInfo {
+  cli: string;
+  account: string;
+  models: ModelInfo[];
+  efforts: string[];
+  free_input: boolean;
+  default_model: string;
+  source: string;
+  note: string;
+}
+export async function fetchModels(cli: string, account: string): Promise<ModelsInfo> {
+  return api<ModelsInfo>(`/commander/models?cli=${encodeURIComponent(cli)}&account=${encodeURIComponent(account)}`);
+}
+
+export interface CommanderSettings {
+  resume_message: string;
+  default_resume_message: string;
+  default_leader?: Endpoint | null;
+  default_roles?: TeamRoleDef[];
+  /** チームの保存先（親フォルダ）。空なら未設定（CodeDEV に自動の作業場所）。 */
+  team_root?: string;
+}
+
+export interface TeamDefaultsBody { default_leader?: Endpoint | null; default_roles?: TeamRoleDef[]; team_root?: string }
+export async function putTeamDefaults(body: TeamDefaultsBody): Promise<CommanderSettings> {
+  return api<CommanderSettings>("/commander/settings/team-defaults", { method: "PUT", json: body });
+}
 
 export async function fetchCommanderSettings(): Promise<CommanderSettings> {
   return api<CommanderSettings>("/commander/settings");
@@ -199,6 +253,11 @@ export interface TeamMember {
   /** codex で、この機械ではサンドボックスが使えない（danger-full-access で動かす）。 */
   no_sandbox?: boolean;
   role: TeamRole;
+  model?: string;
+  effort?: string;
+  /** 役割から自動で作った枠（画面では役割の下にまとめる）。 */
+  auto?: boolean;
+  role_id?: string;
 }
 export const memberKey = (m: TeamMember): string => m.key ?? m.id ?? m.session_id ?? "";
 
@@ -288,6 +347,10 @@ export interface TeamTask {
   runs?: TaskRunRecord[];
   /** 回復を待つ時刻（epoch 秒）。 */
   wait_until?: number;
+  /** 役割（TeamRoleDef.id）。 */
+  role?: string;
+  /** "no_handoff" = 上限で止まり、引き継ぎ先が無い（引き継ぎ先を選ぶと再開）。 */
+  blocked_reason?: string;
 }
 
 export interface Team {
@@ -316,6 +379,12 @@ export interface Team {
   workdir_folder?: string;
   workdir_name?: string;
   parallel?: { running: number; max: number; waiting: number; local_max: number };
+  roles?: TeamRoleDef[];
+  /** 任命されたチームリーダー。無ければ既定のチームリーダー（leader_effective）。 */
+  leader?: Endpoint | null;
+  leader_effective?: Endpoint;
+  leader_run?: { status: "running" | "done" | "failed"; started_at?: number; endpoint?: string; tasks?: number; reason?: string; dropped?: string[]; goal?: string };
+  created_by?: string;
 }
 
 export interface TaskFields {
@@ -326,6 +395,7 @@ export interface TaskFields {
   checks?: string[];
   assignee?: string;
   status?: TaskStatus;
+  role?: string;
 }
 
 const teamUrl = (id: string) => `/commander/teams/${encodeURIComponent(id)}`;
@@ -336,6 +406,24 @@ export async function fetchTeams(): Promise<Team[]> {
 }
 export async function createTeam(name: string): Promise<Team> {
   return api<Team>("/commander/teams", { method: "POST", json: { name } });
+}
+/** 目標からチームを作る（チームリーダーが計画する。結果は一覧の leader_run で見る）。workdir が空なら新しい自動の作業場所。 */
+export async function createAutoTeam(goal: string, workdir = "", name = ""): Promise<Team> {
+  return api<Team>("/commander/teams/auto", { method: "POST", json: { goal, workdir, name } });
+}
+/** 既存のチームのチームリーダーに一文を頼む（計画を作って板へ足す。結果は一覧の leader_run で見る）。 */
+export async function askLeader(id: string, goal: string): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/leader/run`, { method: "POST", json: { goal } });
+}
+export async function setTeamRoles(id: string, roles: TeamRoleDef[]): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/roles`, { method: "PUT", json: { roles } });
+}
+export async function setTeamLeader(id: string, leader: Endpoint | null): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/leader`, { method: "PUT", json: { leader } });
+}
+/** 引き継ぎ先が無くて止まったタスクへ、選んだ担い手で引き継いで再開する。 */
+export async function chooseHandoff(id: string, task: number, endpoint: Endpoint, addToSecondary: boolean): Promise<TeamTask> {
+  return api<TeamTask>(`${teamUrl(id)}/tasks/${task}/handoff`, { method: "POST", json: { endpoint, add_to_secondary: addToSecondary } });
 }
 export async function updateTeam(
   id: string,

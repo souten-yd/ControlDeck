@@ -2,12 +2,16 @@
  *
  * 状態の正本は板（ControlDeck 側）。担当へは「担当へ送る」で短い文を送り、終わったら
  * 「報告を取り込む」で画面の「完了報告:」を読む（LLM なし）。主操作は「＋ タスク」の 1 つ、
- * メンバー・チームの操作はその他メニューへ。モバイル（〜767px）は列を縦に並べる。 */
+ * メンバー・チームの操作はその他メニューへ。モバイル（〜767px）は列を縦に並べる。
+ *
+ * T3b: 目標からチームを作る・役割（自動の振り分け）・チームリーダーの任命・引き継ぎ先を選ぶ。
+ * 「エキスパート」が切（既定）のときは、毎回使うもの（目標・板・引き継ぎ先を選ぶ・通知）と、危険・要対応（止まった・上限・
+ * 引き継ぎ先なし）だけを出す。細かい札・設定・履歴・使用量は入にしたときだけ。 */
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
+  askLeader, collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
   ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, stopTask, TEAM_ROLES, updateTask, updateTeam,
   type CommanderConsole, type CommanderState, type RunUsage, type TaskStatus, type Team, type TeamMember, type TeamRole, type TeamTask,
 } from "../../api/commander";
@@ -17,6 +21,9 @@ import {
 import { IconDots, IconPlus } from "../../components/icons";
 import { useToasts } from "../../stores";
 import { UsageLine } from "./UsageLine";
+import {
+  AutoTeamSheet, endpointText, HandoffSheet, LeaderSheet, RolesPanel, RolesSheet, useExpert,
+} from "./TeamRoles";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const textareaClass = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -48,6 +55,24 @@ const STATE_COLOR: Record<CommanderState | "closed", string> = {
 const STATE_DOT: Record<CommanderState, string> = {
   working: "bg-blue-500 animate-pulse", waiting: "bg-emerald-500", limited: "bg-amber-500", error: "bg-red-500", exited: "bg-zinc-400",
 };
+
+/** エキスパートが切のときの、タスクの札 1 つ（危険・要対応を優先して 1 つにまとめる）。 */
+function simpleBadge(task: TeamTask): { text: string; tone: "red" | "amber" | "blue" } | null {
+  if (task.blocked_reason === "no_handoff") return { text: "引き継ぎ先なし", tone: "red" };
+  if (task.status === "blocked") return { text: "止まった", tone: "red" };
+  if (task.status === "doing" && (task.limited_at || task.run?.status === "limited" || task.wait_until)) return { text: "上限で停止", tone: "amber" };
+  if (task.status === "doing" && task.stalled_at) return { text: "止まった", tone: "amber" };
+  if (task.status === "doing") return { text: "作業中", tone: "blue" };
+  return null;
+}
+function SimpleBadge({ task }: { task: TeamTask }) {
+  const badge = simpleBadge(task);
+  return badge ? <span data-team-simple-badge={badge.text} className={TONE_CLASS[badge.tone]}>{badge.text}</span> : null;
+}
+const TONE_CLASS = {
+  red: BLOCKED_CLASS, amber: WARN_CLASS,
+  blue: "rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",
+} as const;
 
 const HEADLESS_CLIS: ReadonlyArray<readonly [string, string]> = [["claude", "Claude Code"], ["codex", "Codex"], ["opencode", "OpenCode"]];
 const RUN_RESULT_LABEL: Record<string, string> = {
@@ -97,6 +122,11 @@ export function TeamView({
   const [parallelSheet, setParallelSheet] = useState(false);
   const [taskSheet, setTaskSheet] = useState(false);
   const [newTeamSheet, setNewTeamSheet] = useState(false);
+  const [autoSheet, setAutoSheet] = useState(false);
+  const [rolesSheet, setRolesSheet] = useState(false);
+  const [leaderSheet, setLeaderSheet] = useState(false);
+  const [handoffTask, setHandoffTask] = useState<number | null>(null);
+  const expert = useExpert();
   const [openTask, setOpenTask] = useState<number | null>(null);
   const [deletingTeam, setDeletingTeam] = useState(false);
 
@@ -123,10 +153,14 @@ export function TeamView({
   if (!team) {
     return (
       <>
-        <EmptyState actions={<button onClick={() => setNewTeamSheet(true)} className={primaryButtonClass}>チームを作る</button>}>
-          チームはありません。コンソールに役割を付けて、タスクを渡せます。
+        <EmptyState actions={<>
+          <button onClick={() => setAutoSheet(true)} className={primaryButtonClass}>目標からチームを作る</button>
+          <button onClick={() => setNewTeamSheet(true)} className={secondaryButtonClass}>チームを作る</button>
+        </>}>
+          チームはありません。目標を 1 行書くだけで、チームリーダー（目標を計画してタスクを配る AI）が役割とタスクに分けて動かします。
         </EmptyState>
         {newTeamSheet && <NewTeamSheet onClose={() => setNewTeamSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
+        {autoSheet && <AutoTeamSheet expert={expert} onClose={() => setAutoSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
       </>
     );
   }
@@ -202,44 +236,77 @@ export function TeamView({
           ariaLabel="チームの操作"
           trigger={<IconDots />}
           items={[
+            { label: "目標からチームを作る", onSelect: () => setAutoSheet(true) },
             { label: "メンバーを選ぶ", onSelect: () => setMembersSheet(true) },
             {
               label: team.notify === false ? "通知: オフ（オンにする）" : "通知: オン（オフにする）",
               onSelect: () => void toggleNotify(),
             },
             { label: "チームの前提", onSelect: () => setBriefSheet(true) },
-            {
-              label: team.on_limit === "wait" ? "上限で止まったら: 回復を待つ（引き継ぐにする）" : "上限で止まったら: 別の担い手へ引き継ぐ（回復を待つにする）",
-              onSelect: () => void toggleOnLimit(),
-            },
-            {
-              label: team.codex_without_sandbox === false
-                ? "Codex のサンドボックスが使えないとき: 止める（サンドボックスなしで動かすにする）"
-                : "Codex のサンドボックスが使えないとき: サンドボックスなしで動かす（止めるにする）",
-              onSelect: () => void toggleSandbox(),
-            },
-            { label: "候補の順番", onSelect: () => setFallbackSheet(true) },
-            { label: "同時並列の設定", onSelect: () => setParallelSheet(true) },
-            {
-              label: team.reset_before_dispatch === false ? "送る前に会話をリセット: オフ（オンにする）" : "送る前に会話をリセット: オン（オフにする）",
-              onSelect: () => void toggleReset(),
-            },
+            ...(expert ? [
+              { label: "チームリーダーを任命", onSelect: () => setLeaderSheet(true) },
+              { label: "役割を編集（自動の振り分け）", onSelect: () => setRolesSheet(true) },
+              {
+                label: team.on_limit === "wait" ? "上限で止まったら: 回復を待つ（引き継ぐにする）" : "上限で止まったら: 別の担い手へ引き継ぐ（回復を待つにする）",
+                onSelect: () => void toggleOnLimit(),
+              },
+              {
+                label: team.codex_without_sandbox === false
+                  ? "Codex のサンドボックスが使えないとき: 止める（サンドボックスなしで動かすにする）"
+                  : "Codex のサンドボックスが使えないとき: サンドボックスなしで動かす（止めるにする）",
+                onSelect: () => void toggleSandbox(),
+              },
+              { label: "候補の順番", onSelect: () => setFallbackSheet(true) },
+              { label: "同時並列の設定", onSelect: () => setParallelSheet(true) },
+              {
+                label: team.reset_before_dispatch === false ? "送る前に会話をリセット: オフ（オンにする）" : "送る前に会話をリセット: オン（オフにする）",
+                onSelect: () => void toggleReset(),
+              },
+            ] : []),
             { label: "チームを作る", onSelect: () => setNewTeamSheet(true) },
             { label: "このチームを削除", danger: true, separated: true, onSelect: () => setDeletingTeam(true) },
           ]}
         />
-        <IconButton variant="primary" label="＋ タスク" onClick={() => setTaskSheet(true)}><IconPlus /></IconButton>
+        {expert && <IconButton variant="primary" label="＋ タスク" onClick={() => setTaskSheet(true)}><IconPlus /></IconButton>}
       </div>
+      <AskLeader team={team} onAsked={refresh} />
+
+      <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
+        <button type="button" data-team-auto-open onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>目標からチームを作る</button>
+        {expert && (
+          <span data-team-leader className="min-w-0 break-words text-xs text-zinc-600 dark:text-zinc-300">
+            <span className="font-semibold">チームリーダー</span> {endpointText(team.leader ?? team.leader_effective)}{team.leader ? "" : "（既定）"}
+          </span>
+        )}
+      </div>
+      {team.leader_run?.status === "running" && (
+        <p data-team-leader-run="running" role="status" className="mb-3 rounded-xl bg-blue-50 p-2.5 text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+          チームリーダーが目標を計画しています…（{team.leader_run.endpoint}）
+        </p>
+      )}
+      {team.leader_run?.status === "failed" && (
+        <p data-team-leader-run="failed" role="alert" className="mb-3 break-words rounded-xl bg-red-50 p-2.5 text-xs font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">
+          チームリーダーが計画を作れませんでした{team.leader_run.reason ? `（${team.leader_run.reason}）` : ""}。目標を直して、もう一度「目標からチームを作る」を押してください。
+        </p>
+      )}
+      {expert && team.leader_run?.status === "done" && (team.leader_run.dropped ?? []).length > 0 && (
+        <details data-team-leader-dropped className="mb-3 text-xs text-zinc-500">
+          <summary className="cursor-pointer">計画で調整したこと {team.leader_run.dropped!.length} 件</summary>
+          <ul className="mt-1 grid gap-0.5">{team.leader_run.dropped!.map((d) => <li key={d} className="break-words">{d}</li>)}</ul>
+        </details>
+      )}
+
+      <RolesPanel team={team} expert={expert} onEdit={() => setRolesSheet(true)} />
 
       <section aria-label="メンバー" className="mb-4">
-        {team.members.length === 0 ? (
+        {team.members.filter((m) => !m.auto).length === 0 ? (
           <p className="rounded-2xl border border-dashed border-zinc-300 p-3 text-xs text-zinc-500 dark:border-zinc-700">
-            メンバーがいません。
+            手動のメンバーはいません（役割から自動で呼び出します）。
             <button type="button" onClick={() => setMembersSheet(true)} className="ml-1 font-semibold text-accent-600 underline dark:text-accent-400">メンバーを選ぶ</button>
           </p>
         ) : (
           <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {team.members.map((m) => {
+            {team.members.filter((m) => !m.auto).map((m) => {
               const key = memberKey(m);
               if (isHeadless(m)) {
                 const mine = team.tasks.filter((t) => t.assignee === key);
@@ -251,16 +318,16 @@ export function TeamView({
                       <span className="min-w-0 flex-1">
                         <span className="flex min-w-0 items-center gap-1.5">
                           <strong className="min-w-0 truncate text-sm">{headlessName(m)}</strong>
-                          <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>
-                          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">ヘッドレス</span>
-                          {m.no_sandbox && (
+                          {expert && <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>}
+                          {expert && <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">ヘッドレス</span>}
+                          {expert && m.no_sandbox && (
                             <span data-team-no-sandbox className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">サンドボックスなし</span>
                           )}
                         </span>
                         <span data-team-member-state={mstate} className={`mt-0.5 block text-[11px] font-semibold ${STATE_COLOR[mstate]}`}>
-                          {mstate === "working" ? "実行中" : mstate === "limited" ? "上限で停止" : "待機中（画面なし）"}
+                          {mstate === "working" ? (expert ? "実行中" : "作業中") : mstate === "limited" ? "上限で停止" : expert ? "待機中（画面なし）" : "待機中"}
                         </span>
-                        {m.no_sandbox && <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
+                        {expert && m.no_sandbox && <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
                       </span>
                     </div>
                   </li>
@@ -281,12 +348,12 @@ export function TeamView({
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-1.5">
                         <strong className="min-w-0 truncate text-sm">{consoleName(key)}</strong>
-                        <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>
+                        {expert && <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>}
                       </span>
                       <span data-team-member-state={state ?? "closed"} className={`mt-0.5 block text-[11px] font-semibold ${STATE_COLOR[state ?? "closed"]}`}>
-                        {STATE_TEXT[state ?? "closed"]}
+                        {expert || !state ? STATE_TEXT[state ?? "closed"] : state === "working" ? "作業中" : state === "limited" || state === "error" ? "止まった" : state === "exited" ? "終了" : "待機中"}
                       </span>
-                      <UsageLine usage={item?.commander_usage} className="mt-0.5" />
+                      {expert && <UsageLine usage={item?.commander_usage} className="mt-0.5" />}
                     </span>
                   </button>
                 </li>
@@ -297,13 +364,13 @@ export function TeamView({
       </section>
 
       <div className="mb-3 grid min-w-0 gap-1 text-xs text-zinc-600 dark:text-zinc-300">
-        <p data-team-parallel>
+        {expert && <p data-team-parallel>
           <span className="font-semibold">同時に動いている数</span>{" "}
           <span className="num">{team.parallel?.running ?? 0}／{team.parallel?.max ?? team.max_parallel ?? 3}</span>
           <span className="ml-2">待ち <span className="num">{team.parallel?.waiting ?? 0}</span></span>
           {team.auto_run === false && <span className="ml-2 text-amber-700 dark:text-amber-400">自動の割り当て: オフ</span>}
           <span className="ml-2 text-zinc-500">{team.on_limit === "wait" ? "上限: 回復を待つ" : "上限: 別の担い手へ引き継ぐ"}</span>
-        </p>
+        </p>}
         {team.workdir && (
           <p data-team-workdir className="flex min-w-0 flex-wrap items-center gap-x-2">
             <span className="font-semibold">作業場所</span>
@@ -337,39 +404,45 @@ export function TeamView({
                         <strong className="min-w-0 break-words text-sm">{task.title}</strong>
                       </span>
                       <span className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
-                        {task.status === "blocked" && <span data-team-blocked className={BLOCKED_CLASS}>自動で直せず</span>}
-                        {task.checks_result && (
+                        {!expert && <SimpleBadge task={task} />}
+                        {expert && task.blocked_reason === "no_handoff" && <span data-team-no-handoff className={BLOCKED_CLASS}>引き継ぎ先なし</span>}
+                        {expert && task.role && <span data-team-task-role className="rounded-full bg-accent-50 px-2 py-0.5 font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{team.roles?.find((r) => r.id === task.role)?.name ?? "役割"}</span>}
+                        {expert && task.status === "blocked" && task.blocked_reason !== "no_handoff" && <span data-team-blocked className={BLOCKED_CLASS}>自動で直せず</span>}
+                        {expert && task.checks_result && (
                           <span data-team-checks={task.checks_result.status} className={`rounded-full px-2 py-0.5 font-semibold ${CHECK_CLASS[task.checks_result.status]}`}>
                             確認: {CHECK_LABEL[task.checks_result.status]}
                           </span>
                         )}
-                        {task.status === "rejected" && <span className="rounded-full bg-red-50 px-2 py-0.5 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">差し戻し</span>}
-                        {task.unverified && <span data-team-unverified className={UNVERIFIED_CLASS}>未検証</span>}
-                        {task.status === "doing" && task.stalled_at && <span data-team-stalled className={WARN_CLASS}>止まった（報告なし）</span>}
-                        {task.status === "doing" && task.limited_at && <span data-team-limited className={WARN_CLASS}>上限で停止</span>}
-                        {task.run?.status === "running" && (
+                        {expert && task.status === "rejected" && <span className="rounded-full bg-red-50 px-2 py-0.5 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">差し戻し</span>}
+                        {expert && task.unverified && <span data-team-unverified className={UNVERIFIED_CLASS}>未検証</span>}
+                        {expert && task.status === "doing" && task.stalled_at && <span data-team-stalled className={WARN_CLASS}>止まった（報告なし）</span>}
+                        {expert && task.status === "doing" && task.limited_at && <span data-team-limited className={WARN_CLASS}>上限で停止</span>}
+                        {expert && task.run?.status === "running" && (
                           <span data-team-running className="rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
                             実行中（ヘッドレス）{task.run.elapsed != null ? `・${fmtSeconds(task.run.elapsed)}` : ""}
                           </span>
                         )}
-                        {task.status === "doing" && task.wait_until && (
+                        {expert && task.status === "doing" && task.wait_until && (
                           <span data-team-waiting className={WARN_CLASS}>回復を待つ（〜{fmtClock(task.wait_until)}）</span>
                         )}
-                        {task.report_ready && <span data-team-report-ready className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">報告あり</span>}
+                        {expert && task.report_ready && <span data-team-report-ready className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">報告あり</span>}
                         <span className="min-w-0 truncate text-zinc-500 dark:text-zinc-400">
-                          {task.assignee ? `${roleOf(team, task.assignee) ? ROLE_LABEL[roleOf(team, task.assignee)!] + "・" : ""}${consoleName(task.assignee)}` : "担当なし"}
+                          {task.assignee ? `${expert && roleOf(team, task.assignee) ? ROLE_LABEL[roleOf(team, task.assignee)!] + "・" : ""}${consoleName(task.assignee)}` : "担当なし"}
                         </span>
                         {task.assignee_state === "closed" && <span className="font-semibold text-red-600 dark:text-red-400">コンソールが閉じています</span>}
                       </span>
-                      {task.run?.status === "running" && (task.run.last_line || task.run.usage) && (
+                      {expert && task.run?.status === "running" && (task.run.last_line || task.run.usage) && (
                         <span data-team-run-line className="mt-1 block min-w-0 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
                           {task.run.last_line}{fmtUsage(task.run.usage) ? `・${fmtUsage(task.run.usage)}` : ""}
                         </span>
                       )}
-                      {task.warnings.length > 0 && (
+                      {expert && task.warnings.length > 0 && (
                         <span data-team-warning className="mt-1 block break-words text-[11px] text-amber-700 dark:text-amber-400">{task.warnings.join(" / ")}</span>
                       )}
                     </button>
+                    {task.blocked_reason === "no_handoff" && (
+                      <button type="button" data-team-handoff-open={task.id} onClick={() => setHandoffTask(task.id)} className={`mt-1 w-full ${primaryButtonClass}`}>引き継ぎ先を選ぶ</button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -382,11 +455,22 @@ export function TeamView({
       {briefSheet && <BriefSheet team={team} onClose={() => setBriefSheet(false)} onSaved={refresh} />}
       {fallbackSheet && <FallbackSheet team={team} name={consoleName} onClose={() => setFallbackSheet(false)} onSaved={refresh} />}
       {parallelSheet && <ParallelSheet team={team} onClose={() => setParallelSheet(false)} onSaved={refresh} />}
-      {taskSheet && <TaskCreateSheet team={team} consoleName={consoleName} onClose={() => setTaskSheet(false)} onSaved={refresh} />}
+      {taskSheet && <TaskCreateSheet team={team} expert={expert} consoleName={consoleName} onClose={() => setTaskSheet(false)} onSaved={refresh} />}
       {newTeamSheet && <NewTeamSheet onClose={() => setNewTeamSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
+      {autoSheet && <AutoTeamSheet expert={expert} onClose={() => setAutoSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
+      {rolesSheet && <RolesSheet team={team} expert={expert} onClose={() => setRolesSheet(false)} onSaved={refresh} />}
+      {leaderSheet && <LeaderSheet team={team} expert={expert} onClose={() => setLeaderSheet(false)} onSaved={refresh} />}
+      {handoffTask != null && team.tasks.find((t) => t.id === handoffTask) && (
+        <HandoffSheet
+          teamId={team.id} task={team.tasks.find((t) => t.id === handoffTask)!} expert={expert}
+          roleName={team.roles?.find((r) => r.id === team.tasks.find((t) => t.id === handoffTask)?.role)?.name}
+          onClose={() => setHandoffTask(null)} onDone={refresh}
+        />
+      )}
       {current && (
         <TaskSheet
-          team={team} task={current} consoleName={consoleName} roleOf={(sid) => roleOf(team, sid)}
+          team={team} task={current} consoleName={consoleName} roleOf={(sid) => roleOf(team, sid)} expert={expert}
+          onHandoff={() => { setOpenTask(null); setHandoffTask(current.id); }}
           onOpenConsole={onOpenConsole} onClose={() => setOpenTask(null)} onChanged={refresh}
         />
       )}
@@ -400,6 +484,35 @@ export function TeamView({
         />
       )}
     </div>
+  );
+}
+
+/** 普段の入口: 「チームリーダーに頼む」の一文の入力欄だけ（手入力のタスク作成はエキスパートの中）。 */
+function AskLeader({ team, onAsked }: { team: Team; onAsked: () => void }) {
+  const show = useToasts((s) => s.show);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const running = team.leader_run?.status === "running";
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await askLeader(team.id, text.trim());
+      setText("");
+      onAsked();
+      show("チームリーダーに頼みました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "頼めませんでした", "error");
+    }
+    setBusy(false);
+  };
+  return (
+    <form data-team-ask className="mb-3 flex min-w-0 gap-2" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !busy && !running) void submit(); }}>
+      <input
+        aria-label="チームリーダーに頼む" value={text} maxLength={4000} placeholder="チームリーダーに頼む（一文で）"
+        onChange={(e) => setText(e.target.value)} className={`${inputClass} min-w-0 flex-1`}
+      />
+      <button type="submit" disabled={!text.trim() || busy || running} className={`${primaryButtonClass} shrink-0`}>頼む</button>
+    </form>
   );
 }
 
@@ -670,8 +783,8 @@ function AssigneeSelect({
 }
 
 function TaskCreateSheet({
-  team, consoleName, onClose, onSaved,
-}: { team: Team; consoleName: (sid: string) => string; onClose: () => void; onSaved: () => void }) {
+  team, expert, consoleName, onClose, onSaved,
+}: { team: Team; expert: boolean; consoleName: (sid: string) => string; onClose: () => void; onSaved: () => void }) {
   const show = useToasts((s) => s.show);
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
@@ -679,12 +792,13 @@ function TaskCreateSheet({
   const [files, setFiles] = useState("");
   const [checks, setChecks] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [roleId, setRoleId] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true);
     try {
       const task = await createTask(team.id, {
-        title: title.trim(), goal, acceptance, assignee,
+        title: title.trim(), goal, acceptance, assignee, ...(roleId ? { role: roleId } : {}),
         files: files.split("\n").map((f) => f.trim()).filter(Boolean),
         checks: checks.split("\n").map((f) => f.trim()).filter(Boolean),
       });
@@ -706,9 +820,18 @@ function TaskCreateSheet({
       <textarea id="task-acceptance" rows={3} value={acceptance} maxLength={4000} onChange={(e) => setAcceptance(e.target.value)} className={textareaClass} />
       <label className={fieldLabel} htmlFor="task-files">担当ファイル（1 行に 1 つ）</label>
       <textarea id="task-files" rows={2} value={files} onChange={(e) => setFiles(e.target.value)} className={`${textareaClass} font-mono`} />
-      <label className={fieldLabel} htmlFor="task-checks">確認のコマンド（1 行に 1 つ）</label>
-      <textarea id="task-checks" rows={2} value={checks} onChange={(e) => setChecks(e.target.value)} className={`${textareaClass} font-mono`} />
-      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">担当の作業フォルダで Nexarch が実行します（10 個まで）。パイプや && は使えません。</p>
+      {expert && (<>
+        <label className={fieldLabel} htmlFor="task-checks">確認のコマンド（1 行に 1 つ）</label>
+        <textarea id="task-checks" rows={2} value={checks} onChange={(e) => setChecks(e.target.value)} className={`${textareaClass} font-mono`} />
+        <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">担当の作業フォルダで Nexarch が実行します（10 個まで）。パイプや && は使えません。</p>
+        {(team.roles ?? []).length > 0 && (<>
+          <label className={fieldLabel} htmlFor="task-role">役割（自動の振り分け）</label>
+          <select id="task-role" value={roleId} onChange={(e) => setRoleId(e.target.value)} className={inputClass}>
+            <option value="">なし（担当か候補の順で決める）</option>
+            {(team.roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </>)}
+      </>)}
       <label className={fieldLabel} htmlFor="task-assignee">担当</label>
       <AssigneeSelect id="task-assignee" team={team} value={assignee} consoleName={consoleName} onChange={setAssignee} />
       <button type="button" disabled={!title.trim() || busy} onClick={() => void submit()} className={`mt-4 w-full ${primaryButtonClass}`}>作る</button>
@@ -717,9 +840,10 @@ function TaskCreateSheet({
 }
 
 function TaskSheet({
-  team, task, consoleName, roleOf, onOpenConsole, onClose, onChanged,
+  team, task, consoleName, roleOf, expert, onHandoff, onOpenConsole, onClose, onChanged,
 }: {
   team: Team; task: TeamTask; consoleName: (sid: string) => string; roleOf: (sid: string) => TeamRole | undefined;
+  expert: boolean; onHandoff: () => void;
   onOpenConsole: (id: string) => void; onClose: () => void; onChanged: () => void;
 }) {
   const show = useToasts((s) => s.show);
@@ -758,14 +882,15 @@ function TaskSheet({
     <BottomSheet title={`#${task.id} ${task.title}`} onClose={onClose}>
       <p data-team-task-status className="text-xs font-semibold text-zinc-500">
         {STATUS_LABEL[task.status]}
-        {task.report_ready && <span className="ml-2 text-emerald-600 dark:text-emerald-400">報告あり</span>}
-        {task.unverified && <span data-team-unverified className="ml-2 text-orange-700 dark:text-orange-300">未検証</span>}
+        {expert && task.report_ready && <span className="ml-2 text-emerald-600 dark:text-emerald-400">報告あり</span>}
+        {expert && task.unverified && <span data-team-unverified className="ml-2 text-orange-700 dark:text-orange-300">未検証</span>}
         {task.status === "doing" && task.stalled_at && <span data-team-stalled className="ml-2 text-amber-700 dark:text-amber-400">止まった（報告なし）</span>}
         {task.status === "doing" && task.limited_at && <span data-team-limited className="ml-2 text-amber-700 dark:text-amber-400">上限で停止</span>}
-        {running && <span data-team-running className="ml-2 text-blue-600 dark:text-blue-400">実行中（ヘッドレス）</span>}
-        {task.status === "blocked" && <span data-team-blocked className="ml-2 text-red-600 dark:text-red-400">確認が通らず、自動で直せませんでした</span>}
-        {task.checks_result && <span data-team-checks={task.checks_result.status} className="ml-2">確認: {CHECK_LABEL[task.checks_result.status]}</span>}
-        {Boolean(task.attempts) && <span className="ml-2 font-normal">自動で直させた回数 {task.attempts}/2</span>}
+        {expert && running && <span data-team-running className="ml-2 text-blue-600 dark:text-blue-400">実行中（ヘッドレス）</span>}
+        {task.blocked_reason === "no_handoff" && <span data-team-no-handoff className="ml-2 text-red-600 dark:text-red-400">上限で止まり、引き継ぎ先がありません</span>}
+        {task.status === "blocked" && task.blocked_reason !== "no_handoff" && <span data-team-blocked className="ml-2 text-red-600 dark:text-red-400">確認が通らず、自動で直せませんでした</span>}
+        {expert && task.checks_result && <span data-team-checks={task.checks_result.status} className="ml-2">確認: {CHECK_LABEL[task.checks_result.status]}</span>}
+        {expert && Boolean(task.attempts) && <span className="ml-2 font-normal">自動で直させた回数 {task.attempts}/2</span>}
       </p>
       <dl className="mt-2 grid gap-2 text-sm">
         <div><dt className="text-xs text-zinc-500">目的</dt><dd className="whitespace-pre-wrap break-words">{task.goal || "（なし）"}</dd></div>
@@ -775,9 +900,9 @@ function TaskSheet({
           <dd className="break-all font-mono text-xs">{task.files.length ? task.files.join(", ") : "指定なし"}</dd>
         </div>
       </dl>
-      {task.warnings.length > 0 && <p className="mt-2 break-words text-xs text-amber-700 dark:text-amber-400">{task.warnings.join(" / ")}</p>}
+      {expert && task.warnings.length > 0 && <p className="mt-2 break-words text-xs text-amber-700 dark:text-amber-400">{task.warnings.join(" / ")}</p>}
 
-      <section data-team-checks-panel className="mt-3 rounded-xl border border-zinc-200 p-2.5 text-sm dark:border-zinc-700">
+      {expert && <section data-team-checks-panel className="mt-3 rounded-xl border border-zinc-200 p-2.5 text-sm dark:border-zinc-700">
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs font-semibold text-zinc-500">確認のコマンド</p>
           <button type="button" onClick={() => setEditChecks((v) => !v)} aria-expanded={editChecks} className="text-xs font-semibold text-accent-600 underline dark:text-accent-400">
@@ -822,7 +947,7 @@ function TaskSheet({
         )}
         {task.checks_result?.message && <p className="mt-1 break-words text-xs text-amber-700 dark:text-amber-400">{task.checks_result.message}</p>}
         {task.checks_result?.status === "running" && <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">実行中です…</p>}
-      </section>
+      </section>}
 
       <label className={fieldLabel} htmlFor="detail-assignee">担当</label>
       <AssigneeSelect
@@ -850,7 +975,7 @@ function TaskSheet({
         </div>
       )}
 
-      {(task.run || (task.runs ?? []).length > 0) && (
+      {expert && (task.run || (task.runs ?? []).length > 0) && (
         <section data-team-run-panel className="mt-3 rounded-xl border border-zinc-200 p-2.5 text-sm dark:border-zinc-700">
           <p className="text-xs font-semibold text-zinc-500">実行</p>
           {task.run && (
@@ -906,6 +1031,9 @@ function TaskSheet({
           <button type="button" disabled={busy} onClick={() => void run(() => dispatchTask(team.id, task.id), headlessAssignee ? "実行を始めました" : "担当へ送りました")}
             className={primary === "dispatch" ? primaryButtonClass : secondaryButtonClass}>{headlessAssignee ? "実行する" : "担当へ送る"}</button>
         )}
+        {task.blocked_reason === "no_handoff" && (
+          <button type="button" data-team-handoff-open={task.id} onClick={onHandoff} className={primaryButtonClass}>引き継ぎ先を選ぶ</button>
+        )}
         {running && (
           <button type="button" disabled={busy} onClick={() => void run(() => stopTask(team.id, task.id), "止めています")}
             className={secondaryButtonClass}>止める</button>
@@ -914,7 +1042,7 @@ function TaskSheet({
           <button type="button" disabled={busy} onClick={() => void run(() => updateTask(team.id, task.id, { status: "rejected" }), "差し戻しました")}
             className={secondaryButtonClass}>差し戻し</button>
         )}
-        <button type="button" onClick={() => setManual((v) => !v)} aria-expanded={manual} className={secondaryButtonClass}>報告を手で入力</button>
+        {expert && <button type="button" onClick={() => setManual((v) => !v)} aria-expanded={manual} className={secondaryButtonClass}>報告を手で入力</button>}
         <button type="button" onClick={() => setConfirmDelete(true)} className={`${secondaryButtonClass} text-red-600 dark:text-red-400`}>削除</button>
       </div>
 

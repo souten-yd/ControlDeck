@@ -174,6 +174,7 @@ async function mockCommander(page: Page, state: CommanderState) {
       for (const item of opened) state.consoles.push(item);
       return route.fulfill({ status: 201, json: { opened, not_opened: 0, reason: "" } });
     }
+    if (path === "teams" && method === "GET") return route.fulfill({ json: { teams: [] } });
     if (path === "settings" && method === "GET") {
       return route.fulfill({ json: { resume_message: state.resumeMessage, default_resume_message: "続けてください" } });
     }

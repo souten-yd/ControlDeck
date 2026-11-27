@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 100 本、ノード: 41 個
+- ルート: 105 本、ノード: 41 個
 
 ## 守りの印（guards）
 
@@ -188,7 +188,7 @@ flowchart LR
 | `mcp-project-grants` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Project のファイルを Add-on へ渡す・Add-on の出力を受ける（許可の付与） | `auth` `path_check` `approval` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py` |  |
 | `mcp-addon-tools` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Add-on が宣言した道具（動的）。名前は Add-on ごと | `auth` `approval` `audit` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py`<br>`backend/app/addons/registry.py` |  |
 
-### Nexarch（AI Commander・チーム）（18 本）
+### Nexarch（AI Commander・チーム）（23 本）
 
 ```mermaid
 flowchart LR
@@ -196,10 +196,11 @@ flowchart LR
   console["Nexarch のコンソール（Claude・Codex・OpenCode の CLI）"]
   workdir["作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中）"]
   board["チームの板（teams.json）"]
+  cli_accounts["CLI アカウントのフォルダ（ログインの鍵が入る）"]
+  frontend["画面（frontend / React）"]
   codedev["CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有）"]
   terminal["Terminal（tmux・PTY）"]
   usage_files["使用率のファイル（usage・Codex の記録）"]
-  cli_accounts["CLI アカウントのフォルダ（ログインの鍵が入る）"]
   backend -->|"nx-console-open (tmux)"| console
   console -->|"nx-console-read (tmux)"| backend
   backend -->|"nx-resume-inject (tmux)"| console
@@ -211,6 +212,11 @@ flowchart LR
   backend -->|"nx-team-git (subprocess)"| workdir
   backend -->|"nx-team-handoff-inject (tmux)"| console
   backend -->|"nx-team-dispatcher (file)"| board
+  backend -->|"nx-team-leader-run (subprocess)"| workdir
+  cli_accounts -->|"nx-team-models (file)"| backend
+  backend -->|"nx-team-role-console (tmux)"| console
+  frontend -->|"nx-team-handoff-choose (api)"| backend
+  backend -->|"nx-team-root (file)"| workdir
   backend -->|"ws-auto-project (file)"| codedev
   backend -->|"nx-automation-inject (tmux)"| terminal
   backend -->|"nx-team-board (file)"| board
@@ -233,6 +239,11 @@ flowchart LR
 | `nx-team-git` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 上限で止まった担当の作業フォルダの変更（git status --short・git diff --stat）を引き継ぎの本文のために読む | `path_check` `no_secrets` | `backend/app/commander/team_runner.py`<br>`backend/app/commander/team_dispatch.py` | shell なし・引数は固定・15 秒・読むだけ。git が無い・リポジトリでなければ省く |
 | `nx-team-handoff-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限で止まったタスクを次の候補（画面のコンソール）へ、引き継ぎの文を付けて送り直す。待ちのタスクを空いた担当へ自動で送る（配り手） | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/teams.py` | 同時に走らせる数・担い手ごとに 1 つ・担当ファイルの重なり・ローカルの同時の数の決まりの範囲だけ |
 | `nx-team-dispatcher` | backend（FastAPI） | チームの板（teams.json） | file | 待ちのタスクを空いた担い手へ割り当て（60 秒ごと＋タスクが終わったとき）・上限の方針（引き継ぐ／回復を待つ）・中断の回収 | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/team_runner.py` |  |
+| `nx-team-leader-run` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 目標からチームを作る: 任命されたチームリーダー（claude・codex・opencode）をヘッドレスで 1 回、読むだけで走らせ、JSON の計画（前提・役割の数・タスク）を受け取る | `audit` `path_check` `no_secrets` | `backend/app/commander/team_leader.py`<br>`backend/app/commander/team_runner.py` | 目標・作業場所のファイルの一覧（上位 200 件・shell なし）・役割・スキーマだけを渡す。claude は読む道具だけ（Read・Glob・Grep）、codex は read-only。出力はコードがスキーマで検証（形が違えば 1 回だけ再実行・だめなら止めて通知）。確認のコマンドは許す形だけ。本文・出力はログに出さない |
+| `nx-team-models` | CLI アカウントのフォルダ（ログインの鍵が入る） | backend（FastAPI） | file | 担い手のモデルと考えるレベルの一覧: codex の models_cache.json（slug と考えるレベルだけ）・ゲートウェイのモデルの一覧・claude は固定の別名。5 分覚える | `auth` `no_secrets` | `backend/app/commander/models.py`<br>`backend/app/commander/router.py` | auth.json など鍵のファイルは読まない・返さない。外へは何も取りに行かない |
+| `nx-team-role-console` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 役割の担い手が画面ありのとき、Nexarch のコンソールを自動で開く（チームの作業場所・役割のモデルと考えるレベルの引数つき） | `audit` `path_check` | `backend/app/commander/team_roles.py`<br>`backend/app/commander/consoles.py` | 実行ファイル名は CLIS の表だけ・モデルと考えるレベルは英数と ._:/#- だけに検証。開ける数は役割の数まで |
+| `nx-team-handoff-choose` | 画面（frontend / React） | backend（FastAPI） | api | 引き継ぎ先が無くて止まったタスクへ、画面で選んだ担い手（コンソールとモデル別）で引き継いで再開する。選べばその役割のセカンダリへ足せる | `auth` `audit` | `backend/app/commander/router.py`<br>`backend/app/commander/team_roles.py` |  |
+| `nx-team-root` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | file | チームの保存先（Nexarch の設定の team_root）の下へ `<名前>-日時` の作業場所を作る（git init・manifest）。AI アシスタントから作るときは会話の作業場所をそのまま使う | `auth` `audit` `path_check` | `backend/app/commander/settings.py`<br>`backend/app/commander/teams.py`<br>`backend/app/integrations/opencode/projects.py` | 保存先は作業フォルダの決まり（/data1tb・/data2tb の中・realpath・data_dir など禁止）で検証。未設定なら CodeDEV の自動の作業場所 |
 | `ws-auto-project` | backend（FastAPI） | CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有） | file | 作業場所の自動作成（nexarch-/team-/chat-日時のフォルダ・git init）と表示名・作成元（.controldeck/project.json） | `auth` `audit` `path_check` | `backend/app/integrations/opencode/projects.py`<br>`backend/app/commander/consoles.py`<br>`backend/app/workflows/chat_persist.py`<br>`backend/app/project_lab/service.py` | フォルダ名は変えない（OpenCode の会話の履歴がパスに結び付く）。表示名だけ変えられる |
 | `nx-automation-inject` | backend（FastAPI） | Terminal（tmux・PTY） | tmux | Terminal の automation が対象のセッションへコマンドを送る | `auth` `audit` `approval` | `backend/app/terminals/automation_worker.py`<br>`backend/app/terminals/automation.py`<br>`backend/app/terminals/manager.py` |  |
 | `nx-team-board` | backend（FastAPI） | チームの板（teams.json） | file | タスク板の保存（teams.json・0600・置き換えで書く） | `auth` `no_secrets` | `backend/app/commander/teams.py` |  |

@@ -44,6 +44,9 @@ class ConsoleCreate(BaseModel):
     label: str = Field(default="", max_length=64)
     # 「新しい作業場所（自動の名前）」。CodeDEV 直下に作って、そこで開く
     new_workspace: NewWorkspace | None = None
+    # モデル・考えるレベル（空なら付けない。検証は commander.models）
+    model: str = Field(default="", max_length=80)
+    effort: str = Field(default="", max_length=20)
 
     @model_validator(mode="after")
     def need_workdir(self) -> "ConsoleCreate":

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 271 ファイル、2736 テスト（目的の未記入 93 ファイル）
-- E2E: 147 spec、329 テスト
+- backend: 272 ファイル、2783 テスト（目的の未記入 93 ファイル）
+- E2E: 147 spec、333 テスト
 
 ## backend（backend/tests）
 
@@ -833,6 +833,58 @@
 - `test_all_writes_failed_retries_same_member_once_then_hands_off`
 - `test_all_writes_failed_does_not_reach_review_and_report_is_unverified`
 - `test_all_writes_failed_single_member_blocks`
+
+### backend/tests/test_commander_team_t3b.py
+
+目的: Nexarch の AI チーム T3b（チームリーダー・役割・プライマリ／セカンダリ・モデルと考えるレベル）の試験。 目的: 利用者（2026-11-27）の要望を仕組みで守る。 - 「チームはチームリーダーが自動で作成して欲しい。ロールの設定をできるようにして、それに基づいて必要数を呼び出すイメージ」: 目標からチームリーダーが JSON の計画を返し、brief・役割の数・タスクが板に入る（形が違えば 1 回だけ再実行・だめなら止めて通知・ 役割の名前の外は捨てる・数は 1〜4 に丸める・確認のコマンドは許す形だけ）。役割の数まで担い手を呼び出す。 - 「プライマリとセカンダリー。期限切れでセカンダリに移行しても回復後にはプライマリに戻れると良い」: 上限で止まったらセカンダリへ移り、回復の時刻の後の次のタスクからプライマリへ戻る（走っているタスクは止めない）。 - 「トークンが尽きた場合、プライマリ（引き継ぎ先）の設定が無い場合は止まるが、そのコンソールの設定を押すと引き継ぎ先を選べる」: chain が尽きたら止まる（blocked・no_handoff）＋通知、引き継ぎ先を選ぶ API で再開し、チェックでセカンダリに足す。 - 「チームリーダーを任命する感じで」「既定のチームリーダー設定ができると良い」: チームのチームリーダー・既定のチームリーダーと既定の役割の写し。 - 「設定はコンソールとモデルを個別に設定できること。モデルは自動でリストアップし、考えるレベルも選べるように」: モデルの一覧（claude 固定・codex の models_cache・opencode のゲートウェイ）。鍵のファイル（auth.json）は読まない。 model・effort を headless と console の引数へ渡し、不正な値（引数の取り違えになるもの）は断る。 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。CLI は本物を呼ばない（T3a の試験と同じ偽の実行ファイル）。 隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+
+- `test_models_claude_fixed_aliases_and_efforts`
+- `test_models_codex_reads_cache_only_never_key_files`
+- `test_models_codex_unreadable_gives_empty_list_with_free_input`
+- `test_models_opencode_lists_gateway_and_connection_default`
+- `test_models_result_cached_five_minutes`
+- `test_models_api`
+- `test_claude_argv_gets_model_and_effort_only_when_set`
+- `test_codex_argv_gets_model_and_reasoning_effort`
+- `test_opencode_argv_model_and_variant`
+- `test_endpoint_rejects_unsafe_model`
+- `test_endpoint_accepts_listed_and_free_values`
+- `test_headless_member_keeps_model_and_validates`
+- `test_console_command_gets_model_and_effort`
+- `test_new_team_gets_default_roles_and_leader_copy`
+- `test_set_roles_validation`
+- `test_task_role_validated_and_dropped_with_role`
+- `test_dispatcher_calls_up_to_role_count_and_makes_auto_members`
+- `test_run_passes_model_and_effort_from_role`
+- `test_role_without_endpoints_uses_legacy_pool`
+- `test_console_endpoint_opens_nexarch_console_in_team_workdir`
+- `test_limit_moves_to_secondary_and_returns_to_primary_after_recovery`
+- `test_running_task_is_not_interrupted_when_primary_recovers`
+- `test_chain_exhausted_blocks_with_notification_then_choose_handoff`
+- `test_choose_handoff_without_adding_and_rejects_running`
+- `test_wait_policy_keeps_same_endpoint`
+- `test_explicit_fallback_used_after_chain`
+- `test_leader_makes_team_from_goal`
+- `test_leader_prompt_lists_workdir_files_without_shell`
+- `test_leader_drops_unknown_roles_clamps_counts_and_bad_checks`
+- `test_leader_retries_once_when_shape_is_wrong`
+- `test_leader_accepts_json_in_code_fence_and_noise`
+- `test_leader_fails_after_second_bad_output_and_notifies`
+- `test_validate_plan_rejects_wrong_shape`
+- `test_leader_run_fails_on_cli_error_and_limit`
+- `test_leader_codex_uses_output_schema_and_readonly`
+- `test_leader_resolution_team_then_default_then_installed`
+- `test_leader_uses_given_workdir_and_refuses_double_run`
+- `test_leader_run_on_existing_team_adds_tasks_and_keeps_brief` — 「チームリーダーに頼む」: 既存のチームへ頼み足す。前提（brief）は書き換えず、タスクだけ足す。
+- `test_leader_starts_dispatcher_when_auto_run`
+- `test_api_roles_leader_auto_handoff_and_defaults`
+- `test_api_consoles_accept_model_and_effort`
+- `test_team_root_validation`
+- `test_team_root_creates_named_folder_with_manifest`
+- `test_without_team_root_uses_codedev_as_before`
+- `test_vanished_team_root_falls_back_to_codedev`
+- `test_assistant_team_uses_given_workdir_as_is`
+- `test_api_team_root_and_assistant_create`
 
 ### backend/tests/test_commander_team_watch.py
 
@@ -4436,7 +4488,7 @@
 
 ### frontend/e2e/commander-team.spec.ts
 
-目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・ 「自動で直せず」（blocked）の印も確かめる。 T3a: ヘッドレスのメンバーを足す・実行中の表示（最後の行・経過・使用量）と止める・上限の方針（引き継ぐ／待つ）の切り替え・ 候補の順番の並べ替え・同時並列の設定・板の上の「同時に動いている数／上限」・作業場所と履歴（runs）の表示も確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
+目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・ 「自動で直せず」（blocked）の印も確かめる。 T3a: ヘッドレスのメンバーを足す・実行中の表示（最後の行・経過・使用量）と止める・上限の方針（引き継ぐ／待つ）の切り替え・ 候補の順番の並べ替え・同時並列の設定・板の上の「同時に動いている数／上限」・作業場所と履歴（runs）の表示も確かめる。 T3b: 目標からチームを作る（チームリーダーの応答はモック）・役割の欄（自動の振り分け）・担い手の選び手（コンソールとモデルが別・ 考えるレベル）・引き継ぎ先を選ぶ（タスクのカードとコンソールのカード）・チームの既定（チームリーダー・保存先を一度だけ）。 利用者の決まり（2026-11-27）「不要な表示は隠し、必要ならエキスパートで開く」: 切（既定）と入の両方を撮る。 既存の T1〜T3a の流れはエキスパートを入にして通す（beforeEach）。タイトルに「エキスパート切」を含む試験だけ切のまま。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
 
 - AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格
 - URL の ?view=team でチームが開き、コンソールの切り替えで戻れる
@@ -4444,6 +4496,10 @@
 - AI チーム ${label}px: チームの前提・リセットの切り替え・確認のコマンドと結果・自動で直せず
 - AI チーム ${label}px: ヘッドレス（実行中の表示・止める）・上限の方針・候補の順番・同時並列
 - AI チーム ${label}px: ヘッドレスのメンバーを足す
+- AI チーム ${label}px: エキスパート切で目標からチームを作り、板は題・状態・担当だけ → 入で詳細（自動の振り分け）
+- AI チーム ${label}px: 担い手の選び手（コンソールとモデルが別・考えるレベル）と役割の保存
+- AI チーム ${label}px: エキスパート切でも引き継ぎ先を選べる（タスクのカードとコンソールのカード）
+- AI チーム ${label}px: チームの既定（チームリーダー）と保存先を一度だけ選ぶ
 
 ### frontend/e2e/commander.spec.ts
 

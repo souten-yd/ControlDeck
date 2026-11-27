@@ -12,7 +12,7 @@ import { FilePicker } from "../../components/FilePicker";
 import { BottomSheet, primaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
 
-const WORKDIR_SOURCE = {
+export const WORKDIR_SOURCE = {
   rootsUrl: "/commander/workdir/roots",
   listUrl: "/commander/workdir/list",
   mkdirUrl: "/commander/workdir/directory",

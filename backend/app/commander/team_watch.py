@@ -33,7 +33,9 @@ KIND_STALLED = "stalled"
 KIND_LIMITED = "limited"
 KIND_BLOCKED = "blocked"
 KIND_HANDOFF = "handoff"
+KIND_NO_HANDOFF = "no_handoff"
 _KIND_TEXT = {
+    KIND_NO_HANDOFF: "は上限で止まり、引き継ぎ先がありません（Nexarch の画面で引き継ぎ先を選んでください）",
     KIND_REPORT: "の報告が来ました",
     KIND_STALLED: "が報告なしで止まりました",
     KIND_LIMITED: "の担当が上限で止まりました",
@@ -209,6 +211,8 @@ async def watch_loop() -> None:
 
     try:  # 起動時: 前の ControlDeck で走っていた実行は「中断」にする（自動では続けない）
         await asyncio.to_thread(team_runner.recover_interrupted)
+        from app.commander import team_leader
+        await asyncio.to_thread(team_leader.recover_interrupted)
     except Exception:  # noqa: BLE001
         logger.exception("中断した実行の回収に失敗しました")
     while True:

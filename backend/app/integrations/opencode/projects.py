@@ -135,6 +135,43 @@ def create_auto_project(kind: str, display_name: str = "") -> dict:
     return {"folder": folder, "path": str(path), "name": name}
 
 
+def safe_stub(name: str | None, fallback: str = "team") -> str:
+    """フォルダ名の前半。英数・_・- だけ（それ以外は - にまとめる）・30 字まで。残らなければ fallback。"""
+    import re
+
+    stub = re.sub(r"[^A-Za-z0-9_]+", "-", (name or "").strip()).strip("-_")[:30].strip("-_")
+    return stub or fallback
+
+
+def create_project_in(parent: Path, name: str, kind: str = "team") -> dict:
+    """parent（検証済みの親フォルダ）の下に `<名前を安全にした名前>-YYYYMMDD-HHMMSS` を作る（git init・manifest）。
+
+    create_auto_project と同じ作り方（フォルダ名は変えない・表示名は manifest の name・created_by）。
+    CodeDEV の外にも作れる（チームの保存先 team_root）。親の検証は呼び出し側（commander.workdir.resolve_dir）。
+    """
+    if kind not in KINDS:
+        raise ProjectError("作業場所の種類が不正です")
+    display = clean_name(name, fallback=default_name())
+    base = f"{safe_stub(name, kind)}-{datetime.now():%Y%m%d-%H%M%S}"
+    folder = base
+    suffix = 1
+    while True:
+        try:
+            (parent / folder).mkdir()
+            break
+        except FileExistsError:
+            suffix += 1
+            folder = f"{base}-{suffix}"
+    path = (parent / folder).resolve()
+    if shutil.which("git"):
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=path, capture_output=True, timeout=15, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _write_raw(path, {"schemaVersion": 1, "name": display, "description": "", "profiles": [], "created_by": kind})
+    return {"folder": folder, "path": str(path), "name": display}
+
+
 def set_display_name(folder: str, name: str) -> dict:
     """manifest の name だけ書き換える（他の項目・フォルダ名は変えない）。"""
     project = resolve_in_codedev(folder)

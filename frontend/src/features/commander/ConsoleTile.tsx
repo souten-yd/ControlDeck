@@ -107,16 +107,35 @@ function StateLine({ item }: { item: CommanderConsole }) {
   );
 }
 
+/** 引き継ぎ先が無くて止まったタスクの担当のコンソールに出す（押すと引き継ぎ先を選べる）。 */
+export interface StuckTask { teamId: string; taskId: number; title: string }
+
+function HandoffButton({ stuck, onChoose }: { stuck: StuckTask; onChoose: () => void }) {
+  return (
+    <button
+      type="button" data-console-handoff onClick={(e) => { e.stopPropagation(); onChoose(); }}
+      className="mt-1 min-h-11 w-full min-w-0 rounded-xl bg-red-50 px-3 text-left text-xs font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300"
+    >
+      <span className="block truncate">上限で止まり、引き継ぎ先がありません（#{stuck.taskId} {stuck.title}）</span>
+      <span className="block underline">引き継ぎ先を選ぶ</span>
+    </button>
+  );
+}
+
 export function ConsoleTile({
   item,
   cliName,
   onExpand,
   onClose,
+  stuck,
+  onChooseHandoff,
 }: {
   item: CommanderConsole;
   cliName: string;
   onExpand: () => void;
   onClose: () => void;
+  stuck?: StuckTask | null;
+  onChooseHandoff?: () => void;
 }) {
   return (
     <li
@@ -162,7 +181,10 @@ export function ConsoleTile({
           🗑️
         </button>
       </div>
-      <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800"><AutoResume item={item} cliName={cliName} /></div>
+      <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800">
+        <AutoResume item={item} cliName={cliName} />
+        {stuck && onChooseHandoff && <HandoffButton stuck={stuck} onChoose={onChooseHandoff} />}
+      </div>
       <div className={`relative ${TILE_TERMINAL_HEIGHT}`}>
         <Suspense fallback={<div className="grid h-full place-items-center text-xs text-zinc-400">ターミナルを読み込み中...</div>}>
           <XtermView
@@ -184,11 +206,15 @@ export function ConsoleRow({
   cliName,
   onOpen,
   onClose,
+  stuck,
+  onChooseHandoff,
 }: {
   item: CommanderConsole;
   cliName: string;
   onOpen: () => void;
   onClose: () => void;
+  stuck?: StuckTask | null;
+  onChooseHandoff?: () => void;
 }) {
   return (
     <li
@@ -229,7 +255,10 @@ export function ConsoleRow({
         🗑️
       </button>
       </div>
-      <div className="pl-4"><AutoResume item={item} cliName={cliName} /></div>
+      <div className="pl-4">
+        <AutoResume item={item} cliName={cliName} />
+        {stuck && onChooseHandoff && <HandoffButton stuck={stuck} onChoose={onChooseHandoff} />}
+      </div>
     </li>
   );
 }
