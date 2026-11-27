@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 269 ファイル、2667 テスト（目的の未記入 93 ファイル）
-- E2E: 147 spec、326 テスト
+- E2E: 147 spec、327 テスト
 
 ## backend（backend/tests）
 
@@ -4850,6 +4850,7 @@
 
 - Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）
 - Sly-Radiance は Radiance のカードの中のスイッチ（320px）
+- Sly-Radiance の個別設定を保存できる（表示用の項目を送らない）
 
 ### frontend/e2e/speech-engines.spec.ts
 
