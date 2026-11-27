@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-27 Nexarch: OpenCode も /data1tb・/data2tb の作業フォルダで開ける
+- 利用者「作業フォルダの件対処して」。#682 で Nexarch の作業フォルダは /data1tb・/data2tb になったが、OpenCode だけは files の許可ルートの外を断っていた（tui_command が files.resolve で検証するため）。
+- `provider.tui_command(validated_project=)` を足し、呼び出し側が自分の決まりで検証済みの実体の絶対パス（Nexarch は commander/workdir.py が realpath でルートの中・data_dir と拒否の場所の外を確かめたもの）を渡せるようにした。実体でない（リンク・相対）パスは断る。OpenCode 画面など他の呼び出しは今までどおり files.resolve。
+- 確かめたこと: 試験（files の許可ルートの外の作業フォルダで OpenCode を開ける・リンクと相対を断る）、commander・opencode の試験 228 件。
+
 ## 2026-11-27 Nexarch の AI チーム T1: タスク板と、担当のコンソールへの送り込み
 - 利用者「AI チームを作りたい。情報の橋渡し、リーダーはローカル LLM もフロンティアも自由に。使いやすい形で」。設計は docs/PLAN-nexarch-team.md、これはその T1。
 - 作ったもの: `backend/app/commander/teams.py`（保存は `data/ai-commander/teams.json` 0600・DB なし）と `/commander/teams` の API（権限 terminal.use・変更は監査ログ `commander.team.*`）。チーム・メンバー（Nexarch のコンソールだけ・役割・リーダーは 1 人まで・役割は tmux の印にも付く）・タスク（担当ファイルの重なりは断らず警告）。

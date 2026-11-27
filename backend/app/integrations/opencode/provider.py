@@ -1721,6 +1721,7 @@ def tui_command(
     runtime: str = "",
     resume: str = "",
     config_key: str = "",
+    validated_project: Path | None = None,
 ) -> tuple[str, str]:
     """対話TUIセッション用のshellコマンドを組み立てる。(command, project_dir)を返す。
 
@@ -1741,11 +1742,18 @@ def tui_command(
     model_id = (model or settings["model"]).strip()
     if not endpoint.startswith(("http://", "https://")) or not model_id:
         raise CodeAgentError("LLM endpointとmodelを設定してください")
-    raw_project = project_path or settings.get("project_path") or str(Path.home())
-    try:
-        project = files.resolve(raw_project)
-    except (files.FileAccessError, FileNotFoundError) as exc:
-        raise CodeAgentError(str(exc)) from exc
+    if validated_project is not None:
+        # 呼び出し側が自分の決まりで検証済みのフォルダ（Nexarch の作業フォルダ: commander/workdir.py が
+        # /data1tb・/data2tb の中・data_dir と拒否の場所の外を realpath で確かめた実体のパス）。
+        project = validated_project
+        if not project.is_absolute() or project.resolve() != project:
+            raise CodeAgentError("作業フォルダは実体の絶対パスで渡してください")
+    else:
+        raw_project = project_path or settings.get("project_path") or str(Path.home())
+        try:
+            project = files.resolve(raw_project)
+        except (files.FileAccessError, FileNotFoundError) as exc:
+            raise CodeAgentError(str(exc)) from exc
     if not project.is_dir():
         raise CodeAgentError("project pathはディレクトリを指定してください")
     config = _runtime_config(

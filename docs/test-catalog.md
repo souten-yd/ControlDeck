@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 265 ファイル、2612 テスト（目的の未記入 93 ファイル）
+- backend: 265 ファイル、2613 テスト（目的の未記入 93 ファイル）
 - E2E: 146 spec、322 テスト
 
 ## backend（backend/tests）
@@ -771,7 +771,8 @@
 - `test_data_dir_and_denied_places_are_refused`
 - `test_make_directory_audited_and_conflict`
 - `test_create_consoles_validates_with_workdir_roots`
-- `test_opencode_needs_files_allowed_root` — 作業フォルダのルートの中でも files の許可ルートの外なら、OpenCode は 400 で理由を返す。
+- `test_opencode_opens_nexarch_workdir_outside_files_roots` — Nexarch の作業フォルダ（files の許可ルートの外でも）で OpenCode を開ける。検証済みの実体のパスを渡す。
+- `test_tui_command_validated_project_must_be_a_real_absolute_dir` — tui_command の validated_project は実体の絶対パスだけ（リンク・相対は断る）。
 
 ### backend/tests/test_compaction.py
 
