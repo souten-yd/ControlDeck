@@ -107,3 +107,46 @@ test("Sly-Radiance は Radiance のカードの中のスイッチ（320px）", a
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
   await radiance.screenshot({ path: "test-results/sly-radiance-toggle-320.png" });
 });
+
+// 目的: 登録済みの Sly-Radiance の個別設定を開いて保存すると、登録の項目だけが送られる（表示用の項目を混ぜない）。
+// 根拠: 2026-11-27 利用者の iPhone で「runtime: Extra inputs are not permitted / base_url … / ctx_size … / n_parallel …」で保存できなかった。
+test("Sly-Radiance の個別設定を保存できる（表示用の項目を送らない）", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 390, height: 900 });
+  await establishSession(page, context);
+  const instance = {
+    alias: "swift-heretic-sly", model_path: "/data2tb/LLM/Swift", drafter_path: "/data2tb/LLM/drafter", port: 8102,
+    context: 131072, kv_cache: "fp8", max_num_seqs: 8, speculative_tokens: 7, gpu_memory_utilization: 0.98,
+    prefill_chunk: 2048, prefix_cache: true, reasoning_effort: "", quantization: "", engine_settings: {},
+    on_demand_start: true, idle_exclude: false, auto_start: false,
+    // 一覧（_present）が足す表示用の項目
+    runtime: "sly-radiance", role: "llm", base_url: "http://127.0.0.1:8102/v1", loaded: false,
+    runtime_status: "STOPPED", ctx_size: 131072, n_parallel: 8,
+  };
+  let saved: Record<string, unknown> | null = null;
+  await page.route("**/api/v1/models/runtime-environment", async (route) => {
+    const env = await (await route.fetch()).json();
+    env.policy.selected_runtime = "radiance";
+    await route.fulfill({ json: env });
+  });
+  await page.route("**/api/v1/models/providers/*/models", (route) => route.fulfill({ json:
+    route.request().url().includes("/sly-radiance/") ? [{ id: "swift-heretic-sly", name: "swift-heretic-sly", size_bytes: 0, loaded: false, details: {} }] : [] }));
+  await page.route("**/api/v1/models/sly-radiance/instances", (route) => route.fulfill({ json: { runtime: { installed: true }, instances: [instance] } }));
+  await page.route("**/api/v1/models/radiance/instances", (route) => route.fulfill({ json: { runtime: { installed: true }, instances: [] } }));
+  await page.route("**/api/v1/models/sly-radiance/instances/swift-heretic-sly", async (route) => {
+    if (route.request().method() === "PUT") {
+      saved = route.request().postDataJSON();
+      return route.fulfill({ json: { ...instance, ...saved } });
+    }
+    return route.fulfill({ json: instance });
+  });
+  await page.goto("/models");
+  await page.getByRole("button", { name: "swift-heretic-slyの個別設定を開く" }).click();
+  const sheet = page.getByRole("dialog", { name: "swift-heretic-sly · 個別設定", exact: true });
+  await sheet.getByRole("button", { name: "保存", exact: true }).last().click();
+  await expect.poll(() => saved).not.toBeNull();
+  for (const key of ["runtime", "role", "base_url", "runtime_status", "ctx_size", "n_parallel", "loaded"]) {
+    expect(saved).not.toHaveProperty(key);
+  }
+  expect(saved).toMatchObject({ alias: "swift-heretic-sly", max_num_seqs: 8, prefix_cache: true });
+});
