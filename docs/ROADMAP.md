@@ -8,7 +8,8 @@
 
 1. **最優先は「OpenCode で全ての開発ができる」ようにすること。** Claude や Codex を使わなくても、ローカル LLM と OpenRouter で ControlDeck の拡張・改善や新しいソフトを開発し、ホストの GPU・モデル・API で評価し、更新で本体へ入れられるようにする。
 2. それができたら、残りの計画（検索基盤・特許・ナレッジ）は、**この開発環境を使って**進める（OpenCode にやらせ、Opus が監査する）。開発環境の試運転（P6）に、残りの計画の最初の項目を使う。
-3. Claude での開発は Opus が司令塔（`AGENTS.md`）。予算の都合で Fable は使わない（画面の設計も Opus と Sonnet）。
+3. **（2026-11-27 利用者・11-28 再確認）AI チーム（Nexarch）と OpenCode で ControlDeck を開発できるようにしたら、以降の ControlDeck の機能開発はこのプラットフォームから行い、使いながら AI チームと OpenCode の開発機能を磨く。** 「まずは AI チームと OpenCode での ControlDeck 開発機能を完成させ、今後の開発をこのプラットフォームから行うことで開発しながらブラッシュアップして欲しい」。Claude Code の子エージェントで直接作るのは、プラットフォームで回せない所だけにする。使っていて詰まった所・手間だった所は `docs/PLAN-nexarch-team.md` に書き、開発機能の改善として直す。品質の関門は Opus が持つ。Claude・Codex は定額のログインだけで使う（API キーは使わない。2026-11-28）。
+4. Claude での開発は Opus が司令塔（`AGENTS.md`）。予算の都合で Fable は使わない（画面の設計も Opus と Sonnet）。
 
 ## 順番
 
