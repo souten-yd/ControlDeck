@@ -35,6 +35,10 @@ def list_consoles() -> list[dict]:
         label = labels[cli_id].get(str(row.get("commander_account") or ""), "")
         if label:
             row["commander_account_label"] = label
+        login = accounts.login_name(cli_id, str(row.get("commander_account") or accounts.DEFAULT_ACCOUNT)) \
+            if cli_id in CLIS else ""
+        if login:
+            row["commander_login_name"] = login
         # C2: 画面の文字から状態と最後の行（LLM なし）
         text = manager.capture_text(str(row["id"]), status.CAPTURE_LINES) if row.get("alive", True) else ""
         judged = status.classify(cli_id, text, alive=bool(row.get("alive", True)),

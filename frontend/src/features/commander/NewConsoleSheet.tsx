@@ -128,7 +128,7 @@ export function NewConsoleSheet({
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate">
-                      {accountTitle(a.name, a.label, true, a.title)}
+                      {accountTitle(a.name, a.label, true, a.title, a.login_name)}
                       {a.logged_in === true && <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">ログイン済み</span>}
                       {a.logged_in === false && <span className="ml-2 text-[10px] text-zinc-400">未ログイン（開いてから CLI の中でログイン）</span>}
                     </span>

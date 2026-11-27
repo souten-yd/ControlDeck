@@ -145,7 +145,7 @@ def test_accounts_api_create_list_delete_and_audit(admin_client):
     names = [row["name"] for row in body["accounts"]]
     assert names[0] == "default" and "work" in names
     # 返事は名前・既定か・ログイン済み・画面の名前だけ（鍵・トークン・中身は無い）
-    assert set(body["accounts"][0]) == {"name", "default", "logged_in", "label", "usage", "usage_statusline"}
+    assert set(body["accounts"][0]) == {"name", "default", "logged_in", "label", "usage", "usage_statusline", "login_name"}
 
     # 既定のアカウントは消せない
     assert admin_client.delete(
@@ -262,3 +262,25 @@ def test_account_labels_including_the_default_account(admin_client):
     assert admin_client.delete("/api/v1/commander/accounts/codex/label-probe", headers=CSRF_HEADERS).status_code == 204
     assert "label-probe" not in accounts.labels_for("codex")
     assert "default" not in accounts.labels_for("codex")
+
+
+def test_login_name_from_claude_metadata_and_codex_status(monkeypatch, tmp_path):
+    """既定のアカウントの見せ方を、ログインしている名前にする（Claude はメール、Codex はログインの方法）。
+
+    根拠: 2026-11-27 利用者「既定のアカウントではなくログインアカウント名にならないか」。Claude は
+    .claude.json の oauthAccount.emailAddress（鍵ではない）。Codex のメールは鍵のファイルにしか無いので読まず、
+    `codex login status` の方法だけ出す。
+    """
+    import json as json_mod
+    import subprocess
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / ".claude.json").write_text(json_mod.dumps({
+        "oauthAccount": {"emailAddress": "me@example.com", "organizationName": "x"}, "projects": {}}))
+    accounts._login_cache.clear()
+    assert accounts.login_name("claude", "default") == "me@example.com"
+    monkeypatch.setattr(accounts, "executable_path", lambda cli: "/usr/bin/codex")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "Logged in using ChatGPT\n", ""))
+    assert accounts.login_name("codex", "default") == "ChatGPT でログイン"
+    assert accounts.login_name("gemini", "default") == ""
+    accounts._login_cache.clear()

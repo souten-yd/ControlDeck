@@ -305,6 +305,71 @@ def _default_logged_in(cli: CliDef) -> bool | None:
     return logged_in(cli, Path.home() / cli.default_home_dir)
 
 
+# ---- ログインしているアカウントの名前（鍵は読まない） ---------------------------------------------
+
+_LOGIN_CACHE_S = 300
+_login_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def _claude_config_file(account: str) -> Path:
+    if account == DEFAULT_ACCOUNT:
+        base = os.environ.get("CLAUDE_CONFIG_DIR")
+        return Path(base) / ".claude.json" if base else Path.home() / ".claude.json"
+    return account_dir(CLIS["claude"], validate_name(account)) / ".claude.json"
+
+
+def _claude_login(account: str) -> str:
+    """Claude Code の .claude.json の oauthAccount.emailAddress（ログインのメール。鍵ではない）。"""
+    try:
+        raw = json.loads(_claude_config_file(account).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    oauth = raw.get("oauthAccount") if isinstance(raw, dict) else None
+    email = oauth.get("emailAddress") if isinstance(oauth, dict) else None
+    return str(email)[:120] if isinstance(email, str) else ""
+
+
+def _codex_login(account: str) -> str:
+    """`codex login status` の 1 行目を短く（メールは鍵のファイルにしか無いので出さない）。"""
+    import subprocess
+
+    exe = executable_path(CLIS["codex"])
+    if not exe:
+        return ""
+    env = {**os.environ}
+    if account != DEFAULT_ACCOUNT:
+        env["CODEX_HOME"] = str(account_dir(CLIS["codex"], validate_name(account)))
+    try:
+        done = subprocess.run([exe, "login", "status"], capture_output=True, text=True, timeout=15,
+                              env=env, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    line = ((done.stdout or done.stderr).strip().splitlines() or [""])[0]
+    if "ChatGPT" in line:
+        return "ChatGPT でログイン"
+    if "API key" in line or "API Key" in line:
+        return "API キーでログイン"
+    return ""
+
+
+def login_name(cli_id: str, account: str) -> str:
+    """そのアカウントでログインしている名前（Claude はメール、Codex はログインの方法）。分からなければ空。"""
+    if cli_id not in ("claude", "codex"):
+        return ""
+    import time
+
+    key = (cli_id, account)
+    cached = _login_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _LOGIN_CACHE_S:
+        return cached[1]
+    try:
+        value = _claude_login(account) if cli_id == "claude" else _codex_login(account)
+    except (ValueError, KeyError):
+        value = ""
+    _login_cache[key] = (time.monotonic(), value)
+    return value
+
+
 def list_accounts(cli: CliDef) -> list[dict]:
     """アカウントの一覧。既定のアカウントは常に先頭（作る・消すはできない）。"""
     labels = labels_for(cli.id)
@@ -329,6 +394,7 @@ def list_accounts(cli: CliDef) -> list[dict]:
 
     for row in rows:
         row["usage"] = usage.usage_for(cli.id, row["name"])
+        row["login_name"] = login_name(cli.id, row["name"])
         if cli.id == "claude":
             row["usage_statusline"] = usage.statusline_state(row["name"])
     return rows
