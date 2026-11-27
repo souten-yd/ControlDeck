@@ -29,9 +29,9 @@ FEATURE_ID = "android-sdk"
 # 互換の目録（版の固定）。更新するときは人が動作を確かめて、ここの値を書き換える。
 CATALOG = {
     "cmdline_tools": {
-        "version": "11076708",
-        "url": "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip",
-        "sha256": "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258",
+        "version": "15859902",
+        "url": "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip",
+        "sha256": "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583",
         "max_bytes": 300 * 1024 * 1024,
         "hosts": ("dl.google.com",),
     },

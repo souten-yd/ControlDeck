@@ -15,8 +15,8 @@ const base = { route_gated: false, requires: "", requires_installed: true, avail
   summary: "Android の開発用（adb・fastboot・sdkmanager・build-tools）。ライセンスへの同意が要る" };
 const missing = { ...base, installed: false, managed: false, health: "not-installed", version: "", error: "", executable: "",
   android_sdk: { installed: false, root: "/data/tools/android-sdk", cmdline_tools: "", platforms: [], build_tools: [], licenses_accepted: false, java: true, catalog } };
-const present = { ...base, installed: true, managed: true, enabled: true, health: "healthy", version: "11076708", error: "", executable: "/data/tools/android-sdk/platform-tools/adb",
-  android_sdk: { ...missing.android_sdk, installed: true, cmdline_tools: "11076708", platforms: ["34"], build_tools: ["34.0.0"], licenses_accepted: true } };
+const present = { ...base, installed: true, managed: true, enabled: true, health: "healthy", version: "15859902", error: "", executable: "/data/tools/android-sdk/platform-tools/adb",
+  android_sdk: { ...missing.android_sdk, installed: true, cmdline_tools: "15859902", platforms: ["34"], build_tools: ["34.0.0"], licenses_accepted: true } };
 
 async function mockFeatures(page: Page, feature: object) {
   await page.route(/\/api\/v1\/features$/, (route) => route.fulfill({ json: [feature] }));
