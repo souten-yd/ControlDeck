@@ -252,7 +252,10 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             argv += ["-c", f"mcp_servers.{name}.command={json.dumps(spec['command'][0])}",
                      "-c", f"mcp_servers.{name}.args={json.dumps(spec['command'][1:])}",
                      "-c", f"mcp_servers.{name}.env_vars={json.dumps(sorted(spec['environment']))}",
-                     "-c", f"mcp_servers.{name}.tool_timeout_sec=3600"]
+                     "-c", f"mcp_servers.{name}.tool_timeout_sec=3600",
+                     # codex exec の承認は never なので、MCP の道具は既定で「承認が要る」として失敗する（2026-11-27 実機:
+                     # "MCP tool call requires approval, but approval policy is never"）。nexarch_team だけを承認済みにする
+                     "-c", f'mcp_servers.{name}.default_tools_approval_mode="approve"']
             mcp_env = dict(spec["environment"])  # token は argv ではなく codex の環境変数で渡し、env_vars で橋渡しへ転送する
         argv.append(text)
     return argv, {**_base_env(exe), **account_env, **mcp_env}, (lambda: None)

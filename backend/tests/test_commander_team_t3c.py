@@ -613,6 +613,7 @@ def test_launch_args_pass_mcp_without_token_in_argv(env, monkeypatch):
     joined = " ".join(argv)
     assert "SECRET-TOKEN" not in joined and argv[argv.index("-s") + 1] == "read-only"
     assert "mcp_servers.nexarch_team.command=" in joined and "mcp_servers.nexarch_team.env_vars=" in joined
+    assert 'mcp_servers.nexarch_team.default_tools_approval_mode="approve"' in joined  # 無いと exec では道具が承認待ちで失敗する（実機）
     assert e["CONTROL_DECK_ADDON_MCP_TOKEN"] == "SECRET-TOKEN"  # 環境変数で渡し、env_vars で橋渡しへ転送する
     seen: dict = {}
 
