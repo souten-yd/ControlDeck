@@ -36,6 +36,7 @@ interface AccountFixture {
   usage?: { five_hour: { used_percent: number; resets_at: number | null } | null;
     seven_day: { used_percent: number; resets_at: number | null } | null } | null;
   usage_statusline?: "ours" | "other" | "none";
+  login_name?: string;
 }
 
 interface ConsoleFixture {
@@ -126,7 +127,7 @@ function initialState(): CommanderState {
           usage_statusline: "none" },
         { name: "work", default: false, logged_in: false, label: "", usage_statusline: "other" },
       ],
-      codex: [{ name: "default", default: true, logged_in: null, label: "" }],
+      codex: [{ name: "default", default: true, logged_in: null, label: "", login_name: "ChatGPT でログイン" }],
       opencode: [
         { name: "default", default: true, logged_in: null, label: "ControlDeck の API", title: "OpenCode の設定のモデル（auto・ゲートウェイ）" },
         { name: "api-1a2b3c4d5e", default: false, logged_in: null, label: "", title: "DeepSeek V4.1 Flash（openrouter）" },
@@ -416,8 +417,9 @@ test.describe("AI Commander", () => {
     await expect(sheet.getByText(/選んだ接続（OpenCode 画面に登録した API）で開きます/)).toBeVisible();
     await expect(sheet.getByRole("radio", { name: "＋ 新しいアカウント" })).toHaveCount(0);
 
-    // codex の新しいアカウントをその場で作る
+    // codex の新しいアカウントをその場で作る（既定のアカウントは「既定」ではなくログインの名前で出す）
     await sheet.getByRole("radio", { name: /Codex CLI/ }).click();
+    await expect(sheet.getByRole("radio", { name: /ChatGPT でログイン/ })).toBeVisible();
     await sheet.getByRole("radio", { name: "＋ 新しいアカウント" }).click();
     await sheet.getByLabel("新しいアカウント名").fill("sub2");
 

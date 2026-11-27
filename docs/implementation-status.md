@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-27 Nexarch: 既定のアカウントをログインの名前で出す
+- 利用者「既定のアカウントではなくログインアカウント名にならないか」。見せ方の順: 付けた名前 → ログインの名前 → 「既定」。
+- Claude: `.claude.json`（既定は ~/.claude.json、名前付きは CLAUDE_CONFIG_DIR の中）の oauthAccount.emailAddress（ログインのメール。鍵ではない）。Codex: メールは鍵のファイル（auth.json）にしか無いので読まず、`codex login status` の方法（「ChatGPT でログイン」など）だけ。5 分覚える。
+- 確かめたこと: 試験（Claude のメール・Codex の方法）、実機で両方を読めた、E2E。
+
 ## 2026-11-27 AI の CLI を設定から導入・更新・削除／Claude の使用率を Nexarch の外の分も
 - 利用者「各 CLI の導入と削除と更新ができるように Settings の機能に追加して」: 設定 → オプション機能に「AI の CLI（Nexarch）」の分類を足し、Claude Code（@anthropic-ai/claude-code）・Codex CLI（@openai/codex）・Gemini CLI（@google/gemini-cli）を置いた。新しい種類 `npm-global`: 利用者の npm のグローバル（`npm prefix -g`、この PC は ~/.local/npm-global。端末でも使う実体）へ `npm install -g`・`@latest` で更新・`npm uninstall -g`。管理領域に別の写しを作らない。更新ありの確認は npm の公開情報（既存の仕組み）。実機で Claude Code 2.1.332・Codex 0.172.0 を導入済み、Gemini は未導入と判定。
 - 利用者「Claude は週や 5 時間の制限が出ないの？」: Claude の値は Nexarch で開いたコンソールが応答したときにしか来なかった。アカウントの管理の Claude の各アカウントに「使用率を取る」スイッチ: そのアカウントの Claude の settings.json（既定は ~/.claude、名前付きは CLAUDE_CONFIG_DIR）へ使用率を書く statusline を足す・外す。ほかの設定は変えず、利用者の別の statusline は上書きしない。最初の 1 回だけ元を settings.json.bak-nexarch に残す。

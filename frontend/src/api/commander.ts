@@ -22,13 +22,16 @@ export interface CommanderAccount {
   /** 既定の見せ方（OpenCode の接続は「モデル名（提供元）」など）。 */
   title?: string;
   usage?: CommanderUsage | null;
+  /** ログインしている名前（Claude はメール、Codex はログインの方法）。 */
+  login_name?: string;
   /** Claude: アカウントの設定の statusline（ours=Nexarch が使用率を取る・other=利用者の別のもの・none）。 */
   usage_statusline?: "ours" | "other" | "none";
 }
 
-/** アカウントの見せ方: 画面の名前 → 接続の見せ方 → 既定／フォルダの名前。 */
-export function accountTitle(name: string, label?: string, long = false, title?: string): string {
+/** アカウントの見せ方: 画面の名前 → ログインの名前（メール）→ 接続の見せ方 → 既定／フォルダの名前。 */
+export function accountTitle(name: string, label?: string, long = false, title?: string, login?: string): string {
   if (label) return label;
+  if (login) return login;
   if (long && title) return title;
   if (name === "default") return long ? "既定のアカウント（普段の設定）" : "既定";
   return name;
@@ -51,6 +54,8 @@ export interface CommanderConsole {
   commander_cli: string;
   commander_account: string;
   commander_account_label?: string;
+  /** そのアカウントのログインの名前（Claude はメール）。 */
+  commander_login_name?: string;
   commander_label?: string;
   commander_role?: string;
   /** C2: 画面の文字から判定した状態（LLM なし）。 */

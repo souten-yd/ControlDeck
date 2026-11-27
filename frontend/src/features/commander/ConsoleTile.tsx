@@ -129,7 +129,7 @@ export function ConsoleTile({
           <span className="flex min-w-0 items-center gap-1.5">
             <strong className="min-w-0 truncate text-sm">{cliName}</strong>
             <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-              {accountTitle(item.commander_account, item.commander_account_label)}
+              {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
             </span>
             {item.commander_label && (
               <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400" title={item.commander_label}>
@@ -201,7 +201,7 @@ export function ConsoleRow({
         <span className="flex min-w-0 items-center gap-1.5">
           <strong className="min-w-0 truncate text-sm">{cliName}</strong>
           <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-            {accountTitle(item.commander_account, item.commander_account_label)}
+            {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
           </span>
           {item.commander_label && <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{item.commander_label}</span>}
         </span>

@@ -94,8 +94,8 @@ function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: Co
     <li className="flex min-h-11 items-center gap-2 rounded-xl bg-zinc-50 px-3 dark:bg-zinc-900">
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">
-          {accountTitle(account.name, account.label, true, account.title)}
-          {account.label && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.title || folder}）</span>}
+          {accountTitle(account.name, account.label, true, account.title, account.login_name)}
+          {(account.label || account.login_name) && <span className="ml-1.5 text-[11px] text-zinc-400">（{account.label && account.login_name ? account.login_name : account.title || folder}）</span>}
         </span>
         <UsageLine usage={account.usage} />
         {cli.id === "claude" && <UsageStatuslineSwitch cli={cli} account={account} />}
