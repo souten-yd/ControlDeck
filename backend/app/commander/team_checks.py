@@ -75,22 +75,41 @@ def _tail(text: str, limit: int = TAIL_MAX) -> str:
     return text[-limit:]
 
 
+# 出力は一時ファイルへ（メモリに全部を持たない。大量に出すコマンドで backend が膨らまない）。
+# ファイルも上限を超えたら切る（ディスクを食い尽くさない）。読むのは最後の TAIL_MAX 字だけ。
+OUTPUT_FILE_MAX = 50 * 1024 * 1024
+
+
+def _read_tail(handle, limit: int = TAIL_MAX) -> str:
+    handle.flush()
+    size = handle.seek(0, 2)
+    handle.seek(max(0, size - limit * 4))
+    return handle.read().decode("utf-8", errors="replace")[-limit:]
+
+
 def _run_one(cmd: str, cwd: Path) -> dict:
+    import resource
+    import tempfile
+
     started = time.monotonic()
-    try:
-        argv = shlex.split(cmd)
-        if not argv:
-            raise ValueError("空のコマンドです")
-        done = subprocess.run(  # noqa: S603 - shell=False・引数列・作業フォルダは検証済み
-            argv, cwd=str(cwd), timeout=CHECK_TIMEOUT, capture_output=True, text=True,
-            errors="replace", env=_env(), check=False,
-        )
-        code, out = done.returncode, (done.stdout or "") + (done.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
-        code, out = -1, f"（{CHECK_TIMEOUT} 秒でタイムアウト）\n" + partial
-    except (OSError, ValueError) as exc:
-        code, out = 127, f"実行できませんでした: {exc}"
+
+    def _limit_output() -> None:  # 子のプロセスで、書けるファイルの大きさに上限
+        resource.setrlimit(resource.RLIMIT_FSIZE, (OUTPUT_FILE_MAX, OUTPUT_FILE_MAX))
+
+    with tempfile.TemporaryFile() as out_file:
+        try:
+            argv = shlex.split(cmd)
+            if not argv:
+                raise ValueError("空のコマンドです")
+            done = subprocess.run(  # noqa: S603 - shell=False・引数列・作業フォルダは検証済み
+                argv, cwd=str(cwd), timeout=CHECK_TIMEOUT, stdout=out_file, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, env=_env(), check=False, preexec_fn=_limit_output,
+            )
+            code, out = done.returncode, _read_tail(out_file)
+        except subprocess.TimeoutExpired:
+            code, out = -1, f"（{CHECK_TIMEOUT} 秒でタイムアウト）\n" + _read_tail(out_file)
+        except (OSError, ValueError) as exc:
+            code, out = 127, f"実行できませんでした: {exc}"
     return {"cmd": cmd, "exit_code": code, "seconds": round(time.monotonic() - started, 2), "tail": _tail(out)}
 
 

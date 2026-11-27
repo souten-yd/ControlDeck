@@ -376,3 +376,18 @@ def test_audit_has_commands_and_exit_codes_but_no_output(admin_client, fake):
     with SessionLocal() as db:
         upd = [str(vars(r)) for r in db.scalars(select(AuditLog).where(AuditLog.action == "commander.team.update")).all()]
     assert upd and "秘密のメモ" not in upd[-1]
+
+
+def test_check_output_does_not_fill_memory(tmp_path):
+    """確認のコマンドが大量に出力しても、出力は一時ファイルへ書いて最後だけ読む（backend のメモリを膨らませない）。
+
+    根拠: 2026-11-27 の試験で一度だけプロセスが約 25GB に膨らんだ。capture_output は出力を全部メモリに持つ。
+    """
+    import sys
+
+    from app.commander import team_checks
+
+    cmd = f'{sys.executable} -c "import sys; sys.stdout.write(\'x\' * (30 * 1024 * 1024)); print(\'END\')"'
+    row = team_checks._run_one(cmd, tmp_path)
+    assert row["exit_code"] == 0
+    assert row["tail"].endswith("END\n") and len(row["tail"]) <= team_checks.TAIL_MAX
