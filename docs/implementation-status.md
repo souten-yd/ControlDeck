@@ -4,6 +4,11 @@
 - 利用者「既定のアカウントではなくログインアカウント名にならないか」。見せ方の順: 付けた名前 → ログインの名前 → 「既定」。
 - Claude: `.claude.json`（既定は ~/.claude.json、名前付きは CLAUDE_CONFIG_DIR の中）の oauthAccount.emailAddress（ログインのメール。鍵ではない）。Codex: メールは鍵のファイル（auth.json）にしか無いので読まず、`codex login status` の方法（「ChatGPT でログイン」など）だけ。5 分覚える。
 - 確かめたこと: 試験（Claude のメール・Codex の方法）、実機で両方を読めた、E2E。
+## 2026-11-27 Nexarch の作業フォルダのルートを /data1tb・/data2tb だけに
+- 利用者「作業フォルダのルートは /data1tb, /data2tb として他は不要」: コンソールを開くときの「作業フォルダを選択」が files の許可ルート（/home/souten など）を全部出していたので、Nexarch 専用のルートに替えた。files.allowed_roots は変えない（Files 画面などは今まで通り）。
+- 設定 `commander.workdir_roots`（既定 /data1tb・/data2tb）。`app/commander/workdir.py` がルート一覧（実在のものだけ）・フォルダ一覧（ディレクトリだけ、隠しは印）・フォルダ作成を持つ。どれも realpath で実体を解決してからルートの中か確かめる（シンボリックリンクで外へ出られない）。files の拒否の場所（~/.ssh・DB・secret.key など）と ControlDeck の data_dir の中は、一覧に出さず作らせない。
+- API: `GET /commander/workdir/roots`・`GET /commander/workdir/list?path=`・`POST /commander/workdir/directory`（監査 commander.workdir.mkdir）。権限は terminal.use。コンソールを開くときの検証も同じルートに替えた。OpenCode はプロジェクトのパスを files.resolve で検証するため、files の許可ルートの外なら 400「OpenCode は files の許可ルートの中の作業フォルダだけ使えます」。
+- FilePicker に任意の `source`（rootsUrl・listUrl・mkdirUrl）を足し、既定は files API のまま。Nexarch の「コンソールを開く」だけ新しい API を使う。試験: backend/tests/test_commander_workdir.py（8 件）、E2E のモックを新 API へ。
 
 ## 2026-11-27 AI の CLI を設定から導入・更新・削除／Claude の使用率を Nexarch の外の分も
 - 利用者「各 CLI の導入と削除と更新ができるように Settings の機能に追加して」: 設定 → オプション機能に「AI の CLI（Nexarch）」の分類を足し、Claude Code（@anthropic-ai/claude-code）・Codex CLI（@openai/codex）・Gemini CLI（@google/gemini-cli）を置いた。新しい種類 `npm-global`: 利用者の npm のグローバル（`npm prefix -g`、この PC は ~/.local/npm-global。端末でも使う実体）へ `npm install -g`・`@latest` で更新・`npm uninstall -g`。管理領域に別の写しを作らない。更新ありの確認は npm の公開情報（既存の仕組み）。実機で Claude Code 2.1.332・Codex 0.172.0 を導入済み、Gemini は未導入と判定。

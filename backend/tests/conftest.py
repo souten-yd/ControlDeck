@@ -18,6 +18,9 @@ server:
 files:
   allowed_roots:
     - {_sandbox}
+commander:
+  workdir_roots:
+    - {_sandbox}
 """,
     encoding="utf-8",
 )

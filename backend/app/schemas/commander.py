@@ -21,6 +21,12 @@ class AccountCreate(BaseModel):
         return cleaned
 
 
+class WorkdirPath(BaseModel):
+    """作業フォルダの作成（パスの検証は commander.workdir）。"""
+
+    path: str = Field(min_length=1, max_length=4096)
+
+
 class ConsoleCreate(BaseModel):
     """コンソールを開く（CLI・アカウント・作業フォルダ・個数・表示名）。"""
 

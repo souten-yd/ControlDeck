@@ -243,9 +243,9 @@ async function mockCommander(page: Page, state: CommanderState) {
     }
     return route.fulfill({ status: 404, json: { detail: `unmocked: ${method} ${path}` } });
   });
-  // 作業フォルダの FilePicker が使う files API
-  await page.route(/\/api\/v1\/files\/roots$/, (route) => route.fulfill({ json: [ROOT] }));
-  await page.route(/\/api\/v1\/files\/list/, (route) => {
+  // 作業フォルダの FilePicker が使う commander の作業フォルダ API
+  await page.route(/\/api\/v1\/commander\/workdir\/roots$/, (route) => route.fulfill({ json: [ROOT] }));
+  await page.route(/\/api\/v1\/commander\/workdir\/list/, (route) => {
     const listed = new URL(route.request().url()).searchParams.get("path") ?? ROOT;
     return route.fulfill({
       json: {
@@ -255,7 +255,7 @@ async function mockCommander(page: Page, state: CommanderState) {
     });
   });
   // FilePicker の「＋ 新しいフォルダ」
-  await page.route(/\/api\/v1\/files\/directory$/, (route) => {
+  await page.route(/\/api\/v1\/commander\/workdir\/directory$/, (route) => {
     state.folderPosts.push((route.request().postDataJSON() as { path: string }).path);
     return route.fulfill({ json: { ok: true } });
   });

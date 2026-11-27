@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 
-from app.commander import accounts, status, usage
+from app.commander import accounts, status, usage, workdir
 from app.commander.accounts import CLIS, CliDef
 from app.config import get_config
 from app.files import service as files
@@ -96,16 +96,20 @@ def create_consoles(
 
     Terminal の上限（config.terminal.max_sessions）に当たったら、
     開けた分と開けなかった数と理由を返す（例外にはしない）。
-    作業フォルダは files.resolve で許可ルートの中か検証する。
+    作業フォルダは workdir.resolve_dir で commander.workdir_roots の中か検証する。
     """
     cfg = get_config().terminal
     if not cfg.enabled:
         raise RuntimeError("ターミナルは無効化されています")
-    workdir = files.resolve(cwd)  # 存在しない・許可の外は例外（router が 400 へ直す）
-    if not workdir.is_dir():
-        raise NotADirectoryError(f"ディレクトリではありません: {cwd}")
+    work = workdir.resolve_dir(cwd)  # 存在しない・ルートの外は例外（router が 400 へ直す）
+    if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
+        # OpenCode はプロジェクトのパスを files.resolve で検証する。files の許可ルートの外は使えない
+        try:
+            files.resolve(str(work))
+        except (PermissionError, FileNotFoundError) as exc:
+            raise ValueError("OpenCode は files の許可ルートの中の作業フォルダだけ使えます") from exc
     env = accounts.env_for(cli, account)  # 既定のアカウントなら None（環境変数を付けない）
-    command, extra_env = _command_for(cli, str(workdir), user_id, account)
+    command, extra_env = _command_for(cli, str(work), user_id, account)
     if extra_env:
         env = {**extra_env, **(env or {})}
 
@@ -118,7 +122,7 @@ def create_consoles(
                 "config/config.yaml の terminal.max_sessions で変えられます"
             )
             break
-        session = manager.create_session(cwd=str(workdir), command=command, env=env)
+        session = manager.create_session(cwd=str(work), command=command, env=env)
         marks = {"cli": cli.id, "account": account, "created_by": created_by}
         if label:
             marks["label"] = label

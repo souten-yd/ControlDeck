@@ -47,6 +47,11 @@ class FilesConfig(BaseModel):
     trash_max_size_gb: int = 10
 
 
+class CommanderConfig(BaseModel):
+    # Nexarch のコンソールの作業フォルダに選べるルート（files.allowed_roots とは別）
+    workdir_roots: list[str] = ["/data1tb", "/data2tb"]
+
+
 class TerminalConfig(BaseModel):
     enabled: bool = True
     shell: str = "/bin/bash"
@@ -206,6 +211,7 @@ class Config(BaseModel):
     security: SecurityConfig = SecurityConfig()
     files: FilesConfig = FilesConfig()
     terminal: TerminalConfig = TerminalConfig()
+    commander: CommanderConfig = CommanderConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
     logs: LogsConfig = LogsConfig()
     jobs: JobsConfig = JobsConfig()
