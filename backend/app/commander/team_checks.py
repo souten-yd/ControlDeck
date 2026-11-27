@@ -142,7 +142,7 @@ def run_checks(team_id: str, task_id: int) -> dict:
         sid = task.get("assignee") or ""
         member = teams.find_member(team, sid) if sid else None
         headless = member is not None and teams.is_headless(member)
-        team_dir = str(team.get("workdir") or "")
+        team_dir = str(task.get("cwd") or team.get("workdir") or "")  # worktree の仕事はその worktree で確かめる（T3c）
     if not commands:
         return {}
     if headless:  # ヘッドレスの担当はチームの作業場所で確かめる
@@ -165,6 +165,21 @@ def run_checks(team_id: str, task_id: int) -> dict:
         result = {"status": "passed" if ok else "failed", "ran_at": teams._now(), "results": rows}
     _finish(team_id, task_id, result)
     return result
+
+
+def run_commands(cwd: str, commands: list[str]) -> dict:
+    """任意のコマンド列を cwd（検証する）で順に実行して結果を返す（同期。leader の run_checks が使う）。落ちたら残りは実行しない。"""
+    try:
+        path = workdir.resolve_dir(cwd)
+    except (OSError, ValueError):
+        return {"status": "error", "ran_at": teams._now(), "results": [], "message": "実行できませんでした（作業フォルダが分からない・許可の外）"}
+    rows: list[dict] = []
+    for cmd in commands:
+        rows.append(_run_one(cmd, path))
+        if rows[-1]["exit_code"] != 0:
+            break
+    ok = len(rows) == len(commands) and all(r["exit_code"] == 0 for r in rows)
+    return {"status": "passed" if ok else "failed", "ran_at": teams._now(), "results": rows}
 
 
 def _audit(team_id: str, task_id: int, result: dict) -> None:

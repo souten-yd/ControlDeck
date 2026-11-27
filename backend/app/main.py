@@ -369,6 +369,9 @@ app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
 app.include_router(terminal_automation_router, prefix=API)
 app.include_router(commander_router, prefix=API)
+from app.commander.leader_mcp import router as commander_leader_mcp_router  # noqa: E402
+
+app.include_router(commander_leader_mcp_router, prefix=API)  # チームリーダーの MCP（token 認証・loopback だけ）
 app.include_router(samplebook_router, prefix=API)  # /workflows/samples は /workflows/{id} より先に登録
 app.include_router(workflow_runner_router, prefix=API)
 app.include_router(flow_app_router, prefix=API)

@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 274 ファイル、2818 テスト（目的の未記入 93 ファイル）
-- E2E: 148 spec、335 テスト
+- backend: 275 ファイル、2839 テスト（目的の未記入 93 ファイル）
+- E2E: 149 spec、340 テスト
 
 ## backend（backend/tests）
 
@@ -889,19 +889,7 @@
 - `test_choose_handoff_without_adding_and_rejects_running`
 - `test_wait_policy_keeps_same_endpoint`
 - `test_explicit_fallback_used_after_chain`
-- `test_leader_makes_team_from_goal`
-- `test_leader_prompt_lists_workdir_files_without_shell`
-- `test_leader_drops_unknown_roles_clamps_counts_and_bad_checks`
-- `test_leader_retries_once_when_shape_is_wrong`
-- `test_leader_accepts_json_in_code_fence_and_noise`
-- `test_leader_fails_after_second_bad_output_and_notifies`
-- `test_validate_plan_rejects_wrong_shape`
-- `test_leader_run_fails_on_cli_error_and_limit`
-- `test_leader_codex_uses_output_schema_and_readonly`
 - `test_leader_resolution_team_then_default_then_installed`
-- `test_leader_uses_given_workdir_and_refuses_double_run`
-- `test_leader_run_on_existing_team_adds_tasks_and_keeps_brief` — 「チームリーダーに頼む」: 既存のチームへ頼み足す。前提（brief）は書き換えず、タスクだけ足す。
-- `test_leader_starts_dispatcher_when_auto_run`
 - `test_api_roles_leader_auto_handoff_and_defaults`
 - `test_api_consoles_accept_model_and_effort`
 - `test_team_root_validation`
@@ -910,6 +898,44 @@
 - `test_vanished_team_root_falls_back_to_codedev`
 - `test_assistant_team_uses_given_workdir_as_is`
 - `test_api_team_root_and_assistant_create`
+
+### backend/tests/test_commander_team_t3c.py
+
+目的: Nexarch の AI チーム T3c（一文で頼む → チームリーダーが MCP で調べ・計画し・振り分け・評価・統合・試験する）の試験。 目的: 利用者（2026-11-27）の要望を仕組みで守る。 - 「一文リーダーに依頼したら、調査・計画・振り分け・個別の実装と評価・統合して評価・試験する。Opus が Haiku・Sonnet を使う流れを模倣。 ただし LLM は横断的に（司令塔も Claude・Codex・OpenRouter・OpenCode・ローカル LLM）」: - MCP サーバー nexarch_team の道具ごと: token の縛り（チーム・実行の番号・期限）・別チームを触れない・入力の検証と上限。 - 計画の保存（確認のコマンドは T2b の許す形だけ）・段（tier）→役割→担い手の自動の振り分け（上限なら secondary・担い手が無ければ チームリーダー自身）・worktree＋ブランチ・統合（merge）と競合・待つ（上限つき）・差分の上限・質問と autonomy。 - チームリーダーの実行: 起動の引数（claude・codex・opencode の MCP の渡し方。token を argv に出さない）・finish 無しの再開（最大 3）・ 上限で secondary が team_status から再開・落ちたら 1 回だけ再開・web_research=false で research(web) を断る・AI アシスタントの道具。 - 通しの試験: 偽のチームリーダー（試験の中の script。実際に stdio の橋渡し→HTTP の口→道具を呼ぶ）が、依頼→計画→explore→ implement 2 つ並列→review→integrate→checks→finish まで回し、結果と変更ファイルが板に残る。 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3c。CLI は本物を呼ばない（T3a の試験と同じ偽の実行ファイル）。 隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+
+- `test_new_team_has_four_tiers_and_leader_fallback_for_unassigned`
+- `test_update_team_validates_t3c_settings`
+- `test_token_binds_team_run_number_and_expiry`
+- `test_http_door_needs_token_and_loopback`
+- `test_write_plan_validates_and_keeps_status`
+- `test_delegate_picks_endpoint_from_tier_and_falls_back_to_secondary_on_limit`
+- `test_delegate_without_endpoint_uses_leader_itself_and_validates`
+- `test_delegate_item_respects_depends_on_and_redo_needs_note`
+- `test_worktree_per_implement_task_readonly_for_explore_and_merge`
+- `test_integrate_conflict_is_reported_then_redo_merges_team_branch`
+- `test_integrate_refuses_unfinished_or_failed_checks_and_non_write_tiers`
+- `test_non_git_workdir_with_git_init_false_has_no_worktree`
+- `test_git_init_creates_repo_in_plain_folder_and_fast_forwards_at_end`
+- `test_worktreeinclude_copies_untracked_files`
+- `test_wait_returns_progress_when_unfinished_and_limits_arguments`
+- `test_read_result_diff_is_capped_and_other_team_run_is_invisible`
+- `test_run_checks_in_worktree_and_team`
+- `test_research_code_is_bounded_and_web_can_be_refused`
+- `test_ask_user_autonomy_high_decides_without_asking_unless_required`
+- `test_ask_user_waits_for_answer_in_ask_mode`
+- `test_report_and_finish_validation`
+- `test_team_status_is_enough_to_resume`
+- `test_launch_args_pass_mcp_without_token_in_argv`
+- `test_readonly_launch_for_explore_and_review`
+- `test_leader_without_finish_is_resumed_up_to_three_times_then_stops`
+- `test_leader_crash_is_retried_once_with_same_endpoint`
+- `test_leader_limit_moves_to_secondary_which_resumes_from_team_status`
+- `test_leader_all_endpoints_limited_fails_and_notifies`
+- `test_leader_start_validation_and_double_run`
+- `test_leader_launch_error_fails_with_reason`
+- `test_through_fake_leader_runs_whole_flow`
+- `test_api_leader_land_answer_resume_and_settings`
+- `test_assistant_tools_create_team_in_conversation_workdir`
 
 ### backend/tests/test_commander_team_watch.py
 
@@ -4552,6 +4578,8 @@
 - AI チーム ${label}px: 担い手の選び手（コンソールとモデルが別・考えるレベル）と役割の保存
 - AI チーム ${label}px: エキスパート切でも引き継ぎ先を選べる（タスクのカードとコンソールのカード）
 - AI チーム ${label}px: チームの既定（チームリーダー）と保存先を一度だけ選ぶ
+- AI チーム ${label}px: エキスパート切で一文の依頼 → 時系列（計画・進み具合・質問に答える・結果・取り込む）
+- AI チーム ${label}px: エキスパート入で板・MCP の呼び出しの履歴・使用量が出る（止まったら再開）
 
 ### frontend/e2e/commander.spec.ts
 
@@ -4987,6 +5015,14 @@
 目的: **未記入**
 
 - runtime startup preferences can be selected and saved at ${width}px
+
+### frontend/e2e/settings-android-sdk.spec.ts
+
+目的: 目的: 設定の機能と拡張に「Android SDK（コマンドライン）」の行があり、ライセンスへの同意にチェックを入れるまで「導入」を押せず、 押すと同意つきで install-jobs へ送られること（取得は利用者の「導入」のときだけ）。入っていれば入っている部品が出る。 機器のシートでは、Android の機器を渡す設定でホストの adb が動いていれば「ホストの adb が機器を使っています」と 「ホストの adb を止める」が出て、押すと POST が飛ぶ。Android の道具が無ければ「設定で入れる」リンクが出る。 390px・1280px とも横にはみ出さない。 根拠: 2026-11-27 利用者「Android とかにも対応してね」（M5・iOS・Android の開発を OpenCode で）。API は page.route で模擬する （Google から何も取得しない・adb を止めない）。
+
+- 機能と拡張: Android SDK（${width}px）
+- 機能と拡張: Android SDK が入っているとき
+- 機器のシート: ホストの adb の案内と設定で入れるリンク（${width}px）
 
 ### frontend/e2e/settings-keys-research.spec.ts
 

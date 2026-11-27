@@ -71,6 +71,60 @@ def _research_tool() -> dict[str, Any] | None:
     }
 
 
+# AI アシスタントの会話の OpenCode の作業場所で、Nexarch のチームリーダーに一文で頼む（T3c）
+NEXARCH_REQUEST_TOOL = "control_deck.nexarch_team_request"
+NEXARCH_STATUS_TOOL = "control_deck.nexarch_team_status"
+NEXARCH_TOOLS = (NEXARCH_REQUEST_TOOL, NEXARCH_STATUS_TOOL)
+
+
+def _nexarch_tools(project_id: object, permissions: set[str]) -> list[dict[str, Any]]:
+    if not isinstance(project_id, str) or "terminal.use" not in permissions:
+        return []
+    return [
+        {"name": NEXARCH_REQUEST_TOOL,
+         "description": ("Nexarch の AI チームのチームリーダーへ一文で頼む。チームリーダーが調べ・計画し・段ごとに担い手へ振り・評価・統合・試験する。"
+                         "この会話の作業場所で動く。返り値の team_id で nexarch_team_status を引く（終わるまで数分〜数十分）。"),
+         "inputSchema": {"type": "object", "additionalProperties": False, "required": ["text"],
+                         "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "頼むこと（一文〜数行）"}}}},
+        {"name": NEXARCH_STATUS_TOOL,
+         "description": "頼んだチームの状態の要約（進み具合・結果・質問・使用量）。",
+         "inputSchema": {"type": "object", "additionalProperties": False, "required": ["team_id"],
+                         "properties": {"team_id": {"type": "string", "pattern": "^t[0-9a-f]{8}$"}}}},
+    ]
+
+
+def _run_nexarch(name: str, arguments: dict[str, Any], claims: dict[str, Any], permissions: set[str]) -> dict:
+    """同期の処理（チームを作る・状態を読む）。呼び出し側が to_thread へ出す。"""
+    from app.commander import leader_mcp, team_leader, teams
+
+    project_id = claims.get("project_id")
+    if not _nexarch_tools(project_id, permissions):
+        raise HTTPException(status_code=404, detail="nexarch toolが見つかりません")
+    if name == NEXARCH_REQUEST_TOOL:
+        if set(arguments) != {"text"} or not isinstance(arguments["text"], str):
+            raise HTTPException(status_code=422, detail="text（頼むこと）だけを渡してください")
+        try:
+            folder = project_lab.resolve_project(str(project_id))
+            team = team_leader.create_for_assistant(arguments["text"], str(folder))
+        except (project_lab.ProjectLabError, teams.TeamError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"team_id": team["id"], "status": "running", "note": "頼みました。nexarch_team_status で進み具合を見られます"}
+    team_id = arguments.get("team_id")
+    if set(arguments) != {"team_id"} or not isinstance(team_id, str) or not re.fullmatch(r"t[0-9a-f]{8}", team_id):
+        raise HTTPException(status_code=422, detail="team_id だけを渡してください")
+    try:
+        team = leader_mcp._read(team_id)  # noqa: SLF001
+    except leader_mcp.ToolError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    run = team.get("leader_run") or {}
+    result = team.get("result") or {}
+    return {"team_id": team_id, "name": team["name"], "state": run.get("status") or "", "goal": str(run.get("goal") or "")[:300],
+            "progress": [r["text"] for r in team.get("timeline", [])[-8:]],
+            "pending_questions": [q["question"] for q in team.get("questions", []) if q.get("answer") is None],
+            "result": {k: result.get(k) for k in ("summary", "outcome", "remaining", "changes", "checks", "usage")} if result else None,
+            "usage": leader_mcp.usage_total(team)}
+
+
 KNOWLEDGE_TOOL = "control_deck.knowledge_search"
 KNOWLEDGE_MAX_CHARS = 30_000
 
@@ -716,6 +770,7 @@ async def list_tools(
         tools.append(_knowledge_tool())
         tools.append(_news_knowledge_tool())
     tools.extend(_lab_tools(permissions))
+    tools.extend(_nexarch_tools(claims.get("project_id"), permissions))
     return {"tools": tools}
 
 
@@ -756,6 +811,10 @@ async def call_tool(
         audit.record(db, "diagnostics.report", user=user, resource_type="system", resource_id="diagnostics",
                      request=request, metadata={"hours": hours, "via": "agent_mcp"})
         return {"report_markdown": diagnostics_report.to_markdown(data)}
+    if body.name in NEXARCH_TOOLS:
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(_run_nexarch, body.name, body.arguments, claims, permissions)
     if body.name in LAB_TOOLS:
         import asyncio as _asyncio
 

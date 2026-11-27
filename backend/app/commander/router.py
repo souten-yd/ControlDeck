@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from typing import Any
 
@@ -405,6 +406,9 @@ class _TeamUpdate(BaseModel):
     local_parallel: int | None = None
     auto_run: bool | None = None
     codex_without_sandbox: bool | None = None
+    git_init: bool | None = None
+    web_research: bool | None = None
+    autonomy: str | None = Field(default=None, max_length=10)
 
 
 class _TeamMembers(BaseModel):
@@ -428,6 +432,10 @@ class _AutoTeam(BaseModel):
 
 class _LeaderRun(BaseModel):
     goal: str = Field(max_length=20000)
+
+
+class _Answer(BaseModel):
+    answer: str = Field(min_length=1, max_length=2000)
 
 
 class _HandoffChoice(BaseModel):
@@ -570,6 +578,67 @@ def run_team_leader(
     team = _team_call(team_leader.start, team_id, body.goal)
     _team_audit(db, user, request, "leader.run", team_id, goal_length=len(body.goal))
     return team
+
+
+@router.post("/teams/{team_id}/leader/stop")
+def stop_team_leader(
+    team_id: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """チームリーダー（と走っている仕事）を止める。"""
+    from app.commander import team_leader
+
+    from app.commander import team_runner
+
+    stopped = _team_call(team_leader.stop, team_id)
+    team_runner.stop_team(team_id)
+    _team_audit(db, user, request, "leader.stop", team_id, running=stopped)
+    return {"stopped": stopped}
+
+
+@router.post("/teams/{team_id}/leader/resume")
+def resume_team_leader(
+    team_id: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """止まったチームリーダーを、今の状態から再開する。"""
+    from app.commander import team_leader
+
+    team = _team_call(team_leader.resume, team_id)
+    _team_audit(db, user, request, "leader.resume", team_id)
+    return team
+
+
+@router.post("/teams/{team_id}/leader/land")
+def land_team(
+    team_id: str, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """「取り込む」: チームのブランチを元のブランチへ（元から git の作業場所だけ）。"""
+    from app.commander import team_leader
+
+    team = _team_call(team_leader.land, team_id)
+    _team_audit(db, user, request, "leader.land", team_id)
+    return team
+
+
+@router.post("/teams/{team_id}/questions/{question_id}/answer")
+def answer_team_question(
+    team_id: str, question_id: str, body: _Answer, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """チームリーダーの質問に答える。"""
+    from app.commander import leader_mcp
+
+    if not re.fullmatch(r"q\d{1,4}", question_id):
+        raise HTTPException(status_code=400, detail="質問の id が正しくありません")
+    try:
+        leader_mcp._read(team_id)  # noqa: SLF001
+        leader_mcp.answer_question(team_id, question_id, body.answer)
+    except leader_mcp.ToolError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    _team_audit(db, user, request, "answer", team_id, question=question_id)
+    return {"ok": True}
 
 
 @router.put("/teams/{team_id}/roles")

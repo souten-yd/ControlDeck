@@ -169,7 +169,7 @@ def env(tmp_path, monkeypatch):
     e.real_opencode_launch = team_runner._opencode_launch
     monkeypatch.setattr(accounts, "executable_path", lambda cli: e.scripts.get(cli.id))
     monkeypatch.setattr(team_runner, "_opencode_launch",
-                        lambda model, cwd, text: ([e.scripts["opencode"], "run", text, "--model", model], {}, lambda: None))
+                        lambda model, cwd, text, **kw: ([e.scripts["opencode"], "run", text, "--model", model], {}, lambda: None))
     # 実行・確認はその場で走らせる（スレッドを待たない）
     monkeypatch.setattr(team_runner, "_spawn", lambda func, *args: func(*args))
     monkeypatch.setattr(team_checks, "_spawn", lambda func, *args: func(*args))

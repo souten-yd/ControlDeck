@@ -351,7 +351,28 @@ export interface TeamTask {
   role?: string;
   /** "no_handoff" = 上限で止まり、引き継ぎ先が無い（引き継ぎ先を選ぶと再開）。 */
   blocked_reason?: string;
+  /** T3c: チームリーダーが振った仕事。段（explore・implement・review・hard）・計画の項目・worktree のブランチ。 */
+  leader_managed?: boolean;
+  tier?: LeaderTier;
+  item_id?: string;
+  branch?: string;
 }
+
+export type LeaderTier = "explore" | "implement" | "review" | "hard";
+export interface PlanItem {
+  id: string; title: string; tier: LeaderTier; depends_on: string[]; files: string[]; checks: string[];
+  status: "planned" | "delegated" | "done" | "integrated"; task_id: number | null; removed?: boolean;
+}
+export interface TimelineRow { at: number; kind: string; text: string }
+export interface LeaderQuestion { id: string; question: string; options: string[]; asked_at: number; answer: string | null; answered_at: number | null }
+export interface TeamResult {
+  summary: string; outcome: "done" | "blocked"; finished_at: number; remaining: string[];
+  checks: { status: "passed" | "failed" | "error"; ran_at: number; commands: string[] } | null;
+  changes: { files: string[]; count: number; added: number; removed: number } | null;
+  usage: { input_tokens: number; output_tokens: number; cost_usd: number };
+  can_land: boolean; landed: boolean; team_branch: string; base_branch: string;
+}
+export interface McpLogRow { at: number; tool: string; ok: boolean; seconds: number }
 
 export interface Team {
   id: string;
@@ -383,8 +404,24 @@ export interface Team {
   /** 任命されたチームリーダー。無ければ既定のチームリーダー（leader_effective）。 */
   leader?: Endpoint | null;
   leader_effective?: Endpoint;
-  leader_run?: { status: "running" | "done" | "failed"; started_at?: number; endpoint?: string; tasks?: number; reason?: string; dropped?: string[]; goal?: string };
+  leader_run?: {
+    status: "running" | "done" | "failed" | "blocked" | "stopped"; started_at?: number; endpoint?: string; tasks?: number; reason?: string;
+    dropped?: string[]; goal?: string; resumes?: number; n?: number;
+  };
   created_by?: string;
+  /** T3c */
+  plan?: { markdown: string; items: PlanItem[]; updated_at: number };
+  timeline?: TimelineRow[];
+  questions?: LeaderQuestion[];
+  requests?: { at: number; text: string }[];
+  result?: TeamResult;
+  mcp_log?: McpLogRow[];
+  leader_runs?: { status: string; endpoint: string; seconds?: number; reason?: string; ended_at?: number }[];
+  usage_total?: { input_tokens: number; output_tokens: number; cost_usd: number };
+  git?: { enabled?: boolean; origin_was_git?: boolean; base_branch?: string; team_branch?: string; reason?: string };
+  autonomy?: "high" | "ask";
+  web_research?: boolean;
+  git_init?: boolean;
 }
 
 export interface TaskFields {
@@ -415,6 +452,19 @@ export async function createAutoTeam(goal: string, workdir = "", name = ""): Pro
 export async function askLeader(id: string, goal: string): Promise<Team> {
   return api<Team>(`${teamUrl(id)}/leader/run`, { method: "POST", json: { goal } });
 }
+export async function answerLeaderQuestion(id: string, questionId: string, answer: string): Promise<void> {
+  await api(`${teamUrl(id)}/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", json: { answer } });
+}
+export async function resumeLeader(id: string): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/leader/resume`, { method: "POST" });
+}
+export async function stopLeader(id: string): Promise<void> {
+  await api(`${teamUrl(id)}/leader/stop`, { method: "POST" });
+}
+/** 「取り込む」: チームのブランチを元のブランチへ（元から git の作業場所だけ）。 */
+export async function landTeam(id: string): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/leader/land`, { method: "POST" });
+}
 export async function setTeamRoles(id: string, roles: TeamRoleDef[]): Promise<Team> {
   return api<Team>(`${teamUrl(id)}/roles`, { method: "PUT", json: { roles } });
 }
@@ -430,6 +480,7 @@ export async function updateTeam(
   fields: {
     name?: string; brief?: string; reset_before_dispatch?: boolean; on_limit?: OnLimit; fallback?: string[];
     max_parallel?: number; local_parallel?: number; auto_run?: boolean; codex_without_sandbox?: boolean;
+    autonomy?: "high" | "ask"; web_research?: boolean; git_init?: boolean;
   },
 ): Promise<Team> {
   return api<Team>(teamUrl(id), { method: "PUT", json: fields });

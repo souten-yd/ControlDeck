@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  askLeader, collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
+  collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
   ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, stopTask, TEAM_ROLES, updateTask, updateTeam,
   type CommanderConsole, type CommanderState, type RunUsage, type TaskStatus, type Team, type TeamMember, type TeamRole, type TeamTask,
 } from "../../api/commander";
@@ -24,6 +24,7 @@ import { UsageLine } from "./UsageLine";
 import {
   AutoTeamSheet, endpointText, HandoffSheet, LeaderSheet, RolesPanel, RolesSheet, useExpert,
 } from "./TeamRoles";
+import { LeaderAsk, LeaderTimeline } from "./LeaderTimeline";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const textareaClass = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -153,11 +154,12 @@ export function TeamView({
   if (!team) {
     return (
       <>
+        <LeaderAsk onAsked={(id) => { setSelected(id); refresh(); }} />
         <EmptyState actions={<>
-          <button onClick={() => setAutoSheet(true)} className={primaryButtonClass}>目標からチームを作る</button>
-          <button onClick={() => setNewTeamSheet(true)} className={secondaryButtonClass}>チームを作る</button>
+          {expert && <button onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んでチームを作る</button>}
+          {expert && <button onClick={() => setNewTeamSheet(true)} className={secondaryButtonClass}>空のチームを作る</button>}
         </>}>
-          チームはありません。目標を 1 行書くだけで、チームリーダー（目標を計画してタスクを配る AI）が役割とタスクに分けて動かします。
+          チームはありません。上の欄に一文で頼むだけで、チームリーダー（調べ・計画し・担い手へ振り・評価・統合・試験する AI）が進めます。
         </EmptyState>
         {newTeamSheet && <NewTeamSheet onClose={() => setNewTeamSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
         {autoSheet && <AutoTeamSheet expert={expert} onClose={() => setAutoSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
@@ -215,10 +217,23 @@ export function TeamView({
       show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
     }
   };
+  const toggleField = async (fields: Parameters<typeof updateTeam>[1], message: string) => {
+    try {
+      await updateTeam(team.id, fields);
+      refresh();
+      show(message);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const current = team.tasks.find((t) => t.id === openTask);
+
+  const leaderDriven = Boolean(team.leader_run || team.plan);
+  const showBoard = expert || !leaderDriven;  // チームリーダーが動かすチームの板・メンバー・役割はエキスパートだけ（普段は時系列）
 
   return (
     <div data-team-view>
+      <LeaderAsk team={team} onAsked={(id) => { setSelected(id); refresh(); }} />
       <div className="mb-3 flex min-w-0 items-center gap-2">
         {list.length > 1 ? (
           <select
@@ -236,14 +251,25 @@ export function TeamView({
           ariaLabel="チームの操作"
           trigger={<IconDots />}
           items={[
-            { label: "目標からチームを作る", onSelect: () => setAutoSheet(true) },
-            { label: "メンバーを選ぶ", onSelect: () => setMembersSheet(true) },
+            ...(expert ? [{ label: "メンバーを選ぶ", onSelect: () => setMembersSheet(true) }] : []),
             {
               label: team.notify === false ? "通知: オフ（オンにする）" : "通知: オン（オフにする）",
               onSelect: () => void toggleNotify(),
             },
             { label: "チームの前提", onSelect: () => setBriefSheet(true) },
             ...(expert ? [
+              {
+                label: team.autonomy === "ask" ? "自律: 聞いてから進める（聞かずに進めるにする）" : "自律: 聞かずに最善で進める（聞いてから進めるにする）",
+                onSelect: () => void toggleField({ autonomy: team.autonomy === "ask" ? "high" : "ask" }, "自律の度合いを変えました"),
+              },
+              {
+                label: team.web_research === false ? "Web の調査: 禁止（許可にする）" : "Web の調査: 許可（禁止にする）",
+                onSelect: () => void toggleField({ web_research: team.web_research === false }, "Web の調査の設定を変えました"),
+              },
+              {
+                label: team.git_init === false ? "git が無い作業場所: 作らない（git init するにする）" : "git が無い作業場所: git init する（作らないにする）",
+                onSelect: () => void toggleField({ git_init: team.git_init === false }, "git の設定を変えました"),
+              },
               { label: "チームリーダーを任命", onSelect: () => setLeaderSheet(true) },
               { label: "役割を編集（自動の振り分け）", onSelect: () => setRolesSheet(true) },
               {
@@ -269,33 +295,16 @@ export function TeamView({
         />
         {expert && <IconButton variant="primary" label="＋ タスク" onClick={() => setTaskSheet(true)}><IconPlus /></IconButton>}
       </div>
-      <AskLeader team={team} onAsked={refresh} />
-
-      <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
-        <button type="button" data-team-auto-open onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>目標からチームを作る</button>
-        {expert && (
+      <LeaderTimeline team={team} expert={expert} onChanged={refresh} onHandoff={setHandoffTask} />
+      {showBoard && <>
+      {expert && (
+        <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
+          <button type="button" data-team-auto-open onClick={() => setAutoSheet(true)} className={secondaryButtonClass}>作業場所を選んでチームを作る</button>
           <span data-team-leader className="min-w-0 break-words text-xs text-zinc-600 dark:text-zinc-300">
             <span className="font-semibold">チームリーダー</span> {endpointText(team.leader ?? team.leader_effective)}{team.leader ? "" : "（既定）"}
           </span>
-        )}
-      </div>
-      {team.leader_run?.status === "running" && (
-        <p data-team-leader-run="running" role="status" className="mb-3 rounded-xl bg-blue-50 p-2.5 text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
-          チームリーダーが目標を計画しています…（{team.leader_run.endpoint}）
-        </p>
+        </div>
       )}
-      {team.leader_run?.status === "failed" && (
-        <p data-team-leader-run="failed" role="alert" className="mb-3 break-words rounded-xl bg-red-50 p-2.5 text-xs font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">
-          チームリーダーが計画を作れませんでした{team.leader_run.reason ? `（${team.leader_run.reason}）` : ""}。目標を直して、もう一度「目標からチームを作る」を押してください。
-        </p>
-      )}
-      {expert && team.leader_run?.status === "done" && (team.leader_run.dropped ?? []).length > 0 && (
-        <details data-team-leader-dropped className="mb-3 text-xs text-zinc-500">
-          <summary className="cursor-pointer">計画で調整したこと {team.leader_run.dropped!.length} 件</summary>
-          <ul className="mt-1 grid gap-0.5">{team.leader_run.dropped!.map((d) => <li key={d} className="break-words">{d}</li>)}</ul>
-        </details>
-      )}
-
       <RolesPanel team={team} expert={expert} onEdit={() => setRolesSheet(true)} />
 
       <section aria-label="メンバー" className="mb-4">
@@ -451,6 +460,8 @@ export function TeamView({
         })}
       </div>
 
+      </>}
+
       {membersSheet && <MembersSheet team={team} consoles={consoles} cliName={cliName} onClose={() => setMembersSheet(false)} onSaved={refresh} />}
       {briefSheet && <BriefSheet team={team} onClose={() => setBriefSheet(false)} onSaved={refresh} />}
       {fallbackSheet && <FallbackSheet team={team} name={consoleName} onClose={() => setFallbackSheet(false)} onSaved={refresh} />}
@@ -484,35 +495,6 @@ export function TeamView({
         />
       )}
     </div>
-  );
-}
-
-/** 普段の入口: 「チームリーダーに頼む」の一文の入力欄だけ（手入力のタスク作成はエキスパートの中）。 */
-function AskLeader({ team, onAsked }: { team: Team; onAsked: () => void }) {
-  const show = useToasts((s) => s.show);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const running = team.leader_run?.status === "running";
-  const submit = async () => {
-    setBusy(true);
-    try {
-      await askLeader(team.id, text.trim());
-      setText("");
-      onAsked();
-      show("チームリーダーに頼みました");
-    } catch (e) {
-      show(e instanceof Error ? e.message : "頼めませんでした", "error");
-    }
-    setBusy(false);
-  };
-  return (
-    <form data-team-ask className="mb-3 flex min-w-0 gap-2" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !busy && !running) void submit(); }}>
-      <input
-        aria-label="チームリーダーに頼む" value={text} maxLength={4000} placeholder="チームリーダーに頼む（一文で）"
-        onChange={(e) => setText(e.target.value)} className={`${inputClass} min-w-0 flex-1`}
-      />
-      <button type="submit" disabled={!text.trim() || busy || running} className={`${primaryButtonClass} shrink-0`}>頼む</button>
-    </form>
   );
 }
 

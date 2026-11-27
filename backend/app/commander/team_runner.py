@@ -123,8 +123,10 @@ def _base_env(exe: str = "") -> dict[str, str]:
     return env
 
 
-def _opencode_launch(model: str, cwd: Path, text: str):
-    """OpenCode（v2）の argv・環境・後片付け。OpenCode 画面と同じ設定（provider）で作る。"""
+def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False, extra_mcp: dict | None = None):
+    """OpenCode（v2）の argv・環境・後片付け。OpenCode 画面と同じ設定（provider）で作る。
+
+    readonly は読み取りの agent（plan）で動かす。extra_mcp は設定の mcp へ足すサーバー（チームリーダーの nexarch_team）。"""
     from app.integrations.opencode import provider
 
     try:
@@ -133,7 +135,7 @@ def _opencode_launch(model: str, cwd: Path, text: str):
         endpoint = str(settings["base_url"]).rstrip("/")
         config = provider._runtime_config(  # noqa: SLF001 - 設定フォルダの作り方を OpenCode 画面と同じにする
             f"team-{secrets.token_hex(4)}", endpoint, model,
-            project_id=provider._managed_project_id(cwd), runtime=runtime)  # noqa: SLF001
+            project_id=provider._managed_project_id(cwd), runtime=runtime, extra_mcp=extra_mcp)  # noqa: SLF001
     except provider.CodeAgentError as exc:
         raise LaunchError(str(exc)) from exc
     try:  # ローカルのモデルは呼ばれたらロードする（run_chat と同じ）
@@ -143,11 +145,18 @@ def _opencode_launch(model: str, cwd: Path, text: str):
     except Exception:  # noqa: BLE001 - 起動の保証に失敗しても実行は試す
         logger.warning("OpenCode のモデルの起動を保証できませんでした")
     argv = provider._run_argv(runtime, binary, text, model, cwd)  # noqa: SLF001
+    if readonly:
+        argv += ["--agent", "plan"]
     argv, env = provider._launch(runtime, argv, cwd, config, interactive=False)  # noqa: SLF001
     return argv, env, lambda: provider._discard_runtime_config(runtime, config)  # noqa: SLF001
 
 
-LEADER_TOOLS = "Read,Glob,Grep"
+LEADER_MCP_NAME = "nexarch_team"
+LEADER_TIMEOUT = 6 * 60 * 60
+# チームリーダーの許す道具: Nexarch の MCP と読むだけ（書かせない・shell なし）
+LEADER_TOOLS = f"mcp__{LEADER_MCP_NAME}__*,Read,Glob,Grep"
+# 読み取りの担い手（explore・review）の許す道具: 読むのと git の読み取りだけ
+READONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"
 
 
 def _model_args(member: dict) -> tuple[str, str]:
@@ -160,12 +169,29 @@ def _model_args(member: dict) -> tuple[str, str]:
         raise LaunchError(str(exc)) from exc
 
 
+def leader_mcp_server(mcp: dict, *, claude: bool = False) -> dict:
+    """nexarch_team の MCP サーバーの指定（stdio の橋渡し addon_mcp_bridge.py が URL と token で Nexarch の HTTP の口を呼ぶ）。
+
+    claude=True は claude の mcpServers の形（command・args・env）、そうでなければ opencode / codex 共通の形
+    （command=[...]・environment）。"""
+    import sys
+
+    bridge = str(Path(__file__).resolve().parents[1] / "integrations" / "opencode" / "addon_mcp_bridge.py")
+    env = {"CONTROL_DECK_ADDON_MCP_URL": str(mcp["url"]), "CONTROL_DECK_ADDON_MCP_TOKEN": str(mcp["token"])}
+    if claude:
+        return {"command": sys.executable, "args": [bridge], "env": env}
+    return {"type": "local", "command": [sys.executable, bridge], "enabled": True, "timeout": 3_600_000, "environment": env}
+
+
 def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
-                 allow_no_sandbox: bool = True, schema: dict | None = None) -> tuple[list[str], dict[str, str], object]:
+                 allow_no_sandbox: bool = True, mcp: dict | None = None,
+                 readonly: bool = False) -> tuple[list[str], dict[str, str], object]:
     """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。
 
     model・effort があれば渡す（claude `--model` `--effort`・codex `-m` `-c model_reasoning_effort=`・opencode `--model …#variant`）。
-    schema があればチームリーダーの実行（読むだけ・JSON の出力。claude は `--output-format json --json-schema`、codex は `--output-schema`）。
+    mcp があればチームリーダーの実行（`{"url", "token"}`。MCP の橋渡し（stdio）で nexarch_team を渡す。書かせない）。
+    readonly は explore・review の担い手（書かない: claude は plan＋読む道具だけ・codex は read-only・opencode は plan の agent）。
+    token は argv に出さない（claude は 0600 の設定ファイル・codex と opencode は環境変数／0600 の設定）。
     """
     cli_id = str(member.get("cli") or "")
     model, effort = _model_args(member)
@@ -178,7 +204,9 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             connection = accounts.opencode_connection(account)
         except FileNotFoundError as exc:
             raise LaunchError(str(exc)) from exc
-        argv, extra_env, cleanup = _opencode_launch(model or str(connection["model"]), cwd, text)
+        extra_mcp = {LEADER_MCP_NAME: leader_mcp_server(mcp)} if mcp else None
+        argv, extra_env, cleanup = _opencode_launch(model or str(connection["model"]), cwd, text, readonly=readonly or bool(mcp),
+                                                    extra_mcp=extra_mcp)
         if effort and "--model" in argv:  # variant（モデルが持つときだけ効く）
             at = argv.index("--model") + 1
             argv[at] = f"{argv[at]}#{effort}"
@@ -190,19 +218,25 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
         account_env = accounts.env_for(cli, account) or {}
     except (FileNotFoundError, ValueError) as exc:
         raise LaunchError(str(exc)) from exc
+    mcp_env: dict[str, str] = {}
     if cli_id == "claude":
-        if schema is not None:
-            argv = [exe, "-p", text, "--output-format", "json", "--json-schema", json.dumps(schema, ensure_ascii=False),
-                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", LEADER_TOOLS]
+        argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose", "--permission-prompts", "none"]
+        if mcp:
+            config = last_file.with_name("mcp.json")
+            fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"mcpServers": {LEADER_MCP_NAME: {"type": "stdio", **leader_mcp_server(mcp, claude=True)}}}, handle)
+            argv += ["--permission-mode", "dontAsk", "--allowedTools", LEADER_TOOLS, "--mcp-config", str(config), "--strict-mcp-config"]
+        elif readonly:
+            argv += ["--permission-mode", "plan", "--allowedTools", READONLY_TOOLS]
         else:
-            argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose",
-                    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", CLAUDE_TOOLS]
+            argv += ["--permission-mode", "acceptEdits", "--allowedTools", CLAUDE_TOOLS]
         if model:
             argv += ["--model", model]
         if effort:
             argv += ["--effort", effort]
     else:
-        mode = "read-only" if schema is not None else "workspace-write"
+        mode = "read-only" if (readonly or mcp) else "workspace-write"
         if not codex_sandbox_ok():
             if not allow_no_sandbox:
                 raise LaunchError("Codex のサンドボックスがこの機械で使えません")
@@ -212,12 +246,16 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             argv += ["-m", model]
         if effort:
             argv += ["-c", f"model_reasoning_effort={effort}"]
-        if schema is not None:
-            schema_file = last_file.with_name("schema.json")
-            schema_file.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-            argv += ["--output-schema", str(schema_file)]
+        if mcp:
+            spec = leader_mcp_server(mcp)
+            name = LEADER_MCP_NAME
+            argv += ["-c", f"mcp_servers.{name}.command={json.dumps(spec['command'][0])}",
+                     "-c", f"mcp_servers.{name}.args={json.dumps(spec['command'][1:])}",
+                     "-c", f"mcp_servers.{name}.env_vars={json.dumps(sorted(spec['environment']))}",
+                     "-c", f"mcp_servers.{name}.tool_timeout_sec=3600"]
+            mcp_env = dict(spec["environment"])  # token は argv ではなく codex の環境変数で渡し、env_vars で橋渡しへ転送する
         argv.append(text)
-    return argv, {**_base_env(exe), **account_env}, (lambda: None)
+    return argv, {**_base_env(exe), **account_env, **mcp_env}, (lambda: None)
 
 
 # ---------------------------------------------------------------- 出力の JSON の行の読み取り
@@ -446,7 +484,7 @@ def _kill(proc: subprocess.Popen) -> None:
 
 
 def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_sandbox: bool = True,
-             schema: dict | None = None) -> dict:
+             *, mcp: dict | None = None, readonly: bool = False, timeout: float = RUN_TIMEOUT) -> dict:
     """CLI を 1 回走らせて結果の dict を返す（同期）。本文・出力は返さずログにも出さない。"""
     cli_id = str(member.get("cli") or "")
     tmp = Path(tempfile.mkdtemp(prefix="nexarch-run-"))
@@ -454,7 +492,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
     try:
         os.chmod(tmp, 0o700)
         out_path, err_path, last_path = tmp / "stdout", tmp / "stderr", tmp / "last"
-        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox, schema=schema)
+        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox, mcp=mcp, readonly=readonly)
         out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         err_fd = os.open(err_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -497,7 +535,7 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
                 stopping = bool(_active.get(key, {}).get("stop"))
             if stopping:
                 _kill(proc)
-            elif time.monotonic() - started > RUN_TIMEOUT:
+            elif time.monotonic() - started > timeout:
                 timed_out = True
                 _kill(proc)
             time.sleep(POLL_INTERVAL)
@@ -551,11 +589,11 @@ def _notify(events: list[dict]) -> None:
 
 
 def _worker(team_id: str, task_id: int, run_id: str, member: dict, text: str, cwd: Path,
-            allow_no_sandbox: bool = True) -> None:
+            allow_no_sandbox: bool = True, readonly: bool = False) -> None:
     key = (team_id, task_id)
     try:
         try:
-            result = _execute(key, member, text, cwd, allow_no_sandbox)
+            result = _execute(key, member, text, cwd, allow_no_sandbox, readonly=readonly)
         except LaunchError as exc:
             result = {"launch_error": str(exc)[:300]}
         except Exception:  # noqa: BLE001 - スレッドの失敗で落とさない
@@ -739,8 +777,10 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
     sandbox_free = member_sandbox_free(member)  # 初回だけ bwrap を調べる（排他の外）
     allow_no_sandbox = team.get("codex_without_sandbox", True) is not False
     workdir_path = teams.ensure_workdir(team_id)
-    try:
-        cwd = workdir.resolve_dir(workdir_path)
+    with teams._lock:
+        own = str(teams._find_task(teams._find_team(teams._load(), team_id), task_id).get("cwd") or "")
+    try:  # worktree の仕事はその worktree（T3c）
+        cwd = workdir.resolve_dir(own or workdir_path)
     except (OSError, ValueError) as exc:  # PermissionError・FileNotFoundError・NotADirectoryError を含む
         raise teams.TeamError(f"チームの作業場所を使えません: {exc}", 409) from exc
     run_id = secrets.token_hex(6)
@@ -756,6 +796,9 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         note = extra or str(task.pop("resume_note", "") or "")
         task.pop("resume_note", None)
         text = teams.dispatch_text(task, str(team.get("brief") or ""))
+        readonly = bool(task.get("readonly"))
+        if readonly:
+            text += "\n\n【読み取りだけ】ファイルを作らない・変えない・消さない。調べた結果と評価を報告に書くこと。"
         if note:
             text += "\n\n" + note
         task["status"] = "doing"
@@ -778,7 +821,7 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
                      + ("・引き継ぎつき" if note and not retry else ""), by)
         teams._save(all_teams)
         view = teams._task_view(team, task)
-    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd, allow_no_sandbox)
+    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd, allow_no_sandbox, readonly)
     return view
 
 

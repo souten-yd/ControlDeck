@@ -27,6 +27,7 @@ interface Task {
   run?: Record<string, unknown>;
   runs?: Record<string, unknown>[];
   wait_until?: number;
+  leader_managed?: boolean; tier?: string; item_id?: string; branch?: string;
 }
 interface Member {
   session_id?: string; id?: string; key?: string; kind?: string; cli?: string; account?: string; label?: string; role: string;
@@ -38,12 +39,19 @@ interface TeamState {
     on_limit?: string; codex_without_sandbox?: boolean; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
     workdir?: string; workdir_folder?: string; workdir_name?: string; parallel?: Record<string, number>;
     roles?: Record<string, unknown>[]; leader?: unknown; leader_effective?: unknown; leader_run?: Record<string, unknown>;
+    plan?: Record<string, unknown>; timeline?: Record<string, unknown>[]; requests?: Record<string, unknown>[]; mcp_log?: Record<string, unknown>[];
+    questions?: { id: string; question: string; options: string[]; asked_at: number; answer: string | null; answered_at: number | null }[];
+    result?: { summary: string; outcome: string; finished_at: number; remaining: string[]; checks: Record<string, unknown> | null;
+      changes: Record<string, unknown> | null; usage: Record<string, number>; can_land: boolean; landed: boolean; team_branch: string; base_branch: string };
+    usage_total?: Record<string, number>; git?: Record<string, unknown>; autonomy?: string;
     members: Member[]; tasks: Task[];
   }[];
   settings?: { resume_message: string; default_resume_message: string; default_leader: unknown; default_roles: unknown[]; team_root: string };
   modelsReqs?: string[];
   autoPosts?: Record<string, unknown>[];
   askPosts?: Record<string, unknown>[];
+  answers?: Record<string, unknown>[];
+  leaderCalls?: string[];
   rolesPuts?: Record<string, unknown>[][];
   handoffPosts?: Record<string, unknown>[];
   defaultsPuts?: Record<string, unknown>[];
@@ -127,6 +135,22 @@ async function mockTeams(page: Page, state: TeamState) {
       (state.askPosts ??= []).push(body());
       const team = state.teams.find((t) => t.id === m![1])!;
       team.leader_run = { status: "running", endpoint: "Claude Code" };
+      return route.fulfill({ json: team });
+    }
+    m = path.match(/^teams\/(\w+)\/questions\/(q\d+)\/answer$/);
+    if (m && method === "POST") {
+      (state.answers ??= []).push({ id: m[2], ...body() });
+      const team = state.teams.find((t) => t.id === m![1])!;
+      const q = (team.questions ?? []).find((x) => x.id === m![2])!;
+      q.answer = String(body().answer);
+      return route.fulfill({ json: { ok: true } });
+    }
+    m = path.match(/^teams\/(\w+)\/leader\/(land|resume|stop)$/);
+    if (m && method === "POST") {
+      (state.leaderCalls ??= []).push(m[2]);
+      const team = state.teams.find((t) => t.id === m![1])!;
+      if (m[2] === "land" && team.result) { team.result.landed = true; team.result.can_land = false; }
+      if (m[2] === "resume") team.leader_run = { status: "running", endpoint: "Claude Code" };
       return route.fulfill({ json: team });
     }
     m = path.match(/^teams\/(\w+)\/roles$/);
@@ -706,19 +730,16 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await mockTeams(page, state);
     await page.goto("/commander?view=team");
 
-    // 目標を 1 行書くだけ（保存先が未設定なので、その場で一度だけ選べる）
-    await page.getByRole("button", { name: "目標からチームを作る", exact: true }).click();
-    const sheet = page.getByRole("dialog", { name: "目標からチームを作る" });
-    await expect(sheet.locator("[data-team-root]")).toContainText("未設定");
-    await sheet.getByLabel("目標").fill("ログイン機能を作りたい");
-    await sheet.getByRole("button", { name: "チームを作る", exact: true }).click();
-    expect(state.autoPosts).toEqual([{ goal: "ログイン機能を作りたい", workdir: "", name: "" }]);
-    await expect(page.locator('[data-team-leader-run="running"]')).toContainText("チームリーダーが目標を計画しています");
+    // 一文を書くだけ（チームの画面の一番上の入力）
+    await page.getByLabel("チームリーダーに頼む").fill("ログイン機能を作りたい");
+    await page.getByRole("button", { name: "頼む", exact: true }).click();
+    await expect.poll(() => state.autoPosts).toEqual([{ goal: "ログイン機能を作りたい", workdir: "", name: "" }]);
+    await expect(page.locator('[data-team-leader-run="running"]')).toContainText("チームリーダーが進めています");
     await noOverflow(page);
 
-    // チームリーダーが計画を返した想定（板に待ち・作業中・上限の 3 件）
+    // チームリーダーが計画して仕事を振った想定（板に待ち・作業中・上限の 3 件）
     const team = state.teams[0];
-    team.leader_run = { status: "done", tasks: 3, dropped: ["役割「魔法使い」は既存の役割にないので捨てました"] };
+    team.leader_run = { status: "done", tasks: 3 };
     team.parallel = { running: 1, max: 3, waiting: 1, local_max: 1 };
     team.tasks = [
       { id: 1, title: "ログイン画面", goal: "", acceptance: "", files: ["src/login.py"], assignee: "", status: "todo", role: "r1", report: null, created_at: 1, updated_at: 1, history: [], warnings: ["#2 と src/login.py が重なっています"] },
@@ -727,26 +748,24 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     ];
     await page.reload();
 
-    // 切: 普段の入口は「チームリーダーに頼む」の一文だけ（手入力のタスク作成は出ない）
+    // 切: 普段は時系列だけ（板・役割・設定・手入力のタスク作成は出ない）。頼み足すと leader/run へ
     await expect(page.locator('[data-commander-expert="off"]')).toBeVisible();
+    await expect(page.locator("[data-team-timeline]")).toBeVisible();
+    await expect(page.locator("[data-team-column]")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "＋ タスク" })).toHaveCount(0);
     await page.getByLabel("チームリーダーに頼む").fill("パスワードの再設定も作って");
+    await page.getByLabel(/このチームへ頼み足す/).check();
     await page.getByRole("button", { name: "頼む", exact: true }).click();
     await expect.poll(() => state.askPosts).toEqual([{ goal: "パスワードの再設定も作って" }]);
-    state.teams[0].leader_run = { status: "done", tasks: 3, dropped: ["役割「魔法使い」は既存の役割にないので捨てました"] };
+    state.teams[0].leader_run = { status: "done", tasks: 3 };
     await page.reload();
-    // 切: 札は 1 つ・設定は出さない
-    await expect(page.locator("[data-team-roles-summary]")).toContainText("実装・レビュー・試験");
+    await expect(page.locator("[data-team-roles-summary]")).toHaveCount(0);
     await expect(page.locator("[data-team-roles]")).toHaveCount(0);
     await expect(page.locator("[data-team-parallel]")).toHaveCount(0);
     await expect(page.locator("[data-team-leader]")).toHaveCount(0);
-    await expect(page.locator('[data-team-task="2"] [data-team-simple-badge="作業中"]')).toBeVisible();
-    await expect(page.locator('[data-team-task="3"] [data-team-simple-badge="上限で停止"]')).toBeVisible();
-    await expect(page.locator("[data-team-task-role], [data-team-warning], [data-team-run-line], [data-team-checks]")).toHaveCount(0);
     await page.getByRole("button", { name: "チームの操作" }).click();
     await expect(page.getByRole("menuitem", { name: "候補の順番" })).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: "チームリーダーを任命" })).toHaveCount(0);
-    await expect(page.getByRole("menuitem", { name: "目標からチームを作る" })).toBeVisible();
     await page.keyboard.press("Escape");
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-expert-off.png`, fullPage: true });
@@ -766,7 +785,6 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(page.locator('[data-team-task="1"] [data-team-task-role]')).toContainText("実装");
     await expect(page.locator('[data-team-task="1"] [data-team-warning]')).toBeVisible();
     await expect(page.locator('[data-team-task="2"] [data-team-run-line]')).toContainText("pytest -q");
-    await expect(page.locator("[data-team-leader-dropped]")).toContainText("1 件");
     await page.getByRole("button", { name: "チームの操作" }).click();
     await expect(page.getByRole("menuitem", { name: "候補の順番" })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: "チームリーダーを任命" })).toBeVisible();
@@ -837,8 +855,8 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await mockPickerAndTerminal(page); // 後に登録したほうが先に効く
     await page.goto("/commander?view=team");
 
-    // 切: 札は「引き継ぎ先なし」・カードにボタン
-    await expect(page.locator('[data-team-task="1"] [data-team-simple-badge="引き継ぎ先なし"]')).toBeVisible();
+    // 切: 要対応（一番上）に「引き継ぎ先がありません」と選ぶボタン
+    await expect(page.locator('[data-team-attention] [data-team-stuck="1"]')).toContainText("引き継ぎ先がありません");
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-no-handoff.png`, fullPage: true });
     await page.locator('[data-team-handoff-open="1"]').click();
@@ -917,5 +935,124 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(again.getByLabel(/モデル（一覧/)).toHaveCount(0);
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-team-root-set-off.png`, fullPage: true });
+  });
+}
+
+// ---------------------------------------------------------------- T3c: 一文で頼む → 時系列（依頼・計画・進み具合・質問・結果・取り込む）
+
+/** チームリーダーが計画して振り、質問が 1 つ待っていて、結果が出た想定のチーム。 */
+function timelineTeam(): TeamState {
+  const task = (id: number, title: string, tier: string, status: string, extra: Partial<Task> = {}): Task => ({
+    id, title, goal: "", acceptance: "", files: [], assignee: "", status, report: null, created_at: 1, updated_at: 1, history: [], warnings: [],
+    assignee_state: "", leader_managed: true, tier, ...extra,
+  });
+  const state = leaderTeam({
+    id: "t0tl00001", name: "ログイン機能", leader_run: { status: "done", endpoint: "Claude Code", n: 1 },
+    requests: [{ at: 1764000000, text: "ログイン機能を作って、試験まで通して" }],
+    plan: {
+      markdown: "# 計画\n1. 現状を調べる\n2. 画面と API を並列で作る\n3. 評価", updated_at: 1764000100,
+      items: [
+        { id: "scan", title: "現状を調べる", tier: "explore", depends_on: [], files: [], checks: [], status: "done", task_id: 1 },
+        { id: "ui", title: "画面を作る", tier: "implement", depends_on: ["scan"], files: [], checks: ["ls"], status: "integrated", task_id: 2 },
+        { id: "api", title: "API を作る", tier: "implement", depends_on: ["scan"], files: [], checks: [], status: "delegated", task_id: 3 },
+        { id: "eval", title: "全体の評価", tier: "review", depends_on: ["ui", "api"], files: [], checks: [], status: "planned", task_id: null },
+      ],
+    },
+    timeline: [
+      { at: 1764000000, kind: "request", text: "依頼: ログイン機能を作って、試験まで通して" },
+      { at: 1764000100, kind: "plan", text: "計画を更新（4 件）" },
+      { at: 1764000200, kind: "progress", text: "現状を調べ終えました。画面と API を並列で作ります" },
+      { at: 1764000300, kind: "integrate", text: "仕事 #2「画面を作る」を統合しました" },
+      { at: 1764000400, kind: "ask", text: "利用者への質問: パスワードの強度の規則はどうしますか" },
+    ],
+    questions: [{ id: "q1", question: "パスワードの強度の規則はどうしますか", options: ["8 文字以上", "12 文字以上"], asked_at: 1764000400, answer: null, answered_at: null }],
+    mcp_log: [{ at: 1, tool: "team_status", ok: true, seconds: 0.01 }, { at: 2, tool: "delegate", ok: true, seconds: 0.4 }],
+    usage_total: { input_tokens: 123456, output_tokens: 7890, cost_usd: 1.23 },
+    git: { enabled: true, origin_was_git: true, base_branch: "main", team_branch: "nexarch/t0tl00001" }, autonomy: "ask",
+    result: {
+      summary: "画面と API を作り、統合して確認しました", outcome: "done", finished_at: 1764000900, remaining: ["README の更新"],
+      checks: { status: "passed", ran_at: 1764000800, commands: ["pytest -q"] },
+      changes: { files: ["src/login.py", "src/api.py", "tests/test_login.py"], count: 3, added: 120, removed: 4 },
+      usage: { input_tokens: 123456, output_tokens: 7890, cost_usd: 1.23 }, can_land: true, landed: false,
+      team_branch: "nexarch/t0tl00001", base_branch: "main",
+    },
+  }, [
+    task(1, "現状を調べる", "explore", "done"),
+    task(2, "画面を作る", "implement", "done", { branch: "nexarch/t0tl00001-2" }),
+    task(3, "API を作る", "implement", "doing", { branch: "nexarch/t0tl00001-3", assignee: "h0000bbbb", assignee_state: "working" }),
+  ]);
+  return state;
+}
+
+for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
+  test(`AI チーム ${label}px: エキスパート切で一文の依頼 → 時系列（計画・進み具合・質問に答える・結果・取り込む）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = timelineTeam();
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    // 一番上: 一文の入力。要対応（質問）がその次
+    const ask = page.locator("[data-team-ask]");
+    await expect(ask).toBeVisible();
+    const top = await ask.boundingBox();
+    const attention = page.locator("[data-team-attention]");
+    await expect(attention.locator("[data-team-question]")).toContainText("パスワードの強度の規則はどうしますか");
+    expect((await attention.boundingBox())!.y).toBeGreaterThan(top!.y);
+    // 時系列: 依頼 → 計画（題の一覧。開くと本文）→ 進み具合 → 結果
+    await expect(page.locator("[data-team-request]")).toContainText("ログイン機能を作って、試験まで通して");
+    const plan = page.locator("[data-team-plan]");
+    await expect(plan).toContainText("現状を調べる");
+    await expect(plan).toContainText("API を作る");
+    await plan.getByText("計画の本文").click();
+    await expect(plan).toContainText("画面と API を並列で作る");
+    await expect(page.locator('[data-team-progress-task="1"]')).toContainText("調べ済み");
+    await expect(page.locator('[data-team-progress-task="2"]')).toContainText("統合済み");
+    await expect(page.locator('[data-team-progress-task="3"]')).toContainText("実装中");
+    await expect(page.locator("[data-team-progress]")).toContainText("現状を調べ終えました");
+    await expect(page.locator('[data-team-result="done"]')).toContainText("画面と API を作り、統合して確認しました");
+    await expect(page.locator("[data-team-result-checks]")).toHaveText("合格");
+    await expect(page.locator("[data-team-result-changes]")).toContainText("3 件");
+    // 切: 板・MCP の履歴・手入力のタスク作成は出ない
+    await expect(page.locator("[data-team-column]")).toHaveCount(0);
+    await expect(page.locator("[data-team-expert-details]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "＋ タスク" })).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-timeline.png`, fullPage: true });
+
+    // 質問にその場で答える（選択肢のボタン）
+    await attention.getByRole("button", { name: "12 文字以上" }).click();
+    await expect.poll(() => state.answers).toEqual([{ id: "q1", answer: "12 文字以上" }]);
+    // 取り込む（元から git の作業場所だけ）
+    await page.getByRole("button", { name: "取り込む", exact: true }).click();
+    await expect.poll(() => state.leaderCalls).toEqual(["land"]);
+    await expect(page.locator("[data-team-landed]")).toContainText("取り込み済み");
+    await expect(page.locator("[data-team-land]")).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-timeline-landed.png`, fullPage: true });
+  });
+
+  test(`AI チーム ${label}px: エキスパート入で板・MCP の呼び出しの履歴・使用量が出る（止まったら再開）`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = timelineTeam();
+    state.teams[0].leader_run = { status: "failed", endpoint: "Claude Code", reason: "finish されないまま 3 回再開しました" };
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    await expect(page.locator("[data-team-column]").first()).toBeVisible();
+    const details = page.locator("[data-team-expert-details]");
+    await details.locator("summary").click();
+    await expect(details).toContainText("聞いてから進める");
+    await expect(details).toContainText("nexarch/t0tl00001");
+    await expect(details).toContainText("123,456 入力");
+    await expect(details.locator("[data-team-mcp-log]")).toContainText("delegate");
+    // 止まったら、ここまでの状態から再開できる
+    await page.locator("[data-team-resume]").click();
+    await expect.poll(() => state.leaderCalls).toEqual(["resume"]);
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-timeline-expert.png`, fullPage: true });
   });
 }
