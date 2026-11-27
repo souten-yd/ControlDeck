@@ -11,6 +11,11 @@
 - Nexarch: 「コンソールを開く」の作業フォルダは「新しい作業場所（自動の名前）」が既定（名前は任意・コンソールの表示名とは別の欄）。`POST /commander/consoles` に任意の `new_workspace: {name}`（このとき `cwd` は不要）。作る前に CodeDEV が Nexarch の作業フォルダのルートの中か確かめ、外なら 400 で何も作らない。タイルの作業フォルダは CodeDEV の中なら表示名（`commander_workdir_name`）。
 - AI アシスタントの OpenCode: プロジェクトの指定が無く、会話にも前の作業場所が無く、OpenCode 設定の `project_path`（既定の作業場所）も空のときは、会話ごとに `chat-…` を自動で作る（名前は会話のタイトルの先頭 40 字）。作った場所は既存の会話の記録（`meta.project_path`）で次のターンから使い回す。`project_path` が設定されている利用者は今までどおりそれを使う（明示の既定を尊重）。明示の指定（project_name・project_path）も今までどおり。
 - 確かめたこと: backend `test_auto_projects.py`、E2E（commander・project-lab-rename、320px と 1280px）。
+## 2026-11-27 情報の伝達ルートの地図（ルートマップ）
+- 利用者「情報伝達のルートを調査して明確にし、新たに AI を追加したり機能を開発する際はそのルートマップを保守する方法で開発を進めれば迷わないのではないか」。文書だけの地図はコードとずれるので、地図を `backend/app/route_map.py` のデータで持ち、`./deck.sh route-map` で `docs/ROUTE-MAP.md`（領域ごとの Mermaid 図と表）を作る。
+- 試験 `backend/tests/test_route_map.py`: ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口（`ensure_external_allowed`・`guarded_client`）・tmux への送り込み（`inject_input`）がすべて地図に載っていること、owner のファイルが実在すること、`docs/ROUTE-MAP.md` が地図と一致することを見る。地図に無いルートを足すと落ちる。
+- 開発の関門: backend/app を変えたら、import の関係に関わらずこの試験を流す（`dev_check.always_tests`。「変えたコードを確かめるテストがある」の判定には数えない）。
+- 決まりは `AGENTS.md`「情報の伝達ルートの地図」と `CLAUDE.md` の読む順に書いた。
 
 ## 2026-11-27 Nexarch の AI チームを「勝手に完成する」形へ（設計）
 - 利用者「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」。`docs/PLAN-nexarch-team.md` の冒頭に目標（目標 1 行だけ・人の確認は既定で自動・合否はコード・上限で付け替え・自動で合流・聞くのは決まりで承認が要るものと直せないものだけ）を書き、段を T2b〜T5 に組み直した。

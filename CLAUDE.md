@@ -25,7 +25,8 @@
 3. `docs/PLAN-opencode-dev-environment.md`
 4. `docs/design-opencode-feature.md`（v2 の設定の形、ゲートウェイ、MCP、圧縮）
 5. `docs/implementation-status.md`（新しい順。最新の数件）
-6. コード: `backend/app/features/registry.py`（オプション機能）、`backend/app/integrations/opencode/provider.py`（session の設定生成）、`backend/app/addons/agent_mcp.py`（ControlDeck の MCP）、`backend/app/skills/`（スキル）
+6. `docs/ROUTE-MAP.md`（情報の伝達ルートの地図。`backend/app/route_map.py` から作る。AI・道具・通知・外部通信を足す前に読み、足すときは先に地図へ書く）
+7. コード: `backend/app/features/registry.py`（オプション機能）、`backend/app/integrations/opencode/provider.py`（session の設定生成）、`backend/app/addons/agent_mcp.py`（ControlDeck の MCP）、`backend/app/skills/`（スキル）
 
 ## 現行構成（2026-11-15）
 

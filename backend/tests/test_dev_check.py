@@ -28,6 +28,13 @@ def test_select_tests_picks_importers_of_changed_modules_and_new_tests():
                       "backend/tests/test_new.py"]
 
 
+def test_route_map_test_always_runs_with_app_code_changes_but_is_not_counted_as_coverage():
+    sources = {"backend/tests/test_route_map.py": "x = 1\n"}
+    assert dc.always_tests(["backend/app/foo/new.py"], sources) == ["backend/tests/test_route_map.py"]
+    assert dc.always_tests(["frontend/src/App.tsx"], sources) == []
+    assert dc.select_tests(["backend/app/foo/new.py"], [], sources) == []  # 「確かめるテストがある」には数えない
+
+
 def test_check_tests_fails_when_changed_code_has_no_test_and_when_pytest_fails():
     assert dc.check_tests([], True, None).status == dc.NG
     assert dc.check_tests([], False, None).status == dc.SKIP

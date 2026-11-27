@@ -164,6 +164,14 @@ scripts/ 配下は deck.sh への互換ラッパーのみ。新しい運用操�
 - 既にある節と重なるときは、新しい節を作らずにその節を直す。食い違うときは新しい方を正とし、古い記述を消す。
 - 決まりを足す変更は文書だけの PR にする（アプリが変わらないので Release は出さない）。
 
+## 情報の伝達ルートの地図（利用者の決まり 2026-11-27・必須）
+
+利用者「情報伝達のルートを調査して明確にし、新たに AI を追加したり機能を開発する際はそのルートマップを保守する方法で開発を進めれば迷わないのではないか」。
+
+- 新しく AI（モデル・CLI・道具）を足す、情報を渡す機能（LLM の呼び出し・MCP の道具・通知・外部への通信・tmux への送り込み・鍵の保存）を作るときは、**先に `backend/app/route_map.py` にルート（from・to・channel・流れるもの・守り・owner）を書き**、`./deck.sh route-map` で図と表（`docs/ROUTE-MAP.md`）を作り直す。`docs/ROUTE-MAP.md` は手で編集しない。
+- 地図はデータで持ち、`backend/tests/test_route_map.py` がコードの実際の一覧（`cloud.CALLERS`・MCP の道具・`events.KINDS`・`ensure_external_allowed` / `guarded_client` を使うファイル・`inject_input` を呼ぶファイル）と突き合わせる。**地図に無いルートがあると試験が落ち、開発の関門（`./deck.sh dev-check`）が不合格になる**。backend のコードを変えると、この試験は常に流れる。
+- 地図に鍵の値は書かない（「どこに保存されるか」「誰が読まないか」だけ）。守りの無いルートは表の guards が「なし」になるので、足すときに守り（`confidential`・`local_only`・`approval` など）が要らないか考える。
+
 ## 誰が作るか: コード生成の部分は Claude、Patent はローカル LLM（必須）
 
 利用者の決まり（2026-11-22）。「ControlDeck 本体のコードを作成する部分の改修はクロードでメインでやってほしい。下働きとしてローカル LLM・DeepSeek（OpenRouter）・OpenCode の LLM を使ってよいが、計画はクロード。Patent の開発はローカル LLM でぜひ。コード生成のループの部分が最も根幹に関わるので、品質を落としたくない」。

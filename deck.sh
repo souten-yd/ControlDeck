@@ -18,6 +18,7 @@
 #   ./deck.sh test         バックエンドテスト実行
 #   ./deck.sh e2e [spec]   本番とは別の検証用インスタンスを起こして画面の E2E を実行
 #   ./deck.sh test-catalog テストの目録 docs/test-catalog.md を作り直す（手書きの説明は残る。venv は作らない）
+#   ./deck.sh route-map   情報の伝達ルートの地図 docs/ROUTE-MAP.md を backend/app/route_map.py から作り直す（手で編集しない）
 #   ./deck.sh dev-check [--base <ref>] [--full] [--skip-visual]  開発の関門（完了の前に。差分に応じた検査・合否は終了コード）
 #   ./deck.sh ui-review <png...> [--spec 説明]  画面の撮影を、画像を読めるローカルのモデルに見せて見た目の問題を返させる
 #   ./deck.sh knowledge-migrate [--apply] 旧 RAG・ResearchDataHub のデータを統合ナレッジへ取り込む（既定は計画の表示だけ）
@@ -680,6 +681,11 @@ cmd_test_catalog() {
   run_dev_tool app.maintenance.test_catalog "$@"
 }
 
+cmd_route_map() {
+  check_root
+  run_dev_tool app.route_map "$@"
+}
+
 # 開発の関門。作業の完了の前に流す（差分に応じた検査。合否は終了コード）。
 cmd_dev_check() {
   check_root
@@ -929,6 +935,7 @@ case "${1:-start}" in
   e2e)     shift; cmd_e2e "$@" ;;
   sandbox) shift; cmd_sandbox "$@" ;;
   test-catalog) shift; cmd_test_catalog "$@" ;;
+  route-map) shift; cmd_route_map "$@" ;;
   dev-check) shift; cmd_dev_check "$@" ;;
   ui-review) shift; cmd_ui_review "$@" ;;
   knowledge-migrate) shift; cmd_knowledge_migrate "$@" ;;
