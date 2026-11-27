@@ -186,7 +186,53 @@ export const ROLE_LABEL: Record<TeamRole, string> = Object.fromEntries(TEAM_ROLE
 
 export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected" | "blocked";
 
-export interface TeamMember { session_id: string; role: TeamRole }
+/** チームのメンバー。console は Nexarch のコンソール（session_id）、headless は CLI と接続だけ（画面なし。id）。
+ * key は担当（assignee）に入れる識別子（サーバーが付ける）。 */
+export interface TeamMember {
+  session_id?: string;
+  id?: string;
+  key?: string;
+  kind?: "console" | "headless";
+  cli?: string;
+  account?: string;
+  label?: string;
+  role: TeamRole;
+}
+export const memberKey = (m: TeamMember): string => m.key ?? m.id ?? m.session_id ?? "";
+
+export type OnLimit = "wait" | "handoff";
+
+export interface RunUsage { input_tokens: number; output_tokens: number; cost_usd: number }
+/** ヘッドレスの実行（今の実行）。 */
+export interface TaskRun {
+  run_id: string;
+  status: "running" | "finished" | "limited" | "failed" | "stopped" | "interrupted";
+  member: string;
+  cli: string;
+  started_at: number;
+  ended_at?: number;
+  elapsed?: number;
+  last_line: string;
+  progress: string[];
+  usage: RunUsage | null;
+  tail: string;
+  exit_code: number | null;
+  reset_at?: number | null;
+}
+/** 実際にやった担い手の記録（何回目・誰・結果・時間・使用量）。 */
+export interface TaskRunRecord {
+  n: number;
+  kind: "headless" | "console";
+  member: string;
+  cli: string;
+  account: string;
+  label: string;
+  started_at: number;
+  ended_at: number | null;
+  seconds: number | null;
+  result: string;
+  usage: RunUsage | null;
+}
 
 export interface TaskReport { summary: string; changed_files: string[]; tests: string; verify?: string; remaining: string }
 
@@ -228,6 +274,11 @@ export interface TeamTask {
   stalled_at?: number;
   /** 見張りが「上限で止まった」と見つけた時刻。 */
   limited_at?: number;
+  /** ヘッドレスの今の実行。 */
+  run?: TaskRun;
+  runs?: TaskRunRecord[];
+  /** 回復を待つ時刻（epoch 秒）。 */
+  wait_until?: number;
 }
 
 export interface Team {
@@ -242,6 +293,18 @@ export interface Team {
   brief?: string;
   /** 送る前に担当の会話をリセットする（既定 true）。 */
   reset_before_dispatch?: boolean;
+  /** 上限で止まったとき: handoff（別の担い手へ引き継ぐ・既定）／wait（回復を待つ）。 */
+  on_limit?: OnLimit;
+  /** 担い手の候補の順番（メンバーの key）。空なら既定の順。 */
+  fallback?: string[];
+  max_parallel?: number;
+  local_parallel?: number;
+  auto_run?: boolean;
+  /** チームの作業場所（CodeDEV の team-日時）。 */
+  workdir?: string;
+  workdir_folder?: string;
+  workdir_name?: string;
+  parallel?: { running: number; max: number; waiting: number; local_max: number };
 }
 
 export interface TaskFields {
@@ -264,7 +327,11 @@ export async function createTeam(name: string): Promise<Team> {
   return api<Team>("/commander/teams", { method: "POST", json: { name } });
 }
 export async function updateTeam(
-  id: string, fields: { name?: string; brief?: string; reset_before_dispatch?: boolean },
+  id: string,
+  fields: {
+    name?: string; brief?: string; reset_before_dispatch?: boolean; on_limit?: OnLimit; fallback?: string[];
+    max_parallel?: number; local_parallel?: number; auto_run?: boolean;
+  },
 ): Promise<Team> {
   return api<Team>(teamUrl(id), { method: "PUT", json: fields });
 }
@@ -288,6 +355,9 @@ export async function deleteTask(id: string, task: number): Promise<void> {
 }
 export async function dispatchTask(id: string, task: number): Promise<TeamTask> {
   return api<TeamTask>(`${taskUrl(id, task)}/dispatch`, { method: "POST" });
+}
+export async function stopTask(id: string, task: number): Promise<{ ok: boolean }> {
+  return api<{ ok: boolean }>(`${taskUrl(id, task)}/stop`, { method: "POST" });
 }
 export async function collectTask(id: string, task: number): Promise<TeamTask> {
   return api<TeamTask>(`${taskUrl(id, task)}/collect`, { method: "POST" });

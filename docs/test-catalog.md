@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 269 ファイル、2667 テスト（目的の未記入 93 ファイル）
-- E2E: 147 spec、327 テスト
+- backend: 270 ファイル、2711 テスト（目的の未記入 93 ファイル）
+- E2E: 147 spec、329 テスト
 
 ## backend（backend/tests）
 
@@ -776,6 +776,55 @@
 - `test_watch_does_not_pick_old_report_after_retry_marker`
 - `test_audit_has_commands_and_exit_codes_but_no_output`
 - `test_check_output_does_not_fill_memory` — 確認のコマンドが大量に出力しても、出力は一時ファイルへ書いて最後だけ読む（backend のメモリを膨らませない）。
+
+### backend/tests/test_commander_team_t3a.py
+
+目的: Nexarch の AI チーム T3a（ヘッドレスの担い手・上限の方針・同時並列と配り手・チームの作業場所）の試験。 目的: 利用者（2026-11-27）の要望を仕組みで守る。 - 「勝手に完成している状態を目指して」: ヘッドレスの実行が報告を板へ取り込み、確認・再挑戦へつながり、待ちのタスクを配り手が自動で割り当てる。 - 「チームがトークンが尽きて止まった場合、作業内容を引き継いで自動でルーターが別の CLI を開くか、待つかを設定で選択できるように」: on_limit = handoff（前の報告・進み具合・git の変更を本文に付けて別の担い手へ。同じ担い手は選ばない。候補の既定の順）／ wait（回復の時刻まで待って同じ担当で再実行。読めなければ 30 分）。実際にやった担い手を runs に残す。 - 「同時並列処理の場合はどうするのか」: 同時の上限・担い手ごとに 1 つ・担当ファイルの重なりで待つ・ローカルの上限。 根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。 CLI は本物を呼ばない。`accounts.executable_path` を小さな偽の実行ファイル（stream-json・codex の json・opencode の json を出す script） へ差し替える。Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+
+- `test_create_team_makes_workdir_and_defaults`
+- `test_workdir_is_recreated_when_missing`
+- `test_headless_member_validation_and_id_kept`
+- `test_update_team_policy_validation`
+- `test_fallback_order_saved_and_pruned_when_member_removed`
+- `test_claude_argv_and_account_env`
+- `test_codex_argv_and_account_env`
+- `test_opencode_argv_uses_provider_config`
+- `test_missing_executable_blocks_without_retry`
+- `test_claude_run_reports_progress_usage_and_runs`
+- `test_brief_is_in_prompt_each_run`
+- `test_codex_run_takes_report_from_last_message_file`
+- `test_opencode_run`
+- `test_no_report_makes_unverified_report`
+- `test_secrets_not_logged_and_env_is_minimal`
+- `test_audit_log_has_no_body`
+- `test_failed_run_retries_twice_then_blocks_with_notification`
+- `test_checks_failure_reruns_headless_then_blocks`
+- `test_checks_pass_in_team_workdir`
+- `test_stop_kills_running_process`
+- `test_recover_interrupted_marks_and_waits_for_dispatcher`
+- `test_limit_detection_and_reset_time`
+- `test_stream_state_tolerates_garbage_and_each_cli`
+- `test_candidates_default_order_never_same_member`
+- `test_handoff_to_other_cli_carries_work_and_git`
+- `test_handoff_skips_busy_and_members_that_already_limited`
+- `test_handoff_waits_when_candidates_busy`
+- `test_wait_policy_headless_waits_until_reset_then_reruns_same_member`
+- `test_wait_policy_unknown_reset_waits_30_minutes`
+- `test_codex_limit_reads_relative_reset`
+- `test_opencode_rate_limit_json_error_is_limit`
+- `test_console_limit_wait_leaves_to_auto_resume`
+- `test_console_limit_handoff_to_headless`
+- `test_handoff_to_console_injects_handoff_text`
+- `test_max_parallel_limits_and_board_counts`
+- `test_one_task_per_member`
+- `test_overlapping_files_wait`
+- `test_local_parallel_limit`
+- `test_unassigned_task_goes_to_first_free_member_in_fallback_order`
+- `test_auto_run_off_does_not_start`
+- `test_finishing_a_task_starts_the_next_waiting_one`
+- `test_console_task_auto_dispatched_when_ready`
+- `test_watch_ignores_headless_tasks`
+- `test_api_policy_run_and_stop`
 
 ### backend/tests/test_commander_team_watch.py
 
@@ -4357,12 +4406,14 @@
 
 ### frontend/e2e/commander-team.spec.ts
 
-目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・ 「自動で直せず」（blocked）の印も確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
+目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・ 「自動で直せず」（blocked）の印も確かめる。 T3a: ヘッドレスのメンバーを足す・実行中の表示（最後の行・経過・使用量）と止める・上限の方針（引き継ぐ／待つ）の切り替え・ 候補の順番の並べ替え・同時並列の設定・板の上の「同時に動いている数／上限」・作業場所と履歴（runs）の表示も確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
 
 - AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格
 - URL の ?view=team でチームが開き、コンソールの切り替えで戻れる
 - AI チーム ${label}px: 未検証の印と合格の確認・止まった／上限の印・通知の切り替え
 - AI チーム ${label}px: チームの前提・リセットの切り替え・確認のコマンドと結果・自動で直せず
+- AI チーム ${label}px: ヘッドレス（実行中の表示・止める）・上限の方針・候補の順番・同時並列
+- AI チーム ${label}px: ヘッドレスのメンバーを足す
 
 ### frontend/e2e/commander.spec.ts
 

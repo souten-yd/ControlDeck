@@ -6,6 +6,7 @@
   on_limit = handoff（前の報告・進み具合・git の変更を本文に付けて別の担い手へ。同じ担い手は選ばない。候補の既定の順）／
   wait（回復の時刻まで待って同じ担当で再実行。読めなければ 30 分）。実際にやった担い手を runs に残す。
 - 「同時並列処理の場合はどうするのか」: 同時の上限・担い手ごとに 1 つ・担当ファイルの重なりで待つ・ローカルの上限。
+根拠: 利用者の要望（2026-11-27）と docs/PLAN-nexarch-team.md T3。
 CLI は本物を呼ばない。`accounts.executable_path` を小さな偽の実行ファイル（stream-json・codex の json・opencode の json を出す script）
 へ差し替える。Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
 """
@@ -235,7 +236,6 @@ def test_create_team_makes_workdir_and_defaults(env):
 
 def test_workdir_is_recreated_when_missing(env):
     team = teams.create_team("開発班")
-    env.work.rmdir() if not any(env.work.iterdir()) else None
     import shutil
     shutil.rmtree(env.work, ignore_errors=True)
     again = teams.ensure_workdir(team["id"])

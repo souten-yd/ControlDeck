@@ -5,6 +5,8 @@
  * T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。
  * T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・
  * 「自動で直せず」（blocked）の印も確かめる。
+ * T3a: ヘッドレスのメンバーを足す・実行中の表示（最後の行・経過・使用量）と止める・上限の方針（引き継ぐ／待つ）の切り替え・
+ * 候補の順番の並べ替え・同時並列の設定・板の上の「同時に動いている数／上限」・作業場所と履歴（runs）の表示も確かめる。
  * 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -17,9 +19,21 @@ interface Task {
   assignee_state?: string; report_ready?: boolean; unverified?: boolean; stalled_at?: number; limited_at?: number;
   checks?: string[]; attempts?: number;
   checks_result?: { status: string; ran_at: number; results: { cmd: string; exit_code: number; seconds: number; tail: string }[]; message?: string };
+  run?: Record<string, unknown>;
+  runs?: Record<string, unknown>[];
+  wait_until?: number;
+}
+interface Member {
+  session_id?: string; id?: string; key?: string; kind?: string; cli?: string; account?: string; label?: string; role: string;
 }
 interface TeamState {
-  teams: { id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean; members: { session_id: string; role: string }[]; tasks: Task[] }[];
+  teams: {
+    id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean;
+    on_limit?: string; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
+    workdir?: string; workdir_folder?: string; workdir_name?: string; parallel?: Record<string, number>;
+    members: Member[]; tasks: Task[];
+  }[];
+  stopped?: number[];
   dispatched: number[];
   collected: number[];
   notifyCalls?: boolean[];
@@ -44,7 +58,10 @@ async function mockTeams(page: Page, state: TeamState) {
     const body = () => request.postDataJSON() as Record<string, unknown>;
     if (path === "clis") return route.fulfill({ json: { clis: [
       { id: "claude", name: "Claude Code", executable: "claude", installed: true, multi_account: true },
-      { id: "codex", name: "Codex CLI", executable: "codex", installed: true, multi_account: true }] } });
+      { id: "codex", name: "Codex CLI", executable: "codex", installed: true, multi_account: true },
+      { id: "opencode", name: "OpenCode", executable: "opencode2", installed: true, multi_account: true }] } });
+    if (path.startsWith("accounts/")) return route.fulfill({ json: { accounts: [
+      { name: "default", default: true, logged_in: null, label: "", title: "既定の接続" }] } });
     if (path === "consoles" && method === "GET") return route.fulfill({ json: { consoles: CONSOLES } });
     if (path === "teams" && method === "GET") return route.fulfill({ json: { teams: state.teams } });
     if (path === "teams" && method === "POST") {
@@ -66,12 +83,21 @@ async function mockTeams(page: Page, state: TeamState) {
       (state.teamPuts ??= []).push(fields);
       if (typeof fields.brief === "string") team.brief = fields.brief;
       if (typeof fields.reset_before_dispatch === "boolean") team.reset_before_dispatch = fields.reset_before_dispatch;
+      if (typeof fields.on_limit === "string") team.on_limit = fields.on_limit;
+      if (Array.isArray(fields.fallback)) team.fallback = fields.fallback as string[];
+      if (typeof fields.max_parallel === "number") team.max_parallel = fields.max_parallel;
+      if (typeof fields.local_parallel === "number") team.local_parallel = fields.local_parallel;
+      if (typeof fields.auto_run === "boolean") team.auto_run = fields.auto_run;
       return route.fulfill({ json: team });
     }
     m = path.match(/^teams\/(\w+)\/members$/);
     if (m && method === "PUT") {
       const team = state.teams.find((t) => t.id === m![1])!;
-      team.members = body().members as { session_id: string; role: string }[];
+      let n = 0;
+      team.members = (body().members as Member[]).map((x) => {
+        const id = x.kind === "headless" ? x.id ?? `h0000e2e${n++}` : undefined;
+        return { ...x, id, key: id ?? x.session_id, kind: x.kind ?? "console" };
+      });
       return route.fulfill({ json: team });
     }
     m = path.match(/^teams\/(\w+)\/tasks$/);
@@ -89,7 +115,7 @@ async function mockTeams(page: Page, state: TeamState) {
       team.tasks.push(task);
       return route.fulfill({ status: 201, json: task });
     }
-    m = path.match(/^teams\/(\w+)\/tasks\/(\d+)(?:\/(dispatch|collect))?$/);
+    m = path.match(/^teams\/(\w+)\/tasks\/(\d+)(?:\/(dispatch|collect|stop))?$/);
     if (m) {
       const team = state.teams.find((t) => t.id === m![1])!;
       const task = team.tasks.find((t) => t.id === Number(m![2]))!;
@@ -97,6 +123,10 @@ async function mockTeams(page: Page, state: TeamState) {
         task.status = "doing"; state.dispatched.push(task.id);
         task.report_ready = true; // 担当が報告を書いた想定
         return route.fulfill({ json: task });
+      }
+      if (m[3] === "stop") {
+        (state.stopped ??= []).push(task.id);
+        return route.fulfill({ json: { ok: true } });
       }
       if (m[3] === "collect") {
         task.status = "review"; task.report_ready = false; state.collected.push(task.id);
@@ -358,5 +388,163 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await sheet.getByRole("button", { name: "作る", exact: true }).click();
     await expect.poll(() => state.teams[0].tasks[4]?.checks).toEqual(["pytest -q", "npm run build"]);
     await noOverflow(page);
+  });
+}
+
+function headlessTeam(): TeamState {
+  const task = (id: number, fields: Partial<Task>): Task => ({
+    id, title: `タスク${id}`, goal: "", acceptance: "", files: [], assignee: "", status: "todo", report: null,
+    created_at: 1, updated_at: 1, history: [], warnings: [], assignee_state: "", ...fields,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    teams: [{
+      id: "t0a1b2c3d", name: "開発班", created_at: 1, notify: true, on_limit: "handoff", fallback: [], max_parallel: 3, local_parallel: 1, auto_run: true,
+      workdir: "/data1tb/CodeDEV/team-20261127-120000", workdir_folder: "team-20261127-120000", workdir_name: "開発班",
+      parallel: { running: 2, max: 3, waiting: 1, local_max: 1 },
+      members: [
+        { session_id: "aa110001", key: "aa110001", kind: "console", role: "reviewer" },
+        { id: "h0000aaaa", key: "h0000aaaa", kind: "headless", cli: "claude", account: "default", role: "developer", label: "自動係" },
+        { id: "h0000bbbb", key: "h0000bbbb", kind: "headless", cli: "opencode", account: "default", role: "member", label: "ローカル" },
+      ],
+      tasks: [
+        task(1, {
+          title: "ログイン画面", status: "doing", assignee: "h0000aaaa", assignee_state: "working",
+          run: { run_id: "r1", status: "running", member: "h0000aaaa", cli: "claude", started_at: now - 75, elapsed: 75,
+            last_line: "Bash: pytest -q", progress: ["Edit: src/a.py", "Bash: pytest -q"], usage: { input_tokens: 1200, output_tokens: 340, cost_usd: 0.25 },
+            tail: "", exit_code: null },
+          runs: [{ n: 1, kind: "headless", member: "h0000aaaa", cli: "claude", account: "default", label: "自動係", started_at: now - 75, ended_at: null,
+            seconds: null, result: "running", usage: null }],
+        }),
+        task(2, { title: "API の追加", status: "todo", assignee: "h0000bbbb", assignee_state: "waiting" }),
+        task(3, {
+          title: "上限で引き継ぎ", status: "doing", assignee: "h0000aaaa", assignee_state: "limited", limited_at: now - 60,
+          wait_until: now + 1800,
+          run: { run_id: "r3", status: "limited", member: "h0000aaaa", cli: "claude", started_at: now - 300, ended_at: now - 60,
+            last_line: "Edit: src/b.py", progress: [], usage: { input_tokens: 5000, output_tokens: 900, cost_usd: 0.8 }, tail: "5-hour limit reached", exit_code: 1 },
+          runs: [
+            { n: 1, kind: "headless", member: "h0000bbbb", cli: "opencode", account: "default", label: "ローカル", started_at: now - 900, ended_at: now - 700,
+              seconds: 200, result: "limited", usage: { input_tokens: 900, output_tokens: 100, cost_usd: 0 } },
+            { n: 2, kind: "headless", member: "h0000aaaa", cli: "claude", account: "default", label: "自動係", started_at: now - 300, ended_at: now - 60,
+              seconds: 240, result: "limited", usage: { input_tokens: 5000, output_tokens: 900, cost_usd: 0.8 } },
+          ],
+        }),
+      ],
+    }],
+    dispatched: [], collected: [], stopped: [],
+  };
+}
+
+for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as const) {
+  test(`AI チーム ${label}px: ヘッドレス（実行中の表示・止める）・上限の方針・候補の順番・同時並列`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = headlessTeam();
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    // ヘッドレスのメンバー・同時に動いている数・作業場所
+    await expect(page.locator('[data-team-member][data-team-member-kind="headless"]')).toHaveCount(2);
+    await expect(page.locator('[data-team-member-kind="headless"]').first()).toContainText("ヘッドレス");
+    await expect(page.locator('[data-team-member-kind="headless"]').first()).toContainText("実行中");
+    await expect(page.locator("[data-team-parallel]")).toContainText("2／3");
+    await expect(page.locator("[data-team-parallel]")).toContainText("待ち 1");
+    await expect(page.locator("[data-team-workdir]")).toContainText("開発班");
+    await expect(page.getByRole("link", { name: "Project Lab で開く" })).toHaveAttribute("href", /project=team-20261127-120000/);
+
+    // カード: 実行中（ヘッドレス）・最後の行・使用量／回復を待つ
+    await expect(page.locator('[data-team-task="1"] [data-team-running]')).toContainText("実行中（ヘッドレス）");
+    await expect(page.locator('[data-team-task="1"] [data-team-run-line]')).toContainText("Bash: pytest -q");
+    await expect(page.locator('[data-team-task="1"] [data-team-run-line]')).toContainText("1,540 トークン");
+    await expect(page.locator('[data-team-task="3"] [data-team-waiting]')).toContainText("回復を待つ");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-board.png`, fullPage: true });
+
+    // 詳細: 実行の状態・経過・使用量・止める
+    await page.locator('[data-team-task="1"]').click();
+    let detail = page.getByRole("dialog", { name: "#1 ログイン画面" });
+    await expect(detail.locator("[data-team-run-status]")).toHaveAttribute("data-team-run-status", "running");
+    await expect(detail.locator("[data-team-run-usage]")).toContainText("$0.25");
+    await expect(detail.getByRole("button", { name: "実行する" })).toHaveCount(0);
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-running.png`, fullPage: true });
+    await detail.getByRole("button", { name: "止める" }).click();
+    await expect.poll(() => state.stopped).toEqual([1]);
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // 詳細: 担い手の履歴（runs）
+    await page.locator('[data-team-task="3"]').click();
+    detail = page.getByRole("dialog", { name: "#3 上限で引き継ぎ" });
+    await expect(detail.locator("[data-team-runs] li")).toHaveCount(2);
+    await expect(detail.locator("[data-team-runs] li").first()).toContainText("ローカル");
+    await expect(detail.locator("[data-team-runs] li").first()).toContainText("上限で停止");
+    await expect(detail.locator("[data-team-run-panel]")).toContainText("回復を待っています");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-runs.png`, fullPage: true });
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // 上限の方針の切り替え（既定: 引き継ぐ → 回復を待つ → 引き継ぐ）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: /上限で止まったら: 別の担い手へ引き継ぐ/ }).click();
+    await expect.poll(() => state.teams[0].on_limit).toBe("wait");
+    await expect(page.locator("[data-team-parallel]")).toContainText("上限: 回復を待つ");
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /上限で止まったら: 回復を待つ/ })).toBeVisible();
+    await page.getByRole("menuitem", { name: /上限で止まったら: 回復を待つ/ }).click();
+    await expect.poll(() => state.teams[0].on_limit).toBe("handoff");
+
+    // 候補の順番（並べ替えて保存）
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "候補の順番" }).click();
+    const order = page.getByRole("dialog", { name: "候補の順番" });
+    await expect(order.locator("[data-team-fallback-row]")).toHaveCount(3);
+    await order.getByRole("button", { name: /OpenCode・ローカルを上へ/ }).click();
+    await order.getByRole("button", { name: /OpenCode・ローカルを上へ/ }).click();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-order.png`, fullPage: true });
+    await order.getByRole("button", { name: "保存", exact: true }).click();
+    await expect.poll(() => state.teams[0].fallback).toEqual(["h0000bbbb", "aa110001", "h0000aaaa"]);
+
+    // 同時並列の設定
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "同時並列の設定" }).click();
+    const par = page.getByRole("dialog", { name: "同時並列の設定" });
+    await par.getByLabel(/同時に走らせるタスクの数/).fill("5");
+    await par.getByLabel(/ローカルの担い手の同時の数/).fill("2");
+    await par.getByLabel(/自動で割り当てる/).uncheck();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-parallel.png`, fullPage: true });
+    await par.getByRole("button", { name: "保存" }).click();
+    await expect.poll(() => [state.teams[0].max_parallel, state.teams[0].local_parallel, state.teams[0].auto_run]).toEqual([5, 2, false]);
+    await expect(page.locator("[data-team-parallel]")).toContainText("自動の割り当て: オフ");
+  });
+
+  test(`AI チーム ${label}px: ヘッドレスのメンバーを足す`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = seededTeam([]);
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: "メンバーを選ぶ" }).click();
+    const sheet = page.getByRole("dialog", { name: "メンバーを選ぶ" });
+    await sheet.getByLabel("CLI", { exact: true }).selectOption("codex");
+    await sheet.getByLabel("役割", { exact: true }).selectOption("reviewer");
+    await sheet.getByLabel("名前（任意）").fill("夜間の係");
+    await sheet.getByRole("button", { name: "ヘッドレスのメンバーを足す" }).click();
+    await expect(sheet.locator("[data-team-headless-row]")).toHaveCount(1);
+    await expect(sheet.locator("[data-team-headless-row]")).toContainText("夜間の係");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-t3a-members.png`, fullPage: true });
+    await sheet.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.locator('[data-team-member-kind="headless"]')).toContainText("夜間の係");
+    await expect(page.locator('[data-team-member-kind="headless"]')).toContainText("待機中（画面なし）");
+    expect(state.teams[0].members.find((m) => m.kind === "headless")).toMatchObject({ cli: "codex", account: "default", role: "reviewer", label: "夜間の係" });
+    // 担当の選択肢にも出る（ヘッドレスと分かる）
+    await page.getByRole("button", { name: "＋ タスク" }).click();
+    await expect(page.getByRole("dialog", { name: "タスクを作る" }).getByLabel("担当", { exact: true }).locator("option", { hasText: "（ヘッドレス）" })).toHaveCount(1);
   });
 }
