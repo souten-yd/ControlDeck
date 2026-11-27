@@ -216,10 +216,15 @@ def test_chat_workspace_per_conversation(codedev, monkeypatch):
         db.commit()
 
 
-def test_chat_workspace_not_created_when_default_project_path_is_set(codedev, monkeypatch, tmp_path):
+def test_chat_workspace_is_created_even_when_default_project_path_is_set(codedev, monkeypatch, tmp_path):
+    """OpenCode の設定の既定の作業場所があっても、AI アシスタントの会話は会話ごとの作業場所を作る（使い回さない）。
+
+    根拠: 2026-11-27 利用者「AI アシスタントからの OpenCode も自動で名前を振って」。本番は既定に
+    /data1tb/ControlDeck/app が入っていて、全部の会話が 1 つのフォルダに混ざっていた。
+    """
     import app.workflows.chat_persist as cp
     from app.integrations.opencode import provider
 
     monkeypatch.setattr(provider, "get_settings", lambda: {"project_path": str(tmp_path)})
-    assert cp._auto_chat_workspace("題") == ""
-    assert list(codedev.iterdir()) == []
+    folder = cp._auto_chat_workspace("題")
+    assert folder.startswith("chat-") and (codedev / folder).is_dir()

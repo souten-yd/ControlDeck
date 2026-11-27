@@ -2395,17 +2395,16 @@ def _last_code_project(db: Session, conv_id: str) -> tuple[str, str]:
 
 
 def _auto_chat_workspace(title: str) -> str:
-    """作業場所の指定が無く、設定の既定の作業場所（project_path）も無いとき、この会話の作業場所を自動で作る。
+    """作業場所の指定が無いとき、この会話の作業場所を CodeDEV に自動で作る（会話ごとに別のフォルダ `chat-日時`）。
 
-    会話ごとに別のフォルダ（`chat-日時`）。作ったフォルダは OpenCode が動いた時点で会話の記録
-    （meta.project_path）に残り、次のターンからは _last_code_project が同じフォルダを返す。
-    設定の project_path が明示されている利用者は今までどおりそれを使う（ここでは何もしない）。
-    名前を返す（空なら何もしなかった）。
+    2026-11-27 利用者「AI アシスタントからの OpenCode も、作業場所は既定の場所に自動で名前を振って、後で書き換えられる
+    ように」。OpenCode の設定の既定の作業場所（project_path）は OpenCode 画面の既定として残し、AI アシスタントの
+    会話では使い回さない（全部の会話が 1 つのフォルダに混ざっていた）。作ったフォルダは OpenCode が動いた時点で
+    会話の記録（meta.project_path）に残り、次のターンからは _last_code_project が同じフォルダを返す。
+    名前を返す（空なら作れなかった＝今までどおり既定へ）。
     """
-    from app.integrations.opencode import projects as auto_projects, provider as opencode_provider
+    from app.integrations.opencode import projects as auto_projects
 
-    if str(opencode_provider.get_settings().get("project_path") or "").strip():
-        return ""
     name = (title or "").strip()
     if name in ("", "新しい会話"):
         name = ""
