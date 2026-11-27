@@ -32,14 +32,22 @@ KIND_REPORT = "report"
 KIND_STALLED = "stalled"
 KIND_LIMITED = "limited"
 KIND_BLOCKED = "blocked"
+KIND_HANDOFF = "handoff"
 _KIND_TEXT = {
     KIND_REPORT: "の報告が来ました",
     KIND_STALLED: "が報告なしで止まりました",
     KIND_LIMITED: "の担当が上限で止まりました",
     KIND_BLOCKED: "は確認が通らず、自動で直せませんでした",
+    KIND_HANDOFF: "は上限で止まり、別の担い手へ引き継ぎました",
 }
 _ROLE_TEXT = {"leader": "リーダー", "developer": "開発", "reviewer": "レビュー", "researcher": "調査", "member": "メンバー"}
 _CLI_TEXT = {"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode"}
+
+
+def _headless(team: dict, task: dict) -> bool:
+    """担当が headless（画面なし）なら見張らない（実行は team_runner が見ている）。"""
+    member = teams.find_member(team, str(task.get("assignee") or ""))
+    return member is not None and teams.is_headless(member)
 
 
 def _screen_for(task: dict, text: str) -> str:
@@ -68,7 +76,7 @@ def tick(now: float | None = None) -> list[dict]:
     # コンソールの一覧（全コンソールの画面の読み取り・ログイン名の確認）は時間がかかるので、
     # 板の排他（teams._lock）の外で先に取る。持ったままだと板の API がその間止まる。
     with teams._lock:
-        has_doing = any(task.get("status") == "doing" and task.get("assignee")
+        has_doing = any(task.get("status") == "doing" and task.get("assignee") and not _headless(t, task)
                         for t in teams._load() for task in t.get("tasks", []))
     if not has_doing:
         return events
@@ -76,7 +84,7 @@ def tick(now: float | None = None) -> list[dict]:
     with teams._lock:
         all_teams = teams._load()
         watched = [(t, task) for t in all_teams for task in t.get("tasks", [])
-                   if task.get("status") == "doing" and task.get("assignee")]
+                   if task.get("status") == "doing" and task.get("assignee") and not _headless(t, task)]
         if not watched:
             return events
         screens: dict[str, str | None] = {}
@@ -197,6 +205,12 @@ async def run_once(now: float | None = None) -> list[dict]:
 
 
 async def watch_loop() -> None:
+    from app.commander import team_dispatch, team_runner
+
+    try:  # 起動時: 前の ControlDeck で走っていた実行は「中断」にする（自動では続けない）
+        await asyncio.to_thread(team_runner.recover_interrupted)
+    except Exception:  # noqa: BLE001
+        logger.exception("中断した実行の回収に失敗しました")
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
         try:
@@ -205,3 +219,9 @@ async def watch_loop() -> None:
                 logger.info("Nexarch のチーム: %d 件の出来事を通知しました", len(events))
         except Exception:  # noqa: BLE001 - 見回りの失敗で loop を止めない
             logger.exception("Nexarch のチームの見回りに失敗しました")
+        try:  # 配り手（待ちのタスクの割り当て・上限の方針）
+            handed = await team_dispatch.run_once()
+            if handed:
+                logger.info("Nexarch のチーム: 配り手が %d 件の出来事を通知しました", len(handed))
+        except Exception:  # noqa: BLE001
+            logger.exception("Nexarch のチームの配りに失敗しました")

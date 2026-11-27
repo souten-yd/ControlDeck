@@ -7,7 +7,9 @@
 - 保存: `data/ai-commander/teams.json`（0600・tmp → os.replace・プロセス内は RLock）。DB は使わない。
 - 壊れた JSON は空として扱う（落とさない）。
 - 自動の取り込み・止まった／上限の印・通知は team_watch.py（T2a）。ここは一覧のときの担当の状態・報告の有無・未検証の印。
-根拠: docs/PLAN-nexarch-team.md T1。
+- T3a: メンバーに headless（CLI と接続だけ・画面なし）を足せる。実行は team_runner.py、上限の方針・並列・配り手は
+  team_dispatch.py。チームごとに作業場所（CodeDEV の team-日時）を持つ（workdir）。
+根拠: docs/PLAN-nexarch-team.md T1・T3。
 """
 from __future__ import annotations
 
@@ -43,6 +45,12 @@ MAX_RETRIES = 2
 RESET_WAIT = 3.0  # リセットのコマンドを送ってから本文を送るまでの秒数
 RESET_COMMANDS = {"claude": "/clear", "codex": "/new", "opencode": "/new", "gemini": "/clear"}
 RETRY_TAIL = 1500
+HEADLESS_CLIS = ("claude", "codex", "opencode")
+ON_LIMIT = ("wait", "handoff")
+PARALLEL_MAX = 8
+RUNS_MAX = 20
+HEADLESS_ID_RE = re.compile(r"^h[0-9a-f]{8}$")
+LABEL_MAX = 40
 
 _lock = threading.RLock()
 
@@ -160,6 +168,26 @@ def _find_task(team: dict, task_id: int) -> dict:
     raise TeamError("タスクが見つかりません", 404)
 
 
+# ---------------------------------------------------------------- メンバー（console と headless）
+
+def is_headless(member: dict) -> bool:
+    return member.get("kind") == "headless"
+
+
+def member_key(member: dict) -> str:
+    """担当（assignee）に入れる識別子。console は Terminal のセッション ID、headless は h + 16 進 8 桁。"""
+    return str(member["id"] if is_headless(member) else member["session_id"])
+
+
+def find_member(team: dict, key: str) -> dict | None:
+    return next((m for m in team.get("members", []) if member_key(m) == key), None)
+
+
+def member_is_local(member: dict) -> bool:
+    """ローカル LLM（GPU を共有する担い手）。OpenCode の既定の接続＝ゲートウェイのローカルのモデル。"""
+    return member.get("kind") == "headless" and member.get("cli") == "opencode" and member.get("account") == "default"
+
+
 # ---------------------------------------------------------------- 担当ファイルの重なり
 
 def _overlaps(a: str, b: str) -> bool:
@@ -188,14 +216,42 @@ def _console_ids() -> dict[str, dict]:
     return {str(row["id"]): row for row in consoles.list_consoles()}
 
 
+def _make_workdir(name: str) -> dict:
+    """チームの作業場所（CodeDEV の team-日時。git init・Project Lab にも出る）。作れなければ空（実行のときに作り直す）。"""
+    try:
+        from app.integrations.opencode import projects
+
+        made = projects.create_auto_project("team", name)
+        return {"workdir": made["path"], "workdir_folder": made["folder"], "workdir_name": made["name"]}
+    except (OSError, ValueError, ImportError) as exc:
+        logger.warning("チームの作業場所を作れませんでした: %s", exc)
+        return {"workdir": "", "workdir_folder": "", "workdir_name": ""}
+
+
+def ensure_workdir(team_id: str) -> str:
+    """チームの作業場所のパス。無い・消えていれば作る（T3a より前に作ったチームのためにも）。"""
+    with _lock:
+        teams = _load()
+        team = _find_team(teams, team_id)
+        current = str(team.get("workdir") or "")
+        if current and Path(current).is_dir():
+            return current
+        team.update(_make_workdir(str(team.get("name") or "team")))
+        _save(teams)
+        return str(team.get("workdir") or "")
+
+
 def create_team(name: str) -> dict:
     name = clean_line(name, "チーム名", NAME_MAX)
+    made = _make_workdir(name)
     with _lock:
         teams = _load()
         team = {
             "id": "t" + secrets.token_hex(4), "name": name, "created_at": _now(),
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
             "brief": "", "reset_before_dispatch": True,
+            "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
+            **made,
         }
         teams.append(team)
         _save(teams)
@@ -225,8 +281,43 @@ def update_team(team_id: str, fields: dict) -> dict:
             if not isinstance(fields["reset_before_dispatch"], bool):
                 raise TeamError("リセットの入り切りは真偽で指定してください")
             team["reset_before_dispatch"] = fields["reset_before_dispatch"]
+        if fields.get("on_limit") is not None:
+            if fields["on_limit"] not in ON_LIMIT:
+                raise TeamError("上限で止まったときの方針は wait か handoff にしてください")
+            team["on_limit"] = fields["on_limit"]
+        if fields.get("fallback") is not None:
+            team["fallback"] = _clean_fallback(team, fields["fallback"])
+        for key, label, top in (("max_parallel", "同時に走らせる数", PARALLEL_MAX),
+                                ("local_parallel", "ローカルの同時の数", PARALLEL_MAX)):
+            if fields.get(key) is not None:
+                value = fields[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+                    raise TeamError(f"{label}は 1〜{top} の整数にしてください")
+                team[key] = value
+        if fields.get("codex_without_sandbox") is not None:
+            if not isinstance(fields["codex_without_sandbox"], bool):
+                raise TeamError("サンドボックスなしの入り切りは真偽で指定してください")
+            team["codex_without_sandbox"] = fields["codex_without_sandbox"]
+        if fields.get("auto_run") is not None:
+            if not isinstance(fields["auto_run"], bool):
+                raise TeamError("自動の割り当ての入り切りは真偽で指定してください")
+            team["auto_run"] = fields["auto_run"]
         _save(teams)
     return team
+
+
+def _clean_fallback(team: dict, value: object) -> list[str]:
+    """担い手の候補の順番。チームのメンバーの識別子だけ・重複なし。"""
+    if not isinstance(value, list):
+        raise TeamError("候補の順番はリストで指定してください")
+    keys = {member_key(m) for m in team.get("members", [])}
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or item not in keys:
+            raise TeamError("候補の順番はこのチームのメンバーだけで指定してください")
+        if item not in out:
+            out.append(item)
+    return out
 
 
 def delete_team(team_id: str) -> dict:
@@ -236,10 +327,15 @@ def delete_team(team_id: str) -> dict:
         teams.remove(team)
         _save(teams)
     # 役割の印は外す（他のチームのメンバーでなければ）
-    still = {m["session_id"] for t in teams for m in t.get("members", [])}
+    still = {m["session_id"] for t in teams for m in t.get("members", []) if not is_headless(m)}
     for member in team.get("members", []):
-        if member["session_id"] not in still:
+        if not is_headless(member) and member["session_id"] not in still:
             _clear_role(member["session_id"])
+    try:  # 走っている実行があれば止める
+        from app.commander import team_runner
+        team_runner.stop_team(team_id)
+    except Exception:  # noqa: BLE001 - チームの削除は止めない
+        logger.exception("チームの実行を止められませんでした")
     return team
 
 
@@ -250,8 +346,33 @@ def _clear_role(session_id: str) -> None:
         pass  # 閉じたコンソールの印は外せなくてよい
 
 
+def _clean_headless(item: dict) -> dict:
+    """headless のメンバー（CLI と接続だけ。画面なし）。id は引き継ぐ（なければ作る）。"""
+    cli = item.get("cli")
+    role = item.get("role")
+    if cli not in HEADLESS_CLIS:
+        raise TeamError(f"ヘッドレスの CLI は {' / '.join(HEADLESS_CLIS)} のどれかにしてください")
+    if role not in ROLES:
+        raise TeamError(f"役割は {' / '.join(ROLES)} のどれかにしてください")
+    from app.commander import accounts
+
+    account = item.get("account") or accounts.DEFAULT_ACCOUNT
+    if not isinstance(account, str) or not accounts.ACCOUNT_NAME_RE.fullmatch(account):
+        raise TeamError("アカウントの名前が正しくありません")
+    try:
+        exists = accounts.account_exists(accounts.CLIS[cli], account)
+    except Exception:  # noqa: BLE001 - OpenCode の接続の一覧を取れないとき
+        exists = account == accounts.DEFAULT_ACCOUNT
+    if not exists:
+        raise TeamError("アカウントが見つかりません")
+    label = clean_line(item.get("label") or "", "名前", LABEL_MAX, required=False)
+    raw_id = item.get("id")
+    ident = raw_id if isinstance(raw_id, str) and HEADLESS_ID_RE.fullmatch(raw_id) else "h" + secrets.token_hex(4)
+    return {"id": ident, "kind": "headless", "cli": cli, "account": account, "role": role, "label": label}
+
+
 def set_members(team_id: str, members: object) -> dict:
-    """メンバーを丸ごと置き換える。Nexarch のコンソールだけ・リーダーは 0〜1 人。"""
+    """メンバーを丸ごと置き換える。console は Nexarch のコンソールだけ、headless は CLI と接続。リーダーは 0〜1 人。"""
     if not isinstance(members, list):
         raise TeamError("メンバーはリストで指定してください")
     known = _console_ids()
@@ -260,6 +381,13 @@ def set_members(team_id: str, members: object) -> dict:
     for item in members:
         if not isinstance(item, dict):
             raise TeamError("メンバーの形が正しくありません")
+        if item.get("kind") == "headless":
+            member = _clean_headless(item)
+            if member["id"] in seen:
+                member["id"] = "h" + secrets.token_hex(4)
+            seen.add(member["id"])
+            cleaned.append(member)
+            continue
         sid = item.get("session_id")
         role = item.get("role")
         if not isinstance(sid, str) or sid not in known:
@@ -275,13 +403,17 @@ def set_members(team_id: str, members: object) -> dict:
     with _lock:
         teams = _load()
         team = _find_team(teams, team_id)
-        removed = {m["session_id"] for m in team.get("members", [])} - seen
+        removed = {m["session_id"] for m in team.get("members", []) if not is_headless(m)} - seen
         team["members"] = cleaned
+        if team.get("fallback"):  # 外れたメンバーは候補の順番からも外す
+            team["fallback"] = [k for k in team["fallback"] if k in seen]
         _save(teams)
-        others = {m["session_id"] for t in teams if t is not team for m in t.get("members", [])}
+        others = {m["session_id"] for t in teams if t is not team for m in t.get("members", []) if not is_headless(m)}
     for sid in removed - others:
         _clear_role(sid)
     for member in cleaned:
+        if is_headless(member):
+            continue
         try:
             manager.tag_session(member["session_id"], {"role": member["role"]})
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
@@ -294,7 +426,7 @@ def set_members(team_id: str, members: object) -> dict:
 def _check_assignee(team: dict, assignee: object) -> str:
     if assignee in (None, ""):
         return ""
-    if not isinstance(assignee, str) or assignee not in {m["session_id"] for m in team.get("members", [])}:
+    if not isinstance(assignee, str) or assignee not in {member_key(m) for m in team.get("members", [])}:
         raise TeamError("担当はこのチームのメンバーから選んでください")
     return assignee
 
@@ -310,7 +442,43 @@ def is_unverified(task: dict) -> bool:
 
 
 def _task_view(team: dict, task: dict) -> dict:
-    return {**task, "checks": task.get("checks") or [], "warnings": _warnings(team, task), "unverified": is_unverified(task)}
+    view = {**task, "checks": task.get("checks") or [], "warnings": _warnings(team, task), "unverified": is_unverified(task)}
+    run = task.get("run")
+    if isinstance(run, dict) and run.get("status") == "running":
+        from app.commander import team_runner
+        view["run"] = team_runner.live_overlay(team["id"], task["id"], run)  # 実行中の最後の行・経過・使用量（メモリ）
+    return view
+
+
+# ---------------------------------------------------------------- 実際にやった担い手の記録（runs）
+
+def runs_close(task: dict, result: str, **extra: object) -> None:
+    """開いている最後の記録（result が running / sent）を閉じる。無ければ何もしない。"""
+    runs = task.get("runs") or []
+    if runs and runs[-1].get("result") in ("running", "sent"):
+        last = runs[-1]
+        last["result"] = result
+        last["ended_at"] = _now()
+        last["seconds"] = round(max(0.0, last["ended_at"] - float(last.get("started_at") or last["ended_at"])), 1)
+        last.update({k: v for k, v in extra.items() if v is not None})
+
+
+def runs_open(task: dict, member: dict, *, kind: str, cli: str = "", account: str = "", label: str = "",
+              model: str = "") -> dict:
+    """担い手を 1 回分記録する（何回目・誰・結果・時間・使用量）。前の開いたままの記録は「入れ替え」で閉じる。"""
+    runs_close(task, "replaced")
+    runs = task.setdefault("runs", [])
+    entry = {
+        "n": int(task.get("runs_total") or 0) + 1, "kind": kind, "member": member_key(member),
+        "cli": cli or str(member.get("cli") or ""), "account": account or str(member.get("account") or ""),
+        "label": label or str(member.get("label") or ""), "model": model,
+        "started_at": _now(), "ended_at": None, "seconds": None, "result": "running" if kind == "headless" else "sent",
+        "usage": None,
+    }
+    task["runs_total"] = entry["n"]
+    runs.append(entry)
+    del runs[:-RUNS_MAX]
+    return entry
 
 
 def set_notify(team_id: str, enabled: object) -> dict:
@@ -382,6 +550,11 @@ def update_task(team_id: str, task_id: int, fields: dict, by: str) -> dict:
 
 
 def delete_task(team_id: str, task_id: int) -> dict:
+    try:
+        from app.commander import team_runner
+        team_runner.stop_run(team_id, task_id)
+    except Exception:  # noqa: BLE001 - 削除は止めない
+        logger.exception("実行を止められませんでした")
     with _lock:
         teams = _load()
         team = _find_team(teams, team_id)
@@ -425,15 +598,29 @@ def _reset_command(row: dict) -> str:
     return RESET_COMMANDS.get(str(row.get("commander_cli") or ""), "")
 
 
-def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
+def dispatch_task(team_id: str, task_id: int, by: str, handoff: str = "") -> dict:
+    """担当へ送る。担当が headless なら実行（team_runner）、console なら画面へ送り込む。
+
+    handoff は上限で止まった前の担当からの引き継ぎの文（本文の後ろに付ける）。
+    """
     with _lock:
         team = _find_team(_load(), team_id)
         task = _find_task(team, task_id)
         if task["status"] == "done":
             raise TeamError("完了したタスクは送れません", 409)
+        assignee_member = find_member(team, str(task.get("assignee") or ""))
+    if assignee_member is not None and is_headless(assignee_member):
+        from app.commander import team_runner
+        return team_runner.start_run(team_id, task_id, by, extra=handoff)
+    with _lock:
+        team = _find_team(_load(), team_id)
+        task = _find_task(team, task_id)
         row = _assignee_console(task)
         state = row.get("commander_state") or (status.WAITING if row.get("alive", True) else status.EXITED)
         text = dispatch_text(task, str(team.get("brief") or ""))
+        handoff = handoff or str(task.get("resume_note") or "")
+        if handoff:
+            text += "\n\n" + handoff
         reset = _reset_command(row) if team.get("reset_before_dispatch", True) is not False else ""
     if state == status.EXITED:
         raise TeamError("担当のコンソールは終了しています", 409)
@@ -454,11 +641,17 @@ def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
         task["status"] = "doing"
         task["attempts"] = 0
         task.pop("checks_result", None)
+        task.pop("run", None)
+        task.pop("wait_until", None)
+        task.pop("resume_note", None)
         if reset:
             _event(task, f"会話をリセット（{reset}）", by)
         for key in ("stalled_at", "limited_at", "closed_noted", "notified"):
             task.pop(key, None)  # 新しい作業として見張りを数え直す
-        _event(task, "担当へ送信", by)
+        _event(task, "担当へ送信" + ("（引き継ぎつき）" if handoff else ""), by)
+        runs_open(task, assignee_member or {"session_id": sid}, kind="console",
+                  cli=str(row.get("commander_cli") or ""), account=str(row.get("commander_account") or ""),
+                  label=str(row.get("commander_label") or ""))
         _save(teams)
         return _task_view(team, task)
 
@@ -527,10 +720,14 @@ def _normalize_report(values: dict) -> dict:
 
 def collect_report(team_id: str, task_id: int, by: str) -> dict:
     with _lock:
-        task = _find_task(_find_team(_load(), team_id), task_id)
+        team = _find_team(_load(), team_id)
+        task = _find_task(team, task_id)
         sid = task.get("assignee") or ""
         if not sid:
             raise TeamError("担当が決まっていません")
+        member = find_member(team, sid)
+        if member is not None and is_headless(member):
+            raise TeamError("ヘッドレスの担当の報告は実行の終わりに自動で取り込みます", 409)
         if sid not in _console_ids():
             raise TeamError("担当のコンソールが閉じています", 409)
     report = parse_report(manager.capture_text(sid, CAPTURE_LINES))
@@ -558,6 +755,7 @@ def _store_report(team_id: str, task_id: int, report: dict, by: str, event: str)
         task["report"] = report
         task["status"] = "review"
         _event(task, event, by)
+        runs_close(task, "reported" if (task.get("runs") or [{}])[-1].get("kind") == "console" else "ok")
         mark_checks_running(task)
         _save(teams)
         view = _task_view(team, task)
@@ -577,10 +775,30 @@ def mark_checks_running(task: dict) -> None:
 
 # ---------------------------------------------------------------- 一覧と見張り
 
+def _headless_state(task: dict) -> str:
+    """ヘッドレスの担当の状態。working（実行中）・limited・waiting（それ以外）。"""
+    run = task.get("run")
+    if not isinstance(run, dict):
+        return "waiting"
+    return {"running": "working", "limited": "limited"}.get(str(run.get("status")), "waiting")
+
+
+def parallel_summary(team: dict) -> dict:
+    """板の上に出す「同時に動いている数／上限」と待ちの数。"""
+    tasks = team.get("tasks", [])
+    return {
+        "running": sum(1 for t in tasks if t.get("status") == "doing"),
+        "max": int(team.get("max_parallel") or 3),
+        "waiting": sum(1 for t in tasks if t.get("status") == "todo"),
+        "local_max": int(team.get("local_parallel") or 1),
+    }
+
+
 def list_teams() -> list[dict]:
     """全チーム。タスクに担当の状態（assignee_state）と、doing の報告の有無（report_ready）を添える。
 
     capture は 1 回の一覧につき担当ごとに 1 回。コンソールが閉じていれば assignee_state は "closed"。
+    headless の担当は画面が無いので、実行（run）の状態から決める。
     """
     with _lock:
         teams = _load()
@@ -588,11 +806,17 @@ def list_teams() -> list[dict]:
     captured: dict[str, bool] = {}
     out: list[dict] = []
     for team in teams:
+        headless_keys = {member_key(m) for m in team.get("members", []) if is_headless(m)}
         tasks = []
         for task in team.get("tasks", []):
             sid = task.get("assignee") or ""
-            row = rows.get(sid) if sid else None
             view = _task_view(team, task)
+            if sid in headless_keys:
+                view["assignee_state"] = _headless_state(task)
+                view["report_ready"] = False
+                tasks.append(view)
+                continue
+            row = rows.get(sid) if sid else None
             view["assignee_state"] = (row.get("commander_state") or status.WAITING) if row else ("closed" if sid else "")
             ready = False
             if row is not None and task.get("status") == "doing":
@@ -604,5 +828,17 @@ def list_teams() -> list[dict]:
                 ready = captured[sid]
             view["report_ready"] = ready
             tasks.append(view)
-        out.append({**team, "tasks": tasks})
+        members = []
+        for m in team.get("members", []):
+            row = {**m, "kind": "headless" if is_headless(m) else "console", "key": member_key(m)}
+            if is_headless(m) and m.get("cli") == "codex":
+                from app.commander import team_runner
+                row["no_sandbox"] = team_runner.member_sandbox_free(m)  # この機械では codex のサンドボックスが使えない
+            members.append(row)
+        out.append({**team, "members": members, "tasks": tasks, "parallel": parallel_summary(team),
+                    "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),
+                    "max_parallel": team.get("max_parallel", 3), "local_parallel": team.get("local_parallel", 1),
+                    "auto_run": team.get("auto_run", True),
+                    "codex_without_sandbox": team.get("codex_without_sandbox", True), "workdir": team.get("workdir", ""),
+                    "workdir_folder": team.get("workdir_folder", ""), "workdir_name": team.get("workdir_name", "")})
     return out

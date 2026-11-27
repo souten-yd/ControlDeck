@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 CHECK_TIMEOUT = 600
 TAIL_MAX = 2000
 _running: set[tuple[str, int]] = set()
+_pending_rerun: dict[tuple[str, int], bool] = {}   # ヘッドレスの再挑戦（確認の実行が終わってから始める）
 _running_lock = threading.Lock()
 
 
@@ -61,6 +62,12 @@ def _run_guarded(team_id: str, task_id: int) -> None:
     finally:
         with _running_lock:
             _running.discard((team_id, task_id))
+    if _pending_rerun.pop((team_id, task_id), False):
+        from app.commander import team_runner
+        try:
+            team_runner.start_run(team_id, task_id, "Nexarch", retry=True)
+        except teams.TeamError as exc:
+            logger.info("ヘッドレスの再挑戦をすぐには始められませんでした（待ちに戻します）: %s", exc)
 
 
 def _env() -> dict[str, str]:
@@ -130,11 +137,21 @@ def run_checks(team_id: str, task_id: int) -> dict:
     """checks を順に実行して結果を書く（同期。テストは直接呼ぶ）。結果の dict を返す。"""
     with teams._lock:
         task = teams._find_task(teams._find_team(teams._load(), team_id), task_id)
+        team = teams._find_team(teams._load(), team_id)
         commands = list(task.get("checks") or [])
         sid = task.get("assignee") or ""
+        member = teams.find_member(team, sid) if sid else None
+        headless = member is not None and teams.is_headless(member)
+        team_dir = str(team.get("workdir") or "")
     if not commands:
         return {}
-    cwd = _workdir_for(sid) if sid else None
+    if headless:  # ヘッドレスの担当はチームの作業場所で確かめる
+        try:
+            cwd = workdir.resolve_dir(team_dir) if team_dir else None
+        except (OSError, ValueError):
+            cwd = None
+    else:
+        cwd = _workdir_for(sid) if sid else None
     if cwd is None:
         result = {"status": "error", "ran_at": teams._now(), "results": [],
                   "message": "実行できませんでした（作業フォルダが分からない・許可の外）"}
@@ -187,6 +204,9 @@ def _finish(team_id: str, task_id: int, result: dict) -> None:
         if task.get("status") != "review":
             return  # 差し戻し・合格などで状況が変わった。古い結果は捨てる
         task["checks_result"] = result
+        member = teams.find_member(team, str(task.get("assignee") or ""))
+        headless = member is not None and teams.is_headless(member)
+        rerun: tuple[str] | None = None
         label = {"passed": "合格", "failed": "不合格", "error": "実行できず"}[result["status"]]
         teams._event(task, f"確認: {label}", "Nexarch")
         if result["status"] == "failed":
@@ -194,12 +214,20 @@ def _finish(team_id: str, task_id: int, result: dict) -> None:
             if attempts < teams.MAX_RETRIES:
                 text = _retry_text(task, attempts + 1, result)
                 try:
-                    manager.inject_input(task.get("assignee") or "", text, submit=True)
+                    if headless:  # 排他の外で実行を始める（下）。新しい会話なので前回の報告を添える
+                        previous = (task.get("report") or {}).get("summary") if isinstance(task.get("report"), dict) else ""
+                        if previous:
+                            text = f"前回の報告: {previous}\n{text}"
+                    else:
+                        manager.inject_input(task.get("assignee") or "", text, submit=True)
                 except (KeyError, OSError, RuntimeError, ValueError) as exc:
                     teams._event(task, f"自動で直させる送信ができませんでした: {exc}", "Nexarch")
                 else:
                     task["attempts"] = attempts + 1
-                    task["status"] = "doing"
+                    task["status"] = "todo" if headless else "doing"
+                    if headless:
+                        task["resume_note"] = text
+                        rerun = (text,)
                     for key in ("stalled_at", "limited_at", "closed_noted", "notified"):
                         task.pop(key, None)
                     teams._event(task, f"自動で再挑戦 {attempts + 1}/{teams.MAX_RETRIES}", "Nexarch")
@@ -214,6 +242,8 @@ def _finish(team_id: str, task_id: int, result: dict) -> None:
                                          "message": team_watch.message_for(task, team_watch.KIND_BLOCKED, "")}
         teams._save(all_teams)
     _audit(team_id, task_id, result)
+    if rerun is not None:
+        _pending_rerun[(team_id, task_id)] = True
     if blocked_event:
         try:
             asyncio.run(team_watch.send(blocked_event["title"], blocked_event["message"]))

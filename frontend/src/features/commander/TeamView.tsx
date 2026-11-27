@@ -4,11 +4,12 @@
  * 「報告を取り込む」で画面の「完了報告:」を読む（LLM なし）。主操作は「＋ タスク」の 1 つ、
  * メンバー・チームの操作はその他メニューへ。モバイル（〜767px）は列を縦に並べる。 */
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchTeams, putTaskReport,
-  ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, TEAM_ROLES, updateTask, updateTeam,
-  type CommanderConsole, type CommanderState, type TaskStatus, type Team, type TeamRole, type TeamTask,
+  collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
+  ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, stopTask, TEAM_ROLES, updateTask, updateTeam,
+  type CommanderConsole, type CommanderState, type RunUsage, type TaskStatus, type Team, type TeamMember, type TeamRole, type TeamTask,
 } from "../../api/commander";
 import {
   BottomSheet, ConfirmDialog, DropdownMenu, EmptyState, IconButton, primaryButtonClass, secondaryButtonClass, Skeleton,
@@ -48,6 +49,31 @@ const STATE_DOT: Record<CommanderState, string> = {
   working: "bg-blue-500 animate-pulse", waiting: "bg-emerald-500", limited: "bg-amber-500", error: "bg-red-500", exited: "bg-zinc-400",
 };
 
+const HEADLESS_CLIS: ReadonlyArray<readonly [string, string]> = [["claude", "Claude Code"], ["codex", "Codex"], ["opencode", "OpenCode"]];
+const RUN_RESULT_LABEL: Record<string, string> = {
+  running: "実行中", sent: "送信", ok: "完了", reported: "報告あり", failed: "失敗", limited: "上限で停止", stopped: "止めた",
+  interrupted: "中断", replaced: "入れ替え", write_failed: "書き込みがすべて失敗",
+};
+
+function fmtSeconds(value: number | null | undefined): string {
+  if (value == null) return "";
+  const s = Math.max(0, Math.round(value));
+  return s >= 60 ? `${Math.floor(s / 60)}分${s % 60}秒` : `${s}秒`;
+}
+function fmtUsage(u: RunUsage | null | undefined): string {
+  if (!u) return "";
+  const tokens = u.input_tokens + u.output_tokens;
+  const parts = [] as string[];
+  if (tokens) parts.push(`${tokens.toLocaleString()} トークン`);
+  if (u.cost_usd) parts.push(`$${u.cost_usd.toFixed(2)}`);
+  return parts.join("・");
+}
+function fmtClock(epoch: number): string {
+  const d = new Date(epoch * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+const isHeadless = (m: TeamMember | undefined) => m?.kind === "headless";
+
 function stateOf(item: CommanderConsole): CommanderState {
   return item.commander_state ?? (item.alive ? "waiting" : "exited");
 }
@@ -67,6 +93,8 @@ export function TeamView({
   });
   const [membersSheet, setMembersSheet] = useState(false);
   const [briefSheet, setBriefSheet] = useState(false);
+  const [fallbackSheet, setFallbackSheet] = useState(false);
+  const [parallelSheet, setParallelSheet] = useState(false);
   const [taskSheet, setTaskSheet] = useState(false);
   const [newTeamSheet, setNewTeamSheet] = useState(false);
   const [openTask, setOpenTask] = useState<number | null>(null);
@@ -80,12 +108,15 @@ export function TeamView({
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["commander-teams"] });
   const consoleOf = (sid: string) => consoles.find((c) => c.id === sid);
+  const headlessName = (m: TeamMember) => `${cliName(m.cli ?? "")}${m.label ? `・${m.label}` : ""}`;
   const consoleName = (sid: string) => {
+    const member = team?.members.find((m) => memberKey(m) === sid);
+    if (member && isHeadless(member)) return headlessName(member);
     const item = consoleOf(sid);
     if (!item) return "閉じたコンソール";
     return `${cliName(item.commander_cli)}${item.commander_label ? `・${item.commander_label}` : ""}`;
   };
-  const roleOf = (t: Team, sid: string) => t.members.find((m) => m.session_id === sid)?.role;
+  const roleOf = (t: Team, sid: string) => t.members.find((m) => memberKey(m) === sid)?.role;
 
   if (isLoading) return <Skeleton className="h-24" />;
 
@@ -130,6 +161,26 @@ export function TeamView({
       show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
     }
   };
+  const toggleOnLimit = async () => {
+    const next = team.on_limit === "wait" ? "handoff" : "wait";
+    try {
+      await updateTeam(team.id, { on_limit: next });
+      refresh();
+      show(next === "handoff" ? "上限で止まったら別の担い手へ引き継ぎます" : "上限で止まったら回復を待ちます");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
+  const toggleSandbox = async () => {
+    const next = team.codex_without_sandbox === false;
+    try {
+      await updateTeam(team.id, { codex_without_sandbox: next });
+      refresh();
+      show(next ? "Codex のサンドボックスが使えなければ、サンドボックスなしで動かします" : "Codex のサンドボックスが使えなければ止めます");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const current = team.tasks.find((t) => t.id === openTask);
 
   return (
@@ -158,6 +209,18 @@ export function TeamView({
             },
             { label: "チームの前提", onSelect: () => setBriefSheet(true) },
             {
+              label: team.on_limit === "wait" ? "上限で止まったら: 回復を待つ（引き継ぐにする）" : "上限で止まったら: 別の担い手へ引き継ぐ（回復を待つにする）",
+              onSelect: () => void toggleOnLimit(),
+            },
+            {
+              label: team.codex_without_sandbox === false
+                ? "Codex のサンドボックスが使えないとき: 止める（サンドボックスなしで動かすにする）"
+                : "Codex のサンドボックスが使えないとき: サンドボックスなしで動かす（止めるにする）",
+              onSelect: () => void toggleSandbox(),
+            },
+            { label: "候補の順番", onSelect: () => setFallbackSheet(true) },
+            { label: "同時並列の設定", onSelect: () => setParallelSheet(true) },
+            {
               label: team.reset_before_dispatch === false ? "送る前に会話をリセット: オフ（オンにする）" : "送る前に会話をリセット: オン（オフにする）",
               onSelect: () => void toggleReset(),
             },
@@ -177,21 +240,47 @@ export function TeamView({
         ) : (
           <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {team.members.map((m) => {
-              const item = consoleOf(m.session_id);
+              const key = memberKey(m);
+              if (isHeadless(m)) {
+                const mine = team.tasks.filter((t) => t.assignee === key);
+                const mstate = mine.some((t) => t.run?.status === "running") ? "working" : mine.some((t) => t.status === "doing" && t.run?.status === "limited") ? "limited" : "waiting";
+                return (
+                  <li key={key} data-team-member data-team-member-kind="headless" className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="flex min-h-11 w-full min-w-0 items-center gap-2">
+                      <span aria-hidden className={`h-2.5 w-2.5 shrink-0 rounded-full ${STATE_DOT[mstate]}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <strong className="min-w-0 truncate text-sm">{headlessName(m)}</strong>
+                          <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>
+                          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">ヘッドレス</span>
+                          {m.no_sandbox && (
+                            <span data-team-no-sandbox className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">サンドボックスなし</span>
+                          )}
+                        </span>
+                        <span data-team-member-state={mstate} className={`mt-0.5 block text-[11px] font-semibold ${STATE_COLOR[mstate]}`}>
+                          {mstate === "working" ? "実行中" : mstate === "limited" ? "上限で停止" : "待機中（画面なし）"}
+                        </span>
+                        {m.no_sandbox && <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
+                      </span>
+                    </div>
+                  </li>
+                );
+              }
+              const item = consoleOf(m.session_id ?? "");
               const state = item ? stateOf(item) : null;
               return (
-                <li key={m.session_id} data-team-member className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900">
+                <li key={key} data-team-member className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 dark:border-zinc-800 dark:bg-zinc-900">
                   <button
                     type="button"
                     disabled={!item}
-                    onClick={() => onOpenConsole(m.session_id)}
-                    aria-label={`${consoleName(m.session_id)}を開く`}
+                    onClick={() => onOpenConsole(key)}
+                    aria-label={`${consoleName(key)}を開く`}
                     className="flex min-h-11 w-full min-w-0 items-center gap-2 text-left disabled:opacity-60"
                   >
                     <span aria-hidden className={`h-2.5 w-2.5 shrink-0 rounded-full ${state ? STATE_DOT[state] : "bg-zinc-400"}`} />
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <strong className="min-w-0 truncate text-sm">{consoleName(m.session_id)}</strong>
+                        <strong className="min-w-0 truncate text-sm">{consoleName(key)}</strong>
                         <span className="shrink-0 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold text-accent-700 dark:bg-accent-900/30 dark:text-accent-300">{ROLE_LABEL[m.role]}</span>
                       </span>
                       <span data-team-member-state={state ?? "closed"} className={`mt-0.5 block text-[11px] font-semibold ${STATE_COLOR[state ?? "closed"]}`}>
@@ -206,6 +295,25 @@ export function TeamView({
           </ul>
         )}
       </section>
+
+      <div className="mb-3 grid min-w-0 gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+        <p data-team-parallel>
+          <span className="font-semibold">同時に動いている数</span>{" "}
+          <span className="num">{team.parallel?.running ?? 0}／{team.parallel?.max ?? team.max_parallel ?? 3}</span>
+          <span className="ml-2">待ち <span className="num">{team.parallel?.waiting ?? 0}</span></span>
+          {team.auto_run === false && <span className="ml-2 text-amber-700 dark:text-amber-400">自動の割り当て: オフ</span>}
+          <span className="ml-2 text-zinc-500">{team.on_limit === "wait" ? "上限: 回復を待つ" : "上限: 別の担い手へ引き継ぐ"}</span>
+        </p>
+        {team.workdir && (
+          <p data-team-workdir className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <span className="font-semibold">作業場所</span>
+            <span className="min-w-0 truncate" title={team.workdir}>{team.workdir_name || team.workdir_folder}</span>
+            {team.workdir_folder && (
+              <Link to={`/project-lab?project=${encodeURIComponent(team.workdir_folder)}`} className="font-semibold text-accent-600 underline dark:text-accent-400">Project Lab で開く</Link>
+            )}
+          </p>
+        )}
+      </div>
 
       <div className="grid min-w-0 gap-3 md:grid-cols-4">
         {COLUMNS.map((col) => {
@@ -239,12 +347,25 @@ export function TeamView({
                         {task.unverified && <span data-team-unverified className={UNVERIFIED_CLASS}>未検証</span>}
                         {task.status === "doing" && task.stalled_at && <span data-team-stalled className={WARN_CLASS}>止まった（報告なし）</span>}
                         {task.status === "doing" && task.limited_at && <span data-team-limited className={WARN_CLASS}>上限で停止</span>}
+                        {task.run?.status === "running" && (
+                          <span data-team-running className="rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                            実行中（ヘッドレス）{task.run.elapsed != null ? `・${fmtSeconds(task.run.elapsed)}` : ""}
+                          </span>
+                        )}
+                        {task.status === "doing" && task.wait_until && (
+                          <span data-team-waiting className={WARN_CLASS}>回復を待つ（〜{fmtClock(task.wait_until)}）</span>
+                        )}
                         {task.report_ready && <span data-team-report-ready className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">報告あり</span>}
                         <span className="min-w-0 truncate text-zinc-500 dark:text-zinc-400">
                           {task.assignee ? `${roleOf(team, task.assignee) ? ROLE_LABEL[roleOf(team, task.assignee)!] + "・" : ""}${consoleName(task.assignee)}` : "担当なし"}
                         </span>
                         {task.assignee_state === "closed" && <span className="font-semibold text-red-600 dark:text-red-400">コンソールが閉じています</span>}
                       </span>
+                      {task.run?.status === "running" && (task.run.last_line || task.run.usage) && (
+                        <span data-team-run-line className="mt-1 block min-w-0 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {task.run.last_line}{fmtUsage(task.run.usage) ? `・${fmtUsage(task.run.usage)}` : ""}
+                        </span>
+                      )}
                       {task.warnings.length > 0 && (
                         <span data-team-warning className="mt-1 block break-words text-[11px] text-amber-700 dark:text-amber-400">{task.warnings.join(" / ")}</span>
                       )}
@@ -259,6 +380,8 @@ export function TeamView({
 
       {membersSheet && <MembersSheet team={team} consoles={consoles} cliName={cliName} onClose={() => setMembersSheet(false)} onSaved={refresh} />}
       {briefSheet && <BriefSheet team={team} onClose={() => setBriefSheet(false)} onSaved={refresh} />}
+      {fallbackSheet && <FallbackSheet team={team} name={consoleName} onClose={() => setFallbackSheet(false)} onSaved={refresh} />}
+      {parallelSheet && <ParallelSheet team={team} onClose={() => setParallelSheet(false)} onSaved={refresh} />}
       {taskSheet && <TaskCreateSheet team={team} consoleName={consoleName} onClose={() => setTaskSheet(false)} onSaved={refresh} />}
       {newTeamSheet && <NewTeamSheet onClose={() => setNewTeamSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
       {current && (
@@ -341,14 +464,27 @@ function MembersSheet({
 }) {
   const show = useToasts((s) => s.show);
   const [roles, setRoles] = useState<Record<string, TeamRole | "">>(
-    () => Object.fromEntries(team.members.map((m) => [m.session_id, m.role])),
+    () => Object.fromEntries(team.members.filter((m) => !isHeadless(m)).map((m) => [m.session_id ?? "", m.role])),
   );
+  const [headless, setHeadless] = useState<TeamMember[]>(() => team.members.filter(isHeadless));
+  const [addCli, setAddCli] = useState("claude");
+  const [addAccount, setAddAccount] = useState("default");
+  const [addRole, setAddRole] = useState<TeamRole>("developer");
+  const [addLabel, setAddLabel] = useState("");
   const [busy, setBusy] = useState(false);
-  const leaders = Object.values(roles).filter((r) => r === "leader").length;
+  const accountsQuery = useQuery({ queryKey: ["commander-accounts", addCli], queryFn: () => fetchAccounts(addCli) });
+  const leaders = Object.values(roles).filter((r) => r === "leader").length + headless.filter((m) => m.role === "leader").length;
+  const add = () => {
+    setHeadless([...headless, { kind: "headless", cli: addCli, account: addAccount, role: addRole, label: addLabel.trim() }]);
+    setAddLabel("");
+  };
   const save = async () => {
     setBusy(true);
     try {
-      const members = Object.entries(roles).filter(([, r]) => r).map(([session_id, role]) => ({ session_id, role: role as TeamRole }));
+      const members: TeamMember[] = [
+        ...Object.entries(roles).filter(([, r]) => r).map(([session_id, role]) => ({ session_id, role: role as TeamRole })),
+        ...headless.map((m) => ({ kind: "headless" as const, id: m.id, cli: m.cli, account: m.account, role: m.role, label: m.label ?? "" })),
+      ];
       await setTeamMembers(team.id, members);
       onSaved();
       show("メンバーを保存しました");
@@ -363,7 +499,7 @@ function MembersSheet({
       <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
         Nexarch のコンソールに役割を付けます（リーダーは 1 人まで）。役割を「なし」にするとメンバーから外れます。
       </p>
-      {consoles.length === 0 && <p className="mt-3 text-sm text-zinc-500">コンソールがありません。先に「コンソール」で開いてください。</p>}
+      {consoles.length === 0 && <p className="mt-3 text-sm text-zinc-500">コンソールがありません。先に「コンソール」で開くか、下でヘッドレスを足してください。</p>}
       <ul className="mt-3 grid gap-2">
         {consoles.map((item) => (
           <li key={item.id} className="flex min-w-0 items-center gap-2">
@@ -384,7 +520,135 @@ function MembersSheet({
           </li>
         ))}
       </ul>
+
+      <section data-team-headless-section className="mt-4 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+        <h4 className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">ヘッドレス（画面なし）</h4>
+        <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          CLI と接続だけで、タスクごとに新しい会話で 1 回実行します。結果は自動で板に入ります。
+        </p>
+        <ul className="mt-2 grid gap-2">
+          {headless.map((m, i) => (
+            <li key={m.id ?? `new-${i}`} data-team-headless-row className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm">
+                {cliName(m.cli ?? "")}（{m.account}）{m.label ? `・${m.label}` : ""}・{ROLE_LABEL[m.role]}
+              </span>
+              <button
+                type="button" onClick={() => setHeadless(headless.filter((_, j) => j !== i))}
+                aria-label={`${cliName(m.cli ?? "")}${m.label ? `・${m.label}` : ""}を外す`} className={`${secondaryButtonClass} shrink-0`}
+              >外す</button>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-2 grid gap-2 rounded-xl border border-dashed border-zinc-300 p-2.5 dark:border-zinc-700">
+          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300" htmlFor="hl-cli">CLI</label>
+          <select id="hl-cli" value={addCli} onChange={(e) => { setAddCli(e.target.value); setAddAccount("default"); }} className={inputClass}>
+            {HEADLESS_CLIS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select>
+          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300" htmlFor="hl-account">アカウント・接続</label>
+          <select id="hl-account" value={addAccount} onChange={(e) => setAddAccount(e.target.value)} className={inputClass}>
+            {(accountsQuery.data ?? [{ name: "default", label: "", title: "", default: true, logged_in: null }]).map((a) => (
+              <option key={a.name} value={a.name}>{a.label || a.title || (a.default ? "既定" : a.name)}</option>
+            ))}
+          </select>
+          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300" htmlFor="hl-role">役割</label>
+          <select id="hl-role" value={addRole} onChange={(e) => setAddRole(e.target.value as TeamRole)} className={inputClass}>
+            {TEAM_ROLES.map(([id, label]) => <option key={id} value={id} disabled={id === "leader" && leaders >= 1}>{label}</option>)}
+          </select>
+          <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300" htmlFor="hl-label">名前（任意）</label>
+          <input id="hl-label" value={addLabel} maxLength={40} onChange={(e) => setAddLabel(e.target.value)} className={inputClass} />
+          <button type="button" onClick={add} className={secondaryButtonClass}>ヘッドレスのメンバーを足す</button>
+        </div>
+      </section>
       <button type="button" disabled={busy} onClick={() => void save()} className={`mt-4 w-full ${primaryButtonClass}`}>保存</button>
+    </BottomSheet>
+  );
+}
+
+function FallbackSheet({
+  team, name, onClose, onSaved,
+}: { team: Team; name: (key: string) => string; onClose: () => void; onSaved: () => void }) {
+  const show = useToasts((s) => s.show);
+  const all = team.members.map(memberKey);
+  const saved = team.fallback ?? [];
+  const [order, setOrder] = useState<string[]>(() => [...saved.filter((k) => all.includes(k)), ...all.filter((k) => !saved.includes(k))]);
+  const [busy, setBusy] = useState(false);
+  const move = (i: number, d: number) => {
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    setOrder(next);
+  };
+  const save = async (value: string[]) => {
+    setBusy(true);
+    try {
+      await updateTeam(team.id, { fallback: value });
+      onSaved();
+      show(value.length ? "候補の順番を保存しました" : "候補の順番を既定に戻しました");
+      onClose();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存できませんでした", "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <BottomSheet title="候補の順番" onClose={onClose}>
+      <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+        上限で止まったとき、上から順に空いている担い手へ引き継ぎます。既定は「別の CLI → 同じ CLI の別アカウント → ローカル」です。
+      </p>
+      <ol className="mt-3 grid gap-2">
+        {order.map((key, i) => (
+          <li key={key} data-team-fallback-row className="flex min-w-0 items-center gap-2">
+            <span className="num w-5 shrink-0 text-xs text-zinc-400">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate text-sm">{name(key)}</span>
+            <button type="button" aria-label={`${name(key)}を上へ`} disabled={i === 0} onClick={() => move(i, -1)} className={`${secondaryButtonClass} shrink-0`}>↑</button>
+            <button type="button" aria-label={`${name(key)}を下へ`} disabled={i === order.length - 1} onClick={() => move(i, 1)} className={`${secondaryButtonClass} shrink-0`}>↓</button>
+          </li>
+        ))}
+      </ol>
+      {order.length === 0 && <p className="mt-3 text-sm text-zinc-500">メンバーがいません。</p>}
+      <button type="button" disabled={busy || order.length === 0} onClick={() => void save(order)} className={`mt-4 w-full ${primaryButtonClass}`}>保存</button>
+      <button type="button" disabled={busy} onClick={() => void save([])} className={`mt-2 w-full ${secondaryButtonClass}`}>既定の順に戻す</button>
+    </BottomSheet>
+  );
+}
+
+function ParallelSheet({ team, onClose, onSaved }: { team: Team; onClose: () => void; onSaved: () => void }) {
+  const show = useToasts((s) => s.show);
+  const [max, setMax] = useState(team.max_parallel ?? 3);
+  const [local, setLocal] = useState(team.local_parallel ?? 1);
+  const [auto, setAuto] = useState(team.auto_run !== false);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await updateTeam(team.id, { max_parallel: max, local_parallel: local, auto_run: auto });
+      onSaved();
+      show("同時並列の設定を保存しました");
+      onClose();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存できませんでした", "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <BottomSheet title="同時並列の設定" onClose={onClose}>
+      <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+        担い手ごとに同時に 1 つ。担当ファイルが重なるタスクは、片方が終わるまで待ちます。
+      </p>
+      <label className={fieldLabel} htmlFor="par-max">同時に走らせるタスクの数（1〜8）</label>
+      <input id="par-max" type="number" min={1} max={8} value={max} onChange={(e) => setMax(Number(e.target.value))} className={inputClass} />
+      <label className={fieldLabel} htmlFor="par-local">ローカルの担い手の同時の数（1〜8）</label>
+      <input id="par-local" type="number" min={1} max={8} value={local} onChange={(e) => setLocal(Number(e.target.value))} className={inputClass} />
+      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">ローカル LLM は 1 枚の GPU を共有します。モデルの同時処理の枠に合わせて上げてください。</p>
+      <label className="mt-3 flex min-h-11 items-center gap-2 text-sm">
+        <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+        待ちのタスクを空いた担い手へ自動で割り当てる
+      </label>
+      <button
+        type="button" disabled={busy || max < 1 || max > 8 || local < 1 || local > 8}
+        onClick={() => void save()} className={`mt-4 w-full ${primaryButtonClass}`}
+      >保存</button>
     </BottomSheet>
   );
 }
@@ -394,13 +658,13 @@ function AssigneeSelect({
 }: {
   team: Team; value: string; consoleName: (sid: string) => string; onChange: (sid: string) => void; id: string;
 }) {
-  const roleText = (sid: string) => { const r = team.members.find((m) => m.session_id === sid)?.role; return r ? `${ROLE_LABEL[r]}・` : ""; };
-  const inList = !value || team.members.some((m) => m.session_id === value);
+  const roleText = (sid: string) => { const r = team.members.find((m) => memberKey(m) === sid)?.role; return r ? `${ROLE_LABEL[r]}・` : ""; };
+  const inList = !value || team.members.some((m) => memberKey(m) === value);
   return (
     <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
       <option value="">担当なし</option>
       {!inList && <option value={value}>{consoleName(value)}（メンバー外）</option>}
-      {team.members.map((m) => <option key={m.session_id} value={m.session_id}>{roleText(m.session_id)}{consoleName(m.session_id)}</option>)}
+      {team.members.map((m) => <option key={memberKey(m)} value={memberKey(m)}>{roleText(memberKey(m))}{consoleName(memberKey(m))}{isHeadless(m) ? "（ヘッドレス）" : ""}</option>)}
     </select>
   );
 }
@@ -480,13 +744,15 @@ function TaskSheet({
   };
   const pass = () => run(() => updateTask(team.id, task.id, { status: "done" }), "合格にしました");
   const closed = task.assignee_state === "closed";
-  const canDispatch = Boolean(task.assignee) && !closed && task.status !== "done";
-  const canCollect = Boolean(task.assignee) && !closed && (task.status === "doing" || task.status === "review");
+  const running = task.run?.status === "running";
+  const canDispatch = Boolean(task.assignee) && !closed && task.status !== "done" && !running;
+  const headlessAssignee = isHeadless(team.members.find((m) => memberKey(m) === task.assignee));
+  const canCollect = Boolean(task.assignee) && !closed && !headlessAssignee && (task.status === "doing" || task.status === "review");
   const role = task.assignee ? roleOf(task.assignee) : undefined;
   const assigneeState = task.assignee_state;
 
   // 主操作は 1 つ: 状態に応じて「合格」「報告を取り込む」「担当へ送る」のどれか
-  const primary = task.status === "review" ? "pass" : task.status === "doing" ? "collect" : "dispatch";
+  const primary = task.status === "review" ? "pass" : task.status === "doing" ? (headlessAssignee ? "none" : "collect") : "dispatch";
 
   return (
     <BottomSheet title={`#${task.id} ${task.title}`} onClose={onClose}>
@@ -496,6 +762,7 @@ function TaskSheet({
         {task.unverified && <span data-team-unverified className="ml-2 text-orange-700 dark:text-orange-300">未検証</span>}
         {task.status === "doing" && task.stalled_at && <span data-team-stalled className="ml-2 text-amber-700 dark:text-amber-400">止まった（報告なし）</span>}
         {task.status === "doing" && task.limited_at && <span data-team-limited className="ml-2 text-amber-700 dark:text-amber-400">上限で停止</span>}
+        {running && <span data-team-running className="ml-2 text-blue-600 dark:text-blue-400">実行中（ヘッドレス）</span>}
         {task.status === "blocked" && <span data-team-blocked className="ml-2 text-red-600 dark:text-red-400">確認が通らず、自動で直せませんでした</span>}
         {task.checks_result && <span data-team-checks={task.checks_result.status} className="ml-2">確認: {CHECK_LABEL[task.checks_result.status]}</span>}
         {Boolean(task.attempts) && <span className="ml-2 font-normal">自動で直させた回数 {task.attempts}/2</span>}
@@ -566,7 +833,7 @@ function TaskSheet({
         <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px]">
           <span className="text-zinc-500">{role ? ROLE_LABEL[role] : "メンバー外"}</span>
           {assigneeState && <span className={`font-semibold ${STATE_COLOR[assigneeState]}`}>{STATE_TEXT[assigneeState]}</span>}
-          {!closed && (
+          {!closed && !headlessAssignee && (
             <button type="button" onClick={() => { onClose(); onOpenConsole(task.assignee); }} className="font-semibold text-accent-600 underline dark:text-accent-400">コンソールを開く</button>
           )}
         </p>
@@ -583,6 +850,49 @@ function TaskSheet({
         </div>
       )}
 
+      {(task.run || (task.runs ?? []).length > 0) && (
+        <section data-team-run-panel className="mt-3 rounded-xl border border-zinc-200 p-2.5 text-sm dark:border-zinc-700">
+          <p className="text-xs font-semibold text-zinc-500">実行</p>
+          {task.run && (
+            <div data-team-run-status={task.run.status} className="mt-1 text-xs">
+              <p className="font-semibold">
+                {task.run.status === "running" ? "実行中（ヘッドレス）" : RUN_RESULT_LABEL[task.run.status === "finished" ? "ok" : task.run.status] ?? task.run.status}
+                {" "}
+                <span className="font-normal text-zinc-500">
+                  {fmtSeconds(task.run.elapsed ?? (task.run.ended_at ? task.run.ended_at - task.run.started_at : undefined))}
+                </span>
+              </p>
+              {task.run.sandbox === "none" && <p data-team-run-sandbox className="mt-0.5 text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</p>}
+              {task.run.failed_note && <p data-team-run-failed className="mt-0.5 text-red-600 dark:text-red-400">{task.run.failed_note}</p>}
+              {task.run.last_line && <p data-team-run-line className="mt-0.5 break-words text-zinc-600 dark:text-zinc-300">最後の行: {task.run.last_line}</p>}
+              {task.run.usage && fmtUsage(task.run.usage) && <p data-team-run-usage className="mt-0.5 text-zinc-500">使用量: {fmtUsage(task.run.usage)}</p>}
+              {task.run.status === "limited" && task.wait_until && <p className="mt-0.5 text-amber-700 dark:text-amber-400">回復を待っています（〜{fmtClock(task.wait_until)}）</p>}
+              {task.run.tail && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-[11px] text-zinc-500">出力の最後</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-zinc-100 p-2 font-mono text-[11px] dark:bg-zinc-800">{task.run.tail}</pre>
+                </details>
+              )}
+            </div>
+          )}
+          {(task.runs ?? []).length > 0 && (
+            <ol data-team-runs className="mt-2 grid gap-1 text-xs">
+              {(task.runs ?? []).map((r) => (
+                <li key={r.n} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                  <span className="num text-zinc-400">{r.n}</span>
+                  <span className="min-w-0 break-words font-semibold">{r.label || r.cli}</span>
+                  <span className="text-zinc-500">{r.kind === "headless" ? "ヘッドレス" : "画面"}・{r.cli}{r.account && r.account !== "default" ? `（${r.account}）` : ""}</span>
+                  <span>{RUN_RESULT_LABEL[r.result] ?? r.result}</span>
+                  {r.sandbox === "none" && <span className="text-amber-700 dark:text-amber-400">サンドボックスなし（この機械では使えない）</span>}
+                  {r.seconds != null && <span className="text-zinc-500">{fmtSeconds(r.seconds)}</span>}
+                  {fmtUsage(r.usage) && <span className="text-zinc-500">{fmtUsage(r.usage)}</span>}
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
+
       <div className="sheet-actions sticky bottom-0 -mx-5 mt-4 flex flex-wrap gap-2 border-t border-zinc-200 bg-white px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
         {task.status === "review" && (
           <button type="button" disabled={busy} onClick={() => (task.unverified ? setConfirmPass(true) : void pass())}
@@ -593,8 +903,12 @@ function TaskSheet({
             className={primary === "collect" ? primaryButtonClass : secondaryButtonClass}>報告を取り込む</button>
         )}
         {canDispatch && (
-          <button type="button" disabled={busy} onClick={() => void run(() => dispatchTask(team.id, task.id), "担当へ送りました")}
-            className={primary === "dispatch" ? primaryButtonClass : secondaryButtonClass}>担当へ送る</button>
+          <button type="button" disabled={busy} onClick={() => void run(() => dispatchTask(team.id, task.id), headlessAssignee ? "実行を始めました" : "担当へ送りました")}
+            className={primary === "dispatch" ? primaryButtonClass : secondaryButtonClass}>{headlessAssignee ? "実行する" : "担当へ送る"}</button>
+        )}
+        {running && (
+          <button type="button" disabled={busy} onClick={() => void run(() => stopTask(team.id, task.id), "止めています")}
+            className={secondaryButtonClass}>止める</button>
         )}
         {(task.status === "review" || task.status === "doing") && (
           <button type="button" disabled={busy} onClick={() => void run(() => updateTask(team.id, task.id, { status: "rejected" }), "差し戻しました")}

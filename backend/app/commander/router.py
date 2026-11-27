@@ -395,6 +395,12 @@ class _TeamUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     brief: str | None = Field(default=None, max_length=20000)
     reset_before_dispatch: bool | None = None
+    on_limit: str | None = Field(default=None, max_length=20)
+    fallback: list[str] | None = Field(default=None, max_length=60)
+    max_parallel: int | None = None
+    local_parallel: int | None = None
+    auto_run: bool | None = None
+    codex_without_sandbox: bool | None = None
 
 
 class _TeamMembers(BaseModel):
@@ -459,7 +465,9 @@ def update_team(
 ):
     team = _team_call(teams.update_team, team_id, body.model_dump())
     _team_audit(db, user, request, "update", team_id, name=team["name"], brief_length=len(team.get("brief") or ""),
-                reset_before_dispatch=team.get("reset_before_dispatch", True))
+                reset_before_dispatch=team.get("reset_before_dispatch", True), on_limit=team.get("on_limit"),
+                max_parallel=team.get("max_parallel"), local_parallel=team.get("local_parallel"),
+                auto_run=team.get("auto_run"))
     return team
 
 
@@ -532,6 +540,31 @@ def dispatch_team_task(
     task = _team_call(teams.dispatch_task, team_id, task_id, user.username)
     _team_audit(db, user, request, "task.dispatch", team_id, task=task_id, assignee=task["assignee"])
     return task
+
+
+@router.post("/teams/{team_id}/tasks/{task_id}/run")
+def run_team_task(
+    team_id: str, task_id: int, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(require_permission("terminal.use")),
+):
+    """担当（ヘッドレス）でタスクを実行する。担当が画面のコンソールなら送り込みと同じ。"""
+    task = _team_call(teams.dispatch_task, team_id, task_id, user.username)
+    _team_audit(db, user, request, "task.run", team_id, task=task_id, assignee=task["assignee"])
+    return task
+
+
+@router.post("/teams/{team_id}/tasks/{task_id}/stop")
+def stop_team_task(
+    team_id: str, task_id: int, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(require_permission("terminal.use")),
+):
+    """走っているヘッドレスの実行を止める。"""
+    from app.commander import team_runner
+
+    if not team_runner.stop_run(team_id, task_id):
+        raise HTTPException(status_code=409, detail="実行中ではありません")
+    _team_audit(db, user, request, "task.stop", team_id, task=task_id)
+    return {"ok": True}
 
 
 @router.post("/teams/{team_id}/tasks/{task_id}/collect")
