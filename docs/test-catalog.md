@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 263 ファイル、2593 テスト（目的の未記入 93 ファイル）
+- backend: 264 ファイル、2602 テスト（目的の未記入 93 ファイル）
 - E2E: 145 spec、319 テスト
 
 ## backend（backend/tests）
@@ -695,6 +695,7 @@
 - `test_cli_list_reports_installed_state` — /clis は導入済みか・アカウントを分けられるかを返す（gemini は分けられない）。
 - `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
 - `test_account_labels_including_the_default_account` — アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
+- `test_login_name_from_claude_metadata_and_codex_status` — 既定のアカウントの見せ方を、ログインしている名前にする（Claude はメール、Codex はログインの方法）。
 
 ### backend/tests/test_commander_consoles.py
 
@@ -743,6 +744,19 @@
 - `test_claude_usage_reads_and_expires_windows`
 - `test_codex_usage_from_session_records` — Codex は sessions の最新の rollout の最後の rate_limits（primary=5 時間・secondary=週）。
 - `test_account_statusline_toggle_keeps_other_settings_and_never_overwrites` — アカウントの Claude の settings.json に使用率の statusline を足す・外す。ほかの設定は残し、利用者の別の
+
+### backend/tests/test_commander_workdir.py
+
+目的: Nexarch の作業フォルダの選択（app/commander/workdir.py・/commander/workdir/* API）の試験。 目的: コンソールの作業フォルダに選べるのは commander.workdir_roots（既定 /data1tb・/data2tb）の 中だけで、ルートの外・シンボリックリンクで外へ出る道・ControlDeck の data_dir の中・ files の拒否の場所は、一覧にも出さず、作らせず、コンソールも開かせないこと。 一覧はディレクトリだけ（ファイルは返さない）。 根拠: 利用者の指定（2026-11-27）「作業フォルダのルートは /data1tb, /data2tb として他は不要」。 AGENTS.md の「パスは必ず検証（symlink 脱出防止）」「秘密・DB を見せない」。 files.allowed_roots は Files 画面など他の画面の決まりなので変えず、Nexarch 専用の設定にした。
+
+- `test_roots_only_existing`
+- `test_list_directories_only_with_hidden_mark`
+- `test_outside_root_is_refused`
+- `test_symlink_escape_is_refused_and_hidden`
+- `test_data_dir_and_denied_places_are_refused`
+- `test_make_directory_audited_and_conflict`
+- `test_create_consoles_validates_with_workdir_roots`
+- `test_opencode_needs_files_allowed_root` — 作業フォルダのルートの中でも files の許可ルートの外なら、OpenCode は 400 で理由を返す。
 
 ### backend/tests/test_compaction.py
 

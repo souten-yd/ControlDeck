@@ -14,16 +14,31 @@ interface Entry {
   hidden: boolean;
 }
 
+/** 取得先の差し替え（既定は files API。Nexarch の作業フォルダは commander の API） */
+export interface FilePickerSource {
+  rootsUrl: string;
+  listUrl: string;
+  mkdirUrl: string;
+}
+
+const FILES_SOURCE: FilePickerSource = {
+  rootsUrl: "/files/roots",
+  listUrl: "/files/list",
+  mkdirUrl: "/files/directory",
+};
+
 export function FilePicker({
   mode,
   title,
   initialPath,
+  source = FILES_SOURCE,
   onSelect,
   onClose,
 }: {
   mode: "file" | "dir";
   title?: string;
   initialPath?: string;
+  source?: FilePickerSource;
   onSelect: (path: string) => void;
   onClose: () => void;
 }) {
@@ -49,7 +64,7 @@ export function FilePicker({
     setError(null);
     const target = `${path.replace(/\/+$/, "")}/${name}`;
     try {
-      await api("/files/directory", { method: "POST", json: { path: target } });
+      await api(source.mkdirUrl, { method: "POST", json: { path: target } });
       setCreating(false);
       setNewName("");
       setPath(target);
@@ -61,7 +76,7 @@ export function FilePicker({
   };
 
   useEffect(() => {
-    api<string[]>("/files/roots")
+    api<string[]>(source.rootsUrl)
       .then((r) => {
         setRoots(r);
         // 初期パスがあればそこから、ルートが1つならそこから開始
@@ -84,7 +99,7 @@ export function FilePicker({
     if (path == null) return;
     setLoading(true);
     setError(null);
-    api<{ path: string; entries: Entry[] }>(`/files/list?path=${encodeURIComponent(path)}`)
+    api<{ path: string; entries: Entry[] }>(`${source.listUrl}?path=${encodeURIComponent(path)}`)
       .then((r) => {
         setPath(r.path);
         setEntries(r.entries);

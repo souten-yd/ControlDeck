@@ -23,12 +23,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.audit import service as audit
-from app.commander import accounts, consoles
+from app.commander import accounts, consoles, workdir
 from app.database import get_db
 from app.models import User
 from app.schemas.commander import (
     AccountCreate, AccountLabel, CommanderSettingsBody, ConsoleAutoResume, ConsoleCreate, ResumeMessage,
-    UsageStatusline,
+    UsageStatusline, WorkdirPath,
 )
 from app.security.deps import require_permission
 from app.terminals.router import streams
@@ -140,6 +140,47 @@ def _warm_opencode_llm() -> None:
     task = asyncio.create_task(local_llm.ensure_ready_by_base_url(endpoint))
     _warmups.add(task)
     task.add_done_callback(_warmups.discard)
+
+
+def _workdir_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/workdir/roots")
+def workdir_roots(user: User = Depends(require_permission("terminal.use"))):
+    del user
+    return workdir.list_roots()
+
+
+@router.get("/workdir/list")
+def workdir_list(path: str, user: User = Depends(require_permission("terminal.use"))):
+    del user
+    try:
+        return workdir.list_dirs(path)
+    except (PermissionError, FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise _workdir_http(exc) from exc
+
+
+@router.post("/workdir/directory")
+def workdir_mkdir(
+    body: WorkdirPath,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    try:
+        created = workdir.make_directory(body.path)
+    except (PermissionError, FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise _workdir_http(exc) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="同じ名前があります") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"フォルダを作れません: {exc.strerror}") from exc
+    audit.record(db, "commander.workdir.mkdir", user=user, resource_type="commander_workdir",
+                 resource_id=created, request=request)
+    return {"ok": True, "path": created}
 
 
 @router.get("/consoles")

@@ -1,7 +1,7 @@
 /** 「＋ コンソール」のシート: CLI・アカウント・作業フォルダ・同時に開く数・表示名を選んで開く。
  *
  * アカウントは既定・作ったもの・その場で新しく作るから選ぶ。
- * 作業フォルダは既存の FilePicker（files API の許可ルート内）を使う。 */
+ * 作業フォルダは既存の FilePicker を commander の作業フォルダ API（/data1tb・/data2tb）で使う。 */
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,6 +12,11 @@ import { FilePicker } from "../../components/FilePicker";
 import { BottomSheet, primaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
 
+const WORKDIR_SOURCE = {
+  rootsUrl: "/commander/workdir/roots",
+  listUrl: "/commander/workdir/list",
+  mkdirUrl: "/commander/workdir/directory",
+};
 const COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 export function NewConsoleSheet({
@@ -231,6 +236,7 @@ export function NewConsoleSheet({
           mode="dir"
           title="作業フォルダを選択"
           initialPath={cwd || undefined}
+          source={WORKDIR_SOURCE}
           onSelect={(path) => {
             setCwd(path);
             setPicking(false);
