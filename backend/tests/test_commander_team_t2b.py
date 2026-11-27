@@ -16,6 +16,8 @@ import shlex
 import sys
 import time
 
+import threading
+
 import pytest
 from sqlalchemy import select
 
@@ -160,7 +162,14 @@ def test_reset_command_per_cli_then_wait_then_body(admin_client, fake, monkeypat
     sleeps: list[float] = []
     monkeypatch.setattr(teams, "RESET_WAIT", 3.0)
 
+    real_sleep = teams.time.sleep
+
     def fake_sleep(seconds):
+        # time.sleep は process 全体で差し替わるので、他の試験の残りのスレッド（ヘッドレスの実行など）の sleep は数えない
+        # （全体の実行でだけ ['', ''] になって落ちた: 2026-11-27）
+        if threading.current_thread().name.startswith("nexarch-"):
+            real_sleep(seconds)
+            return
         sleeps.append(seconds)
         fake.injected.append(("sleep", "", True))
 
