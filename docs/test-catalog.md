@@ -486,7 +486,7 @@
 - `test_nexarch_new_workspace_creates_in_codedev_and_opens_there`
 - `test_nexarch_new_workspace_refused_when_codedev_outside_roots`
 - `test_chat_workspace_per_conversation` — 会話ごとに別の作業場所。作った後は _last_code_project が同じ場所を返す（次のターンで使い回す）。
-- `test_chat_workspace_not_created_when_default_project_path_is_set`
+- `test_chat_workspace_is_created_even_when_default_project_path_is_set` — OpenCode の設定の既定の作業場所があっても、AI アシスタントの会話は会話ごとの作業場所を作る（使い回さない）。
 
 ### backend/tests/test_auto_update.py
 
