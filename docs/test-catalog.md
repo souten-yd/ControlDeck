@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 270 ファイル、2719 テスト（目的の未記入 93 ファイル）
+- backend: 271 ファイル、2736 テスト（目的の未記入 93 ファイル）
 - E2E: 147 spec、329 テスト
 
 ## backend（backend/tests）
@@ -1635,6 +1635,28 @@
 - `test_same_level_newer_first`
 - `test_update_failure_shown_and_cleared_by_next_success`
 - `test_dismiss_hides_and_cleans_after_resolution`
+
+### backend/tests/test_hub_expand.py
+
+目的: 目的: ハブの関係・概要で検索の語を広げる部品（app/knowledge/hub_expand.py）と、その使う場所（RAG・特許・Web 調査）・MCP の道具（control_deck.news_knowledge）の試験。 ハブの応答はモック（hub_link.call を差し替える。ハブ・インターネットへは通信しない）。 根拠: 2026-11-27 利用者「（ニュースハブの）関係と概要あたりは参考にすることで、検索ワードを広げるとかそういうのに利用できないか。例えば特許とかにも」。 AGENTS.md「機能を取り込む条件」に従い、効果と時間は hub_expand_eval で測り（docs/implementation-status.md）、効いた所（RAG）だけ既定オン。 守ること: - 重みは 別名 ＞ 上位・下位・置き換え ＞ 仲間・使う ＞ 概要の語。既定は 0.45 未満を足さない（測定で外れを足したため）。理由と元の Thing を付ける。 - 問いと同じ語・短すぎる語・版や hash・一般語（ハブで記事の多すぎる物・一般語の一覧）は外す。purpose=patent は製品名・社名より技術の言葉を重く。 - つながっていない・時間切れ・エラー・403（秘密の区分を許されていない）は空の結果。結果は覚える（失敗は短く）。 - 秘密の区分: 特許は常に confidential=true で問う。通常は今の会話のスコープに従う。MCP の道具は公開だけ（false）。 - 使う場所ごとに設定で入り切り（RAG の既定はオン、Web・特許はオフ）。つながっていなければオンでも呼ばない。広げても元の結果が消えない（融合）。 - MCP の道具の形・件数と大きさの上限。ハブへ呼ぶのは hub_link.call だけ（外部へ送らない）。
+
+- `test_weights_reasons_and_exclusions`
+- `test_canonical_name_is_added_when_the_query_used_an_alias`
+- `test_short_version_and_generic_words_are_dropped`
+- `test_patent_prefers_technical_words_over_product_names`
+- `test_partial_matches_are_not_seeds`
+- `test_not_linked_timeout_error_and_forbidden_are_empty`
+- `test_results_are_cached_and_failures_too`
+- `test_confidential_mark_follows_the_scope_and_patent_is_always_confidential`
+- `test_enabled_follows_settings_and_link`
+- `test_or_query_and_fusion_keep_the_original_order`
+- `test_rag_search_fuses_the_expanded_query_only_when_on`
+- `test_patent_search_widens_only_when_on_and_honours_excluded_terms`
+- `test_web_search_adds_up_to_two_queries_when_on`
+- `test_news_knowledge_tool_shape_limits_and_public_only`
+- `test_news_cards_cap_size_and_are_empty_when_not_linked`
+- `test_hub_link_call_accepts_a_short_timeout` — 検索の補助は待てないので、呼び出しごとに短い timeout を渡せる（既定の 30 秒を変えない）。
+- `test_the_module_sends_nothing_outside_the_hub` — 外へ送るのは hub_link.call だけ（httpx・requests・guarded_client を直に使わない）。
 
 ### backend/tests/test_inline_code.py
 

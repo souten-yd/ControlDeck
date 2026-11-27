@@ -103,6 +103,37 @@ async def _run_knowledge(arguments: dict[str, Any]) -> dict:
             "sources": [{"label": s["label"], "title": s["title"]} for s in built.sources]}
 
 
+NEWS_KNOWLEDGE_TOOL = "control_deck.news_knowledge"
+
+
+def _news_knowledge_tool() -> dict[str, Any]:
+    return {
+        "name": NEWS_KNOWLEDGE_TOOL,
+        "description": (
+            "ニュースハブ（QNAP）の Things（技術・製品・組織・人）のカードを引く: 概要・別名・関係（上位・下位・仲間・使う・置き換え）・主張と根拠の記事・変化と矛盾。"
+            "ニュースや技術動向の言葉の言い換え・関連語を知りたいときに使う。公開の区分だけを返す。ハブとつながっていなければ空。"
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False, "required": ["query"],
+            "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 500, "description": "探す内容。例: llama.cpp の代わりになるもの"}},
+        },
+    }
+
+
+async def _run_news_knowledge(arguments: dict[str, Any]) -> dict:
+    """ハブへは読む API だけ（hub_link.call）。区分は公開のみ。件数・大きさの上限は hub_expand.news_cards。"""
+    import asyncio as _asyncio
+
+    from app.knowledge import hub_expand
+
+    query = arguments.get("query")
+    if set(arguments) != {"query"} or not isinstance(query, str) or not query.strip() or len(query) > 500:
+        raise HTTPException(status_code=422, detail="query（1〜500 文字）だけを渡してください")
+    out = await _asyncio.to_thread(hub_expand.news_cards, query.strip())
+    return {"text": out["text"] or "関係する Things は見つかりませんでした（ハブにつながっていないか、公開の記録に無い言葉です）。", "things": out["things"], "sources": out["sources"],
+            "truncated": out.get("truncated", False)}
+
+
 # ---- Project Lab の実行の道具（P2a）。中身は project_lab の既存の関数を呼ぶだけ ----
 LAB_PROJECTS_TOOL = "control_deck.lab_projects"
 LAB_RUN_START_TOOL = "control_deck.lab_run_start"
@@ -683,6 +714,7 @@ async def list_tools(
         tools.append(_diagnostics_tool())
     if "workflows.run" in permissions:
         tools.append(_knowledge_tool())
+        tools.append(_news_knowledge_tool())
     tools.extend(_lab_tools(permissions))
     return {"tools": tools}
 
@@ -734,6 +766,10 @@ async def call_tool(
         if "workflows.run" not in permissions:
             raise HTTPException(status_code=404, detail="knowledge toolが見つかりません")
         return await _run_knowledge(body.arguments)
+    if body.name == NEWS_KNOWLEDGE_TOOL:
+        if "workflows.run" not in permissions:
+            raise HTTPException(status_code=404, detail="news knowledge toolが見つかりません")
+        return await _run_news_knowledge(body.arguments)
     if body.name == PROJECT_OUTPUT_GRANT_TOOL:
         project_id = claims.get("project_id")
         available = _project_output_tool(project_id, permissions)

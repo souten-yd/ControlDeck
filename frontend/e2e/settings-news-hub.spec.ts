@@ -5,7 +5,7 @@ import { establishSession, hasSession } from "./support/session";
  *  根拠: 2026-11-25 利用者「ControlDeck に QNAP ニュースハブとつなぐ機能」。指紋を利用者が見比べるまで使い始めない／トークン・鍵を画面に出さない／320 で崩れない。 */
 const hubSettings = {
   source: "local", sync_minutes: 5, kinds: ["items", "entities", "events"], channels: [], categories: [],
-  features: { imagegen: false, reader: true, rag: true }, jobs: { enabled: false, kinds: ["summarize_hq", "extract_retry", "image"], max_per_run: 5, interval_minutes: 15 },
+  features: { imagegen: false, reader: true, rag: true, expand_patent: false, expand_web: false, expand_rag: true }, jobs: { enabled: false, kinds: ["summarize_hq", "extract_retry", "image"], max_per_run: 5, interval_minutes: 15 },
 };
 const settings = {
   settings: {
@@ -86,6 +86,12 @@ for (const width of [1280, 320]) {
     await card.getByTestId("fold-news-hub-detail").locator("summary").click();      // 詳しい設定は畳んである
     await card.getByRole("checkbox", { name: /ハブの仕事を借りて処理する/ }).check();
     await expect(card.getByTestId("hub-jobs-note")).toContainText("GPU を使います");
+    // 検索の語の拡張: RAG はオン・Web 調査と特許はオフが既定（測定の結果）。320px でも切れない
+    await expect(card.getByTestId("hub-expand-settings")).toBeVisible();
+    await expect(card.getByRole("checkbox", { name: /知識（RAG）の検索/ })).toBeChecked();
+    await expect(card.getByRole("checkbox", { name: /Web 調査の検索/ })).not.toBeChecked();
+    await expect(card.getByRole("checkbox", { name: /特許の検索/ })).not.toBeChecked();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
     await card.getByRole("button", { name: "つなぎを切る" }).click();
     await expect(card.getByRole("alert")).toContainText("取り込んだ記事は残ります");
     await card.getByRole("button", { name: "やめる" }).click();

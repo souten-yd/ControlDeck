@@ -1,7 +1,7 @@
 /** 案件の各区画（概要・ヒアリング・請求項・文献・期限・AI 支援）。Patents.tsx のシートから案件ページへ移したもの。 */
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { patentsApi, type CaseDetail, type ClaimChart, type PatentMeta, type SearchHit } from "../../api/patents";
+import { patentsApi, type CaseDetail, type ClaimChart, type ExpandedTerm, type PatentMeta, type SearchHit } from "../../api/patents";
 import { useToasts } from "../../stores";
 import { IconButton, Skeleton, primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { IconSearch, IconTrash } from "../../components/icons";
@@ -199,7 +199,13 @@ export function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
   const [category, setCategory] = useState("A");
   const [manual, setManual] = useState("");
   const [openDoc, setOpenDoc] = useState<string | null>(null);
-  const search = useMutation({ mutationFn: () => patentsApi.search(query), onSuccess: (r) => setHits(r.results), onError });
+  const [expanded, setExpanded] = useState<ExpandedTerm[]>([]);
+  const [excluded, setExcluded] = useState<string[]>([]);
+  const search = useMutation({
+    mutationFn: (exclude: string[]) => patentsApi.search(query, exclude),
+    onSuccess: (r) => { setHits(r.results); setExpanded(r.expanded ?? []); },
+    onError,
+  });
   const add = useMutation({
     mutationFn: (body: { ref?: string; doc_ref?: string; relevance?: string }) => patentsApi.addRef(c.id, { ...body, category }),
     onSuccess: (next) => { onSaved(next); setManual(""); },
@@ -234,10 +240,22 @@ export function RefsTab({ c, meta, editable, onSaved, onError }: TabProps) {
         </label>
       )}
       <section>
-        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (query.trim()) search.mutate(); }}>
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (query.trim()) { setExcluded([]); search.mutate([]); } }}>
           <input className={input} placeholder="ナレッジを検索（一般・特許・規格）" value={query} onChange={(e) => setQuery(e.target.value)} />
           <IconButton label="検索" variant="primary" type="submit" disabled={!query.trim() || search.isPending}><IconSearch /></IconButton>
         </form>
+        {expanded.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs" data-testid="patent-expanded-terms">
+            <span className="text-zinc-500">広げた語（ハブの関係・概要）:</span>
+            {expanded.map((t) => (
+              <span key={t.term} title={t.reason} className="inline-flex min-h-8 items-center gap-1 rounded-full bg-accent-600/10 pl-2.5 text-accent-700 dark:text-accent-300">
+                {t.term}
+                <button type="button" aria-label={`${t.term} を外す`} className="grid h-8 w-8 place-items-center rounded-full hover:bg-accent-600/20"
+                  onClick={() => { const next = [...excluded, t.term]; setExcluded(next); search.mutate(next); }}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
         {hits && (hits.length === 0 ? <p className="mt-2 text-sm text-zinc-500">見つかりませんでした。</p> : (
           <ul className="mt-3 space-y-2">
             {hits.map((h) => (

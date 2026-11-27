@@ -29,8 +29,10 @@ async def _query_vector(question: str):
     return ([vector] if vector is not None else None), model
 
 
-async def search(question: str, *, limit: int = 20, mode: str = "hybrid") -> list[dict]:
-    """文書を単位に探す（断片を文書ごとに集め、番号の完全一致・書誌の関係も出す）。"""
+async def search(question: str, *, limit: int = 20, mode: str = "hybrid", exclude_terms: tuple[str, ...] = (), expansion: dict | None = None) -> list[dict]:
+    """文書を単位に探す（断片を文書ごとに集め、番号の完全一致・書誌の関係も出す）。
+    設定でオンのとき（news.hub.features.expand_patent。既定オフ: 測定は docs/implementation-status.md）、ニュースハブの関係・概要で広げた語の OR の問いでも引いて融合する。
+    広げた語は expansion["terms"] に入れて返す（画面に理由つきで出し、利用者が exclude_terms で外せる）。"""
     from app.knowledge import documents
 
     question = (question or "").strip()
@@ -42,6 +44,7 @@ async def search(question: str, *, limit: int = 20, mode: str = "hybrid") -> lis
         vector = vecs[0] if vecs else None
     ranked = await asyncio.to_thread(documents.search_documents, question, consumer="local", query_vector=vector,
                                      model=model, mode=mode if vector is not None else "fulltext", limit=limit)
+    ranked = await _widen(documents, question, ranked, limit, exclude_terms, expansion)
     out = []
     for doc in ranked:
         first = doc["hits"][0] if doc["hits"] else {"text": "", "locator": {}}
@@ -51,6 +54,22 @@ async def search(question: str, *, limit: int = 20, mode: str = "hybrid") -> lis
                     "locator": first["locator"], "sensitivity": doc["sensitivity"], "relation": doc["relation"],
                     "via": doc.get("via", "")})
     return out
+
+
+async def _widen(documents, question: str, ranked: list[dict], limit: int, exclude_terms: tuple[str, ...], expansion: dict | None) -> list[dict]:
+    from app.knowledge import hub_expand
+
+    if not await asyncio.to_thread(hub_expand.enabled, "patent"):
+        return ranked
+    ex = await hub_expand.aexpand(question, purpose="patent")
+    skip = {t.casefold() for t in exclude_terms}
+    terms = [t for t in ex["terms"] if t["term"].casefold() not in skip]
+    if expansion is not None:
+        expansion["terms"] = terms
+    if not terms:
+        return ranked
+    extra = await asyncio.to_thread(documents.search_documents, hub_expand.or_query(terms), consumer="local", mode="fulltext", limit=limit, expand=False)
+    return hub_expand.fuse_hits(ranked, [{**d, "via": d.get("via") or "hub_expand"} for d in extra], key="ref")[:limit]
 
 
 def _hit(h: dict) -> dict:

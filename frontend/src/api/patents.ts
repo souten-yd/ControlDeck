@@ -38,6 +38,8 @@ export interface SearchHit {
   doc_ref: string; chunk_ref: string; collection: string; title: string; source: string; url: string;
   score: number; snippet: string; sensitivity: string; relation?: string;
 }
+/** ハブの関係・概要で広げた語（設定でオンのときだけ返る）。理由つき・利用者が外せる。 */
+export interface ExpandedTerm { term: string; weight: number; reason: string }
 export interface ClaimChart {
   claim_no: number; claim: string;
   rows: { element: ClaimElement; query: string; evidence: { doc_ref: string; title: string; collection: string; snippet: string }[] }[];
@@ -104,7 +106,8 @@ export const patentsApi = {
   addRef: (id: number, body: { ref?: string; doc_ref?: string; category: string; relevance?: string }) =>
     api<CaseDetail>(`/patents/cases/${id}/refs`, { method: "POST", json: body }),
   removeRef: (id: number, refId: number) => api<CaseDetail>(`/patents/cases/${id}/refs/${refId}`, { method: "DELETE" }),
-  search: (query: string) => api<{ results: SearchHit[] }>("/patents/search", { method: "POST", json: { query, limit: 20 } }),
+  search: (query: string, excludeTerms: string[] = []) =>
+    api<{ results: SearchHit[]; expanded?: ExpandedTerm[] }>("/patents/search", { method: "POST", json: { query, limit: 20, exclude_terms: excludeTerms } }),
   claimChart: (id: number, claimNo: number) =>
     api<ClaimChart>(`/patents/cases/${id}/claim-chart`, { method: "POST", json: { claim_no: claimNo } }),
   charts: (id: number) => api<{ charts: JudgedChart[] }>(`/patents/cases/${id}/charts`),

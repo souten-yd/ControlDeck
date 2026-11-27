@@ -84,6 +84,8 @@ W3 は Codex の #638（発見・SQLite の待ち行列）と #640（巡回の H
 
 ## 7. 作業記録（新しい順に追記）
 
+- 2026-11-27: Web 調査の検索にハブの関係・概要で広げた語の追加検索（最大 2 本。`research_tools._hub_expand_searches`・`news.hub.features.expand_web`）を実装。**既定オフ**: 代わりの検索（ニュースの全文検索）では Recall@10 0.815→0.875 だが、本物の Web 検索（SearXNG）で測れていない。測るときは追加の外部検索が増えることも勘定に入れる。測定の手順は `knowledge/hub_expand_eval.py`、結果は `docs/implementation-status.md` の同日の節。
+
 - 2026-11-26: 利用者提示の10 OSSを比較（採否・受入条件は `PLAN-web-collector.md` §7）。ドラフト PR #634 に W1a のURL誤重複除外修正・focus による関連リンク選別・回帰テストを追加。既存の W2 安全なブラウザ、W3 明示の巡回、W4 パーサー比較、W5 統合ナレッジを続ける。新しい通信経路・依存・UI変更なし。pytest/実機は未実施、未マージ。まず PR差分、テスト目録再生成、集中テスト、実機評価を実施する。
 
 - 2026-11-22 Claude: AI アシスタントの調査を作り直した（詳細は `implementation-status.md` の同日の項）。`collect` を使う `read_page`（本文の抜粋・リンク一覧）、サイトごとの入口、依頼の理解、今日の日付の確認。W1 の取得は変えず、`fetch._CAPTCHA` に Reddit の「Prove your humanity」を、`extract.fallback` に相対リンクの絶対化を足しただけ。robots.txt は 1 ページずつの取得では見ない（巡回 W3 で Protego を使う）。次にやること: Reddit は未認証の JSON・RSS が拒否されるので、認証つきの API（利用者の許可が要る）か別の取得を検討。

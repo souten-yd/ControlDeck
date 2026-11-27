@@ -161,6 +161,8 @@ PatentBuddy の Draft PR #10・#23・#24・#29〜#40 は 2026-11-21 に閉じた
 
 ## 9. 作業記録（新しい順に追記）
 
+- 2026-11-27 ハブの関係・概要で検索の語を広げる（`knowledge/hub_expand.py`・`hub_expand_eval.py`）。RAG は既定オン（言い方の違いで Recall@10 +0.08）。**特許の検索への拡張は実装済みだが既定オフ**: ハブ（ニュース中心）が特許・半導体の語を持たず、無関係な語が足されて下がった。ハブに技術文書・特許の Things が入ったら `hub_expand_eval build/run` で測り直し、`news.hub.features.expand_patent` を再判断する。画面（先行文献の検索）に「広げた語」（理由つき・× で外せる）を出す。
+
 - 2026-11-25: 統合ナレッジ基盤（ControlDeck × QnapNewsHub）の計画と採否を `docs/PLAN-integrated-knowledge.md` に書いた（棚卸しの結果: Deep Research・GitHub 調査・Web 調査の結果は保存されていない、arXiv・GitHub・HF の構造化は無い）。実装は QnapNewsHub の完成の後。
 
 - 2026-11-22 GLM-5.3（開発の箱の OpenCode、K3）: 知識マップ・技術仮説のリンク。
