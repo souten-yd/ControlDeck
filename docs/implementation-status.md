@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-27 AI アシスタントと OpenCode のモデルの選び方をそろえる（Models のフロンティアに「OpenCode のモデル」）
+- 利用者「Qwen で会話を始めたが、OpenCode に切り替えた後は GLM が選択されていた。OpenCode のモデルは Models のフロンティアモデルのところで設定し、AI アシスタントなどでローカル LLM と他のモデルを選べるように」。
+- **原因**: OpenCode の回（`chat_persist._run_chat_job_impl` の mode=code）は会話のモデル（params の model）を見ず、作業場は `sandbox.model_chain` の先頭（`opencode-go/glm-5.3`）、ホストは settings の model で動いていた。会話のモデルは調査の下請けにしか使われていなかった。
+- **選び方**: 会話で選んだモデル（始めた会話は常に）を OpenCode のセッションへ `chat_server.switch_model` で渡す（`integrations/opencode/model_choice.py`）。使えない（外部送信の許可なし・Zen のキーなし・ローカルを借りない箱）ときは Models の既定へ替え、会話に「OpenCode では〇〇が使えないので△△にします」を 1 行（meta.model_note）。選んでいない新しい会話は Models の既定（無ければ従来の順番）。使用量の上限で順番を進めたセッションは切り替えを保つ。エージェント切り替え（プラン）でも、セッションのモデルに従う役割は会話のモデルのまま（`_session_models`・`_agent_model_ref(follow)`）。
+- **既定**: settings の `default_model`（`PUT/GET /opencode/default-model`・Models のフロンティアの「OpenCode のモデル」）。作業場の順番の先頭にもなる。ローカルを選ぶと settings.model も揃える。OpenCode の設定の「既定のモデル」の選択欄は案内（Models へのリンク）に置き換え（二重に持たない）。
+- **一覧**: `GET /workflows/model-choices`（ローカル・OpenRouter・OpenCode（Zen）・Claude・その他の API）。各モデルに一言、細かい値はエキスパートだけ。秘密の会話はローカルだけ。Claude・Codex の CLI は会話の経路が無いので出さない（Claude は Anthropic の API モデルを有効にしたときだけ）。会話ごとの保存は発言の meta（model_choice・code_model）。
+- 追加: Nexarch のアカウントの管理・コンソールを開くシートの OpenCode は、接続＝モデルの一覧を普段は出さず Models への案内 1 行（接続の行はエキスパートで 1 行省略）。API の形は変えない。
+- 試験: `backend/tests/test_model_choice.py`（15 件・再現は `test_conversation_model_follows_into_opencode`）、E2E `assistant-model-picker.spec.ts`（8）・`commander.spec.ts`・`opencode-roles.spec.ts` を更新。地図に `asst-opencode-model`。
+- 変えた共有ファイル: `chat_server.py`（`_session_models` と `_agent_model_ref` の follow・`_start` の default 反映）。`AssistantChat.tsx`（モデル状態・札・選び手・送信の記録・会話の復元）。
 ## 2026-11-27 OpenCode の箱で Android の開発（Android SDK の機能・ホストの adb の案内）
 - 利用者「Android とかにも対応してね」（M5・iOS・Android の開発を OpenCode で）。箱へ USB の adb・fastboot は渡せていたが、ホストに fastboot・Android SDK・Gradle が無かった。
 - 機能と拡張に「Android SDK（コマンドライン）」（`features/android_sdk.py`・種類 `android-sdk`・CLI の並び）。入れ先は `data/tools/android-sdk`（ユーザー空間・root 不要）。取得は Google の公式の cmdline-tools の zip だけで、URL・sha256 は目録 `CATALOG` に固定（最新を勝手に取らない）。**取得は設定の画面で「導入」を押し、ライセンスへの同意にチェックを入れたときだけ**（API は同意なしだと 422・自動更新と一括導入の対象外）。sha256 の照合後、zip のパスの逃げ出し・リンク・不正な名前を拒否して展開し、`sdkmanager`（argv・shell なし）で `platform-tools`・`platforms;android-NN`・`build-tools;NN` を入れる（選べるのは目録の範囲）。ライセンスの yes は同意したときだけ渡す。更新は `sdkmanager --update`、修復は入れ直し、削除は管理領域だけ。Java（JDK 17 以上）が無ければ取得の前に止める。

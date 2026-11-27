@@ -11,6 +11,7 @@ import {
 import { FilePicker } from "../../components/FilePicker";
 import { BottomSheet, primaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
+import { useExpert } from "./TeamRoles";
 
 export const WORKDIR_SOURCE = {
   rootsUrl: "/commander/workdir/roots",
@@ -26,6 +27,7 @@ export function NewConsoleSheet({
   clis: CommanderCli[];
   onClose: () => void;
 }) {
+  const expert = useExpert();
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
   const installed = useMemo(() => clis.filter((cli) => cli.installed), [clis]);
@@ -123,7 +125,12 @@ export function NewConsoleSheet({
           <h3 className="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">アカウント</h3>
           {multi || cli?.connector ? (
             <>
-            <ul className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="アカウントを選ぶ">
+            {cli?.connector === "controldeck-opencode" && !expert && (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400" data-opencode-console-note>
+                OpenCode は ControlDeck の接続で開きます。モデルは Models のフロンティアモデル（または会話・チームのモデルの選び手）で選びます。
+              </p>
+            )}
+            <ul className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="アカウントを選ぶ" hidden={cli?.connector === "controldeck-opencode" && !expert}>
               {(accounts ?? []).map((a) => (
                 <li key={a.name}>
                   <button
@@ -174,7 +181,7 @@ export function NewConsoleSheet({
                 </li>
               )}
             </ul>
-            {cli?.connector === "controldeck-opencode" && (
+            {cli?.connector === "controldeck-opencode" && expert && (
               <p className="mt-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                 ControlDeck の OpenCode を、選んだ接続（OpenCode 画面に登録した API）で開きます。接続を増やすのは OpenCode 画面の設定です。
               </p>

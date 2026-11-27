@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 275 ファイル、2839 テスト（目的の未記入 93 ファイル）
-- E2E: 149 spec、340 テスト
+- backend: 276 ファイル、2854 テスト（目的の未記入 93 ファイル）
+- E2E: 150 spec、342 テスト
 
 ## backend（backend/tests）
 
@@ -2374,6 +2374,26 @@
 - `test_mirror_gateway_relays_models_and_chat_stream`
 - `test_relay_forwards_confidential_header`
 
+### backend/tests/test_model_choice.py
+
+目的: AI アシスタントと OpenCode のモデルの選び方をそろえる（2026-11-27）。 目的: (1) 会話で選んだモデルが、OpenCode のモードに切り替えても変わらない（Qwen で始めた会話は OpenCode でも Qwen）。 (2) OpenCode で使えないモデルを選んでいるときは、Models の既定の OpenCode のモデルへ置き換えて 1 行出す。 (3) モデルの一覧は種類ごとのまとまりで、使えない経路（外部送信が許可されていない・Zen のキー無し・秘密の会話）は並べない。 (4) Models で選ぶ OpenCode の既定のモデルが保存・読み出しでき、作業場の順番の先頭になる。 根拠: 2026-11-27 利用者「AI アシスタントで Qwen で会話を始めたが、OpenCode に切り替えた後は GLM が選択されていた」。 原因は、OpenCode の回が会話のモデル（params の model）を見ず、作業場の順番の最初（opencode-go/glm-5.3）で 動いていたこと。OpenCode・会話サーバーは偽物（test_opencode_workspace_persist.py の _fake を使う）。
+
+- `test_conversation_model_follows_into_opencode` — Qwen で選んだ会話を OpenCode へ切り替えても、OpenCode のセッションのモデルは Qwen（GLM に戻らない）。
+- `test_unselected_model_keeps_the_existing_order` — 会話でモデルを選んでおらず既定も無ければ、従来どおり作業場の順番（切り替えない）。
+- `test_unselected_model_uses_the_models_default`
+- `test_unusable_model_is_replaced_by_the_default_with_one_line` — OpenCode への外部送信が許可されていない外部モデルは、既定へ置き換えて 1 行出す。
+- `test_model_choice_is_recorded_on_the_user_message` — 会話ごとに保存（再読み込み・別の端末でも同じ）: 選んだモデルが発言の meta に残る。
+- `test_agent_switch_keeps_the_chosen_model_for_roles_that_follow_the_session` — プランに切り替えても、セッションのモデルに従う役割は会話で選んだモデルのまま（別に指定した役割は変えない）。
+- `test_resolve_rules`
+- `test_groups_are_split_by_kind_and_hide_unusable_routes`
+- `test_secret_conversation_lists_only_local_models`
+- `test_zen_group_needs_a_key`
+- `test_model_choices_endpoint`
+- `test_secret_flag_follows_the_conversation`
+- `test_default_model_roundtrip_and_validation`
+- `test_local_default_keeps_the_host_model_in_step`
+- `test_default_model_leads_the_workspace_order`
+
 ### backend/tests/test_model_display_names.py
 
 目的: モデルの表示名。 目的: - 利用者が付けた名前を、モデルの一覧（Models）とモデルを選ぶ欄（AI アシスタント）に出すこと。空にすると既定へ戻ること。 - ゲートウェイでの名前（alias）は変えないこと（既定のモデル・会話・Workflow の設定が alias を覚えているため）。 - Strata の手元の GGUF の登録は、系列名ではなくファイルの名前と量子化を既定にすること（同じ系列のモデルが同じ名前にならない）。 根拠: 2026-11-21 利用者「モデルが同じ名前になるので分かりにくい。任意の名前に変えれるようにしたい」。
@@ -4421,6 +4441,13 @@
 
 - assistant input stays flush in standalone iPhone viewports
 - shows compact conversation references and inserts one into the prompt
+
+### frontend/e2e/assistant-model-picker.spec.ts
+
+目的: 目的: AI アシスタントのモデルの札が 1 つの選び手で、ふつうのチャットも OpenCode も同じ一覧（種類ごとのまとまり: ローカル・ OpenRouter・OpenCode（Zen）・Claude）から選べること。各モデルに一言が付き、細かい値（モデル名）はエキスパートのときだけ出ること。 会話で選んだモデルは、OpenCode に切り替えても変わらず（札も送る値も同じ）、会話ごとに戻ること。OpenCode で使えないモデル （チャット専用の Claude）を選んでいたら、切り替えのときに 1 行出して Models の既定へ替えること。 Models の「フロンティアモデル」の「OpenCode のモデル」で既定を選んで保存できること。320px・1280px・ライト・ダーク。 根拠: 2026-11-27 利用者「AI アシスタントで Qwen で会話を始めたが、OpenCode に切り替えた後は GLM が選択されていた。 OpenCode のモデルは Models のフロンティアモデルのところで設定できるようにして。AI アシスタントなどで、他のモデルとローカル LLM を選べるように」。 API は page.route で模擬する（OpenCode・LLM・外部のモデルを動かさない）。
+
+- model picker: grouped list, same model across modes, per conversation (${width}px ${scheme})
+- Models frontier: OpenCode model is chosen and saved here (${width}px ${scheme})
 
 ### frontend/e2e/assistant-offline-research.spec.ts
 

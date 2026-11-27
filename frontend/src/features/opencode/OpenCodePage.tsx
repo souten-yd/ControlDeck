@@ -379,8 +379,7 @@ function OpenCodeSettingsSheet({ initial, onClose }: { initial: Status; onClose:
     <BottomSheet title="OpenCode 設定" onClose={onClose} wide>
       <div className="space-y-3">
         {!editable && <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">変更には管理者権限が必要です。</p>}
-        {workflow && <RolesPanel value={{ ...workflow, models, installed: workflowData?.installed }} onChange={setWorkflow} editable={editable} onProblem={setRolesProblem}
-          defaultModel={{ value: form.model, onChange: (next) => setForm({ ...form, model: next }) }} />}
+        {workflow && <RolesPanel value={{ ...workflow, models, installed: workflowData?.installed }} onChange={setWorkflow} editable={editable} onProblem={setRolesProblem} />}
         {workflow && <WorkflowExtensions value={{ ...workflow, models, installed: workflowData?.installed, features: workflowData?.features, browser: workflowData?.browser }} onChange={setWorkflow} editable={editable} />}
         <SettingsGroup title="詳細" description="接続先" collapsible defaultOpen={false}>
           <label className="block text-xs text-zinc-500">接続先（LLM endpoint）

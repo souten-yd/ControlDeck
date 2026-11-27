@@ -54,6 +54,43 @@ async def llm_endpoints(user: User = Depends(require_permission("workflows.edit"
     return result
 
 
+@router.get("/workflows/model-choices")
+async def model_choices(secret: bool = False, conversation: str = "",
+                        user: User = Depends(require_permission("workflows.edit"))):
+    """AI アシスタントのモデルの札の一覧（ふつうのチャットも OpenCode も同じ）。
+
+    種類ごとのまとまり（ローカル・OpenRouter・OpenCode（Zen）・Claude ほか）。使えない経路のものは並べない。
+    秘密の会話（secret=true、または conversation が秘密）はローカルだけ。default_model は Models で選んだ OpenCode の既定。
+    """
+    from app.integrations.opencode import model_choice, zen
+    from app.models_mgmt import gateway
+    from app.models_mgmt.providers import list_providers
+
+    if conversation:
+        secret = secret or await asyncio.to_thread(_conversation_is_secret, conversation, user.id)
+    endpoints = await list_providers(include_unavailable=False, exclude_port=get_server_port(), include_gateway=True)
+    gate = next((ep for ep in endpoints if ep.get("managed")), None)
+    labels = await asyncio.to_thread(_model_labels)
+    external = {item["id"] for item in (gate or {}).get("external_models", [])}
+    local = [m for m in (gate or {}).get("models", []) if m not in external]
+    target = await asyncio.to_thread(_auto_target, labels) if gate else None
+    base = str((gate or {}).get("base_url") or gateway.base_url())
+    result = model_choice.groups(local_models=local, labels=labels, auto_name=(target or {}).get("name", ""),
+                                 gateway_base=base, secret=secret, zen_ok=bool(zen.configured()) and not secret)
+    result["default_model"] = "" if secret else await asyncio.to_thread(model_choice.default_model)
+    result["secret"] = secret
+    return result
+
+
+def _conversation_is_secret(conversation_id: str, user_id: int) -> bool:
+    from app.database import SessionLocal
+    from app.models import Conversation
+
+    with SessionLocal() as db:
+        conv = db.get(Conversation, conversation_id)
+        return bool(conv is not None and conv.owner_user_id == user_id and conv.confidential_at is not None)
+
+
 def _auto_target(labels: dict[str, str]) -> dict | None:
     """「auto」が今解かれるモデル（ゲートウェイの転送と同じ resolve_instance の結果）。解けなければ None。"""
     from app.models_mgmt import gateway

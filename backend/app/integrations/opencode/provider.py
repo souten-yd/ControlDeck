@@ -22,6 +22,9 @@ DEFAULT_SETTINGS = {
     "base_url": "http://127.0.0.1:11434/v1",
     "model": "llama3.2",
     "project_path": "",
+    # OpenCode が使う既定のモデル（`provider/モデル`。Models の「フロンティアモデル」で選ぶ）。空＝従来どおり
+    # （作業場は箱の順番・ホストは model）。会話でモデルを選んでいれば、そちらが先（model_choice.py）。
+    "default_model": "",
     # ControlDeck の OpenAI 互換ゲートウェイ経由にするか。
     # 経由すると KV の受け入れ制御（混雑時の待機・枯渇時の再試行）が効く。
     "use_gateway": True,
@@ -621,6 +624,11 @@ def save_settings(patch: dict) -> dict:
         raise ValueError("LLM endpointはhttp(s) URLで指定してください")
     if not settings["model"] or len(settings["model"]) > 200:
         raise ValueError("modelを指定してください")
+    settings["default_model"] = str(settings.get("default_model") or "").strip()
+    if len(settings["default_model"]) > 200 or "/" not in settings["default_model"] and settings["default_model"]:
+        raise ValueError("OpenCode の既定のモデルは provider/モデル の形で指定してください")
+    if settings["default_model"].startswith("controldeck/") and not settings["default_model"].split("/", 1)[1].startswith("cloud:"):
+        settings["model"] = settings["default_model"].split("/", 1)[1]   # ホストの OpenCode・TUI もそろえる
     # 系列は v2 だけ。古い画面や設定が v1 を送ってきても v2 に揃える。
     settings["runtime"] = "v2"
     project = str(settings.get("project_path") or "")
@@ -858,6 +866,17 @@ def _compaction_enabled() -> bool:
         return True
 
 
+def _local_aliases() -> list[str]:
+    """ゲートウェイで使えるローカルのモデルの名前（登録順）。読めなければ空。"""
+    try:
+        from app.models_mgmt import local_llm
+
+        return [str(item["alias"]) for item in local_llm.list_instances() if item.get("alias")]
+    except Exception:  # noqa: BLE001 - 一覧が読めなくても session は止めない
+        logger.exception("ローカルのモデルの一覧を読めませんでした")
+        return []
+
+
 def _cloud_models_for_opencode() -> list[dict]:
     try:
         from app.models_mgmt import cloud
@@ -940,8 +959,8 @@ def _runtime_config(
     権限を判断させる操作を ask にし、ControlDeck の権限プラグインを読ませる。
     """
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", job_id)[:24]
-    payload = _config_payload(safe_job_id, base_url, model,
-                              owner_user_id=owner_user_id, project_id=project_id)
+    payload = _config_payload(safe_job_id, base_url, model, owner_user_id=owner_user_id, project_id=project_id,
+                              with_local_models=chat_server)
     if chat_server:
         payload["_chat_server"] = True
     if extra_mcp:
@@ -983,8 +1002,12 @@ def _config_payload(
     owner_user_id: int | None = None,
     project_id: str | None = None,
     local_only: bool = False,
+    with_local_models: bool = False,
 ) -> dict:
-    """設定の中身（書き込み前）。形は旧来の OpenCode 形式で、_v2_payload が v2 へ読み替える。"""
+    """設定の中身（書き込み前）。形は旧来の OpenCode 形式で、_v2_payload が v2 へ読み替える。
+
+    with_local_models: 登録済みのローカルのモデルを全て並べる（AI アシスタントの会話サーバー用。会話で選んだ
+    モデルへ OpenCode のセッションを切り替えられるように）。"""
     runtime = "v2"
     from app.security import offline
 
@@ -1078,6 +1101,13 @@ def _config_payload(
         payload["provider"]["controldeck"]["models"].setdefault(item["id"], {
             "name": f"{item['name']}（外部）", "attachment": True,
             "modalities": {"input": ["text", "image"], "output": ["text"]},
+        })
+    # 会話で選んだローカルのモデルへ切り替えられるよう、いま登録されている全てを並べる（無いと
+    # 「Model unavailable」で止まる）。起動中のサーバーには、あとから足した分は次の起動から入る。
+    for alias in (_local_aliases() if with_local_models else []):
+        payload["provider"]["controldeck"]["models"].setdefault(alias, {
+            "name": alias, "attachment": True, "modalities": {"input": ["text", "image"], "output": ["text"]},
+            **({"limit": alias_limits} if (alias_limits := _model_limits(alias)) else {}),
         })
     for extra in workflow["models"]:
         if extra.startswith(CLOUD_PREFIX):

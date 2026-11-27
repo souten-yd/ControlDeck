@@ -41,6 +41,7 @@ import {
   type AssistantPlan, type BuildState, type GenData, type GenStats, type Msg, type PersistMsg,
 } from "./chatState";
 import { GenStatsBadge, MessageBubble, RoleModels, SpeakerToggle } from "./ChatMessage";
+import { ModelPicker, defaultChoiceId, findChoice, useModelChoices } from "./ModelPicker";
 import { UsbChip, UsbHint } from "./ProjectUsb";
 import { agentIcon, ComposerPill, modeIcon, permissionIcon, PlusMenu, type PlusAction } from "./PlusMenu";
 import {
@@ -103,6 +104,12 @@ export default function AssistantChat() {
   };
   const [baseUrl, setBaseUrl] = useState<string>(saved.baseUrl || "http://127.0.0.1:11434/v1");
   const [model, setModel] = useState<string>(saved.model || "");
+  // 会話のモデルの選び方（ふつうのチャットも OpenCode も同じ札。ModelPicker.tsx）。
+  // codeModel: OpenCode でだけ使うモデル（Zen など）。空なら会話のモデルを OpenCode でも使う。
+  // modelPicked: 利用者がこの会話で選んだ。選んでいなければ OpenCode は Models の既定のモデルで始める。
+  const [codeModel, setCodeModel] = useState("");
+  const [modelPicked, setModelPicked] = useState(false);
+  const pickedModelRef = useRef("");   // 選んだ（復元した）チャットのモデル。ランタイムの追従で上書きしない
   // ⚙️で選択中runtimeのendpoint（最後に追従した値）。変わったら手動選択より優先して切り替える。
   const [autoBase, setAutoBase] = useState<string>(saved.autoBase || "");
   // Web検索エンジンはSearXNG固定（ローカル・オンデマンド起動）
@@ -300,7 +307,9 @@ export default function AssistantChat() {
     if (followKey !== autoBase || !model) {
       setAutoBase(followKey);
       setBaseUrl(preferred.base_url);
-      if (followKey !== autoBase && preferred.models.includes("auto")) setModel("auto");
+      // 会話で選んだモデル（復元した・自分で選んだ）が使えるなら、ランタイムの追従で「auto」へ戻さない
+      if (pickedModelRef.current && preferred.models.includes(pickedModelRef.current)) setModel(pickedModelRef.current);
+      else if (followKey !== autoBase && preferred.models.includes("auto")) setModel("auto");
       // 外部のモデルを既定にはしない（送信は利用者が自分で選んだときだけ）。
       else if (!preferred.models.includes(model)) {
         const external = new Set((preferred.external_models ?? []).map((item) => item.id));
@@ -341,6 +350,41 @@ export default function AssistantChat() {
     : modeChoice === "investigate"
       ? plansInOpenCode ? "code" : (researchDepth !== "auto" ? researchDepth : SEARCH_MODES.includes(displayedDecision.mode) ? displayedDecision.mode : "web")
       : modeChoice;
+
+  // モデルの一覧（種類ごとのまとまり）。OpenCode で使うモデルは、選んだモデル → Models の既定 → 従来の順番、の順
+  const { data: choices } = useModelChoices(can("workflows.edit"), convId || null, confidential || (!convId && newSecret));
+  const modelExplicit = modelPicked || messages.some((m) => m.role === "user");
+  const defaultChoice = defaultChoiceId(choices);
+  const codeEffective = codeModel || (modelExplicit ? model : defaultChoice);
+  const codeNoticeRef = useRef("");
+  useEffect(() => {
+    // OpenCode に切り替えたとき、いまのモデルが OpenCode で使えなければ、Models の既定へ置き換えて 1 行出す
+    if (effectiveMode !== "code" || !choices) return;
+    const current = findChoice(choices, codeEffective);
+    if (!current || current.code || codeNoticeRef.current === current.id) return;
+    codeNoticeRef.current = current.id;
+    const fallback = findChoice(choices, defaultChoice);
+    if (fallback?.code) {
+      setCodeModel(fallback.id);
+      show(`OpenCode では${current.name}が使えないので${fallback.name}にします`);
+    } else {
+      show(`OpenCode では${current.name}が使えないので、OpenCode の既定のモデルにします`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveMode, codeEffective, choices]);
+  const pickModel = (choice: { id: string; name: string; chat: boolean; code: boolean }) => {
+    setModelPicked(true);
+    if (choice.chat) {
+      setModel(choice.id);
+      pickedModelRef.current = choice.id;
+      if (choices?.base_url) setBaseUrl(choices.base_url);
+      setCodeModel("");
+      codeNoticeRef.current = "";
+    } else {
+      setCodeModel(choice.id);
+      if (effectiveMode !== "code") show(`${choice.name}は OpenCode のときに使います。ふつうのチャットは今のモデルのままです`);
+    }
+  };
 
   const append = (m: Msg) => setMessages((prev) => [...prev, m]);
   const patchLast = (fn: (m: Msg) => Msg) =>
@@ -495,6 +539,14 @@ export default function AssistantChat() {
       agent: sent?.agent_choice === "plan" || sent?.agent_choice === "build" ? sent.agent_choice : undefined,
     }, sentRow?.id ?? "", rows.map((m) => m.id));
     setModeChoice(prefs.choice ?? "auto");
+    // 会話のモデルも戻す（別の端末・再読み込みでも同じ。送った発言の記録から）
+    const modelRow = [...rows].reverse().find((m) => m.role === "user" && m.meta?.model_choice);
+    setModelPicked(Boolean(modelRow));
+    codeNoticeRef.current = "";
+    pickedModelRef.current = modelRow?.meta?.model_choice ?? "";
+    if (modelRow?.meta?.model_choice) setModel(modelRow.meta.model_choice);
+    const codePick = modelRow?.meta?.code_model;
+    setCodeModel(codePick && codePick !== modelRow?.meta?.model_choice ? codePick : "");
     setResearchDepth(prefs.depth ?? "auto");
     returnChoiceRef.current = null;
     setCodeAgent(prefs.agent ?? (last?.meta?.agent === "plan" ? "plan" : "build"));
@@ -573,6 +625,10 @@ export default function AssistantChat() {
     setModeChoice("auto");
     setResearchDepth("auto");
     setCodeAgent("build");
+    setModelPicked(false);
+    setCodeModel("");
+    pickedModelRef.current = "";
+    codeNoticeRef.current = "";
     setResolvedDecision(null);
     returnChoiceRef.current = null;
     setCodeProject("__new__");   // 作業フォルダも会話ごと
@@ -1144,7 +1200,9 @@ export default function AssistantChat() {
       return;
     }
     // 発言に記録するのは利用者の選択（1 回だけの調査や「このプランで作る」の送り先ではない）
-    const sentPrefs = { mode_choice: returnChoiceRef.current ?? storedChoice, research_depth: researchDepth, agent_choice: agent };
+    const sentPrefs = { mode_choice: returnChoiceRef.current ?? storedChoice, research_depth: researchDepth, agent_choice: agent,
+      // 会話のモデルの選び方（会話に残し、モードを切り替えても同じモデルで続ける）
+      model_choice: modelExplicit ? model : "", code_model: codeEffective, model_explicit: modelExplicit };
     if (busy) {
       // 生成中は送信待ちへ（サーバーが持ち、回答が終わったら送る。2026-11-18 利用者の依頼）
       if (selectedMode === "gen" || selectedMode === "run") {
@@ -1681,7 +1739,12 @@ export default function AssistantChat() {
     : wsIsBody && wsCanManage ? "controldeck" : "llm_app";
   const chosenWorkspace = selectedWorkspace(codeProject, workspaces);
   // 作業場を選んだ OpenCode は会話のモデルではなく作業場のモデルの並びで動くので、札もそれを出す
-  const headerPill = effectiveMode === "code" && workspaceModelPill(chosenWorkspace) || modelPill;
+  // OpenCode のときの札: 会話のモデルと別のモデル（既定・OpenCode 専用）ならその名前。同じなら会話の札のまま。
+  // 何も決まっていない（選んでおらず既定も無い）ときだけ、作業場の順番の札
+  const codePill = codeEffective && codeEffective !== model ? findChoice(choices, codeEffective)?.name : undefined;
+  const headerPill = effectiveMode === "code"
+    ? (codePill || (codeEffective ? modelPill : workspaceModelPill(chosenWorkspace)) || modelPill)
+    : modelPill;
   const devTarget: DevTargetState | null = effectiveMode !== "code" ? null
     : codeProject === WS_NEW ? {
       mode: "create", target: wsEffectiveTarget,
@@ -1891,7 +1954,10 @@ export default function AssistantChat() {
           <div className="grid max-h-[50dvh] min-w-0 shrink-0 gap-2.5 overflow-y-auto overflow-x-hidden overscroll-contain border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900/60 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1 block text-xs text-zinc-500">LLM モデル</span>
-              {modelOptions.length ? (
+              {choices && choices.groups.length ? (
+                <ModelPicker choices={choices} value={effectiveMode === "code" ? codeEffective || model : model}
+                  onPick={pickModel} mode={effectiveMode === "code" ? "code" : "chat"} />
+              ) : modelOptions.length ? (
                 <select
                   value={`${baseUrl}|${model}`}
                   onChange={(e) => {

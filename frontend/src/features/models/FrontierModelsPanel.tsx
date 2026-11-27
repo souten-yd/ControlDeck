@@ -17,6 +17,7 @@ import {
 } from "../../components/icons";
 import { useToasts } from "../../stores";
 import { SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
+import { OpenCodeModelPanel } from "./OpenCodeModelPanel";
 
 const field = "min-h-11 w-full min-w-0 rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
 const smallButton = "min-h-11 shrink-0 rounded-xl border border-zinc-300 px-3 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800";
@@ -174,6 +175,7 @@ function FrontierModelsLoaded({ state }: { state: CloudState }) {
       description={active.length > 0
         ? `外部の API モデル · ${active.map((p) => p.name).join("・")} が有効`
         : "外部の API モデル（OpenRouter・OpenAI・Claude・Gemini ほか）· 既定では使いません"}>
+      <OpenCodeModelPanel />
       <EgressSummary state={state} />
       <ul className="space-y-2" aria-label="プロバイダ">
         {state.providers.map((p) => <ProviderCard key={p.id} provider={p} />)}

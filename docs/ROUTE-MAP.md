@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 115 本、ノード: 43 個
+- ルート: 116 本、ノード: 43 個
 
 ## 守りの印（guards）
 
@@ -122,7 +122,7 @@ flowchart LR
 | `llm-local-ollama` | LLM ゲートウェイ（/api/v1/llm/v1） | Ollama | gateway | Ollama への転送 | `loopback` | `backend/app/models_mgmt/ollama.py` |  |
 | `llm-cloud` | LLM ゲートウェイ（/api/v1/llm/v1） | 外部 LLM（OpenRouter ほか） | gateway | 外部モデル（cloud:）へ転送。月の上限・データの扱い（zdr・deny）を要求ごとに付ける | `confidential` `approval` `audit` `ssrf_guard` `no_secrets` | `backend/app/models_mgmt/gateway.py`<br>`backend/app/models_mgmt/cloud.py` | 秘密の印は呼び出し元の許可より先に 403。送り先は固定 URL（custom だけ HTTPS の利用者指定）。キーは暗号化して保存 |
 
-### AI アシスタントと OpenCode（6 本）
+### AI アシスタントと OpenCode（7 本）
 
 ```mermaid
 flowchart LR
@@ -135,6 +135,7 @@ flowchart LR
   secret_store["鍵の保存（暗号化・0600）"]
   sandbox_box["箱の OpenCode（sandbox）"]
   assistant -->|"asst-opencode-serve (api)"| opencode
+  assistant -->|"asst-opencode-model (api)"| opencode
   opencode_tui -->|"asst-opencode-tui (tmux)"| terminal
   backend -->|"asst-runtime-config (file)"| opencode
   opencode -->|"asst-mcp-bridge (mcp)"| mcp_bridge
@@ -145,6 +146,7 @@ flowchart LR
 | id | from | to | channel | 流れるもの | guards | owner | 備考 |
 |---|---|---|---|---|---|---|---|
 | `asst-opencode-serve` | AI アシスタント（チャット） | OpenCode（serve・実行） | api | AI アシスタントの OpenCode 会話（opencode serve の API。本文・道具の実行・許可の問い合わせ・中断） | `auth` `loopback` `approval` `no_secrets` `path_check` | `backend/app/integrations/opencode/chat_server.py`<br>`backend/app/workflows/chat_persist.py` | サーバーはプロジェクト×利用者ごと。パスワードは環境変数ファイル（0600）で渡し argv に載せない。権限は controldeck-permission プラグイン |
+| `asst-opencode-model` | AI アシスタント（チャット） | OpenCode（serve・実行） | api | 会話のモデルを OpenCode のセッションのモデルへ（会話で選んだモデルをそのまま。使えなければ Models の既定の OpenCode のモデル） | `confidential` `approval` `no_secrets` | `backend/app/integrations/opencode/model_choice.py`<br>`backend/app/workflows/chat_persist.py`<br>`backend/app/integrations/opencode/chat_server.py` | 外部のモデルは OpenCode への外部送信の許可があるときだけ。秘密の会話は OpenCode を使わず一覧にも外部を出さない。選んだモデルは発言の meta に残る |
 | `asst-opencode-tui` | OpenCode の TUI（tmux） | Terminal（tmux・PTY） | tmux | OpenCode の TUI を tmux のセッションで開く（--standalone。閉じたら記録だけ残す） | `auth` `path_check` | `backend/app/integrations/opencode/tui_history.py`<br>`backend/app/integrations/opencode/router.py` |  |
 | `asst-runtime-config` | backend（FastAPI） | OpenCode（serve・実行） | file | OpenCode の隔離した runtime config（モデル・ゲートウェイの URL・MCP の橋・識別ヘッダ）を生成して渡す | `no_secrets` `loopback` | `backend/app/integrations/opencode/provider.py` | 利用者のグローバル設定は触らない。MCP のトークンは短命・利用者に結びつく |
 | `asst-mcp-bridge` | OpenCode（serve・実行） | MCP の橋（stdio） | mcp | OpenCode が ControlDeck の道具を呼ぶ（stdio の橋が host の MCP へ中継） | `auth` `loopback` | `backend/app/integrations/opencode/addon_mcp_bridge.py` | 橋は権限を持たず、渡された短命トークンで転送するだけ |

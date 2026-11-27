@@ -1,4 +1,4 @@
-/** 役割とモデル。OpenCode でモデルを選ぶ場所はここ 1 か所（既定のモデル＋役割ごとのモデル）。
+/** 役割とモデル。役割ごとのモデルはここ、OpenCode の既定のモデルは Models の「フロンティアモデル」で選ぶ（二重に持たない）。
  * 計画・開発・調査・簡易検証・最終検証・評価・相談に別々のモデルを選ぶ。開発担当（子エージェント developer）は
  * 「開発」と同じモデル、Auto Advisor の相談先は「相談」のモデルで動く（別の選択欄は持たない）。
  * どの役割にもどのモデルでも選べる（全部同じでも全部違ってもよい。2026-11-22 利用者「変な制限は設けなくて良い」）。
@@ -6,6 +6,7 @@
  * （保存せずに確かめる API /opencode/roles/check の notes）。 */
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { SettingsGroup } from "../models/formControls";
 import type { Workflow } from "./WorkflowExtensions";
@@ -40,10 +41,8 @@ const STAGES: { n: number; title: string; hint: string; roles: { key: RoleKey; l
 /** 役割の表示名（AI アシスタントのヘッダの「役割ごとのモデル」一覧もこれを使う） */
 export const ROLE_LABELS: [RoleKey, string][] = STAGES.flatMap((stage) => stage.roles.map((r): [RoleKey, string] => [r.key, r.label]));
 
-export function RolesPanel({ value, onChange, editable, onProblem, defaultModel }: {
+export function RolesPanel({ value, onChange, editable, onProblem }: {
   value: Workflow; onChange: (next: Workflow) => void; editable: boolean; onProblem?: (message: string | null) => void;
-  /** 既定のモデル（役割でモデルを選ばなければ、このモデルで動く）。 */
-  defaultModel: { value: string; onChange: (next: string) => void };
 }) {
   const roles: Roles = value.roles ?? {};
   const cloud = value.cloud_models ?? [];
@@ -57,22 +56,15 @@ export function RolesPanel({ value, onChange, editable, onProblem, defaultModel 
   const field = "mt-1 min-h-11 w-full truncate pr-8 text-ellipsis rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
   // 相談は Auto Advisor を使うときだけ働く。使わないときは薄く出す（選んでおくことはできる）
   const adviseUsed = value.auto_advisor !== "off" && Boolean(value.installed?.auto_advisor);
-  const models = value.models ?? [];
-  const model = defaultModel.value;
-  const known = model === "" || model === "auto" || models.some((m) => m.alias === model);
   const set = (key: RoleKey, next: string) => onChange({ ...value, roles: { ...roles, [key]: next } });
   return (
     <SettingsGroup title="役割とモデル" description="役割ごとに使うモデルを選びます。選ばない役割は既定のモデルで動き、同じモデルが続くときは載せ替えません">
-      <div className="space-y-1 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/50">
-        <label className="block text-xs font-semibold">既定のモデル
-          <select aria-label="既定のモデル" value={known ? (model || "auto") : model} disabled={!editable}
-            onChange={(e) => defaultModel.onChange(e.target.value)} className={`${field} font-normal`}>
-            <option value="auto">Models で選んだランタイムに任せる（auto）</option>
-            {models.map((m) => <option key={m.alias} value={m.alias}>{m.alias}{m.runtime ? `（${m.runtime}）` : ""}</option>)}
-            {!known && <option value={model}>{model}</option>}
-          </select>
-        </label>
-        <p className="text-[11px] text-zinc-500">役割でモデルを選ばなければ、このモデルで動きます。auto は Models の共通設定のランタイムで、必要なら起動します。</p>
+      <div role="group" aria-label="既定のモデル" className="space-y-1 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/50">
+        <p className="text-xs font-semibold">既定のモデル</p>
+        <p className="text-[11px] text-zinc-500">役割でモデルを選ばなければ、このモデルで動きます。選ぶ場所は Models の「フロンティアモデル」の「OpenCode のモデル」に一本化しました（AI アシスタントの札もそこを読みます）。</p>
+        <Link to="/models?tab=frontier" className="inline-flex min-h-11 items-center text-xs font-medium text-accent-700 underline dark:text-accent-400">
+          Models で OpenCode のモデルを選ぶ
+        </Link>
       </div>
       {STAGES.map((stage) => (
         <section key={stage.n} aria-label={stage.title}
