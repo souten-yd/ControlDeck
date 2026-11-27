@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 98 本、ノード: 41 個
+- ルート: 100 本、ノード: 41 個
 
 ## 守りの印（guards）
 
@@ -151,7 +151,7 @@ flowchart LR
 | `asst-reports` | OpenCode（serve・実行） | backend（FastAPI） | mcp | 作業結果（UI 検証・精密調査・レビュー）を control_deck.report で受け取り画面へ | `auth` `path_check` | `backend/app/integrations/opencode/reports.py` |  |
 | `asst-zen-key` | 鍵の保存（暗号化・0600） | 箱の OpenCode（sandbox） | file | OpenCode Zen（無料モデル）の鍵。箱の OpenCode が opencode.ai へ直接つなぐときだけ環境変数で渡す | `no_secrets` | `backend/app/integrations/opencode/zen.py` | Zen はゲートウェイを通らない（外部へ直結）。値は返さず末尾 4 文字だけ |
 
-### ControlDeck の MCP の道具（9 本）
+### ControlDeck の MCP の道具（10 本）
 
 ```mermaid
 flowchart LR
@@ -161,12 +161,14 @@ flowchart LR
   backend["backend（FastAPI）"]
   web["公開インターネット（Web・学術・フォーラム）"]
   knowledge["ナレッジ・特許・規格"]
+  news_hub["QNAP ニュースハブ"]
   addons["Add-on（外部アプリ）"]
   mcp_bridge -->|"mcp-transport (mcp)"| mcp
   mcp -->|"mcp-lab (mcp)"| workflows
   mcp -->|"mcp-report (mcp)"| backend
   mcp -->|"mcp-research (mcp)"| web
   mcp -->|"mcp-knowledge (mcp)"| knowledge
+  mcp -->|"mcp-news-knowledge (mcp)"| news_hub
   mcp -->|"mcp-diagnostics (mcp)"| backend
   mcp -->|"mcp-contract (mcp)"| backend
   mcp -->|"mcp-project-grants (mcp)"| addons
@@ -180,6 +182,7 @@ flowchart LR
 | `mcp-report` | ControlDeck の MCP サーバー | backend（FastAPI） | mcp | 作業結果の報告 | `auth` `path_check` | `backend/app/addons/agent_mcp.py`<br>`backend/app/integrations/opencode/reports.py` |  |
 | `mcp-research` | ControlDeck の MCP サーバー | 公開インターネット（Web・学術・フォーラム） | mcp | 調査（Web・学術・Deep・複合）の実行 | `auth` `confidential` `ssrf_guard` | `backend/app/addons/agent_mcp.py`<br>`backend/app/workflows/deep_research.py` | 外部へ出る調査。秘密の会話・オフライン指定では出口で止まる |
 | `mcp-knowledge` | ControlDeck の MCP サーバー | ナレッジ・特許・規格 | mcp | ナレッジの検索 | `auth` `confidential` | `backend/app/addons/agent_mcp.py`<br>`backend/app/knowledge/store.py` |  |
+| `mcp-news-knowledge` | ControlDeck の MCP サーバー | QNAP ニュースハブ | mcp | ニュースハブの Things のカード（概要・別名・関係・主張・変化と矛盾）と根拠の記事を引く | `auth` `confidential` | `backend/app/addons/agent_mcp.py`<br>`backend/app/knowledge/hub_expand.py` | MCP の相手のモデルは分からないので公開の区分だけ。ハブへは読む API だけ（LAN）。件数・大きさに上限 |
 | `mcp-diagnostics` | ControlDeck の MCP サーバー | backend（FastAPI） | mcp | 診断の情報（ログの要約など） | `auth` `no_secrets` | `backend/app/addons/agent_mcp.py`<br>`backend/app/diagnostics/report.py` |  |
 | `mcp-contract` | ControlDeck の MCP サーバー | backend（FastAPI） | mcp | 道具の契約（引数の仕様）の取得 | `auth` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/contract.py` |  |
 | `mcp-project-grants` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Project のファイルを Add-on へ渡す・Add-on の出力を受ける（許可の付与） | `auth` `path_check` `approval` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py` |  |
@@ -238,7 +241,7 @@ flowchart LR
 | `nx-codex-usage` | 使用率のファイル（usage・Codex の記録） | backend（FastAPI） | file | Codex の sessions の記録（rollout）の最後の rate_limits を読む | `no_secrets` | `backend/app/commander/usage.py` | auth.json など鍵のファイルは読まない |
 | `nx-accounts` | backend（FastAPI） | CLI アカウントのフォルダ（ログインの鍵が入る） | file | CLI アカウントのフォルダを作る・消す・ログイン済みかをファイルの有無だけで判定 | `auth` `audit` `no_secrets` | `backend/app/commander/accounts.py`<br>`backend/app/commander/router.py` | 中身（auth.json・.credentials.json）は読まない・返さない |
 
-### 外部への通信の出口（14 本）
+### 外部への通信の出口（15 本）
 
 ```mermaid
 flowchart LR
@@ -264,6 +267,7 @@ flowchart LR
   backend -->|"ext-release-update (egress)"| github
   backend -->|"ext-feature-install (subprocess)"| pkg_registry
   backend -->|"ext-news-hub-link (egress)"| news_hub
+  knowledge -->|"ext-hub-expand (egress)"| news_hub
   backend -->|"ext-hub-key-seal (egress)"| news_hub
   news_hub -->|"ext-news-hub-llm (gateway)"| gateway
   backend -->|"ext-git-service (subprocess)"| github
@@ -282,6 +286,7 @@ flowchart LR
 | `ext-release-update` | backend（FastAPI） | GitHub | egress | ControlDeck・Strata・機能の Release の確認と取得（許可したホストだけ・署名・ハッシュの検証） | `ssrf_guard` `audit` `approval` | `backend/app/features/release_bundle.py`<br>`backend/app/maintenance/self_update.py`<br>`backend/app/maintenance/auto_update.py`<br>`backend/app/models_mgmt/strata.py` | 本番の更新は承認待ち・Job 待ちがある |
 | `ext-feature-install` | backend（FastAPI） | PyPI・npm | subprocess | 機能の導入（pip・npm をユーザー空間へ。shell=True 禁止・sudo 不要） | `auth` `audit` `path_check` | `backend/app/features/registry.py`<br>`backend/app/features/cli.py`<br>`backend/app/features/playwright_browsers.py` |  |
 | `ext-news-hub-link` | backend（FastAPI） | QNAP ニュースハブ | egress | ニュースハブとのペアリング・差分の同期・仕事の貸し出し（LAN。リダイレクトを辿らない） | `auth` `no_secrets` `audit` | `backend/app/news/hub_link.py`<br>`backend/app/news/hub_sync.py`<br>`backend/app/news/hub_jobs.py`<br>`backend/app/news/hub_discovery.py` | 指紋の目視確認が済むまで同期しない。トークン・秘密鍵は暗号化して保存 |
+| `ext-hub-expand` | ナレッジ・特許・規格 | QNAP ニュースハブ | egress | 検索の語の拡張（問いの文をハブの検索 API へ送り、別名・上位下位の語をもらう。特許・Web 調査・RAG。LAN・読むだけ・LLM なし） | `confidential` `no_secrets` | `backend/app/knowledge/hub_expand.py`<br>`backend/app/workflows/rag.py`<br>`backend/app/patents/service.py`<br>`backend/app/workflows/research_tools.py` | 設定（news.hub.features.expand_*）で入り切り。特許は秘密の区分として問い、ハブのつなぎが許さなければ空で元の語だけ。インターネットへは何も送らない（広げた語を Web 検索に使うときの出口は既存の ensure_external_allowed） |
 | `ext-hub-key-seal` | backend（FastAPI） | QNAP ニュースハブ | egress | 利用者が押したときだけ、OpenRouter の鍵をハブの公開鍵で封じて渡す（ECIES） | `approval` `no_secrets` | `backend/app/news/hub_link.py` | 秘密が外（NAS）へ出る唯一の道。封じた形だけが流れ、ログ・応答には出ない |
 | `ext-news-hub-llm` | QNAP ニュースハブ | LLM ゲートウェイ（/api/v1/llm/v1） | gateway | ハブから借りた仕事（要約・抽出）が ControlDeck のゲートウェイ（caller=news）を使う | `approval` `audit` | `backend/app/news/hub_jobs.py` | ローカルのモデルなら GPU を使う。クラウドのモデルのときは外部送信の許可が無ければその種類は借りない |
 | `ext-git-service` | backend（FastAPI） | GitHub | subprocess | git リポジトリの操作（gitrepos） | `auth` `audit` `path_check` | `backend/app/gitrepos/service.py` |  |
@@ -406,6 +411,7 @@ flowchart LR
 | `control_deck.report` | `mcp-report` |
 | `control_deck.research` | `mcp-research` |
 | `control_deck.knowledge_search` | `mcp-knowledge` |
+| `control_deck.news_knowledge` | `mcp-news-knowledge` |
 | `control_deck.diagnostics` | `mcp-diagnostics` |
 | `control_deck.tool_contract` | `mcp-contract` |
 | `control_deck.project_output_grant` | `mcp-project-grants` |

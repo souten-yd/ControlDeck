@@ -173,6 +173,13 @@ export function NewsHubCard() {
         <Toggle label="知識（RAG）への取り込み" hint="「検索（RAG）への蓄積」が入のときだけ、ハブの記事も知識の分野「ニュース」へ入れます" value={draft.features.rag} disabled={dis} onChange={(on) => set({ features: { ...draft.features, rag: on } })} />
       </div>
 
+      <div className="space-y-2" data-testid="hub-expand-settings">
+        <span className={label}>ハブの関係・概要で検索の語を広げる</span>
+        <Toggle label="知識（RAG）の検索" hint="別名・正式名・確かな上位下位の語を足した問いでも引いて融合します（測定: 言い方の違いの Recall@10 が上がる。処理は 1 検索あたり約 8 ms 増）" value={draft.features.expand_rag} disabled={dis} onChange={(on) => set({ features: { ...draft.features, expand_rag: on } })} />
+        <Toggle label="Web 調査の検索" hint="広げた語で追加の検索を最大 2 本します（インターネットへの検索が増えます。既定は切）" value={draft.features.expand_web} disabled={dis} onChange={(on) => set({ features: { ...draft.features, expand_web: on } })} />
+        <Toggle label="特許の検索" hint="自分の発明の語はハブへ「秘密」として問います（ハブのつなぎが許していなければ広げません）。ハブが知らない分野では効きません（既定は切）" value={draft.features.expand_patent} disabled={dis} onChange={(on) => set({ features: { ...draft.features, expand_patent: on } })} />
+      </div>
+
       <div className="space-y-2" data-testid="hub-jobs-settings">
         <Toggle label="ハブの仕事を借りて処理する" hint="ハブの NAS には重い LLM・画像生成が無いので、この PC の既存の処理を貸します（既定は切）" value={draft.jobs.enabled} disabled={dis} onChange={(on) => set({ jobs: { ...draft.jobs, enabled: on } })} />
         {draft.jobs.enabled && <>

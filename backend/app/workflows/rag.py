@@ -346,6 +346,10 @@ async def search(
     found = await asyncio.to_thread(
         store.search, [collection], question, query_vector=query_vector, model=cfg["embed_model"],
         mode=mode, hybrid_weight=float(cfg.get("hybrid_weight", 0.5)), limit=top_k * 8)
+    expanded_terms: list[dict] = []
+    widened = await _hub_expand_hits(collection, question, top_k, found)
+    if widened is not None:
+        found, expanded_terms = widened
     if not found:
         return {"matches": [], "context": "", "count": 0}
 
@@ -372,8 +376,27 @@ async def search(
         # 付けるので、点数では切らず上位の件数で入れる（docs/reranker-evaluation.md）
         reranked = [m for m in reranked if m.get("rerank_score", 0.0) >= min_rerank_score]
     context = "\n\n---\n\n".join(strip_instruction(m["context"]) for m in reranked)
-    return {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
-            "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
+    out = {"matches": reranked, "context": context, "count": len(reranked), "mode": mode,
+           "reranked": len(reranked) != len(matches) or any("rerank_score" in m for m in reranked)}
+    if expanded_terms:
+        out["expanded_terms"] = expanded_terms
+    return out
+
+
+async def _hub_expand_hits(collection: str, question: str, top_k: int, found: list[dict]):
+    """ニュースハブの関係・概要で語を広げた問い（OR）でも引き、元の結果へ RRF で融合する。設定で切ってあれば・つながっていなければ・広げる語が無ければ None（元の語だけ）。
+    測定と根拠は docs/implementation-status.md「ハブの関係・概要で検索の語を広げる」。"""
+    from app.knowledge import hub_expand
+
+    if not await asyncio.to_thread(hub_expand.enabled, "rag"):
+        return None
+    ex = await hub_expand.aexpand(question, purpose="rag")
+    if not ex["terms"]:
+        return None
+    extra = await asyncio.to_thread(store.search, [collection], hub_expand.or_query(ex["terms"]), mode="fulltext", limit=top_k * 8)
+    if not extra:
+        return None
+    return hub_expand.fuse_hits(found, extra)[:top_k * 8], [{"term": t["term"], "reason": t["reason"]} for t in ex["terms"][:6]]
 
 
 async def _warm_gpu_reranker(fast: bool) -> None:

@@ -124,7 +124,7 @@ export interface NewsRuntimeSettings {
 export type NewsHubSource = "local" | "hub" | "auto";
 export interface NewsHubSettings {
   source: NewsHubSource; sync_minutes: number; kinds: string[]; channels: string[]; categories: string[];
-  features: { imagegen: boolean; reader: boolean; rag: boolean };
+  features: { imagegen: boolean; reader: boolean; rag: boolean; expand_patent: boolean; expand_web: boolean; expand_rag: boolean };
   jobs: { enabled: boolean; kinds: string[]; max_per_run: number; interval_minutes: number };
 }
 /** ハブとのつなぎと診断（GET /news/hub。トークン・鍵は含まない）。 */

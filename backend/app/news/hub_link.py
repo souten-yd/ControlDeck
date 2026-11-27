@@ -169,8 +169,9 @@ def normalize_url(value: object) -> str:
     return text.rstrip("/")
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(verify=shared_ssl_context(), follow_redirects=False, timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT), trust_env=False)
+def _client(timeout: float | None = None) -> httpx.Client:
+    limit = READ_TIMEOUT if timeout is None else max(0.05, float(timeout))
+    return httpx.Client(verify=shared_ssl_context(), follow_redirects=False, timeout=httpx.Timeout(limit, connect=min(CONNECT_TIMEOUT, limit)), trust_env=False)
 
 
 def _detail(response: httpx.Response) -> str:
@@ -184,8 +185,8 @@ def _detail(response: httpx.Response) -> str:
 
 
 def call(method: str, path: str, *, url: str | None = None, token: str | None = None, json_body: dict | None = None, content: bytes | None = None,
-         params: dict | None = None, headers: dict | None = None, raw: bool = False):
-    """ハブの API を呼ぶ。url・token を渡さなければ保存した値（つないで確かめた後だけ）。失敗は HubError。"""
+         params: dict | None = None, headers: dict | None = None, raw: bool = False, timeout: float | None = None):
+    """ハブの API を呼ぶ。url・token を渡さなければ保存した値（つないで確かめた後だけ）。失敗は HubError。timeout（秒）は検索の補助のように待てない呼び出しが短く切るため。"""
     state = None
     if url is None or token is None:
         state = load()
@@ -194,7 +195,7 @@ def call(method: str, path: str, *, url: str | None = None, token: str | None = 
         url, token = state["url"], _token(state)
     head = {"Authorization": f"Bearer {token}", "Accept": "application/json", **(headers or {})} if token else {"Accept": "application/json", **(headers or {})}
     try:
-        with _client() as client:
+        with _client(timeout) as client:
             response = client.request(method, f"{url}{API}{path}", headers=head, params=params, json=json_body, content=content)
     except httpx.TimeoutException:
         raise HubError(f"ハブが時間内に答えませんでした（試したアドレス: {url}）") from None

@@ -155,7 +155,7 @@ def test_defaults_keep_todays_behavior_and_settings_are_validated():
     assert conf["hub"]["source"] == "local" and conf["hub"]["jobs"]["enabled"] is False and conf["hub"]["sync_minutes"] == 5
     assert hub_sync.effective_source(conf) == "local"          # つないでいなければ、どれを選んでも local
     ok = settings.normalize({"hub": {"source": "auto", "channels": ["ai-news"], "categories": ["news", "model"], "kinds": ["items"], "features": {"imagegen": True}}})["hub"]
-    assert ok["source"] == "auto" and ok["categories"] == ["news", "model"] and ok["features"] == {"imagegen": True, "reader": True, "rag": True}
+    assert ok["source"] == "auto" and ok["categories"] == ["news", "model"] and ok["features"] == {"imagegen": True, "reader": True, "rag": True, "expand_patent": False, "expand_web": False, "expand_rag": True}
     for bad in ({"source": "cloud"}, {"sync_minutes": 0}, {"categories": ["x"]}, {"channels": ["a b"]}, {"kinds": "items"}, {"jobs": {"kinds": ["embed"]}}, {"jobs": {"max_per_run": 99}}):
         with pytest.raises(settings.ConfigError):
             settings.normalize({"hub": bad})

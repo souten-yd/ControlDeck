@@ -36,7 +36,7 @@ DEFAULTS: dict = {
     "imagegen": {"enabled": False, "tier": "small", "threads": 8, "max_per_run": 30},
     # QNAP ニュースハブとつなぐ（app/news/hub_*.py。2026-11-25 利用者の案 C）。既定はローカル（今の動きを変えない）。ハブの設定とは別。
     "hub": {"source": "local", "sync_minutes": 5, "kinds": ["items", "entities", "events"], "channels": [], "categories": [],
-            "features": {"imagegen": False, "reader": True, "rag": True},
+            "features": {"imagegen": False, "reader": True, "rag": True, "expand_patent": False, "expand_web": False, "expand_rag": True},
             "jobs": {"enabled": False, "kinds": ["summarize_hq", "extract_retry", "image"], "max_per_run": 5, "interval_minutes": 15}},
 }
 HUB_SOURCES = ("local", "hub", "auto")        # データの出どころ: 自分で集める・ハブ・自動（ハブが答えなければローカル、戻ったらハブ）
@@ -184,7 +184,8 @@ def _hub(raw: dict) -> dict:
     return {"source": source, "sync_minutes": _int(raw.get("sync_minutes", base["sync_minutes"]), "ハブの同期の間隔（分）", 1, 240),
             "kinds": _pick(raw.get("kinds", base["kinds"]), HUB_KINDS, "受け取る種類") or list(HUB_KINDS)[:1],
             "channels": list(dict.fromkeys(channels)), "categories": _pick(raw.get("categories", []), HUB_CATEGORIES, "受け取る分類"),
-            "features": {"imagegen": _bool(features, "imagegen", False), "reader": _bool(features, "reader", True), "rag": _bool(features, "rag", True)},
+            "features": {"imagegen": _bool(features, "imagegen", False), "reader": _bool(features, "reader", True), "rag": _bool(features, "rag", True),
+                         "expand_patent": _bool(features, "expand_patent", False), "expand_web": _bool(features, "expand_web", False), "expand_rag": _bool(features, "expand_rag", True)},
             "jobs": {"enabled": _bool(jobs, "enabled", False), "kinds": _pick(jobs.get("kinds", base["jobs"]["kinds"]), HUB_JOB_KINDS, "借りる仕事の種類"),
                      "max_per_run": _int(jobs.get("max_per_run", 5), "仕事を借りる 1 回の件数", 1, 20),
                      "interval_minutes": _int(jobs.get("interval_minutes", 15), "仕事を借りる間隔（分）", 1, 240)}}

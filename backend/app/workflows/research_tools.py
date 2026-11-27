@@ -1046,6 +1046,10 @@ async def run_search_tool(call: dict, *, searx, register, max_chars: int, now=No
         if not ok:
             raise next(f for f in founds if isinstance(f, Exception))
         found = {"results": _merge([f["results"] for f in ok], limit), "notes": [n for f in ok for n in f["notes"]]}
+        extra = await _hub_expand_searches(query, sites, time_range, limit, searx)
+        if extra:
+            found = {"results": _merge([found["results"], *extra], limit), "notes": found["notes"]}
+            record["expanded"] = True
     except ExternalResearchBlocked as exc:
         return str(exc), {**record, "error": "blocked"}, []
     except Exception as exc:  # noqa: BLE001 - 検索の失敗は文にしてモデルへ返す
@@ -1082,6 +1086,24 @@ async def run_search_tool(call: dict, *, searx, register, max_chars: int, now=No
     body = _fit([(f"[{src['reference_id']}] {res['title']}", res.get("snippet", ""), res["url"])
                  for src, res in zip(registered, results)], max(max_chars - len(header), 400))
     return header + body, {**record, "count": len(results)}, registered
+
+
+async def _hub_expand_searches(query: str, sites, time_range: str, limit: int, searx) -> list[list[dict]]:
+    """ニュースハブの関係・概要で広げた語で、追加の検索を最大 2 本（元の語＋広げた語）。設定で切ってあれば・つながっていなければ空。
+    追加の検索の失敗は無視する（元の検索の結果は変えない）。外部への出口の検査（ensure_external_allowed）は search_web の中で同じにかかる。"""
+    from app.knowledge import hub_expand
+
+    if not await asyncio.to_thread(hub_expand.enabled, "web"):
+        return []
+    ex = await hub_expand.aexpand(query, purpose="web")
+    queries = [f"{query} {t['term']}" for t in ex["terms"][:hub_expand.WEB_EXTRA_QUERIES]]
+    if not queries:
+        return []
+    got = await asyncio.gather(*[search_web(q, sites, time_range, limit, searx=searx) for q in queries], return_exceptions=True)
+    for g in got:
+        if isinstance(g, ExternalResearchBlocked):
+            raise g
+    return [g["results"] for g in got if isinstance(g, dict)]
 
 
 async def run_read_page_tool(call: dict, *, register, max_chars: int, ranker=rerank_scores) -> tuple[str, dict, list[dict]]:

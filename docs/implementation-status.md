@@ -9,6 +9,15 @@
 - codex のサンドボックス（2026-11-27 実機）: この機械では Ubuntu の `kernel.apparmor_restrict_unprivileged_userns=1` のため bwrap が落ち、`-s workspace-write` だと書き込みも shell も全部 failed なのに codex は終了コード 0 で「完了」と返す。`team_runner.codex_sandbox_ok()` が `bwrap --ro-bind / / --dev /dev true` を一度だけ調べて覚え、使えなければ `-s danger-full-access`（チームの `codex_without_sandbox`・既定 true。false なら「Codex のサンドボックスがこの機械で使えません」で止める）。メンバー・実行・runs に「サンドボックスなし」の印。codex の JSON は `file_change`・`command_execution` を進み具合に入れ、`status: failed` を失敗した操作として数えて run に「失敗した操作 n 件」を残す。書き込みが全部失敗した実行は報告を未検証にして review へ進めず、同じ担い手で 1 回再挑戦 → 続けて同じなら引き継ぎの方針へ（候補が無ければ blocked）。
 - 画面（TeamView）: ヘッドレスのメンバーを足す・メンバーのカード・実行中（ヘッドレス）の印と最後の行・経過・使用量・止める・出力の最後（折りたたみ）・担い手の履歴（runs）・「…」メニューに「上限で止まったら: 別の担い手へ引き継ぐ／回復を待つ」「候補の順番」「同時並列の設定」・板の上に「同時に動いている数／上限・待ち」と作業場所（Project Lab で開く）。
 - 試験: `backend/tests/test_commander_team_t3a.py`（偽の CLI の実行ファイルで、引数・報告・使用量・上限・止める・再挑戦・wait／handoff・候補の順・runs・並列の 4 つの決まり・配り手・作業場所）、E2E `commander-team.spec.ts`（320px・1280px）。地図（route_map）に 4 ルートを足した。
+## 2026-11-27 ハブの関係・概要で検索の語を広げる（RAG は既定オン・Web 調査と特許はオフ）
+- 利用者「（ニュースハブの）関係と概要あたりは参考にすることで、検索ワードを広げるとかそういうのに利用できないか。例えば特許とかにも」。AGENTS.md「機能を取り込む条件」に従い、測ってから既定にした。
+- 部品 `backend/app/knowledge/hub_expand.py`: `expand(query, purpose=patent|web|rag)` がハブの `/retrieve/seeds`（名前・別名で当たった物だけ）→ `/things/context`（別名・概要）と `/graph/neighbors`（深さ 1）から語を集め、重み（別名 1.0 ＞ 上位・下位・置き換え 0.7 ＞ 仲間・使う 0.5 ＞ 概要 0.3、×確かさ×種の順位）と理由つきで返す。問いと同じ語・短い語・版・hash・ハブで記事が 150 件以上の物（一般語）は外す。特許は技術の言葉を重く、製品名・社名を軽く。つながっていない・時間切れ・エラー・403 は空（元の語だけで続く）、結果は 10 分（失敗は 30 秒）覚える。外へは `hub_link.call`（LAN）だけ。特許は常に秘密の区分として問い、ハブのつなぎが許さなければ空。`hub_link.call` に呼び出しごとの `timeout` を足した。
+- 使う場所（`news.hub.features.expand_rag|expand_web|expand_patent`。ハブがつながっているときだけ働く）: RAG＝`workflows/rag.search` が広げた語の OR の問いでも引いて RRF（重み 0.5）で融合し `expanded_terms` を返す／特許＝`patents/service.search` が同様に融合し、`POST /patents/search` が `expanded`（理由つき）を返して画面に外せる語として出す（`exclude_terms`）／Web＝`research_tools.run_search_tool` が `元の問い＋広げた語` の追加の検索を最大 2 本。設定画面（ニュースのハブ）に 3 つの入り切り。
+- AI アシスタントの道具 `control_deck.news_knowledge`（`agent_mcp.py`）: 問い → ハブの Things のカード（概要・別名・関係・主張・変化と矛盾）と根拠の記事。公開の区分だけ・3 カード・5 記事・12,000 文字まで。地図 `route_map.py` に `ext-hub-expand`・`mcp-news-knowledge` を追加。
+- **測定**（`hub_expand_eval.py`。ハブの複製と知識 DB の複製を読むだけ・LLM なし。結果は `~/ControlDeck-評価/2026-11-27-ハブの関係・概要で検索の語を広げる.md`）: 重み 0.45 以上（別名・正式名・確かな上位下位）だけ足す版が最良。
+  RAG（news・20 問）Recall@10 0.720→0.776・nDCG 0.773→0.818（言い方の違い 14 問は 0.662→0.742・0.718→0.783、対照 6 問は不変）、時間 1.9→9.1 ms。Web（代わりの検索・20 問）0.815→0.875・0.838→0.867。全部の語を足すと対照で悪化（Web 0.958→0.925）。特許（papers・10 問）はハブが分野を知らず、無関係な語が足されて nDCG 0.795→0.742。
+- 既定: **RAG のみオン**。Web 調査は本物の検索で測れていない（追加のインターネット検索も増える）ためオフ、特許はハブに特許・技術文書の Things が入るまでオフ（同じ測定で再判断）。ハブは同じ機械の複製で測ったので、LAN 越しの本物の NAS では往復が増える（予算 800 ms で打ち切り）。正解は語の一致の機械的なもので、「言い方の違い」の問いは広げる側に有利。
+- 試験: `backend/tests/test_hub_expand.py`（17 件）。既存の MCP の道具の一覧・設定の試験を更新。
 
 ## 2026-11-27 Sly-Radiance の個別設定が保存できない不具合
 - 利用者の iPhone:「runtime: Extra inputs are not permitted / role … / base_url … / runtime_status … / ctx_size … / n_parallel …」で保存できなかった。画面が一覧の行（表示用の項目つき）をそのまま送り、backend（extra="forbid"）が断っていた。

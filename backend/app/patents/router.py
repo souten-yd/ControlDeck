@@ -71,6 +71,7 @@ class SearchBody(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=20, ge=1, le=50)
     mode: str = Field(default="hybrid", pattern="^(hybrid|fulltext|vector)$")
+    exclude_terms: list[str] = Field(default_factory=list, max_length=20)      # 画面で外した「広げた語」
 
 
 class ChartBody(BaseModel):
@@ -187,7 +188,9 @@ def delete_ref(case_id: int, ref_id: int, user: User = Depends(EDIT)):
 
 @router.post("/search")
 async def search(body: SearchBody, user: User = VIEW):
-    return {"results": await service.search(body.query, limit=body.limit, mode=body.mode)}
+    expansion: dict = {}
+    results = await service.search(body.query, limit=body.limit, mode=body.mode, exclude_terms=tuple(body.exclude_terms), expansion=expansion)
+    return {"results": results, "expanded": [{"term": t["term"], "weight": t["weight"], "reason": t["reason"]} for t in expansion.get("terms", [])]}
 
 
 @router.post("/cases/{case_id}/claim-chart")
