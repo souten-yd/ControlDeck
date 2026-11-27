@@ -156,7 +156,7 @@ def test_codex_argv_gets_model_and_reasoning_effort(env):
     assert argv[argv.index("-m") + 1] == "gpt-a" and argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
     assert argv[-1] == "本文"
     plain, _e, _ = team_runner.build_launch({"cli": "codex"}, "本文", env.work, env.tmp / "l")
-    assert "-m" not in plain and "-c" not in plain
+    assert "-m" not in plain and not any(a.startswith("model_reasoning_effort=") for a in plain)
 
 
 def test_opencode_argv_model_and_variant(env, monkeypatch):

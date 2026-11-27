@@ -86,7 +86,11 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
     # 見つけた絶対パスで開き、その場所を PATH の先頭に足す（codex は `#!/usr/bin/env node` の
     # スクリプトなので、同じ場所の道具を PATH で探す）。
     path = accounts.executable_path(cli) or cli.executable
-    command = shlex.quote(path)
+    # API キー（従量課金）は使わない: 鍵の環境変数を消してから開く（tmux のサーバーの環境を引き継がない）。
+    # Codex は forced_login_method で ChatGPT のログインだけにする（accounts.API_KEY_ENV の説明）。
+    command = accounts.UNSET_API_KEYS + " " + shlex.quote(path)
+    if cli.id == "codex":
+        command += " " + " ".join(shlex.quote(a) for a in accounts.CODEX_SUBSCRIPTION_ARGS)
     if cli.id == "claude":
         # 5 時間・週の使用率を statusline から受け取る（usage.py。鍵は読まない）
         command += " --settings " + shlex.quote(str(usage.claude_settings_file(account)))

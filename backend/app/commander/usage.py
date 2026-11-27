@@ -39,12 +39,14 @@ def claude_usage_file(account: str) -> Path:
 
 
 def claude_settings_file(account: str) -> Path:
-    """Claude に --settings で渡すファイル（statusline のコマンドだけ）。開くたびに書き直す。"""
+    """Claude に --settings で渡すファイル（statusline のコマンドと、API キーを使わない設定）。開くたびに書き直す。"""
     out = claude_usage_file(account)
     command = " ".join(shlex.quote(part) for part in (sys.executable, "-I", str(STATUSLINE_SCRIPT), str(out)))
     path = usage_dir() / f"claude-settings-{out.stem.removeprefix('claude-')}.json"
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps({"statusLine": {"type": "command", "command": command, "padding": 0}}), encoding="utf-8")
+    # 定額のログインだけで使う（apiKeyHelper を空・forceLoginMethod=claudeai。accounts.CLAUDE_SUBSCRIPTION_SETTINGS）
+    settings = {"statusLine": {"type": "command", "command": command, "padding": 0}, **accounts.CLAUDE_SUBSCRIPTION_SETTINGS}
+    temp.write_text(json.dumps(settings), encoding="utf-8")
     os.chmod(temp, 0o600)
     os.replace(temp, path)
     return path

@@ -39,10 +39,11 @@ def test_statusline_script_writes_only_limits_and_prints_summary(tmp_path):
 
 
 def test_claude_settings_file_points_the_statusline_at_the_account_file():
-    """--settings のファイルは statusline だけで、書き出し先はアカウントごと。"""
+    """--settings のファイルは statusline と API キーを使わない設定だけで、書き出し先はアカウントごと。"""
     path = usage.claude_settings_file("default")
     data = json.loads(path.read_text())
-    assert set(data) == {"statusLine"}
+    assert set(data) == {"statusLine", "apiKeyHelper", "forceLoginMethod"}
+    assert data["apiKeyHelper"] == "" and data["forceLoginMethod"] == "claudeai"
     assert str(usage.claude_usage_file("default")) in data["statusLine"]["command"]
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 

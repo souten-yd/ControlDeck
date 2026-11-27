@@ -220,7 +220,9 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
         raise LaunchError(str(exc)) from exc
     mcp_env: dict[str, str] = {}
     if cli_id == "claude":
-        argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose", "--permission-prompts", "none"]
+        argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
+                # 定額のログインだけ（API キーは使わない。accounts.CLAUDE_SUBSCRIPTION_SETTINGS）
+                "--settings", json.dumps(accounts.CLAUDE_SUBSCRIPTION_SETTINGS)]
         if mcp:
             config = last_file.with_name("mcp.json")
             fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -257,8 +259,8 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
                      # "MCP tool call requires approval, but approval policy is never"）。nexarch_team だけを承認済みにする
                      "-c", f'mcp_servers.{name}.default_tools_approval_mode="approve"']
             mcp_env = dict(spec["environment"])  # token は argv ではなく codex の環境変数で渡し、env_vars で橋渡しへ転送する
-        argv.append(text)
-    return argv, {**_base_env(exe), **account_env, **mcp_env}, (lambda: None)
+        argv += [*accounts.CODEX_SUBSCRIPTION_ARGS, text]   # ChatGPT のログインだけ（API キーは使わない）
+    return argv, accounts.without_api_keys({**_base_env(exe), **account_env, **mcp_env}), (lambda: None)
 
 
 # ---------------------------------------------------------------- 出力の JSON の行の読み取り
