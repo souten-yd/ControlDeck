@@ -138,3 +138,8 @@
 - （追加調査）Chorus: https://github.com/homilabo/Chorus 、PAL MCP（clink）: https://github.com/beehiveinnovations/zen-mcp-server
 - （追加調査）oh-my-opencode のカテゴリ別の振り分け: https://dev.to/rosgluk/oh-my-opencode-review-honest-results-billing-risks-and-when-its-worth-it-3ea
 - （追加調査）スマホから操作: https://dev.to/alexeiled/ccgram-control-ai-coding-agents-from-your-phone-via-telegram-and-tmux-4jjd
+
+
+## 使いながら見つけた直し（2026-11-28〜。`docs/ROADMAP.md` 方針 3）
+ControlDeck の開発を本番の AI チームから回して、詰まった所・手間だった所をここに書き、開発機能の直しとして入れる。
+- 2026-11-28: 実装の担い手に OpenCode の GLM（Zen・Go）を当てられなかった（選択肢に出ない・ゲートウェイでしか起動しない）→ チームの画面のない実行で Zen のモデルを使えるようにした。コンソールは未対応（断る）。

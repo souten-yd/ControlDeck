@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 116 本、ノード: 43 個
+- ルート: 117 本、ノード: 43 個
 
 ## 守りの印（guards）
 
@@ -190,13 +190,15 @@ flowchart LR
 | `mcp-project-grants` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Project のファイルを Add-on へ渡す・Add-on の出力を受ける（許可の付与） | `auth` `path_check` `approval` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py` |  |
 | `mcp-addon-tools` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Add-on が宣言した道具（動的）。名前は Add-on ごと | `auth` `approval` `audit` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py`<br>`backend/app/addons/registry.py` |  |
 
-### Nexarch（AI Commander・チーム）（28 本）
+### Nexarch（AI Commander・チーム）（29 本）
 
 ```mermaid
 flowchart LR
   backend["backend（FastAPI）"]
   console["Nexarch のコンソール（Claude・Codex・OpenCode の CLI）"]
   workdir["作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中）"]
+  secret_store["鍵の保存（暗号化・0600）"]
+  opencode["OpenCode（serve・実行）"]
   board["チームの板（teams.json）"]
   mcp_bridge["MCP の橋（stdio）"]
   web["公開インターネット（Web・学術・フォーラム）"]
@@ -214,6 +216,7 @@ flowchart LR
   backend -->|"nx-team-checks (subprocess)"| workdir
   backend -->|"nx-team-retry-inject (tmux)"| console
   backend -->|"nx-team-run (subprocess)"| workdir
+  secret_store -->|"nx-team-zen (file)"| opencode
   backend -->|"nx-team-sandbox-probe (subprocess)"| workdir
   backend -->|"nx-team-git (subprocess)"| workdir
   backend -->|"nx-team-handoff-inject (tmux)"| console
@@ -246,6 +249,7 @@ flowchart LR
 | `nx-team-checks` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | チームのタスクの確認のコマンドを担当の作業フォルダで実行し、合否と出力の最後を板へ（LLM なし） | `audit` `path_check` `no_secrets` | `backend/app/commander/team_checks.py` | shell なし・最小の環境（PATH・HOME・LANG）・600 秒・出力は一時ファイル（上限 50MB）。監査ログはコマンドと終了コードだけ |
 | `nx-team-retry-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 確認のコマンドが落ちたとき、失敗の出力を付けて担当へ自動で再挑戦を送る（2 回まで。直せなければ blocked と通知） | `audit` | `backend/app/commander/team_checks.py` |  |
 | `nx-team-run` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | チームのタスクをヘッドレスの CLI（claude・codex・opencode）で 1 回実行し、JSON の行から進み具合・報告・使用量・上限を板へ（LLM なし） | `audit` `path_check` `no_secrets` | `backend/app/commander/team_runner.py` | shell なし・最小の環境（PATH・HOME・LANG など）＋アカウントの設定フォルダ・出力は一時ファイル（上限 50MB）・2 時間で打ち切り・止められる。本文・出力はログに出さない。監査ログは担当・CLI・終了コード・時間・上限かだけ |
+| `nx-team-zen` | 鍵の保存（暗号化・0600） | OpenCode（serve・実行） | file | AI チームの担い手が OpenCode（Zen・Go）のモデル（opencode-go/glm-5.3 など）のとき、Zen の鍵を OpenCode へ渡し、OpenCode が opencode.ai へ直接つなぐ | `no_secrets` | `backend/app/commander/team_runner.py`<br>`backend/app/integrations/opencode/zen.py` | ゲートウェイを通らない（外部へ直結）。鍵は箱なら 0600 の --env-file（使い終わったら消す）、ホストなら子の環境変数だけ。argv・ログに出さない。コンソール（TUI）では断る（鍵を渡す道が無い）。2026-11-28 本番で GLM をチームに当てようとして欠けが分かった |
 | `nx-team-sandbox-probe` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | codex のサンドボックス（bwrap）がこの機械で使えるかを一度だけ調べて覚える（`bwrap --ro-bind / / --dev /dev true`）。使えなければ codex を danger-full-access で動かす（チームの設定で止めることもできる） | `no_secrets` | `backend/app/commander/team_runner.py` | shell なし・引数は固定・10 秒。Ubuntu の kernel.apparmor_restrict_unprivileged_userns=1 では bwrap が落ち、codex は書き込みも shell も全部失敗するのに完了と返す |
 | `nx-team-git` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | 上限で止まった担当の作業フォルダの変更（git status --short・git diff --stat）を引き継ぎの本文のために読む | `path_check` `no_secrets` | `backend/app/commander/team_runner.py`<br>`backend/app/commander/team_dispatch.py` | shell なし・引数は固定・15 秒・読むだけ。git が無い・リポジトリでなければ省く |
 | `nx-team-handoff-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限で止まったタスクを次の候補（画面のコンソール）へ、引き継ぎの文を付けて送り直す。待ちのタスクを空いた担当へ自動で送る（配り手） | `audit` | `backend/app/commander/team_dispatch.py`<br>`backend/app/commander/teams.py` | 同時に走らせる数・担い手ごとに 1 つ・担当ファイルの重なり・ローカルの同時の数の決まりの範囲だけ |

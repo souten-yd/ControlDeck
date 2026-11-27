@@ -324,7 +324,7 @@ def test_opencode_argv_uses_provider_config(env, monkeypatch, tmp_path):
     monkeypatch.setattr(provider, "get_settings", lambda: {"base_url": "http://gw/v1", "model": "auto"})
     monkeypatch.setattr(provider, "_runtime_config", lambda job, url, model, **kw: seen.update(url=url, model=model) or config)
     monkeypatch.setattr(provider, "_managed_project_id", lambda p: None)
-    monkeypatch.setattr(provider, "_launch", lambda rt, argv, project, cfg, interactive: (argv, {"XDG_CONFIG_HOME": str(cfg)}))
+    monkeypatch.setattr(provider, "_launch", lambda rt, argv, project, cfg, interactive, **kw: (argv, {"XDG_CONFIG_HOME": str(cfg)}))
     monkeypatch.setattr(accounts, "opencode_connection", lambda account: {"name": account, "model": "qwen-local"})
 
     async def ready(url):

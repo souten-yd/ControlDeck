@@ -1,5 +1,12 @@
 # 実装状況
 
+## 2026-11-28 AI チームの担い手に OpenCode（Zen・Go）の GLM などを使える
+- 本番の Nexarch で ControlDeck の開発を AI チームに回そうとしたところ（`docs/ROADMAP.md` 方針 3）、実装の担い手に OpenCode の GLM（opencode-go/glm-5.3）を当てられなかった。選択肢に出ず、起動も常に `controldeck/<モデル>`（ゲートウェイ）だった。利用者「ローカル LLM と OpenCode の GLM と OpenRouter の DS を使って良い」。
+- **一覧**: Zen の鍵があるときだけ、OpenCode のモデルに `model_choice.ZEN_MODELS`（GLM-5.3・HY4 Flash・DeepSeek V4.1 Flash）を足す（`commander/models.py`）。
+- **起動**: 担い手が Zen のモデルなら、設定のモデルはゲートウェイの既定のままにし、`--model opencode-go/...` だけ Zen を指す（`team_runner._opencode_launch`）。鍵は argv に出さない。箱なら 0600 の `--env-file`（後片付けで消す）、ホストなら子の環境変数で渡す。鍵が無ければ起動の前に断る。
+- **コンソール（TUI）**: Zen のモデルは断る（TUI の設定に鍵を渡す道が無い）。
+- 実機: 本番の設定（箱）で、チームの起動の形で GLM-5.3 が答えた。鍵の一時ファイルは残らない。
+- 試験: `backend/tests/test_commander_team_zen.py`（6 件）。地図に `nx-team-zen`。
 ## 2026-11-28 Nexarch の Claude・Codex は API キーを使わない（定額のログインだけ）
 - 利用者「クロードとコーデックスは API キーを消してください。基本的にはもう定額でしか使えません」。前の会話で作らせかけた「API キーのアカウント」は入っていない（PR なし）。本番の Claude・Codex はどちらも定額のログイン（Codex は ChatGPT）で、本体の環境変数にも鍵は無かった。その状態を仕組みで守る。
 - **環境変数**: `ANTHROPIC_API_KEY`・`ANTHROPIC_AUTH_TOKEN`・`OPENAI_API_KEY`・`CODEX_API_KEY`・`AZURE_OPENAI_API_KEY`（`accounts.API_KEY_ENV`）を CLI へ渡さない。コンソールは tmux のサーバーの環境を引き継ぐので、コマンドの頭に `env -u …`（`accounts.UNSET_API_KEYS`）。チームは `without_api_keys`。`codex login status` にも渡さない。
