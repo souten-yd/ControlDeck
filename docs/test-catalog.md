@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 266 ファイル、2625 テスト（目的の未記入 93 ファイル）
-- E2E: 146 spec、323 テスト
+- backend: 267 ファイル、2647 テスト（目的の未記入 93 ファイル）
+- E2E: 146 spec、324 テスト
 
 ## backend（backend/tests）
 
@@ -734,6 +734,33 @@
 - `test_last_line_skips_frames_prompts_and_hints` — 最後の行は枠・空の入力欄・操作の案内を除いた、意味のある最後の行。
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
+
+### backend/tests/test_commander_team_t2b.py
+
+目的: Nexarch の AI チーム T2b（チームの前提・会話のリセット・確認のコマンドの自動実行と自動の再挑戦）の試験。 目的: 「合否はコードが確かめる・タスクごとに新しい会話・チームの前提を毎回渡す・落ちたら自動で直させる」を守る。 - brief が送り込みの文面の先頭へ付く・リセットのコマンドが CLI ごとに正しく、オフなら送らず、CLI 不明なら飛ばす。 - checks の検証（個数・長さ・制御文字）。 - 実行は本物の小さなコマンド（passed/failed/timeout）。shell を使わない（&& が効かない）・環境変数は最小限・ 作業フォルダが分からない／許可の外なら実行せず error。 - 落ちたら 2 回まで自動で再送（リセットしない）、3 回目も落ちたら blocked と通知。監査ログにはコマンドと終了コードだけ。 根拠: 利用者の方針（2026-11-27）「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」と docs/PLAN-nexarch-team.md（検証できる完了報告・落ちたら自動で直させる）。 Terminal は FakeManager（tmux は使わない）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+
+- `test_brief_is_prefixed_and_empty_brief_is_not`
+- `test_brief_validation`
+- `test_reset_command_per_cli_then_wait_then_body`
+- `test_reset_off_and_unknown_cli_do_not_send_reset`
+- `test_checks_validation`
+- `test_passed_keeps_review_and_records_results`
+- `test_failed_runs_stop_at_first_failure_and_keep_output_tail`
+- `test_output_tail_is_limited_to_2000`
+- `test_timeout_is_failed`
+- `test_no_shell`
+- `test_minimal_env`
+- `test_runs_in_the_assignee_workdir`
+- `test_unknown_or_forbidden_workdir_is_error_and_nothing_runs`
+- `test_missing_executable_is_failed_not_crash`
+- `test_task_without_checks_is_as_before`
+- `test_failure_retries_twice_then_blocks_and_notifies`
+- `test_blocked_notification_respects_team_notify_off`
+- `test_manual_dispatch_resets_attempts_and_result`
+- `test_stale_result_is_dropped_when_task_left_review`
+- `test_watch_auto_collect_runs_checks`
+- `test_watch_does_not_pick_old_report_after_retry_marker`
+- `test_audit_has_commands_and_exit_codes_but_no_output`
 
 ### backend/tests/test_commander_team_watch.py
 
@@ -4300,11 +4327,12 @@
 
 ### frontend/e2e/commander-team.spec.ts
 
-目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
+目的: Nexarch の AI チーム（/commander?view=team）の E2E。API と端末の WebSocket はモック。 目的（docs/PLAN-nexarch-team.md T1）: チームを作る → メンバーに役割を付ける → タスクを作る → 担当へ送る → 報告を取り込む → 合格、の流れと、担当ファイルの重なりの警告・報告ありの印を確かめる。 T2a: 未検証の印・合格の確認ダイアログ・止まった／上限の印・通知の切り替えも確かめる。 T2b: チームの前提（brief）の編集・送る前のリセットの切り替え・確認のコマンドの入力と結果（✓／✗・出力）・ 「自動で直せず」（blocked）の印も確かめる。 320px と 1280px で撮影し、横はみ出しが無いこと（モバイルは列が縦に並ぶ）を見る。
 
 - AI チーム ${label}px: 作る → メンバー → タスク → 送る → 取り込む → 合格
 - URL の ?view=team でチームが開き、コンソールの切り替えで戻れる
 - AI チーム ${label}px: 未検証の印と合格の確認・止まった／上限の印・通知の切り替え
+- AI チーム ${label}px: チームの前提・リセットの切り替え・確認のコマンドと結果・自動で直せず
 
 ### frontend/e2e/commander.spec.ts
 

@@ -179,11 +179,19 @@ export const TEAM_ROLES: ReadonlyArray<readonly [TeamRole, string]> = [
 ];
 export const ROLE_LABEL: Record<TeamRole, string> = Object.fromEntries(TEAM_ROLES) as Record<TeamRole, string>;
 
-export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected";
+export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected" | "blocked";
 
 export interface TeamMember { session_id: string; role: TeamRole }
 
 export interface TaskReport { summary: string; changed_files: string[]; tests: string; verify?: string; remaining: string }
+
+export interface CheckRow { cmd: string; exit_code: number; seconds: number; tail: string }
+export interface ChecksResult {
+  status: "running" | "passed" | "failed" | "error";
+  ran_at: number;
+  results: CheckRow[];
+  message?: string;
+}
 
 export interface TeamTask {
   id: number;
@@ -191,6 +199,12 @@ export interface TeamTask {
   goal: string;
   acceptance: string;
   files: string[];
+  /** 確認のコマンド（Nexarch が担当の作業フォルダで実行して合否を決める）。 */
+  checks?: string[];
+  /** 確認の結果。checks が無いタスクには無い。 */
+  checks_result?: ChecksResult;
+  /** 確認が落ちて自動で直させた回数（2 回まで）。 */
+  attempts?: number;
   assignee: string;
   status: TaskStatus;
   report: TaskReport | null;
@@ -219,6 +233,10 @@ export interface Team {
   tasks: TeamTask[];
   /** 見張りの通知（既定オン）。 */
   notify?: boolean;
+  /** チームの前提。送り込みの文面の先頭に付く。 */
+  brief?: string;
+  /** 送る前に担当の会話をリセットする（既定 true）。 */
+  reset_before_dispatch?: boolean;
 }
 
 export interface TaskFields {
@@ -226,6 +244,7 @@ export interface TaskFields {
   goal?: string;
   acceptance?: string;
   files?: string[];
+  checks?: string[];
   assignee?: string;
   status?: TaskStatus;
 }
@@ -238,6 +257,11 @@ export async function fetchTeams(): Promise<Team[]> {
 }
 export async function createTeam(name: string): Promise<Team> {
   return api<Team>("/commander/teams", { method: "POST", json: { name } });
+}
+export async function updateTeam(
+  id: string, fields: { name?: string; brief?: string; reset_before_dispatch?: boolean },
+): Promise<Team> {
+  return api<Team>(teamUrl(id), { method: "PUT", json: fields });
 }
 export async function setTeamNotify(id: string, notify: boolean): Promise<Team> {
   return api<Team>(`${teamUrl(id)}/notify`, { method: "PUT", json: { notify } });

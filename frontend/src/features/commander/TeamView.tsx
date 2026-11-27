@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchTeams, putTaskReport,
-  ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, TEAM_ROLES, updateTask,
+  ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, TEAM_ROLES, updateTask, updateTeam,
   type CommanderConsole, type CommanderState, type TaskStatus, type Team, type TeamRole, type TeamTask,
 } from "../../api/commander";
 import {
@@ -26,8 +26,16 @@ const COLUMNS: ReadonlyArray<{ id: "todo" | "doing" | "review" | "done"; label: 
   { id: "todo", label: "待ち" }, { id: "doing", label: "作業中" }, { id: "review", label: "レビュー待ち" }, { id: "done", label: "完了" },
 ];
 const STATUS_LABEL: Record<TaskStatus, string> = {
-  todo: "待ち", doing: "作業中", review: "レビュー待ち", done: "完了", rejected: "差し戻し",
+  todo: "待ち", doing: "作業中", review: "レビュー待ち", done: "完了", rejected: "差し戻し", blocked: "自動で直せず",
 };
+const CHECK_LABEL = { running: "実行中", passed: "合格", failed: "不合格", error: "実行できず" } as const;
+const CHECK_CLASS = {
+  running: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",
+  passed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  failed: "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300",
+  error: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+} as const;
+const BLOCKED_CLASS = "rounded-full bg-red-50 px-2 py-0.5 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300";
 const UNVERIFIED_CLASS = "rounded-full bg-orange-50 px-2 py-0.5 font-semibold text-orange-700 dark:bg-orange-950/40 dark:text-orange-300";
 const WARN_CLASS = "rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
 const STATE_TEXT: Record<CommanderState | "closed", string> = { ...STATE_LABEL, closed: "コンソールが閉じています" };
@@ -58,6 +66,7 @@ export function TeamView({
     try { return localStorage.getItem(SELECTED_KEY) ?? ""; } catch { return ""; }
   });
   const [membersSheet, setMembersSheet] = useState(false);
+  const [briefSheet, setBriefSheet] = useState(false);
   const [taskSheet, setTaskSheet] = useState(false);
   const [newTeamSheet, setNewTeamSheet] = useState(false);
   const [openTask, setOpenTask] = useState<number | null>(null);
@@ -111,6 +120,16 @@ export function TeamView({
       show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
     }
   };
+  const toggleReset = async () => {
+    const next = team.reset_before_dispatch === false;
+    try {
+      await updateTeam(team.id, { reset_before_dispatch: next });
+      refresh();
+      show(next ? "送る前に会話をリセットします" : "送る前の会話のリセットをやめました");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切り替えられませんでした", "error");
+    }
+  };
   const current = team.tasks.find((t) => t.id === openTask);
 
   return (
@@ -136,6 +155,11 @@ export function TeamView({
             {
               label: team.notify === false ? "通知: オフ（オンにする）" : "通知: オン（オフにする）",
               onSelect: () => void toggleNotify(),
+            },
+            { label: "チームの前提", onSelect: () => setBriefSheet(true) },
+            {
+              label: team.reset_before_dispatch === false ? "送る前に会話をリセット: オフ（オンにする）" : "送る前に会話をリセット: オン（オフにする）",
+              onSelect: () => void toggleReset(),
             },
             { label: "チームを作る", onSelect: () => setNewTeamSheet(true) },
             { label: "このチームを削除", danger: true, separated: true, onSelect: () => setDeletingTeam(true) },
@@ -185,7 +209,7 @@ export function TeamView({
 
       <div className="grid min-w-0 gap-3 md:grid-cols-4">
         {COLUMNS.map((col) => {
-          const tasks = team.tasks.filter((t) => (col.id === "todo" ? t.status === "todo" || t.status === "rejected" : t.status === col.id));
+          const tasks = team.tasks.filter((t) => (col.id === "todo" ? t.status === "todo" || t.status === "rejected" || t.status === "blocked" : t.status === col.id));
           return (
             <section key={col.id} data-team-column={col.id} aria-label={col.label} className="min-w-0 rounded-2xl bg-zinc-50 p-2 dark:bg-zinc-900/50">
               <h3 className="mb-2 flex items-center justify-between px-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
@@ -205,6 +229,12 @@ export function TeamView({
                         <strong className="min-w-0 break-words text-sm">{task.title}</strong>
                       </span>
                       <span className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
+                        {task.status === "blocked" && <span data-team-blocked className={BLOCKED_CLASS}>自動で直せず</span>}
+                        {task.checks_result && (
+                          <span data-team-checks={task.checks_result.status} className={`rounded-full px-2 py-0.5 font-semibold ${CHECK_CLASS[task.checks_result.status]}`}>
+                            確認: {CHECK_LABEL[task.checks_result.status]}
+                          </span>
+                        )}
                         {task.status === "rejected" && <span className="rounded-full bg-red-50 px-2 py-0.5 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">差し戻し</span>}
                         {task.unverified && <span data-team-unverified className={UNVERIFIED_CLASS}>未検証</span>}
                         {task.status === "doing" && task.stalled_at && <span data-team-stalled className={WARN_CLASS}>止まった（報告なし）</span>}
@@ -228,6 +258,7 @@ export function TeamView({
       </div>
 
       {membersSheet && <MembersSheet team={team} consoles={consoles} cliName={cliName} onClose={() => setMembersSheet(false)} onSaved={refresh} />}
+      {briefSheet && <BriefSheet team={team} onClose={() => setBriefSheet(false)} onSaved={refresh} />}
       {taskSheet && <TaskCreateSheet team={team} consoleName={consoleName} onClose={() => setTaskSheet(false)} onSaved={refresh} />}
       {newTeamSheet && <NewTeamSheet onClose={() => setNewTeamSheet(false)} onCreated={(id) => { setSelected(id); refresh(); }} />}
       {current && (
@@ -246,6 +277,35 @@ export function TeamView({
         />
       )}
     </div>
+  );
+}
+
+function BriefSheet({ team, onClose, onSaved }: { team: Team; onClose: () => void; onSaved: () => void }) {
+  const show = useToasts((s) => s.show);
+  const [brief, setBrief] = useState(team.brief ?? "");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await updateTeam(team.id, { brief });
+      onSaved();
+      show("チームの前提を保存しました");
+      onClose();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存できませんでした", "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <BottomSheet title="チームの前提" onClose={onClose}>
+      <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+        プロジェクトの説明・決まり・使ってよいコマンドなど。タスクを送るたびに、文面の先頭へ付けます（8000 文字まで）。
+      </p>
+      <label className={fieldLabel} htmlFor="team-brief">前提</label>
+      <textarea id="team-brief" rows={10} value={brief} maxLength={8000} onChange={(e) => setBrief(e.target.value)} className={textareaClass} />
+      <p className="num mt-1 text-right text-[11px] text-zinc-400">{brief.length} / 8000</p>
+      <button type="button" disabled={busy} onClick={() => void save()} className={`mt-3 w-full ${primaryButtonClass}`}>保存</button>
+    </BottomSheet>
   );
 }
 
@@ -353,6 +413,7 @@ function TaskCreateSheet({
   const [goal, setGoal] = useState("");
   const [acceptance, setAcceptance] = useState("");
   const [files, setFiles] = useState("");
+  const [checks, setChecks] = useState("");
   const [assignee, setAssignee] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
@@ -361,6 +422,7 @@ function TaskCreateSheet({
       const task = await createTask(team.id, {
         title: title.trim(), goal, acceptance, assignee,
         files: files.split("\n").map((f) => f.trim()).filter(Boolean),
+        checks: checks.split("\n").map((f) => f.trim()).filter(Boolean),
       });
       onSaved();
       show(task.warnings.length ? `タスクを作りました（${task.warnings.join(" / ")}）` : "タスクを作りました");
@@ -380,6 +442,9 @@ function TaskCreateSheet({
       <textarea id="task-acceptance" rows={3} value={acceptance} maxLength={4000} onChange={(e) => setAcceptance(e.target.value)} className={textareaClass} />
       <label className={fieldLabel} htmlFor="task-files">担当ファイル（1 行に 1 つ）</label>
       <textarea id="task-files" rows={2} value={files} onChange={(e) => setFiles(e.target.value)} className={`${textareaClass} font-mono`} />
+      <label className={fieldLabel} htmlFor="task-checks">確認のコマンド（1 行に 1 つ）</label>
+      <textarea id="task-checks" rows={2} value={checks} onChange={(e) => setChecks(e.target.value)} className={`${textareaClass} font-mono`} />
+      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">担当の作業フォルダで Nexarch が実行します（10 個まで）。パイプや && は使えません。</p>
       <label className={fieldLabel} htmlFor="task-assignee">担当</label>
       <AssigneeSelect id="task-assignee" team={team} value={assignee} consoleName={consoleName} onChange={setAssignee} />
       <button type="button" disabled={!title.trim() || busy} onClick={() => void submit()} className={`mt-4 w-full ${primaryButtonClass}`}>作る</button>
@@ -398,6 +463,8 @@ function TaskSheet({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [manual, setManual] = useState(false);
   const [confirmPass, setConfirmPass] = useState(false);
+  const [editChecks, setEditChecks] = useState(false);
+  const [checksDraft, setChecksDraft] = useState((task.checks ?? []).join("\n"));
   const [draft, setDraft] = useState({ summary: "", changed: "", tests: "", verify: "", remaining: "" });
 
   const run = async (action: () => Promise<unknown>, done: string) => {
@@ -429,6 +496,9 @@ function TaskSheet({
         {task.unverified && <span data-team-unverified className="ml-2 text-orange-700 dark:text-orange-300">未検証</span>}
         {task.status === "doing" && task.stalled_at && <span data-team-stalled className="ml-2 text-amber-700 dark:text-amber-400">止まった（報告なし）</span>}
         {task.status === "doing" && task.limited_at && <span data-team-limited className="ml-2 text-amber-700 dark:text-amber-400">上限で停止</span>}
+        {task.status === "blocked" && <span data-team-blocked className="ml-2 text-red-600 dark:text-red-400">確認が通らず、自動で直せませんでした</span>}
+        {task.checks_result && <span data-team-checks={task.checks_result.status} className="ml-2">確認: {CHECK_LABEL[task.checks_result.status]}</span>}
+        {Boolean(task.attempts) && <span className="ml-2 font-normal">自動で直させた回数 {task.attempts}/2</span>}
       </p>
       <dl className="mt-2 grid gap-2 text-sm">
         <div><dt className="text-xs text-zinc-500">目的</dt><dd className="whitespace-pre-wrap break-words">{task.goal || "（なし）"}</dd></div>
@@ -439,6 +509,53 @@ function TaskSheet({
         </div>
       </dl>
       {task.warnings.length > 0 && <p className="mt-2 break-words text-xs text-amber-700 dark:text-amber-400">{task.warnings.join(" / ")}</p>}
+
+      <section data-team-checks-panel className="mt-3 rounded-xl border border-zinc-200 p-2.5 text-sm dark:border-zinc-700">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold text-zinc-500">確認のコマンド</p>
+          <button type="button" onClick={() => setEditChecks((v) => !v)} aria-expanded={editChecks} className="text-xs font-semibold text-accent-600 underline dark:text-accent-400">
+            {editChecks ? "編集をやめる" : "編集"}
+          </button>
+        </div>
+        {editChecks ? (
+          <>
+            <label className="sr-only" htmlFor="detail-checks">確認のコマンド（1 行に 1 つ）</label>
+            <textarea id="detail-checks" rows={3} value={checksDraft} onChange={(e) => setChecksDraft(e.target.value)} className={`mt-1 ${textareaClass} font-mono`} />
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">担当の作業フォルダで実行します。パイプや && は使えません（10 個まで）。</p>
+            <button
+              type="button" disabled={busy} className={`mt-2 w-full ${secondaryButtonClass}`}
+              onClick={() => void run(() => updateTask(team.id, task.id, { checks: checksDraft.split("\n").map((c) => c.trim()).filter(Boolean) }), "確認のコマンドを保存しました")}
+            >確認のコマンドを保存</button>
+          </>
+        ) : (task.checks ?? []).length === 0 ? (
+          <p className="mt-1 text-xs text-zinc-500">なし（確認は担当の自己申告だけ）</p>
+        ) : (
+          <ul className="mt-1 grid gap-1">
+            {(task.checks ?? []).map((cmd, i) => {
+              const row = task.checks_result?.results.find((r) => r.cmd === cmd) ?? task.checks_result?.results[i];
+              return (
+                <li key={`${i}-${cmd}`} data-team-check-row className="min-w-0">
+                  <p className="flex min-w-0 items-start gap-1.5 text-xs">
+                    <span aria-hidden className={row ? (row.exit_code === 0 ? "text-emerald-600" : "text-red-600") : "text-zinc-400"}>
+                      {row ? (row.exit_code === 0 ? "✓" : "✗") : "・"}
+                    </span>
+                    <code className="min-w-0 break-all font-mono">{cmd}</code>
+                    {row && <span className="num shrink-0 text-zinc-500">終了 {row.exit_code}</span>}
+                  </p>
+                  {row && row.tail && (
+                    <details className="ml-4 mt-0.5">
+                      <summary className="cursor-pointer text-[11px] text-zinc-500">出力の最後</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-zinc-100 p-2 font-mono text-[11px] dark:bg-zinc-800">{row.tail}</pre>
+                    </details>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {task.checks_result?.message && <p className="mt-1 break-words text-xs text-amber-700 dark:text-amber-400">{task.checks_result.message}</p>}
+        {task.checks_result?.status === "running" && <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">実行中です…</p>}
+      </section>
 
       <label className={fieldLabel} htmlFor="detail-assignee">担当</label>
       <AssigneeSelect

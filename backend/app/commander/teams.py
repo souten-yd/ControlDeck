@@ -27,7 +27,7 @@ from app.terminals.manager import manager
 logger = logging.getLogger(__name__)
 
 ROLES = ("leader", "developer", "reviewer", "researcher", "member")
-STATUSES = ("todo", "doing", "review", "done", "rejected")
+STATUSES = ("todo", "doing", "review", "done", "rejected", "blocked")
 NAME_MAX = 40
 TITLE_MAX = 120
 TEXT_MAX = 4000
@@ -36,6 +36,13 @@ FILE_MAX = 500
 HISTORY_MAX = 50
 CAPTURE_LINES = 200
 REPORT_FIELD_MAX = 2000
+BRIEF_MAX = 8000
+CHECKS_MAX = 10
+CHECK_MAX = 500
+MAX_RETRIES = 2
+RESET_WAIT = 3.0  # リセットのコマンドを送ってから本文を送るまでの秒数
+RESET_COMMANDS = {"claude": "/clear", "codex": "/new", "opencode": "/new", "gemini": "/clear"}
+RETRY_TAIL = 1500
 
 _lock = threading.RLock()
 
@@ -118,6 +125,17 @@ def clean_files(value: object) -> list[str]:
     return out
 
 
+def clean_checks(value: object) -> list[str]:
+    """確認のコマンド（1 行ずつ・制御文字不可）。空行は捨てる。"""
+    if not isinstance(value, list):
+        raise TeamError("確認のコマンドは文字列のリストで指定してください")
+    out = [clean_line(item, "確認のコマンド", CHECK_MAX, required=False) for item in value]
+    out = [c for c in out if c]
+    if len(out) > CHECKS_MAX:
+        raise TeamError(f"確認のコマンドは {CHECKS_MAX} 個までです")
+    return out
+
+
 def _now() -> float:
     return round(time.time(), 3)
 
@@ -177,6 +195,7 @@ def create_team(name: str) -> dict:
         team = {
             "id": "t" + secrets.token_hex(4), "name": name, "created_at": _now(),
             "members": [], "tasks": [], "next_task_id": 1, "notify": True,
+            "brief": "", "reset_before_dispatch": True,
         }
         teams.append(team)
         _save(teams)
@@ -189,6 +208,23 @@ def rename_team(team_id: str, name: str) -> dict:
         teams = _load()
         team = _find_team(teams, team_id)
         team["name"] = name
+        _save(teams)
+    return team
+
+
+def update_team(team_id: str, fields: dict) -> dict:
+    """チームの名前・前提（brief）・送る前のリセットを、送った欄だけ変える。"""
+    with _lock:
+        teams = _load()
+        team = _find_team(teams, team_id)
+        if fields.get("name") is not None:
+            team["name"] = clean_line(fields["name"], "チーム名", NAME_MAX)
+        if fields.get("brief") is not None:
+            team["brief"] = clean_text(fields["brief"], "チームの前提", BRIEF_MAX)
+        if fields.get("reset_before_dispatch") is not None:
+            if not isinstance(fields["reset_before_dispatch"], bool):
+                raise TeamError("リセットの入り切りは真偽で指定してください")
+            team["reset_before_dispatch"] = fields["reset_before_dispatch"]
         _save(teams)
     return team
 
@@ -274,7 +310,7 @@ def is_unverified(task: dict) -> bool:
 
 
 def _task_view(team: dict, task: dict) -> dict:
-    return {**task, "warnings": _warnings(team, task), "unverified": is_unverified(task)}
+    return {**task, "checks": task.get("checks") or [], "warnings": _warnings(team, task), "unverified": is_unverified(task)}
 
 
 def set_notify(team_id: str, enabled: object) -> dict:
@@ -293,13 +329,14 @@ def create_task(team_id: str, fields: dict, by: str) -> dict:
     goal = clean_text(fields.get("goal", ""), "目的")
     acceptance = clean_text(fields.get("acceptance", ""), "受け入れ条件")
     files = clean_files(fields.get("files", []))
+    checks = clean_checks(fields.get("checks", []))
     with _lock:
         teams = _load()
         team = _find_team(teams, team_id)
         assignee = _check_assignee(team, fields.get("assignee", ""))
         task = {
             "id": int(team.get("next_task_id") or 1), "title": title, "goal": goal,
-            "acceptance": acceptance, "files": files, "assignee": assignee, "status": "todo",
+            "acceptance": acceptance, "files": files, "checks": checks, "assignee": assignee, "status": "todo",
             "report": None, "created_at": _now(), "updated_at": _now(), "history": [],
         }
         team["next_task_id"] = task["id"] + 1
@@ -327,6 +364,9 @@ def update_task(team_id: str, task_id: int, fields: dict, by: str) -> dict:
         if "files" in fields:
             task["files"] = clean_files(fields["files"])
             changed.append("担当ファイル")
+        if "checks" in fields:
+            task["checks"] = clean_checks(fields["checks"])
+            changed.append("確認のコマンド")
         if "assignee" in fields and fields["assignee"] != task.get("assignee"):
             task["assignee"] = _check_assignee(team, fields["assignee"])
             changed.append("担当")
@@ -353,9 +393,10 @@ def delete_task(team_id: str, task_id: int) -> dict:
 
 # ---------------------------------------------------------------- 送り込み・取り込み
 
-def dispatch_text(task: dict) -> str:
+def dispatch_text(task: dict, brief: str = "") -> str:
     files = ", ".join(task.get("files") or []) or "指定なし"
-    return (
+    head = f"【チームの前提】\n{brief}\n\n" if brief else ""
+    return head + (
         f"【Nexarch タスク #{task['id']}】{task['title']}\n"
         f"目的: {task.get('goal') or '（なし）'}\n"
         f"受け入れ条件: {task.get('acceptance') or '（なし）'}\n"
@@ -379,6 +420,11 @@ def _assignee_console(task: dict) -> dict:
     return row
 
 
+def _reset_command(row: dict) -> str:
+    """担当の CLI に応じた会話のリセットのコマンド。CLI が分からなければ空（飛ばす）。"""
+    return RESET_COMMANDS.get(str(row.get("commander_cli") or ""), "")
+
+
 def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
     with _lock:
         team = _find_team(_load(), team_id)
@@ -387,13 +433,17 @@ def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
             raise TeamError("完了したタスクは送れません", 409)
         row = _assignee_console(task)
         state = row.get("commander_state") or (status.WAITING if row.get("alive", True) else status.EXITED)
-        text = dispatch_text(task)
+        text = dispatch_text(task, str(team.get("brief") or ""))
+        reset = _reset_command(row) if team.get("reset_before_dispatch", True) is not False else ""
     if state == status.EXITED:
         raise TeamError("担当のコンソールは終了しています", 409)
     if state == status.WORKING:
         raise TeamError("作業中です。終わってから送ります", 409)
     sid = str(row["id"])
     try:
+        if reset:
+            manager.inject_input(sid, reset, submit=True)
+            time.sleep(RESET_WAIT)  # 呼び出しは backend のスレッド（同期 endpoint）。event loop は止めない
         manager.inject_input(sid, text, submit=True)
     except (KeyError, OSError, RuntimeError, ValueError) as exc:
         raise TeamError(f"担当のコンソールへ送れませんでした: {exc}", 409) from exc
@@ -402,6 +452,10 @@ def dispatch_task(team_id: str, task_id: int, by: str) -> dict:
         team = _find_team(teams, team_id)
         task = _find_task(team, task_id)
         task["status"] = "doing"
+        task["attempts"] = 0
+        task.pop("checks_result", None)
+        if reset:
+            _event(task, f"会話をリセット（{reset}）", by)
         for key in ("stalled_at", "limited_at", "closed_noted", "notified"):
             task.pop(key, None)  # 新しい作業として見張りを数え直す
         _event(task, "担当へ送信", by)
@@ -504,8 +558,21 @@ def _store_report(team_id: str, task_id: int, report: dict, by: str, event: str)
         task["report"] = report
         task["status"] = "review"
         _event(task, event, by)
+        mark_checks_running(task)
         _save(teams)
-        return _task_view(team, task)
+        view = _task_view(team, task)
+    if task.get("checks"):
+        from app.commander import team_checks
+        team_checks.schedule(team_id, task_id)
+    return view
+
+
+def mark_checks_running(task: dict) -> None:
+    """報告が入ったとき、確認のコマンドがあれば実行中の印を付け、無ければ前の結果を消す（排他の中で呼ぶ）。"""
+    if task.get("checks"):
+        task["checks_result"] = {"status": "running", "ran_at": _now(), "results": []}
+    else:
+        task.pop("checks_result", None)
 
 
 # ---------------------------------------------------------------- 一覧と見張り
