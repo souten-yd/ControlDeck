@@ -62,13 +62,20 @@ def tick(now: float | None = None) -> list[dict]:
     """1 回分の見回り。通知する出来事 [{"team","task","kind","title","message"}] を返す（同期）。"""
     now = now or time.time()
     events: list[dict] = []
+    # コンソールの一覧（全コンソールの画面の読み取り・ログイン名の確認）は時間がかかるので、
+    # 板の排他（teams._lock）の外で先に取る。持ったままだと板の API がその間止まる。
+    with teams._lock:
+        has_doing = any(task.get("status") == "doing" and task.get("assignee")
+                        for t in teams._load() for task in t.get("tasks", []))
+    if not has_doing:
+        return events
+    rows = {str(r["id"]): r for r in consoles.list_consoles()}
     with teams._lock:
         all_teams = teams._load()
         watched = [(t, task) for t in all_teams for task in t.get("tasks", [])
                    if task.get("status") == "doing" and task.get("assignee")]
         if not watched:
             return events
-        rows = {str(r["id"]): r for r in consoles.list_consoles()}
         screens: dict[str, str | None] = {}
         dirty = False
 
