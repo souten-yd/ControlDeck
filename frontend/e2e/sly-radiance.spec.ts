@@ -1,50 +1,77 @@
+/** 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（共通の取得 Job）→ 取得したフォルダが
+ *        共通設定のフォームへ入る、フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、
+ *        登録の本文が API の形（同時に答える数 1〜8・先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。
+ *        320px と 1280px で横にあふれない。API はすべてモック。
+ *  根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。
+ *        AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
+ *  更新: Nexarch #24。旧「Sly-Radiance目録のモデル／同時実行数／量子化／先読みのフォルダ／詳しい設定」は
+ *        共通 UI では「目録から取る」の行と共通フィールド（エキスパート）に置き換わったので、その導線へ追随した。
+ *        旧 /models/sly-radiance/catalog は削除済み（#13）。共通 /models/catalog をモックする。 */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
-// 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（HF の取得 Job）→ 取得したフォルダがフォームへ入る、
-// フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、登録の本文が API の形（同時に答える数 1〜8・
-// 先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。320px と 1280px で横にあふれない。API はすべてモック。
-// 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。
-// AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
+const RUNTIME_IDS = ["llama", "strata", "radiance", "sly-radiance", "maya"] as const;
+
+const entry = (over: object) => ({
+  id: "x", repo: "a/b", name: "x", kind: "model", format: "safetensors", quantization: "",
+  size_gib: null, memory_gib: null, uncensored: false, supported: true, note: "",
+  acquire: "hf", source: "e2e", fit: "unknown", ...over,
+});
+const repoOf = (entryId: string) =>
+  entryId === "dflash2" ? "syvai/Qwen3.8-27B-DFlash2-W4A16" : "slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ";
+
 for (const width of [320, 1280]) {
   test(`Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
+    // フォルダの中身・量子化の提案・環境変数・先読みのフォルダはエキスパート欄にある（UI ルール）。
+    await page.addInitScript(() => {
+      try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+    });
     await page.setViewportSize({ width, height: 900 });
     await establishSession(page, context);
     await page.route("**/api/v1/models/runtime-environment", async (route) => {
       const env = await (await route.fetch()).json();
-      env.policy.selected_runtime = "sly-radiance";
+      env.policy = { ...env.policy, selected_runtime: "sly-radiance" };
+      env.runtimes = RUNTIME_IDS.map((id) => ({ id, runtime: id, label: id, installed: true, available: true }));
       await route.fulfill({ json: env });
     });
     await page.route("**/api/v1/models/providers/*/models", (route) => route.fulfill({ json: [] }));
-    await page.route("**/api/v1/models/radiance/instances", (route) => route.fulfill({ json: { runtime: { installed: true }, instances: [] } }));
-    await page.route("**/api/v1/models/sly-radiance/instances", async (route) => {
-      if (route.request().method() === "POST") return route.fallback();
-      await route.fulfill({ json: { runtime: { installed: true, version: "1.13.4-rocm10.1", warning: "" }, instances: [] } });
-    });
-    const entry = (over: object) => ({ id: "x", repo: "a/b", name: "x", kind: "model", quantization: "", size_gib: null,
-      uncensored: false, supported: true, note: "", fit: "unknown", ...over });
-    await page.route("**/api/v1/models/sly-radiance/catalog", (route) => route.fulfill({ json: { hardware: { vram_total_gib: 32 }, entries: [
-      entry({ id: "swift-heretic", repo: "slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ", name: "Swift-1.5 Qwen3.8-27B heretic MXFP4（標準）",
-        size_gib: 19, uncensored: true, fit: "fits" }),
-      entry({ id: "nvfp4", repo: "unsloth/Qwen3.8-27B-NVFP4", name: "Qwen3.8-27B NVFP4", quantization: "nvfp4" }),
-      entry({ id: "dflash2", repo: "syvai/Qwen3.8-27B-DFlash2-W4A16", name: "先読み DFlash2", kind: "drafter" }),
-      entry({ id: "minicpm-v", repo: "", name: "MiniCPM-V 4.7", supported: false }),
+    for (const runtime of ["radiance", "sly-radiance"]) {
+      await page.route(`**/api/v1/models/${runtime}/instances`, async (route) => {
+        if (route.request().method() === "POST") return route.fallback();
+        await route.fulfill({ json: { runtime: { installed: true, version: "1.13.4-rocm10.1", warning: "" }, instances: [] } });
+      });
+    }
+    // #10 以降の共通目録（runtimes / entries 形状）。旧 /sly-radiance/catalog は存在しない。
+    await page.route("**/api/v1/models/catalog", (route) => route.fulfill({ json: { runtimes: [
+      ...RUNTIME_IDS.filter((id) => id !== "sly-radiance").map((id) => ({
+        id, name: id, installed: true, formats: [], acquire: "hf", entries: [],
+      })),
+      { id: "sly-radiance", name: "Sly-Radiance", installed: true, formats: ["safetensors"], acquire: "hf", entries: [
+        entry({ id: "swift-heretic", repo: "slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ", name: "Swift-1.5 Qwen3.8-27B heretic MXFP4（標準）",
+          size_gib: 19, uncensored: true, fit: "fits", quantization: "safetensors" }),
+        entry({ id: "dflash2", repo: "syvai/Qwen3.8-27B-DFlash2-W4A16", name: "先読み DFlash2", kind: "drafter" }),
+        entry({ id: "minicpm-v", repo: "", name: "MiniCPM-V 4.7", supported: false }),
+      ] },
     ] } }));
-    await page.route("**/api/v1/models/sly-radiance/catalog/*/files", (route) => route.fulfill({ json: {
+    await page.route("**/api/v1/models/catalog/sly-radiance/entries/*/files", (route) => route.fulfill({ json: {
       repo: "a/b", files: [{ path: "config.json", size: 10 }, { path: "model.safetensors", size: 100 }], total_bytes: 110,
       libraries: [{ id: "lib1", label: "SSD", mounted: true }] } }));
     const downloads: any[] = [];
-    await page.route("**/api/v1/models/hf/download-jobs", async (route) => {
-      downloads.push(route.request().postDataJSON());
-      await route.fulfill({ status: 201, json: { job_id: `job-${downloads.length}` } });
+    await page.route("**/api/v1/models/acquire-jobs", async (route) => {
+      const body = route.request().postDataJSON();
+      downloads.push(body);
+      await route.fulfill({ status: 201, json: { job_id: body.entry_id === "dflash2" ? "job-2" : "job-1", repo: repoOf(body.entry_id) } });
     });
     await page.route("**/api/v1/jobs/job-*", (route) => {
       const drafter = route.request().url().endsWith("job-2");
-      return route.fulfill({ json: { status: "succeeded", error: "", result: { files: [
-        drafter ? "/data1tb/LLM/syvai--drafter/config.json" : "/data1tb/LLM/slybase--Swift/config.json"] } } });
+      return route.fulfill({ json: {
+        id: drafter ? "job-2" : "job-1", kind: "model.hf_download", title: "E2E 取得", status: "succeeded",
+        progress: { status: "完了", completed: 1, total: 1 }, error: "", can_resume: false,
+        result: { files: [drafter ? "/data1tb/LLM/syvai--drafter/config.json" : "/data1tb/LLM/slybase--Swift/config.json"] },
+      } });
     });
-    await page.route("**/api/v1/models/sly-radiance/inspect**", (route) => route.fulfill({ json: {
+    await page.route("**/api/v1/models/sly-radiance/inspect*", (route) => route.fulfill({ json: {
       path: "/data1tb/LLM/slybase--Swift", name: "slybase--Swift", safetensors_count: 4, total_bytes: 19 * 1024 ** 3,
       quant_method: "quark", quant_format: "", suggested_quantization: "quark", ready: true } }));
     let saved: any = null;
@@ -63,26 +90,45 @@ for (const width of [320, 1280]) {
     await expect(slySwitch).toHaveAttribute("aria-checked", "true");
     await slySwitch.click();
     await expect(slySwitch).toHaveAttribute("aria-checked", "false");
-    await expect(sheet.getByLabel("Sly-Radiance目録のモデル")).toHaveCount(0);
+    await expect(sheet.locator('[data-runtime-catalog="sly-radiance"]')).toHaveCount(0);
     await slySwitch.click();
-    await sheet.getByText("目録から取る").click();
-    await expect(sheet.getByLabel("Sly-Radiance目録のモデル")).toContainText("無検閲寄り");
-    await expect(sheet.getByRole("option", { name: /MiniCPM-V.*未対応/ })).toHaveAttribute("disabled", "");
-    await sheet.getByRole("button", { name: "取得する", exact: true }).click();
-    await expect.poll(() => downloads.length).toBe(2);
-    expect(downloads[0]).toMatchObject({ repo: "slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ", files: ["config.json", "model.safetensors"], expected_bytes: 110 });
-    await expect(sheet.getByLabel("Sly-Radianceモデルのフォルダ")).toHaveValue("/data1tb/LLM/slybase--Swift");
-    await expect(sheet.getByLabel("Sly-Radiance先読みのフォルダ")).toHaveValue("/data1tb/LLM/syvai--drafter");
-    await expect(sheet.getByText(/safetensors 4 個・19.0 GiB/).first()).toBeVisible();
-    await sheet.getByRole("button", { name: /量子化を「Quark/ }).first().click();
-    await expect(sheet.getByLabel("Sly-Radiance量子化")).toHaveValue("quark");
-    await sheet.getByLabel("Sly-Radiance同時実行数").fill("12");
-    await expect(sheet.getByLabel("Sly-Radiance同時実行数")).toHaveValue("8");   // 上限 8 に丸める
-    await sheet.locator("summary", { hasText: "詳細" }).click();
-    await sheet.getByLabel("Sly-Radiance詳しい設定").fill("RADIANCE_KV_GROUP_SIZE=8");
+    // 目録・ファイル登録は閉じた <details> の <summary> なので、開いてから中身を見る。
+    await sheet.locator("summary").filter({ hasText: /^目録から取る/ }).click();
+    const catalog = sheet.locator('[data-runtime-catalog="sly-radiance"]');
+    await expect(catalog.locator('[data-catalog-entry="swift-heretic"]')).toContainText("無検閲寄り");
+    await expect(catalog.locator('[data-catalog-entry="minicpm-v"]')).toContainText("未対応");
+    await expect(catalog.locator('[data-catalog-entry="minicpm-v"]').getByRole("button", { name: "取得する" })).toHaveCount(0);
+
+    // 目録の行 → 確認パネルの「取得する」→ ジョブ完了 → 行の「登録する」で共通設定の欄へ入る。
+    const acquire = async (entryId: string) => {
+      const row = catalog.locator(`[data-catalog-entry="${entryId}"]`);
+      await row.getByRole("button", { name: "取得する", exact: true }).click();
+      // 確認パネルの「取得する」は行の同名ボタンと区別するため、「やめる」の兄弟として取る。
+      await catalog.getByRole("button", { name: "やめる" }).locator("..")
+        .getByRole("button", { name: "取得する", exact: true }).click();
+      // ジョブ完了後に目録の行へ「登録する」が出る（ジョブカードは完了直後に消えるので待ち条件にはしない）。
+      await expect(row.getByRole("button", { name: "登録する", exact: true })).toBeVisible();
+      await row.getByRole("button", { name: "登録する", exact: true }).click();
+    };
+    await acquire("swift-heretic");
+    await acquire("dflash2");
+    expect(downloads).toHaveLength(2);
+    expect(downloads[0]).toMatchObject({ runtime: "sly-radiance", entry_id: "swift-heretic",
+      files: ["config.json", "model.safetensors"] });
+    expect(downloads[1]).toMatchObject({ runtime: "sly-radiance", entry_id: "dflash2" });
+    await expect(sheet.getByLabel("モデルのフォルダ", { exact: true })).toHaveValue("/data1tb/LLM/slybase--Swift");
+    await expect(sheet.getByLabel("先読みモデルのフォルダ", { exact: true })).toHaveValue("/data1tb/LLM/syvai--drafter");
+    await expect(sheet.getByText(/safetensors 4 個・19.0 GiB/)).toBeVisible();
+    await sheet.getByRole("button", { name: /量子化を「quark」にする/ }).click();
+    await expect(sheet.getByLabel("量子化の切り替え")).toHaveValue("quark");
+    // ゲートウェイ名は自動推測（slybase--swift）になる。目的の別名を明示して保存する。
+    await sheet.getByLabel("モデル名").fill("qwen3.8-27b-sly");
+    await sheet.getByRole("slider", { name: "同時に処理する数" }).press("End");
+    await expect(sheet.getByRole("slider", { name: "同時に処理する数" })).toHaveValue("8");   // 上限 8 に丸める
+    await sheet.getByLabel("環境変数（RADIANCE_*・R4D_*）").fill("RADIANCE_KV_GROUP_SIZE=8");
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/sly-radiance-register-${width}.png` });
-    await sheet.getByRole("button", { name: "登録", exact: true }).click();
+    await sheet.getByTestId("runtime-settings-save").click();
     await expect.poll(() => saved?.alias).toBe("qwen3.8-27b-sly");
     expect(saved).toMatchObject({ model_path: "/data1tb/LLM/slybase--Swift", drafter_path: "/data1tb/LLM/syvai--drafter",
       quantization: "quark", max_num_seqs: 8, speculative_tokens: 7, prefill_chunk: 2048,
@@ -110,6 +156,7 @@ test("Sly-Radiance は Radiance のカードの中のスイッチ（320px）", a
 
 // 目的: 登録済みの Sly-Radiance の個別設定を開いて保存すると、登録の項目だけが送られる（表示用の項目を混ぜない）。
 // 根拠: 2026-11-27 利用者の iPhone で「runtime: Extra inputs are not permitted / base_url … / ctx_size … / n_parallel …」で保存できなかった。
+//       #24: 共通 UI では「保存」が表示名用と設定用に分かれたので、設定用を data-testid で指定する。
 test("Sly-Radiance の個別設定を保存できる（表示用の項目を送らない）", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 900 });
@@ -143,10 +190,12 @@ test("Sly-Radiance の個別設定を保存できる（表示用の項目を送�
   await page.goto("/models");
   await page.getByRole("button", { name: "swift-heretic-slyの個別設定を開く" }).click();
   const sheet = page.getByRole("dialog", { name: "swift-heretic-sly · 個別設定", exact: true });
-  await sheet.getByRole("button", { name: "保存", exact: true }).last().click();
+  await sheet.getByTestId("runtime-settings-save").click();
   await expect.poll(() => saved).not.toBeNull();
   for (const key of ["runtime", "role", "base_url", "runtime_status", "ctx_size", "n_parallel", "loaded"]) {
     expect(saved).not.toHaveProperty(key);
   }
-  expect(saved).toMatchObject({ alias: "swift-heretic-sly", max_num_seqs: 8, prefix_cache: true });
+  // prefix_cache は共通 UI では常時オンの注記だけで欄が無く、保存本文にも載らない。
+  expect(saved).not.toHaveProperty("prefix_cache");
+  expect(saved).toMatchObject({ alias: "swift-heretic-sly", max_num_seqs: 8 });
 });

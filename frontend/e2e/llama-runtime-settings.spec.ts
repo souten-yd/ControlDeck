@@ -1,3 +1,8 @@
+/** 目的: llama.cpp の個別設定で保存すると、読み取り専用の状態項目（model_path・loaded など）を
+ *        除外した本文だけが PUT されること。422 の詳細が画面に出ること。
+ *        Ollama のロード状態が表示とライフサイクルボタンに反映されること。
+ *  根拠: 状態項目を送ると保存 API が extra inputs で 422 になる不具合の回帰確認。
+ *  #24: 共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 */
 import { expect, test } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;

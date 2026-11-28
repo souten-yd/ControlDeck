@@ -1,7 +1,9 @@
-// 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。
-//       画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。
-// 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」
-//       「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
+/** 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。
+ *        画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。
+ *  根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」
+ *        「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
+ *  更新: Nexarch #24。個別設定には「表示名の保存」（無効）と下端の「保存」が並ぶため、
+ *        目的の設定保存は .last() で指定する（曖昧な「保存」単体では strict mode 違反）。 */
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
@@ -50,7 +52,7 @@ for (const width of [320, 1280]) {
     await expect(select).toBeEnabled();
     await expect(select).toHaveValue("on");
     await select.selectOption("off");
-    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await page.getByRole("button", { name: "保存", exact: true }).last().click();
     await expect.poll(() => state.put).toEqual({ vision: "off" });            // 選んだ項目だけを送る
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
   });
