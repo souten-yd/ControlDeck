@@ -728,7 +728,7 @@ def _audit(team_id: str, task_id: int, member: dict, code: int | None, seconds: 
 def _notify(events: list[dict]) -> None:
     for event in events:
         try:
-            asyncio.run(team_watch.send(event["title"], event["message"]))
+            asyncio.run(team_watch.send(event["title"], event["message"], team_watch.notify_kind(event)))
         except Exception:  # noqa: BLE001
             logger.exception("チームの通知を送れませんでした")
 

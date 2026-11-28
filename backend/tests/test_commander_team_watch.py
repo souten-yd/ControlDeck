@@ -61,7 +61,7 @@ def fake(monkeypatch):
 def sent(monkeypatch):
     out: list[tuple[str, str]] = []
 
-    async def fake_send(title, message):
+    async def fake_send(title, message, kind="team_blocked"):
         out.append((title, message))
 
     monkeypatch.setattr(team_watch, "send", fake_send)
@@ -247,5 +247,5 @@ def test_run_once_sends_through_notification_channels(admin_client, fake, monkey
 
     events = asyncio.run(team_watch.run_once(time.time() + 1000))
     assert len(events) == 1
-    assert [c[0] for c in calls] == ["push", "discord"] and all(c[3] == "team_task" for c in calls)
+    assert [c[0] for c in calls] == ["push", "discord"] and all(c[3] == "team_report" for c in calls)   # 報告の出来事は「担い手の報告」の種類（2026-11-28 に種類を分けた）
 

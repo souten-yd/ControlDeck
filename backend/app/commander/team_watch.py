@@ -188,13 +188,26 @@ async def _channels() -> list[tuple[str, str]]:
     return await asyncio.to_thread(load)
 
 
-async def send(title: str, message: str) -> None:
-    """有効な通知先すべて（Web Push など）へ送る。届かなくても見張りは止めない。"""
+# 見張りの出来事 → 通知の種類（alerts/events.py の KINDS。利用者が設定で入り切りできる）
+NOTIFY_KIND = {
+    KIND_REPORT: "team_report", KIND_STALLED: "team_blocked", KIND_LIMITED: "team_blocked",
+    KIND_BLOCKED: "team_blocked", KIND_NO_HANDOFF: "team_blocked", KIND_HANDOFF: "team_handoff",
+}
+
+
+def notify_kind(event: dict) -> str:
+    """出来事の通知の種類（明示の notify_kind → 見張りの kind → 既定は「仕事が止まった」）。"""
+    return str(event.get("notify_kind") or NOTIFY_KIND.get(str(event.get("kind") or ""), "team_blocked"))
+
+
+async def send(title: str, message: str, kind: str = "team_blocked") -> None:
+    """有効な通知先すべて（Web Push など）へ送る。届かなくても見張りは止めない。
+    ControlDeck の通知（この ControlDeck の通知）は、種類 kind の利用者の設定とお休みモードを通る。"""
     try:
         from app.alerts.notify import send_notification
 
         for channel_type, url in await _channels():
-            await send_notification(channel_type, url, title, message, kind="team_task")
+            await send_notification(channel_type, url, title, message, kind=kind)
     except Exception:  # noqa: BLE001
         logger.exception("Nexarch のチームの通知を送れませんでした")
 
@@ -202,7 +215,7 @@ async def send(title: str, message: str) -> None:
 async def run_once(now: float | None = None) -> list[dict]:
     events = await asyncio.to_thread(tick, now)
     for event in events:
-        await send(event["title"], event["message"])
+        await send(event["title"], event["message"], notify_kind(event))
     return events
 
 
