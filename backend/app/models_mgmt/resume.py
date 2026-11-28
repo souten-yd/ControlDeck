@@ -31,14 +31,18 @@ def huggingface_download_runner(params: dict[str, Any]) -> Runner:
     library_id = str(params.get("library_id") or "")
     revision = str(params.get("revision") or "main")
     expected_bytes = int(params.get("expected_bytes") or 0)
+    # 量子化のサブフォルダ（GGUF の分割片）は引数として残す。秘密値は入れない。
+    quantization = str(params.get("quantization") or "")
     register = params.get("register")
     register = dict(register) if isinstance(register, dict) else None
 
     async def run(job: jobs.Job) -> dict:
+        # 古い記録（量子化無し）には引数を足さない（既存の呼び出し形を壊さない）。
+        extra = {"quantization": quantization} if quantization else {}
         return await hf.download(
             job, repo, files, library_id=library_id, revision=revision,
             expected_bytes=expected_bytes, fetch_sizes=fetch_sizes,
-            register=register,
+            register=register, **extra,
         )
 
     return run

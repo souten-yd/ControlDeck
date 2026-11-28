@@ -1949,7 +1949,11 @@ async def models_catalog_entry_files(
     runtime: str, entry_id: str,
     user: User = Depends(require_permission("workflows.run")),
 ):
-    """目録の 1 行の repo のファイル一覧（取得の直前に見せる。外部許可と出口の検査を通る）。"""
+    """目録の 1 行の repo のファイル一覧（取得の直前に見せる。外部許可と出口の検査を通る）。
+
+    GGUF の量子化行はサブフォルダの分割全片を列挙し、選んだ量子化だけを返す（repo 全体の
+    他量子化を混ぜない）。`.rad` は最上位の .rad だけ。フォルダ形式（Sly）は従来どおり。
+    """
     from app.models_mgmt import hf, libraries, runtime_catalog
 
     entry = runtime_catalog.get_entry(runtime, entry_id)
@@ -1958,7 +1962,13 @@ async def models_catalog_entry_files(
     if not entry.supported or entry.acquire != "hf" or not entry.repo:
         raise HTTPException(status_code=422, detail="この行は HF からの取得に対応していません")
     try:
-        files = await hf.list_model_files(entry.repo)
+        if entry.quantization and entry.format == "gguf":
+            files = await hf.list_quantization_files(entry.repo, quantization=entry.quantization)
+        elif entry.format == "rad":
+            files = [item for item in await hf.list_model_files(entry.repo)
+                     if item["path"].lower().endswith(".rad")]
+        else:
+            files = await hf.list_model_files(entry.repo)
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
@@ -1995,15 +2005,34 @@ async def models_acquire(
             port = register.get("port")
             if port is not None and not (sly_radiance._MIN_PORT <= port <= sly_radiance._MAX_PORT):  # noqa: SLF001
                 raise HTTPException(status_code=422, detail="Sly-Radiance のポートは 8081〜65535 です")
+        elif body.runtime in ("radiance", "strata"):
+            from app.models_mgmt import radiance, strata_gateway
+
+            checker = radiance if body.runtime == "radiance" else strata_gateway
+            if checker._ALIAS.fullmatch(register["alias"]) is None:  # noqa: SLF001 - 検証の正規表現を共用
+                raise HTTPException(status_code=422, detail="別名は小文字英数字・ハイフン（先頭英字）にしてください")
+            port = register.get("port")
+            if port is not None and not (checker._MIN_PORT <= port <= checker._MAX_PORT):  # noqa: SLF001
+                raise HTTPException(status_code=422, detail="ポートは 8081〜65535 です")
+            if body.runtime == "strata":
+                # 既存の Strata 登録 API と同じ family/model を目録の行から渡す。
+                register["family"] = entry.family or ""
+                register["model"] = entry.quantization.casefold()
         else:
             from app.models_mgmt import llama
 
             if llama.ALIAS_RE.fullmatch(register["alias"]) is None:
                 raise HTTPException(status_code=422, detail="別名は英数字・._:- だけにしてください")
     # 大きさはここで書かない（expected_bytes=0 + fetch_sizes=True: Job の開始時に HF から読む）。
+    # 量子化行は files=[] のまま、開始時に HF の tree からその量子化の分割全片を列挙する。
+    # .rad は最上位に置かれるので、調査済みのファイル名をそのまま渡す（README 等を落とさない）。
+    files = list(body.files)
+    if not files and entry.format == "rad":
+        files = list(entry.files)
     resume = {
-        "repo": entry.repo, "files": list(body.files), "revision": "main",
+        "repo": entry.repo, "files": files, "revision": "main",
         "library_id": body.library_id, "expected_bytes": 0, "fetch_sizes": True,
+        "quantization": entry.quantization if entry.format == "gguf" else "",
         "register": register,
     }
     job = jobs.create(

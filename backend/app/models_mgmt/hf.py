@@ -189,6 +189,62 @@ async def list_repo_files(repo: str, revision: str = "main") -> list[dict]:
     return sorted(groups.values(), key=lambda g: g["name"].lower())
 
 
+def _quantization_matches(path: str, quantization: str) -> bool:
+    """量子化 id がパス（サブフォルダ名またはファイル名）に含まれるかを区切り付きで判定する。
+
+    `Q2_0` が `IQ2_0` や `Q2_00` に部分一致しないように、`-` `_` `.` `/` を境界として扱う。
+    Unsloth のサブフォルダ（UD-Q4_K_XL/…）と Maya の tier（Maya-M/…）の両方に効く。
+    """
+    quant = (quantization or "").strip().strip("/").casefold()
+    if not quant or "/" in quant or "\\" in quant or quant.startswith("."):
+        return False
+    pattern = re.compile(r"(?:^|[-_./])" + re.escape(quant) + r"(?=$|[-_./])", re.I)
+    segments = [(part.casefold(), part) for part in path.split("/")]
+    for folded, raw in segments[:-1]:         # サブフォルダ名
+        if folded == quant or pattern.search(raw):
+            return True
+    return bool(pattern.search(segments[-1][1]))   # 最上位に直接置かれた GGUF
+
+
+async def list_quantization_files(repo: str, revision: str = "main",
+                                  quantization: str = "") -> list[dict]:
+    """repo 内の指定した量子化の GGUF **分割全片**をサブフォルダごと列挙する。
+
+    同じ repo に他の量子化のフォルダが並んでいても、選んだ量子化だけを返す
+    （repo 全体を落とさない）。ファイル名の実在は HF の tree API で確認し、大きさも
+    ここから読む（推測しない）。
+    """
+    if not (quantization or "").strip():
+        raise HfError("量子化が指定されていません")
+    entries = await _repo_tree(repo, revision)
+    files = [{"path": str(item["path"]), "size": int(item.get("size") or 0)}
+             for item in entries
+             if item.get("type") == "file"
+             and str(item.get("path") or "").lower().endswith(".gguf")
+             and _quantization_matches(str(item["path"]), quantization)]
+    files.sort(key=lambda item: item["path"])
+    if not files:
+        raise HfError(f"量子化 {quantization} の GGUF が repo にありません")
+    _ensure_complete_shards([item["path"] for item in files])
+    return files
+
+
+def _ensure_complete_shards(paths: list[str]) -> None:
+    """分割 GGUF の全片が揃っているか確認する（1 片だけでは起動できない）。"""
+    groups: dict[str, dict[str, int]] = {}
+    for path in paths:
+        match = _SHARD_RE.match(path.rsplit("/", 1)[-1])
+        if match is None:
+            continue
+        group = groups.setdefault(match.group("stem"), {"have": 0, "total": int(match.group("total"))})
+        group["have"] += 1
+    for stem, group in groups.items():
+        if group["have"] != group["total"]:
+            raise HfError(
+                f"分割 GGUF の一部がありません: {stem}（{group['have']}/{group['total']} 片）"
+            )
+
+
 def _ensure_free_space(destination: Path, expected_bytes: int) -> None:
     """入らないものを落とし始めない（途中で詰まると中途半端なファイルが残る）。"""
     try:
@@ -304,10 +360,14 @@ async def _fetch_file_sizes(repo: str, revision: str, files: list[str],
     """Job の開始時に HF の API からファイルの大きさを読む（推測値を受け取らない）。
 
     repo に無いファイルはここで断る（目録と repo の食い違いを途中で失敗させない）。
-    `listed` は呼び出し側が既に取った一覧（同じ問い合わせを 2 度しない）。
+    `listed` は呼び出し側が既に取った一覧（同じ問い合わせを 2 度しない）。呼び出し側から
+    渡されないときは recursive な tree を使う（量子化のサブフォルダにある分割片も検証できる）。
     """
-    available = {str(item["path"]): int(item.get("size") or 0)
-                 for item in (listed if listed is not None else await list_model_files(repo, revision))}
+    if listed is not None:
+        source = listed
+    else:
+        source = [item for item in await _repo_tree(repo, revision) if item.get("type") == "file"]
+    available = {str(item["path"]): int(item.get("size") or 0) for item in source}
     missing = [path for path in files if path not in available]
     if missing:
         raise HfError(f"repo にファイルがありません: {', '.join(missing[:3])}")
@@ -328,6 +388,47 @@ def _register_llama(register: dict, saved: list[str]) -> str:
     return alias
 
 
+def _candidate_ports(register: dict) -> list[int]:
+    """登録先のポート候補。指定が無ければ全ランタイムの使用中ポートを 1 度だけ読む。
+
+    数 GB を取り終えてからポート衝突で失敗しないように、Sly・Radiance・Strata で同じ
+    候補の選び方を使う（既存 API の既定は 8100）。
+    """
+    if register.get("port") is not None:
+        return [int(register["port"])]
+    from app.models_mgmt import local_llm
+
+    try:
+        taken = local_llm.endpoint_ports()
+    except Exception:  # noqa: BLE001 - 読めないときは保存時の判定に任せる
+        taken = set()
+    return [port for port in range(8100, 8200) if port not in taken]
+
+
+def _save_with_port(save, error_type, register: dict, **fields) -> None:
+    """ポートの衝突だけ次の候補へ。別名の重複など他の理由はそのまま呼び出し側へ返す。"""
+    ports = _candidate_ports(register)
+    for port in ports:
+        try:
+            save(port=port, **fields)
+        except error_type as exc:
+            # 明示指定のポートは再試行しない（利用者の指定を黙って変えない）。
+            if register.get("port") is not None or not getattr(exc, "port_conflict", False):
+                raise
+            continue
+        return
+    raise error_type("空いているポートがありません")
+
+
+def _first_shard(paths: list[str]) -> str:
+    """分割 GGUF の 00001 を選ぶ（保存 API は最初の片を要求する。順序に依存しない）。"""
+    for path in paths:
+        match = _SHARD_RE.match(path.rsplit("/", 1)[-1])
+        if match is not None and int(match.group("index")) == 1:
+            return path
+    return paths[0]
+
+
 def _register_sly_radiance(register: dict, saved: list[str]) -> str:
     """Sly-Radiance: 取得したフォルダ（config.json + safetensors）をモデルとして登録する。
 
@@ -336,7 +437,7 @@ def _register_sly_radiance(register: dict, saved: list[str]) -> str:
     """
     from pathlib import Path as _Path
 
-    from app.models_mgmt import local_llm, sly_radiance
+    from app.models_mgmt import sly_radiance
 
     alias = str(register.get("alias") or "").strip()
     if not alias:
@@ -347,30 +448,60 @@ def _register_sly_radiance(register: dict, saved: list[str]) -> str:
                 "gpu_memory_utilization", "prefill_chunk", "reasoning_effort"):
         if register.get(key) is not None:
             fields[key] = register[key]
-    # ポートの既定は既存 API（SlyRadianceModelBody）と同じ 8100。埋まっていると全ファイルを
-    # 取り終えてから登録で失敗するので、全ランタイムの使用中のポートを 1 度だけ読み、
-    # 空いている候補を順に試す（候補の選定と保存の間に取られた場合だけ、印を見て次へ）。
-    if register.get("port") is not None:
-        ports = [int(register["port"])]
-    else:
-        try:
-            taken = local_llm.endpoint_ports()
-        except Exception:  # noqa: BLE001 - 読めないときは保存時の判定に任せる
-            taken = set()
-        ports = [port for port in range(8100, 8200) if port not in taken]
-        if not ports:
-            raise sly_radiance.SlyRadianceError("空いているポートがありません")
-    for port in ports:
-        try:
-            # prefix cache は常にオン（切る値は受け付けない。sly_radiance が検証する）
-            sly_radiance.save_instance(alias, model_path=str(folder), port=port, **fields)
-        except sly_radiance.SlyRadianceError as exc:
-            # 別名の重複など、ポート以外の理由の失敗はそのまま返す（理由の印で判定）。
-            if register.get("port") is not None or not getattr(exc, "port_conflict", False):
-                raise
-            continue
-        return alias
-    raise sly_radiance.SlyRadianceError("空いているポートがありません")
+    # prefix cache は常にオン（切る値は受け付けない。sly_radiance が検証する）
+    _save_with_port(
+        lambda *, port: sly_radiance.save_instance(alias, model_path=str(folder), port=port, **fields),
+        sly_radiance.SlyRadianceError, register,
+    )
+    return alias
+
+
+def _register_radiance(register: dict, saved: list[str]) -> str:
+    """Radiance: 取得した .rad ファイルをそのまま既存の登録 API へ渡す（Sly と混ぜない）。"""
+    from app.models_mgmt import radiance
+
+    alias = str(register.get("alias") or "").strip()
+    if not alias:
+        return ""
+    fields: dict = {}
+    for key in ("context",):
+        if register.get(key) is not None:
+            fields[key] = int(register[key])
+    _save_with_port(
+        lambda *, port: radiance.save_instance(alias, model_path=str(saved[0]), port=port, **fields),
+        radiance.RadianceError, register,
+    )
+    return alias
+
+
+def _register_strata(register: dict, saved: list[str]) -> str:
+    """Strata: 取得した分割 GGUF の最初の片を、既存の family/model 登録へ渡す。
+
+    既存の保存 API は model_path にフォルダではなく 00001 のファイルを要求し、残りの片も
+    同じ場所に揃っていることを検証する。ランタイム自身が取る既存の経路
+    （model.strata.start）はそのまま残し、ここは ControlDeck が HF から取った重みを
+    登録するときだけ使う（起動は既存 API に任せる）。
+    """
+    from app.models_mgmt import strata_catalog, strata_gateway
+
+    alias = str(register.get("alias") or "").strip()
+    if not alias:
+        return ""
+    family = str(register.get("family") or "")
+    model = str(register.get("model") or "").casefold()
+    if not family or not model:
+        raise HfError("Strata の登録には family と model が必要です")
+    if not strata_catalog.is_valid(family, model):
+        raise HfError(f"Strata の系列・量子化が不正です: {family}/{model}")
+    fields: dict = {"model_path": _first_shard(saved)}
+    if register.get("context") is not None:
+        fields["context"] = f"{int(register['context']) // 1024}k"
+    _save_with_port(
+        lambda *, port: strata_gateway.save_instance(alias, family=family, model=model,
+                                                      port=port, **fields),
+        strata_gateway.StrataGatewayError, register,
+    )
+    return alias
 
 
 def _register_dispatch(register: dict, saved: list[str]) -> str:
@@ -378,19 +509,26 @@ def _register_dispatch(register: dict, saved: list[str]) -> str:
     runtime = str(register.get("runtime") or "llama")
     if runtime == "llama":
         return _register_llama(register, saved)
+    if runtime == "radiance":
+        return _register_radiance(register, saved)
     if runtime == "sly-radiance":
         return _register_sly_radiance(register, saved)
+    if runtime == "strata":
+        return _register_strata(register, saved)
+    # Maya の登録は Maya 本体の目録（probe）から行う。ここでは受け付けない。
     raise HfError(f"取得後の登録に対応していないランタイムです: {runtime}")
 
 
 async def download(job, repo: str, files: list[str], *, library_id: str = "",
                    revision: str = "main", expected_bytes: int = 0,
-                   fetch_sizes: bool = False,
+                   fetch_sizes: bool = False, quantization: str = "",
                    register: dict | None = None) -> dict:
     """GGUF をライブラリへ取得し、必要ならランタイムへ登録する。
 
     fetch_sizes=True のとき、大きさは Job の開始時に HF の API から読む
     （呼び出し側の expected_bytes=0 と併せる。推測値は使わない）。
+    quantization が指定され files が空なら、その量子化の分割全片だけを HF の tree から
+    列挙して取得する（他量子化は落とさない）。
     """
     from app.models_mgmt import libraries
 
@@ -404,13 +542,25 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
         ensure_external_allowed("Hugging Face のモデル取得")
         listed = None
         if not files:
-            # 目録の行から「ファイル全部」で始まったとき: 最上位のファイルをここで決める
-            # （フォルダ形式のモデル。サブフォルダは扱わない: list_model_files と同じ決まり）。
-            listed = await list_model_files(repo, revision)
-            files = [str(item["path"]) for item in listed]
-            if not files:
-                raise HfError("repo に取得できるファイルがありません")
-            job.log(f"repo のファイル {len(files)} 件を全部取得します")
+            if quantization:
+                # 目録の量子化行: サブフォルダの分割全片を列挙し、選んだ量子化だけを取る。
+                listed = await list_quantization_files(repo, revision, quantization)
+                files = [str(item["path"]) for item in listed]
+                job.log(f"量子化 {quantization} のファイル {len(files)} 件を取得します")
+            else:
+                # フォルダ形式のモデル（Sly など）。最上位のファイルをここで決める
+                # （list_model_files と同じ決まり）。サブフォルダは扱わない。
+                listed = await list_model_files(repo, revision)
+                files = [str(item["path"]) for item in listed]
+                if not files:
+                    raise HfError("repo に取得できるファイルがありません")
+                job.log(f"repo のファイル {len(files)} 件を全部取得します")
+        if quantization:
+            # 明示指定された files に他量子化が混ざらないようにする（repo 全体を落とさない）。
+            for path in files:
+                if not _quantization_matches(path, quantization):
+                    raise HfError(f"量子化 {quantization} に属さないファイルです: {path}")
+            _ensure_complete_shards(files)
         expected_bytes = await _fetch_file_sizes(repo, revision, files, listed=listed)
         job.log(f"HF の API から大きさを確認しました: 約 {expected_bytes / 1e9:.1f}GB")
     elif not files:

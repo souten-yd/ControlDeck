@@ -1,4 +1,12 @@
-"""HuggingFace からの GGUF 取得。"""
+"""HuggingFace からの GGUF 取得。
+
+目的（Nexarch #19 で追加）: 量子化ごとにサブフォルダが分かれた repo でも、選んだ量子化の
+分割全片だけを列挙・取得し、repo 全体の他量子化を落とさないこと。取得後の登録は既存の
+5 ランタイムの保存 API へ渡すこと。根拠: docs/PLAN-model-catalog.md「目録候補」の
+Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が
+置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。
+充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。
+"""
 from __future__ import annotations
 
 import json
@@ -425,3 +433,129 @@ def test_download_rejects_bad_repo_revision_and_escaping_paths(tmp_path, monkeyp
     refused("owner/name", ["a.gguf?download=1"])
     refused("owner/name", ["a.gguf#frag"])
     refused("owner/name", ["a%2f.gguf"])
+
+
+# ---- サブフォルダの量子化と分割片（Nexarch #19） --------------------------------------------
+
+
+def _quantized_tree():
+    """2 つの量子化フォルダを持つ repo の偽 tree（大きさは HF から読んだ値として扱う）。"""
+    return [
+        {"type": "directory", "path": "Q2_0", "size": 0},
+        {"type": "file", "path": "README.md", "size": 10},
+        {"type": "file", "path": "Q2_0/model-Q2_0-00001-of-00002.gguf", "size": 100},
+        {"type": "file", "path": "Q2_0/model-Q2_0-00002-of-00002.gguf", "size": 200},
+        {"type": "file", "path": "IQ2_XS/model-IQ2_XS-00001-of-00002.gguf", "size": 300},
+        {"type": "file", "path": "IQ2_XS/model-IQ2_XS-00002-of-00002.gguf", "size": 400},
+    ]
+
+
+def test_quantization_files_lists_all_shards_in_subdirectories(monkeypatch):
+    """目的: サブフォルダの分割 GGUF を全片列挙し、他量子化を混ぜないこと。
+
+    根拠: 依頼「HF はサブディレクトリの GGUF 分割全片を正しく列挙し選択した量子化だけ取得」。
+    Q2_0 と IQ2_XS が部分一致しないことも確かめる（`Q2_0` が `IQ2_XS` に当たらない）。
+    """
+    import asyncio
+
+    _tree(monkeypatch, _quantized_tree())
+    files = asyncio.run(hf.list_quantization_files("owner/name", quantization="Q2_0"))
+    assert [item["path"] for item in files] == [
+        "Q2_0/model-Q2_0-00001-of-00002.gguf",
+        "Q2_0/model-Q2_0-00002-of-00002.gguf",
+    ]
+    assert sum(item["size"] for item in files) == 300
+    other = asyncio.run(hf.list_quantization_files("owner/name", quantization="IQ2_XS"))
+    assert len(other) == 2 and all("IQ2_XS" in item["path"] for item in other)
+
+
+def test_quantization_files_refuses_an_incomplete_shard_set(monkeypatch):
+    """目的: 分割片が 1 片だけの量子化を「取得できる」と出さないこと。
+
+    根拠: 分割 GGUF は 1 片だけでは起動できない（既存 test_incomplete_shard_set_is_flagged と
+    同じ守りを、サブフォルダの量子化列挙にも効かせる。新しい別の試験ではない）。
+    """
+    import asyncio
+
+    entries = [item for item in _quantized_tree()
+               if not item["path"].endswith("00002-of-00002.gguf")]
+    _tree(monkeypatch, entries)
+    with pytest.raises(hf.HfError, match="分割"):
+        asyncio.run(hf.list_quantization_files("owner/name", quantization="Q2_0"))
+
+
+def test_download_quantization_takes_only_the_selected_subdirectory(tmp_path, monkeypatch):
+    """目的: files=[] + 量子化指定で、その量子化の分割全片だけを取得すること。
+
+    根拠: 目録の量子化行から始まる取得が repo 全体を落とさないこと。HF への通信は偽物で、
+    ファイル名・大きさは tree API から読む（大きさを推測しない）。
+    """
+    import asyncio
+
+    from app.models_mgmt import libraries
+
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(hf, "_ensure_free_space", lambda *args: None)
+    monkeypatch.setattr(hf.httpx, "AsyncClient",
+                        lambda **kwargs: _tree_and_stream_client(_quantized_tree(), [b"GGUF"])())
+    job = _DownloadJob()
+    result = asyncio.run(hf.download(job, "owner/name", [], fetch_sizes=True,
+                                     quantization="Q2_0"))
+    saved = [path.rsplit("/", 1)[-1] for path in result["files"]]
+    assert saved == ["model-Q2_0-00001-of-00002.gguf", "model-Q2_0-00002-of-00002.gguf"]
+    assert not any("IQ2_XS" in name for name in saved)
+    assert any(args[2] == 300 for args, _ in job.progress if len(args) > 2), job.progress
+
+
+def test_download_refuses_files_from_another_quantization(tmp_path, monkeypatch):
+    """目的: 明示指定された files に他量子化が混ざっていたら取得の前に断ること。
+
+    根拠: 「repo 全体の他量子化を落とさない」。画面の選択と repo の不一致で別の重みを
+    落とす前に止める（取得後の発見より無駄が少ない）。
+    """
+    import asyncio
+
+    monkeypatch.setattr(hf, "ensure_external_allowed", lambda what: None)
+    with pytest.raises(hf.HfError, match="属さない"):
+        asyncio.run(hf.download(_DownloadJob(), "owner/name",
+                                ["IQ2_XS/model-IQ2_XS-00001-of-00002.gguf"],
+                                fetch_sizes=True, quantization="Q2_0"))
+
+
+def test_register_dispatch_covers_all_five_runtimes(tmp_path, monkeypatch):
+    """目的: 取得後の登録が既存の 5 ランタイムの保存 API へ正しく渡ること。
+
+    根拠: 依頼「取得後既存登録へ渡す、既存の runtime 登録/起動互換は維持」。Maya は
+    probe から登録するので受け付けない。Radiance は .rad ファイル、Strata は分割 GGUF の
+    フォルダを渡す（Sly の safetensors と混ぜない）。
+    """
+    from app.models_mgmt import llama, radiance, sly_radiance, strata_catalog, strata_gateway
+
+    saved = tmp_path / "owner--name" / "model.gguf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"GGUF")
+    called: list[tuple] = []
+
+    monkeypatch.setattr(llama, "save_instance",
+                        lambda alias, patch: called.append(("llama", alias, patch)))
+    monkeypatch.setattr(radiance, "save_instance",
+                        lambda alias, **kw: called.append(("radiance", alias, kw)))
+    monkeypatch.setattr(sly_radiance, "save_instance",
+                        lambda alias, **kw: called.append(("sly", alias, kw)))
+    monkeypatch.setattr(strata_gateway, "save_instance",
+                        lambda alias, **kw: called.append(("strata", alias, kw)))
+    monkeypatch.setattr(strata_catalog, "is_valid", lambda family, model: True)
+
+    assert hf._register_dispatch({"runtime": "llama", "alias": "a"}, [str(saved)]) == "a"
+    assert hf._register_dispatch({"runtime": "radiance", "alias": "b"}, [str(saved)]) == "b"
+    assert hf._register_dispatch({"runtime": "sly-radiance", "alias": "c"}, [str(saved)]) == "c"
+    assert hf._register_dispatch(
+        {"runtime": "strata", "alias": "d", "family": "qwen", "model": "q2_0"},
+        [str(saved)],
+    ) == "d"
+    assert [item[0] for item in called] == ["llama", "radiance", "sly", "strata"]
+    assert called[1][2]["model_path"] == str(saved)          # .rad はファイルのまま
+    assert called[3][2]["model_path"] == str(saved.parent)   # Strata はフォルダ
+    assert called[3][2]["family"] == "qwen"
+    with pytest.raises(hf.HfError, match="対応していない"):
+        hf._register_dispatch({"runtime": "maya", "alias": "m"}, [str(saved)])
