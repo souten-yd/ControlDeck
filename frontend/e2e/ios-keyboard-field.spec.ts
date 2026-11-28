@@ -79,7 +79,9 @@ test("iPhone: キーボードが出ると、シートが見える範囲に収ま
   await page.getByRole("menuitem", { name: "アカウントの管理" }).click();
   const sheet = page.getByRole("dialog", { name: "アカウントの管理" });
   await expect(sheet).toBeVisible();
-  const field = sheet.getByLabel("Claude Codeの新しいアカウント名");
+  // 新しいアカウントの名前の欄は無くした（2026-11-28）。名前を付ける欄で確かめる
+  await sheet.getByRole("button", { name: /のアカウントに名前を付ける/ }).first().click();
+  const field = sheet.getByLabel(/のアカウントの名前$/).first();
   await field.evaluate((el) => (el as HTMLInputElement).focus({ preventScroll: true }));
   await page.evaluate(() => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(517));
   await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("cd-keyboard-fit"))).toBe(true);

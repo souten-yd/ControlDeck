@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  accountTitle, createAccount, deleteAccount, fetchAccounts, setAccountLabel, setUsageStatusline,
+  accountTitle, createAccount, nextAccountName, deleteAccount, fetchAccounts, setAccountLabel, setUsageStatusline,
   type CommanderAccount, type CommanderCli,
 } from "../../api/commander";
 import { UsageLine } from "./UsageLine";
@@ -129,7 +129,6 @@ function AccountRow({ cli, account, onDelete }: { cli: CommanderCli; account: Co
 function CliAccountsSection({ cli }: { cli: CommanderCli }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
-  const [name, setName] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
   const expert = useExpert();
   // OpenCode の接続（＝モデルの一覧）は普段は出さない。モデルは Models で選ぶ（エキスパートで接続の行を開く）
@@ -140,11 +139,11 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["commander-accounts", cli.id] });
+  // 内部の名前は自動（表示はログインしたメールアドレス。2026-11-28）
   const create = useMutation({
-    mutationFn: () => createAccount(cli.id, name.trim()),
+    mutationFn: () => createAccount(cli.id, nextAccountName((accounts ?? []).map((a) => a.name))),
     onSuccess: () => {
-      show(`アカウント「${name.trim()}」を作りました`);
-      setName("");
+      show("アカウントを足しました。コンソールを開いて、その中でログインしてください");
       invalidate();
     },
     onError: (e) => show(e instanceof Error ? e.message : "作れませんでした", "error"),
@@ -184,28 +183,17 @@ function CliAccountsSection({ cli }: { cli: CommanderCli }) {
           既定のアカウントだけ使えます（アカウントを分ける確かな方法がありません）。
         </p>
       ) : (
-        <form
-          className="mt-2 flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (name.trim()) create.mutate();
-          }}
-        >
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="新しいアカウント名（英小数字・_・-）"
-            aria-label={`${cli.name}の新しいアカウント名`}
-            className="h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-          />
+        <div className="mt-2">
           <button
-            type="submit"
-            disabled={!name.trim() || create.isPending}
-            className="min-h-11 shrink-0 rounded-xl bg-zinc-100 px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-200 disabled:opacity-40 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+            type="button"
+            onClick={() => create.mutate()}
+            disabled={create.isPending}
+            className="min-h-11 w-full rounded-xl border border-dashed border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
-            追加
+            ＋ アカウントを足す
           </button>
-        </form>
+          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">名前は入れません。ログインしたメールアドレスが名前として出ます。</p>
+        </div>
       )}
       {deleting && (
         <ConfirmDialog
