@@ -30,7 +30,7 @@ import { deleteLlamaInstance, duplicateLlamaInstance, getRuntimeCatalog, listLla
 import { RuntimeCatalog } from "../features/models/RuntimeCatalog";
 import { RuntimeRegisterFromFile } from "../features/models/RuntimeRegisterFromFile";
 import { RuntimeSettings } from "../features/models/RuntimeSettings";
-import type { SettingValues } from "../features/models/runtimeSettings";
+import { applyInspectValues, nextPort, type SettingValues } from "../features/models/runtimeSettings";
 import { useExpert } from "../features/commander/TeamRoles";
 
 interface Model {
@@ -1541,27 +1541,14 @@ const BACKEND_LABEL: Record<string, string> = {
   rocm10: "ROCm 10", rocm7: "ROCm 7.2",
 };
 
-/** 既存の llama.cpp インスタンスを共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。 */
+/** 既存の llama.cpp インスタンスを共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。
+ *  一部だけを写すと、共通設定に無い既存値が capability の既定で上書きされるため、
+ *  保存 API が受け付ける値はすべて初期値として渡す（buildSaveBody が save_keys で絞る）。 */
 function llamaSettingsInitial(instance: LlamaInstanceConfig): SettingValues {
-  const role = (instance as LlamaInstanceConfig & { role?: string }).role;
-  return {
-    alias: instance.alias,
-    model_path: instance.model_path,
-    ...(role !== undefined ? { role } : {}),
-    ctx_size: instance.ctx_size,
-    n_parallel: instance.n_parallel,
-    n_gpu_layers: instance.n_gpu_layers,
-    image_min_tokens: instance.image_min_tokens,
-    idle_exclude: instance.idle_exclude,
-    auto_start: instance.auto_start,
-    port: instance.port,
-    mmproj_path: instance.mmproj_path,
-  };
+  return { ...instance } as SettingValues;
 }
 
 function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
-  const qc = useQueryClient();
-  const expert = useExpert();
   const { data: st } = useQuery({ queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status") });
   const instance = st?.instances.find((item) => item.alias === alias);
   return (
@@ -1587,22 +1574,6 @@ function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => vo
               { method: "PUT", json: body });
           }}
           onDone={onClose}
-          note={expert ? (
-            <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
-              <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
-              <div className="mt-3">
-                <LlamaInstanceControls
-                  key={alias}
-                  initial={instance}
-                  onSaved={onClose}
-                  onChanged={() => {
-                    qc.invalidateQueries({ queryKey: ["llama-status"] });
-                    qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] });
-                  }}
-                />
-              </div>
-            </details>
-          ) : undefined}
         />
       </>)}
     </BottomSheet>
@@ -2198,7 +2169,7 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
     ? (llamaSt?.instances ?? []).map((item) => item.port)
     : (strataSt?.instances ?? []).map((item) => item.port);
   const base = runtime === "llama" ? 8080 : 8095;
-  const port = Math.max(base, ...ports) + (ports.length ? 1 : 0);
+  const port = nextPort(base, ports);
   const aliasFrom = (name: string) => name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "").slice(0, 48);
   const toValues = (path: string, alias: string, extra: SettingValues = {}): SettingValues => ({
@@ -2236,7 +2207,7 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
             </p>
           )}
           <RuntimeRegisterFromFile runtime={runtime} mode="file"
-            onRegistered={(info, alias) => onReady(toValues(info.path, alias))} />
+            onRegistered={(info, alias) => onReady(applyInspectValues(toValues(info.path, alias), info.metadata, runtime))} />
         </>
       )}
       {tab === "legacy" && (runtime === "llama"
@@ -2525,30 +2496,13 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   </div>;
 }
 
-/** 既存の Strata 設定を共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。 */
+/** 既存の Strata 設定を共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。
+ *  llama と同じく、全値を渡してから buildSaveBody に save_keys で絞らせる。 */
 function strataSettingsInitial(item: StrataSettings): SettingValues {
-  return {
-    alias: item.alias,
-    family: item.family,
-    model: item.model,
-    model_path: item.model_path ?? "",
-    context: item.context,
-    port: item.port,
-    kv: item.kv ?? "int8",
-    vision: item.vision ?? "on",
-    parallel: item.parallel ?? 1,
-    drafting: item.drafting ?? "auto",
-    kv_resident: item.kv_resident ?? null,
-    ram_keep_gib: item.ram_keep_gib ?? null,
-    idle_exclude: !!item.idle_exclude,
-    auto_start: !!item.auto_start,
-    reasoning_effort: item.reasoning_effort ?? "",
-    thinking_budget: item.thinking_budget ?? 0,
-  };
+  return { ...item } as SettingValues;
 }
 
 function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
-  const expert = useExpert();
   const { data } = useQuery({
     queryKey: ["strata-instances"], queryFn: () => api<{
       runtime: { installed: boolean; models_dir: string };
@@ -2574,18 +2528,9 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
           });
         }}
         onDone={onClose}
-        note={<div className="space-y-2">
-          <p className="text-[11px] text-zinc-500">Strata のモデル別名は変更できません（変更しても元の名前で保存されます）。</p>
-          {expert && (
-            <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
-              <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
-              {/* key is the alias only: a load finishing mid-edit must not wipe the form. */}
-              <div className="mt-3">
-                <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
-              </div>
-            </details>
-          )}
-        </div>}
+        note={<p className="text-[11px] text-zinc-500">
+          Strata のモデル別名は変更できません（変更しても元の名前で保存されます）。
+        </p>}
       />
     </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
   </BottomSheet>;

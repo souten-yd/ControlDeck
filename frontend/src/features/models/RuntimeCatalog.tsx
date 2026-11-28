@@ -11,7 +11,7 @@ import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import {
   cancelModelJob, getModelJob, getRuntimeCatalog, getRuntimeCatalogFiles,
-  listRuntimeInstances, resumeModelJob, startRuntimeAcquire, stopModelJob,
+  listModelJobs, listRuntimeInstances, resumeModelJob, startRuntimeAcquire, stopModelJob,
   type ModelJob, type ModelLibrary, type RuntimeCatalogEntry,
 } from "../../api/models";
 
@@ -46,11 +46,45 @@ interface Pending {
   library_id: string;
 }
 
+interface JobEntry {
+  id: string;
+  entry: RuntimeCatalogEntry;
+  /** 再表示したジョブは最初の状態でトーストを出さない。 */
+  restored?: boolean;
+}
+
+const DOC_SUFFIX = /\.(md|txt|json|yaml|yml|py|html|pdf|part|lock|gitattributes)$/i;
+
+/** 取得した中から実際に登録できる重みファイルを選ぶ（README・config・index を先頭にしない）。 */
+export function pickWeightFile(
+  files: Array<{ path: string; size: number }>, format: string,
+): string | null {
+  const weights = files.filter((file) => {
+    const name = file.path.split("/").pop() ?? file.path;
+    if (DOC_SUFFIX.test(name) || /^(readme|license|config|tokenizer|special_tokens_map)/i.test(name)) return false;
+    if (format === "gguf") return /\.gguf$/i.test(name);
+    if (format === "safetensors") return /\.safetensors$/i.test(name);
+    if (format === "rad") return /\.rad$/i.test(name);
+    return true;
+  });
+  if (!weights.length) return null;
+  // 分割モデルは先頭（00001-of-000NN）を登録の入口にする。単一は渡された順が先のもの
+  // （scheme の files 一覧順。大きさが分かる呼び出しでは size の大きいものが先に来る）。
+  const first = weights.filter((file) => /0000?1-of-0*\d+/i.test(file.path));
+  const pool = first.length ? first : weights;
+  return [...pool].sort((a, b) => b.size - a.size)[0]?.path ?? null;
+}
+
+/** 取得結果（README や config を含む全ファイル）から登録の入口だけを残す。 */
+const weightPath = (entry: RuntimeCatalogEntry, paths: string[]) =>
+  pickWeightFile(paths.map((path) => ({ path, size: 0 })), entry.format) ?? paths[0] ?? "";
+
 /** 取得ジョブの進み具合。速度と残り時間は進捗の増分から画面側で計算する（backend は completed/total を出す）。 */
-function AcquireJobCard({ jobId, title, onFinished, onResumed, onDismiss }: {
+function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismiss }: {
   jobId: string;
   title: string;
-  onFinished: (job: ModelJob) => void;
+  restored?: boolean;
+  onFinished: (job: ModelJob, restored: boolean) => void;
   onResumed: (newJobId: string) => void;
   onDismiss: () => void;
 }) {
@@ -82,7 +116,7 @@ function AcquireJobCard({ jobId, title, onFinished, onResumed, onDismiss }: {
   useEffect(() => {
     if (job && terminal(job.status) && !finished.current) {
       finished.current = true;
-      onFinished(job);
+      onFinished(job, !!restored);
     }
   }, [job, onFinished]);
 
@@ -168,7 +202,7 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
   const show = useToasts((s) => s.show);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
-  const [jobs, setJobs] = useState<Array<{ id: string; entry: RuntimeCatalogEntry }>>([]);
+  const [jobs, setJobs] = useState<JobEntry[]>([]);
   const [acquired, setAcquired] = useState<Record<string, string[]>>({});
 
   const { data: catalog, isLoading, error } = useQuery({
@@ -177,8 +211,42 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
   const { data: instances } = useQuery({
     queryKey: ["runtime-instances"], queryFn: listRuntimeInstances, staleTime: 30_000,
   });
+  // 画面を開き直しても、サーバー側で止まっている取得を再表示する（新しく取得はしない）。
+  const { data: savedJobs } = useQuery({
+    queryKey: ["runtime-acquire-jobs"], queryFn: () => listModelJobs("model.hf_download"),
+    staleTime: 30_000, retry: false,
+  });
   const block = catalog?.runtimes.find((item) => item.id === runtime);
   const entries = block?.entries ?? [];
+
+  useEffect(() => {
+    // 同じ名前の行が別ランタイムにあっても取り違えないよう repo で照合する（無ければ title）。
+    const matchJob = (job: ModelJob) => entries.find((entry) => {
+      const repo = (job.result as { repo?: string } | undefined)?.repo;
+      return repo ? repo === entry.repo : job.title.includes(entry.name);
+    });
+    const restored: JobEntry[] = (savedJobs ?? []).flatMap((job) => {
+      if (job.kind !== "model.hf_download" || ["succeeded", "canceled"].includes(job.status)) return [];
+      const match = matchJob(job);
+      return match ? [{ id: job.id, entry: match, restored: true }] : [];
+    });
+    if (restored.length) {
+      setJobs((current) => {
+        const known = new Set(current.map((item) => item.id));
+        return [...restored.filter((item) => !known.has(item.id)), ...current];
+      });
+    }
+    const successful = (savedJobs ?? []).flatMap((job) => {
+      if (job.status !== "succeeded") return [];
+      const match = matchJob(job);
+      const files = (job.result?.files as string[] | undefined) ?? [];
+      const weight = match && files.length ? weightPath(match, files) : "";
+      return weight ? [[match!.id, [weight]]] : [];
+    });
+    if (successful.length) setAcquired((current) => ({ ...Object.fromEntries(successful), ...current }));
+    // entries は参照が変わるので id 列で比較する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedJobs, entries.map((entry) => entry.id).join(",")]);
 
   const open = async (entry: RuntimeCatalogEntry) => {
     setBusy(true);
@@ -211,28 +279,30 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
   };
 
   const dropJob = (jobId: string) => setJobs((current) => current.filter((item) => item.id !== jobId));
-  const onFinished = (jobId: string, entry: RuntimeCatalogEntry) => (job: ModelJob) => {
+  const onFinished = (jobId: string, entry: RuntimeCatalogEntry) => (job: ModelJob, restored: boolean) => {
     // 停止は意図した操作なので失敗扱いにしない。再開できるようカードは残す。
+    // 画面を開き直しただけで再表示した Job はトーストを出さない（利用者の操作ではない）。
     if (job.status === "interrupted") {
-      show("停止しました。続きから再開できます", "info");
+      if (!restored) show("停止しました。続きから再開できます", "info");
       return;
     }
     const files = (job.result?.files as string[] | undefined) ?? [];
-    if (job.status !== "succeeded" || !files.length) {
-      show(job.error || `${entry.name} を取得できませんでした`, "error");
+    const weight = weightPath(entry, files);
+    if (job.status !== "succeeded" || !weight) {
+      if (!restored) show(job.error || `${entry.name} を取得できませんでした`, "error");
       dropJob(jobId);
       return;
     }
-    setAcquired((current) => ({ ...current, [entry.id]: files }));
+    setAcquired((current) => ({ ...current, [entry.id]: [weight] }));
     dropJob(jobId);
-    show(`${entry.name} を取得しました`);
+    if (!restored) show(`${entry.name} を取得しました`);
   };
 
   const instanceRuntime = runtime === "llama" ? "llama.cpp" : runtime;
   const registered = (entry: RuntimeCatalogEntry) => {
-    const paths = acquired[entry.id] ?? [];
-    if (!paths.length) return false;
-    const candidates = paths.flatMap((path) => [path, dirname(path)]);
+    const weight = weightPath(entry, acquired[entry.id] ?? []);
+    if (!weight) return false;
+    const candidates = [weight, dirname(weight)];
     return (instances?.instances ?? []).some((item) =>
       item.runtime === instanceRuntime && candidates.includes(item.model_path));
   };
@@ -309,7 +379,8 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
               {done && <span className="min-h-11 content-center text-xs text-emerald-600">登録済み</span>}
               {!done && acquired[entry.id]?.[0] && onRegister && (
                 <button type="button" onClick={() => {
-                  const file = acquired[entry.id][0];
+                  // README・config ではなく実際の重みを入口にする（分割モデルは先頭シャード）。
+                  const file = weightPath(entry, acquired[entry.id]);
                   // safetensors はフォルダ単位で登録する（Sly は config.json のあるフォルダ）。
                   onRegister(entry.format === "safetensors" ? dirname(file) : file, entry);
                 }}
@@ -331,8 +402,8 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
         })}
       </ul>
 
-      {jobs.map(({ id, entry }) => (
-        <AcquireJobCard key={id} jobId={id} title={entry.name}
+      {jobs.map(({ id, entry, restored }) => (
+        <AcquireJobCard key={id} jobId={id} title={entry.name} restored={restored}
           onFinished={onFinished(id, entry)}
           onDismiss={() => dropJob(id)}
           onResumed={(newId) => setJobs((current) => [

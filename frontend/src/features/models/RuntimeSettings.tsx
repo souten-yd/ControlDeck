@@ -19,9 +19,9 @@ import {
   SettingsGroup, SheetActions, Toggle, primaryButton,
 } from "./formControls";
 import {
-  buildSaveBody, coerceField, dictToText, displayValue, fieldPresets, invalidateRuntimeQueries,
-  isFieldVisible, mergeSettingValues, sectionFields, sectionLabels, textToDict, useRuntimeCapabilities,
-  type SettingValues,
+  buildSaveBody, coerceField, contextLimit, dictToText, displayValue, fieldPresets,
+  invalidateRuntimeQueries, isFieldVisible, mergeSettingValues, sectionFields, sectionLabels,
+  textToDict, useRuntimeCapabilities, type SettingValues,
 } from "./runtimeSettings";
 import type { CapabilityField } from "../../api/models";
 
@@ -98,7 +98,7 @@ export function RuntimeSettings({
     if (!cap) return;
     setSaving(true);
     try {
-      const body = buildSaveBody(cap, form);
+      const body = buildSaveBody(cap, form, initial);
       if (save) {
         await save(body);
       } else if (runtime === "maya") {
@@ -123,10 +123,14 @@ export function RuntimeSettings({
     }
   };
 
+  const limit = contextLimit(form);
   const renderField = (field: CapabilityField): ReactNode => {
     if (!isFieldVisible(field, expert)) return null;
     const value = form[field.id];
-    const presets = fieldPresets(field);
+    const presets = fieldPresets(field, limit);
+    const bound = limit !== null && (field.id === "ctx_size" || field.id === "context")
+      ? <span className="mt-1 block text-[11px] text-zinc-500">ファイルの上限 {limit.toLocaleString()} トークンまで</span>
+      : null;
     const label = <span className="mb-1 block text-xs font-medium text-zinc-500">{field.label}</span>;
     const hint = field.note ? <span className="mt-1 block text-[11px] text-zinc-500">{field.note}</span> : null;
 
@@ -156,11 +160,12 @@ export function RuntimeSettings({
           {custom && <option value="">{displayValue(field, value)}（現在の値）</option>}
           {presets.map((p) => <option key={String(p.v)} value={String(p.v)}>{p.label}</option>)}
         </select>
+        {bound}
         {expert && field.type === "int" && (
           <input aria-label={`${field.label}（数値）`} type="number" disabled={disabled}
             value={value === undefined || value === null ? "" : String(value)}
             min={field.min} max={field.max} step={field.step ?? 1}
-            onChange={(e) => setField(field.id, e.target.value === "" ? undefined : Number(e.target.value))}
+            onChange={(e) => setField(field.id, e.target.value === "" ? null : Number(e.target.value))}
             className="mt-1.5 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         )}
         {hint}
@@ -168,22 +173,26 @@ export function RuntimeSettings({
     }
     if (field.type === "int" || field.type === "float") {
       const min = field.min ?? 0;
-      const max = field.max ?? (field.type === "float" ? 1 : 100);
+      const max = Math.min(
+        field.max ?? (field.type === "float" ? 1 : 100),
+        limit !== null && (field.id === "ctx_size" || field.id === "context") ? limit : Infinity,
+      );
       const step = field.step ?? (field.type === "float" ? 0.01 : 1);
       const numeric = typeof value === "number" ? value : Number(value ?? min);
       return <label key={field.id} className="block">{label}
         <div className="flex items-center gap-2">
           <input type="range" aria-label={field.label} disabled={disabled} min={min} max={max} step={step}
             value={Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : min}
-            onChange={(e) => setField(field.id, coerceField(field, Number(e.target.value)))}
+            onChange={(e) => setField(field.id, coerceField(field, Number(e.target.value), limit))}
             className="min-w-0 flex-1" />
           <span className="num min-w-14 shrink-0 text-right text-xs">{displayValue(field, value)}</span>
         </div>
+        {bound}
         {expert && (
           <input aria-label={`${field.label}（数値入力）`} type="number" disabled={disabled}
             value={value === undefined || value === null ? "" : String(value)}
             min={min} max={max} step={step}
-            onChange={(e) => setField(field.id, e.target.value === "" ? undefined : Number(e.target.value))}
+            onChange={(e) => setField(field.id, e.target.value === "" ? null : Number(e.target.value))}
             className="mt-1.5 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
         )}
         {hint}

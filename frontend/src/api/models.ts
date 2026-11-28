@@ -327,6 +327,8 @@ export interface RuntimeCapabilities {
   sections: CapabilitySection[];
   /** 常時オンで切る欄が無いもの（Sly の prefix cache など）。 */
   always_on?: Array<{ id: string; note: string }>;
+  /** 既存保存 API が受け付ける引数名。capability に無い既存値を落とさないために使う。 */
+  save_keys?: string[];
   endpoints?: { instances?: string };
 }
 
@@ -349,6 +351,10 @@ export interface ModelJob {
 
 export const getModelJob = (jobId: string) =>
   api<ModelJob>(`/jobs/${encodeURIComponent(jobId)}`);
+
+/** 取得ジョブの一覧（画面を開き直したあと停止中の Job を再表示する）。 */
+export const listModelJobs = (kind: string) =>
+  api<ModelJob[]>(`/jobs?kind=${encodeURIComponent(kind)}&limit=30`);
 
 export const stopModelJob = (jobId: string) =>
   api<{ ok: boolean; status: string; can_resume: boolean }>(

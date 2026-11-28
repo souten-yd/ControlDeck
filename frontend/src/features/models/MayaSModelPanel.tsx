@@ -20,7 +20,7 @@ import { CopyText, FileName, ModelStatusSummary, SettingsGroup } from "./formCon
 import { RuntimeCatalog } from "./RuntimeCatalog";
 import { MODEL_FILE_PICKER_SOURCE, RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
 import { RuntimeSettings } from "./RuntimeSettings";
-import type { SettingValues } from "./runtimeSettings";
+import { applyInspectValues, type SettingValues } from "./runtimeSettings";
 
 export interface MayaSettings {
   model_path: string;
@@ -183,6 +183,7 @@ function MayaSettingsForm({ status, onDone }: {
     <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます。名前はファイル名から自動で入ります"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="maya" mode="file" disabled={locked} expert={expert}
+        onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "maya"))}
         onRegistered={(info) => apply({ model_path: info.path })} />
     </SettingsGroup>
   </div>;

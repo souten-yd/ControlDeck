@@ -17,7 +17,7 @@ import { CopyText, FileName, ModelStatusSummary, SettingsGroup, secondaryButton 
 import { RuntimeCatalog } from "./RuntimeCatalog";
 import { MODEL_FILE_PICKER_SOURCE, RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
 import { RuntimeSettings } from "./RuntimeSettings";
-import type { SettingValues } from "./runtimeSettings";
+import { applyInspectValues, nextPort, type SettingValues } from "./runtimeSettings";
 
 export type SlyQuant = "" | "quark" | "nvfp4" | "paroquant";
 export interface SlyRadianceSettings {
@@ -85,11 +85,14 @@ export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
   onDone: () => void; initial?: SlyRadianceSettings; running?: boolean;
 }) {
   const expert = useExpert();
+  const { data: state } = useSlyRadianceState();
   const [values, setValues] = useState<SettingValues>({});
   const [drafterPicker, setDrafterPicker] = useState(false);
   const apply = (patch: SettingValues) => setValues((current) => ({ ...current, ...patch }));
   const modelPath = String(values.model_path ?? initial?.model_path ?? "");
   const drafterPath = String(values.drafter_path ?? initial?.drafter_path ?? "");
+  // 既存のインスタンスとポートが被らないようにする（取得や起動はしない）。
+  const port = nextPort(8100, (state?.instances ?? []).map((item) => item.port));
 
   // 目録からの取得・ファイル選択で決まった値を共通設定のフォームへ渡す（登録自体は下の保存で行う）。
   const catalogSlot = initial ? null : <div className="space-y-3">
@@ -98,13 +101,14 @@ export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
       <RuntimeCatalog runtime="sly-radiance" expert={expert} onRegister={(path, entry) => {
         // 先読みは model_path を上書きしない（続けてモデルを取ったときに消えないように）。
         if (entry.kind === "drafter") apply({ drafter_path: path });
-        else apply({ model_path: path, ...(entry.quantization ? { quantization: entry.quantization } : {}) });
+        else apply({ model_path: path, port, ...(entry.quantization ? { quantization: entry.quantization } : {}) });
       }} />
     </SettingsGroup>
     <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中からフォルダを選びます。名前はファイル名から自動で入り、下の設定へ入ります（保存は最後のボタン）"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="sly-radiance" mode="dir" disabled={running} expert={expert}
-        onRegistered={(info, alias) => apply({ model_path: info.path, alias })} />
+        onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "sly-radiance"))}
+        onRegistered={(info, alias) => apply({ model_path: info.path, alias, port })} />
     </SettingsGroup>
   </div>;
 
