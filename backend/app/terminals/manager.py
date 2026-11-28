@@ -155,10 +155,13 @@ def _apply_commander_marks(session: dict, values: list[str]) -> None:
     印の無いセッション（既存の Terminal と同じ）は鍵を足さない。
     values は COMMANDER_MARK_KEYS の順で、tmux の出力そのまま（空文字列=印なし）。
     """
-    if not values or not values[0]:
+    if not values:
         return
+    # 印の無い普通のターミナルでも、自動再開の印（上限からの再開・2026-11-29）だけは読む。
+    # commander_cli が無いので Nexarch のコンソールの一覧には出ない（consoles.list_consoles）。
+    keys = COMMANDER_MARK_KEYS if values[0] else ("autoresume", "resume_at", "resume_count", "resume_last", "resume_message")
     for key, value in zip(COMMANDER_MARK_KEYS, values):
-        if value:
+        if value and key in keys:
             session[f"commander_{key}"] = value
 
 

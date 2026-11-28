@@ -20,8 +20,9 @@ def test_parse_claude_and_codex_reset_times():
     """Claude の「resets 10:20pm (Asia/Tokyo)」「resets Nov 30, 12am」・Codex の「try again at/in」。"""
     assert resume.parse_reset("You've hit your 5-hour limit · resets 10:20pm (Asia/Tokyo)", NOW) == \
         datetime(2026, 11, 27, 22, 20, tzinfo=TOKYO)
-    # 過ぎた時刻は翌日
-    assert resume.parse_reset("resets 7pm (Asia/Tokyo)", NOW) == datetime(2026, 11, 28, 19, 0, tzinfo=TOKYO)
+    # 12 時間より前の時刻は翌日。近い過去（1 時間前）は「もう戻った」（2026-11-29 まで翌日へ延ばしていた）
+    assert resume.parse_reset("resets 7am (Asia/Tokyo)", NOW) == datetime(2026, 11, 28, 7, 0, tzinfo=TOKYO)
+    assert resume.parse_reset("resets 7pm (Asia/Tokyo)", NOW) == datetime(2026, 11, 27, 19, 0, tzinfo=TOKYO)
     assert resume.parse_reset("weekly limit · resets Nov 30, 12am (Asia/Tokyo)", NOW) == \
         datetime(2026, 11, 30, 0, 0, tzinfo=TOKYO)
     codex = resume.parse_reset("You've hit your usage limit. try again at Nov 28th, 2026 3:05 AM.", NOW)
@@ -176,3 +177,73 @@ def test_resume_message_console_then_global_then_default(admin_client, monkeypat
     # 全体を空にすると既定へ
     admin_client.put("/api/v1/commander/settings", headers=CSRF_HEADERS, json={"resume_message": ""})
     assert commander_settings.resume_message() == "続けてください"
+
+
+def test_time_only_reset_still_sends_after_the_reset_passes(monkeypatch):
+    """目的: 「resets 2:50am」は、戻る時刻＋猶予を過ぎた見回りで送る（翌日へ延ばさない）。
+    根拠: 2026-11-29 利用者「5 時間の上限が戻ったら自動で再開する機能が効いていなかった」。送る時刻に読み直すと
+    「1 分前より前なら翌日」で翌日の 2:50 になり、Claude は一度も自動で再開できていなかった。"""
+    reset = datetime(2026, 11, 29, 2, 50, tzinfo=TOKYO)
+    row = _row(commander_detail="⎿  You've hit your 5-hour limit · resets 2:50am")
+    for after in (resume.GRACE, resume.GRACE + 90, 3 * 3600):
+        now = reset.timestamp() + after
+        orig = resume.parse_reset
+        monkeypatch.setattr(resume, "parse_reset", lambda text, now_=None, _t=now: orig(text, datetime.fromtimestamp(_t, TOKYO)))
+        assert resume.plan(row, now)["action"] == "send", after
+        monkeypatch.setattr(resume, "parse_reset", orig)
+
+
+def test_plain_terminal_cli_is_watched_too(monkeypatch):
+    """目的: Nexarch のコンソールでない普通のターミナルで動く Claude・Codex も、上限から自動で再開する。
+    Codex は node で動くので、シェルの子の cmdline（codex.js）で見分ける。印の無いシェルは対象にしない。
+    根拠: 2026-11-29、上限に当たった Claude は普通のターミナル（cdterm-2f41d4dd）で、見回りの外だった。"""
+    from app.terminals import manager as manager_module
+
+    sessions = [
+        {"id": "t1", "program": "claude", "pid": 1, "alive": True},
+        {"id": "t2", "program": "node", "pid": 2, "alive": True},
+        {"id": "t3", "program": "bash", "pid": 3, "alive": True},
+        {"id": "c1", "program": "claude", "pid": 4, "alive": True, "commander_cli": "claude"},   # コンソールは別の道
+    ]
+
+    class Fake(FakeManager):
+        def list_sessions(self):
+            return sessions
+
+    fake = Fake(LIMIT_SCREEN)
+    monkeypatch.setattr(manager_module, "manager", fake)
+    monkeypatch.setattr(resume, "_children", lambda pid: {2: [20]}.get(pid, []))
+    real = resume.Path
+
+    def cmdline(pid):
+        return {20: b"node\0/home/x/node_modules/@openai/codex/bin/codex.js\0"}.get(pid)
+
+    monkeypatch.setattr(resume, "Path", lambda *a: _ProcPath(a, cmdline, real))
+    rows = {r["id"]: r for r in resume._terminal_rows()}
+    assert set(rows) == {"t1", "t2"}
+    assert rows["t1"]["commander_cli"] == "claude" and rows["t2"]["commander_cli"] == "codex"
+    assert rows["t1"]["commander_state"] == status.LIMITED
+
+
+class _ProcPath:
+    """/proc/<pid>/cmdline だけを差し替える小さな Path の代わり。"""
+
+    def __init__(self, parts, cmdline, real):
+        self._parts = [str(p) for p in parts]
+        self._cmdline = cmdline
+        self._real = real
+
+    def __truediv__(self, other):
+        return _ProcPath(self._parts + [str(other)], self._cmdline, self._real)
+
+    @property
+    def name(self):
+        return self._real(*self._parts).name
+
+    def read_bytes(self):
+        if len(self._parts) == 3 and self._parts[0] == "/proc" and self._parts[2] == "cmdline":
+            data = self._cmdline(int(self._parts[1]))
+            if data is None:
+                raise OSError
+            return data
+        return self._real(*self._parts).read_bytes()

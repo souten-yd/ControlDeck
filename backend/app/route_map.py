@@ -266,7 +266,7 @@ ROUTES: tuple[Route, ...] = (
           "（続きから: Claude --continue・Codex resume --last・OpenCode は既存の再開）",
           ("audit", "path_check", "no_secrets"), _o("commander/locks.py", "commander/consoles.py"), "nexarch",
           "作業フォルダは保存した実体のパスを改めて検証。失敗も数えて 10 分 3 回まで・設定で切れる"),
-    Route("nx-resume-inject", "backend", "console", "tmux", "上限からの自動再開「続けてください」を送る（inject_input）", ("audit", "approval"),
+    Route("nx-resume-inject", "backend", "console", "tmux", "上限からの自動再開「続けてください」を送る（inject_input。Nexarch のコンソールと、普通のターミナルで動く AI の CLI）", ("audit", "approval"),
           _o("commander/resume.py", "commander/settings.py"), "nexarch",
           "送る直前に画面を読み直し、止まったままのときだけ。回数・間隔に歯止め。コンソールごとに止められる"),
     Route("nx-team-inject", "backend", "console", "tmux", "チームのタスクを担当のコンソールへ送る（短い文）", ("auth", "audit"),

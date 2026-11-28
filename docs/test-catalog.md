@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 292 ファイル、3068 テスト（目的の未記入 93 ファイル）
+- backend: 292 ファイル、3070 テスト（目的の未記入 93 ファイル）
 - E2E: 156 spec、370 テスト
 
 ## backend（backend/tests）
@@ -833,6 +833,8 @@
 - `test_tick_clears_and_schedules` — 止まっていないコンソールは印を消し、待ちのコンソールは次の予定を残す（画面に出す）。
 - `test_autoresume_toggle_api` — コンソールごとに自動再開を止める・戻す（off の印を付ける・外す）。無いコンソールは 404。
 - `test_resume_message_console_then_global_then_default` — 送る文言: コンソールの設定 → 全体の設定 → 既定「続けてください」。空で上の段へ戻す。
+- `test_time_only_reset_still_sends_after_the_reset_passes` — 目的: 「resets 2:50am」は、戻る時刻＋猶予を過ぎた見回りで送る（翌日へ延ばさない）。
+- `test_plain_terminal_cli_is_watched_too` — 目的: Nexarch のコンソールでない普通のターミナルで動く Claude・Codex も、上限から自動で再開する。
 
 ### backend/tests/test_commander_status.py
 
