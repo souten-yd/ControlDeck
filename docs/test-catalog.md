@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 279 ファイル、2901 テスト（目的の未記入 93 ファイル）
-- E2E: 152 spec、348 テスト
+- E2E: 153 spec、354 テスト
 
 ## backend（backend/tests）
 
@@ -4914,6 +4914,17 @@
 目的: **未記入**
 
 - uses the common provider routes for pull and model configuration
+
+### frontend/e2e/models-runtime-common.spec.ts
+
+目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28、同日補強）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番の共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 目録の見出しの動詞（取る／探す／取得）は今の実装で不統一なので、並びだけを検査し 不統一な文言へ期待を固定しない（docs/PLAN-model-catalog.md「共通の並び」）。 - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。 - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。 ※ この環境では frontend/node_modules が無く実行不能（ホストの共有 node_modules は worktree リンク整備待ち。箱内で見えないので自分では導入しない）。spec と実行コマンド のみを残し、結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
+
+- モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す
+- 共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ? 
+- 取得ジョブ: 停止 → 再開のボタンがモックの API で動く（320px）
+- 取得ジョブ: 取り消しの API モックと实际操作（320px）
+- ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ
+- 画面写真: ${width}px ${scheme} エキスパート${expert ? 
 
 ### frontend/e2e/models-swap-queue.spec.ts
 
