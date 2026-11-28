@@ -184,3 +184,159 @@ run4 で確認したこと（コードを読んだ結果。実機・実重みは
 実装後にこの表と `docs/HANDOFF-model-catalog.md` の作業記録を更新する。
 
 M3 の載せ方（M2・M4 で Maya・Radiance の取得 Job を作るとき）: 取得の Job を `jobs.create(..., resume={JSON にできる平らな引数})` で作り、`app/models_mgmt/resume.py` と同じ形で `jobs.register_resumable(kind, factory, title=...)` をモジュールの読み込み時に登録する（factory は保存した引数から runner を作る）。秘密値（HF のトークン等）は resume に入れない。再開の記録・回数の歯止め（3 回・7 日）・停止時の扱いは Job 基盤が持つので、ランタイムごとに作らない。
+
+## 設定項目の調査（2026-11-28）
+
+Nexarch タスク #6。前回の explore（run1/run2）が Web で調べた内容を、依頼どおりこの計画へ永続化する。
+run2 は読み取り専用だったため未書き込みだった。この作業も Web の閲覧と既存ファイルの読み取りだけで、
+本番の checkout・data・モデル・プロセス・workflows 画面は変更していない。モデルや npm/pip の取得はしていない。
+
+確かさの記号（`AGENTS.md`「分からないことの調べ方」に従い分けて書く）:
+
+- **【公】**: 公式 README / docs / CLI help に書かれていたもの（2026-11-28 に Web で確認）。
+- **【源】**: リポジトリのコード・保存 API の検証定数で確認したもの（run3/run4 の確認を再利用）。
+- **【未】**: この PC の本番では未実測。公式の既定値を引用しただけで、挙動は確かめていない。
+
+### ランタイム × 設定項目
+
+| 項目 | Radiance（C++ エンジン / `stilldeadcode/radiance:2.2.0`） | Sly-Radiance（vLLM 0.32 の R9700 向け改造版） | Strata（0.2.22） | Maya（v1.1.81） | llama.cpp |
+|---|---|---|---|---|---|
+| コンテキスト長 | **【公】** `--max-model-len`（Flash-Next 200000、27B 200000、MiniCPM5 131072、bf16 参照 32768） | **【公】** `--max-model-len`（quickstart 262144、最速起動 65536）。vLLM は `k/m/g` と `auto` も可 | **【公】** `--max-context`（全 Window は 262K。IQ3 系は 128K を推奨設定で案内） | **【公】＋【源】** `--max-context`。保存 API の下限は 8192（run4 がコードで確認） | **【公】** `-c, --ctx-size`（既定 0＝GGUF のメタデータから読む） |
+| 同時に処理する数 | **【公】** `--max-num-seqs`（Flash-Next と 27B-bf16 は 8、その他 32） | **【公】** `--max-num-seqs 8`（起動例） | **【公】** `--batch` スロット／`--parallel`（スロット数。通常 1） | **【公】＋【源】** `--parallel N`（1〜4 を保存 API が受ける）。`MAYA_PAR_MAX` でサーバー側の上限も可 | **【公】** `-np, --parallel`（既定 -1＝自動。スロット数） |
+| KV キャッシュ形式 | **【公】** `--kv-cache-dtype fp8`（各 compose の共通設定）。`rad-convert --kv-cache-dtype bf16\|fp8` は変換時の宣言幅 | **【公】** `--kv-cache-dtype fp8`（既定）、オプトインの 4bit `kv4`（TetraAttention）、`--mamba-ssm-cache-dtype bfloat16`、ネイティブ 4bit は `ultraquant_4bit` | **【公】** `--kv int8`（既定）／`q4_0`（Hadamard 回転＋4bit）／`k8v4`。`--kv-streaming on\|off\|auto` と `--kv-resident 32768`、`--kv-grow` | **【公】** `MAYA_GLM_KV_INT8`（v1.1.55 から既定オン、`--kv int8`）。`--kv fp16` で戻す。`--kv-streaming`／`--kv-resident 32768` | **【公】** `-ctk/-ctv, --cache-type-k/-v`（f32, f16, bf16, f8_e4m3, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1。既定 f16） |
+| prefix cache | **【公】** README が Flash-Next の「prefix-cache tiers」に言及。個別のフラグ名は `docs/GUIDE.md` 参照＝**【未】** | **【公】** `--enable-prefix-caching` / `--no-enable-prefix-caching`（最速起動では off）。**【源】** ControlDeck は常時オンで `false` を 422 にする（run3/run4）。欄自体を出さない | **【公】** 会話キャッシュ（GPU→ホスト→SSD の階層）。固定 prefix を使う `strata_prefix` は `--prompt-cache 3` 以上が必要 | **【未】** `docs/SETTINGS.md` に prefix cache の専用スイッチの記載なし。KV streaming が相当するが、等価かは未確認 | **【公】** `--cache-prompt`（既定オン）、`--cache-reuse N`（KV shifting の最小チャンク、既定 0＝無効）、`--cache-ram 8192`、`--ctx-checkpoints 32` |
+| 投機的デコード | **【公】** `--num-speculative-tokens`（Flash-Next 3、bf16 参照 0）。ドラフターはコンテナに同梱 | **【公】** `--speculative-config.method dflash` / `.model syvai/Qwen3.8-27B-DFlash2-W4A16` / `.num_speculative_tokens 7` / `.draft_sample_method greedy\|probabilistic` | **【公】** `--mtp`（モデル自身の MTP 層）＋`--spec N` / `--spec-min-p P`（setup 既定は 4 / 0.5）＋prompt lookup | **【公】** モデル同梱の MTP／DFlash2 ドラフト。`MAYA_GLM_NO_MTP=1` で無効、`MAYA_GLM_SPEC_*` で細かく制御 | **【公】** `--spec-type`（none / draft-simple / draft-eagle3 / draft-mtp / draft-dflash / draft-dspark / draft-dflash2 / ngram-*）。`--spec-draft-model`、`--spec-draft-n-max 3` |
+| 量子化 | **【公】** `rad-convert --recipe` / `--quant`（`rtn`・`gptq`・`awq`・`autoround`・`paroquant`・`ggml`・`cast`）で `.rad` コンテナを作る | **【公】** MXFP4 GPTQ（compressed-tensors）、`--quantization quark`（Quark AWQ）、`RADIANCE_NVFP4_MXFP4=1 --quantization compressed-tensors`、ParoQuant／AutoRound／escha | **【公】** ファミリー×量子化パック（GSQ-RCO の Q2_0 / IQ2_XS / IQ3_XXS / IQ3_S、Unsloth UD-*、Q8_0）。`--family` で選ぶ | **【公】** Maya-XS / S / S24 / M / L、Maya-M-Derisked、UD-IQ2_M、EXL3。`--model <setup id>` で選ぶ | **【公】** GGUF の量子化をファイル側で選ぶ（Q4_K_M・Q8_0・IQ2_XXS など）。実行時の切替ではない |
+| GPU メモリ割合／配分 | **【公】** 割合ではなく `--host-pool-mib 12288`・`--gpu-headroom-mib 96`・`--expert-vs-cache-ratio 0.82`・`--placement expert_tiered`・`--weights-disk-tier` | **【公】** `--gpu-memory-utilization 0.98`（起動例）。vLLM の既定は extensible KV なら 1.0、それ以外 0.92 | **【公】** `--vram-reserve-mib`、`--resident-budget-gib N`、`--pcie-frac`、エキスパートキャッシュの予算と KV の取り合い | **【公】** `MAYA_GLM_RAM_HEADROOM_GB 6`／`MAYA_GLM_RAM_GB`／`--vram-reserve-mib`／`MAYA_GLM_SPLIT auto` | **【公】** 割合フラグはなし。`-ngl, --n-gpu-layers auto`、`--fit on` / `--fit-target 1024`、`-dev`（オフロード先） |
+| バッチ | **【公】** `--max-num-batched-tokens`（Flash-Next 2048、MiniCPM5 512、bf16 参照 32768） | **【公】** `--max-num-batched-tokens 2048`（quickstart）／4096（最速起動）＝prefill チャンク | **【公】** `--prefill auto`（プロンプトのチャンク）と `--batch` スロット | **【公】** `--prefill 32768`（長文のプロンプト分割。1M コンテキストで効果が大きい） | **【公】** `-b, --batch-size 2048`、`-ub, --ubatch-size 512` |
+| 既定のサンプリング | **【未】** README に既定値の明記なし（`generation_config` 依存）。Sly の起動例は T 1.0 / top_p 0.95 / top_k 20 | **【公】** `--override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0}'`。ベンチは T 0.7 / top_p 0.95 / top_k 20 | **【公】** 設定ファイルの `"sampling"`（例 T 1.0 / top_p 0.95 / top_k 20）。要求→共有 Chat 設定→`sampling`→モデルカードの順 | **【公】＋【源】** `reasoning_effort`（`MayaInstanceSettingsBody` の `Literal` から選択肢を読む）と `thinking_budget`（既定 32768）、`MAYA_GLM_THINK_RESERVE 1024`。ペナルティは `docs/SETTINGS.md` | **【公】** `--temp 0.80` / `--top-k 40` / `--top-p 0.95` / `--min-p 0.05` / `--repeat-penalty 1.00` |
+| 思考の度合い | **【未】** エンジン側の選択肢は README に記載なし（チャットテンプレート側） | **【公】** `--default-chat-template-kwargs '{"enable_thinking": false}'` / `{"reasoning_effort":"medium"}` | **【公】** none / low / medium / high の 4 段 | **【公】＋【源】** `reasoning_effort`／`thinking_budget`（保存 API の引数名と同じ） | **【未】** 専用フラグなし。チャットテンプレートと要求側のオプションに依存 |
+
+### 他製品の設定画面の並べ方（参考）
+
+| 製品 | 並べ方の要点 | 出どころ |
+|---|---|---|
+| LM Studio | 「モデルを読み込む時」と「会話中」の 2 段。読み込み時は Context Length・GPU Offload（`max` / 比率 / `off`）・Flash Attention、会話中は Temperature / Top P / Min P / Repeat Penalty 系。`My Models` → ギア → モデルごとの既定（per-model defaults）として保存でき、`lms load --context-length --gpu` と同じ値を GUI から触れる | https://lmstudio.ai/docs/cli/local-models/load , https://lmstudio.ai/docs/app/advanced/per-model , https://lmstudio.ai/docs/typescript/api-reference/llm-load-model-config |
+| Ollama | GUI というより `Modelfile` の `PARAMETER` と API の `options` に集約。`num_ctx`（既定 2048）・`num_predict`・`temperature`（0.8）・`top_k`（40）・`top_p`（0.9）・`min_p`・`repeat_penalty`（1.0）・`seed` と、投機は `draft_num_predict`。「モデルへ値を焼き込む」場所が 1 か所 | https://docs.ollama.com/modelfile |
+| text-generation-webui | タブで役割を分ける: **Model** タブ＝モデルの選択・ローダー別の読み込み設定（llama.cpp なら `gpu_layers`・`ctx_size`・`cache_type`・`batch_size`・`ubatch_size`）と HF ダウンロード（repo id＋ファイル名を入力）、**Parameters** タブ＝生成パラメータ、**Chat** タブ＝会話。モデルの設定をドロップダウンに保存し、再選択時に復元する | https://github.com/oobabooga/text-generation-webui/wiki/04-%E2%80%90-Model-Tab , https://github.com/oobabooga/text-generation-webui/wiki/03-%E2%80%90-Parameters-Tab |
+
+共通して言えること: **「どのモデルを・どれだけの文脈で読み込むか」を先に出し、速度・サンプリングの細かい値は後ろ／別の所へ置く**。
+ControlDeck の ①〜⑥ の並び（下記）はこの並べ方と同じ方向で矛盾しない。
+
+### 出どころ（すべて 2026-11-28 に閲覧）
+
+- vLLM 公式 Engine Arguments: https://docs.vllm.ai/en/stable/configuration/engine_args/
+- Sly-Radiance 公式 README（Tech stack / Options / Quickstart / Other checkpoints）: https://github.com/SlyBase/vllm-sly-radiance/blob/main/README.md
+- Radiance 公式 README とツールリファレンス（GitHub ミラー。上流は Codeberg だがスクレイパー対策で本文が取得できなかったためミラーで確認）: https://github.com/AndrzejukPawel/radiance/blob/main/README.md , https://github.com/AndrzejukPawel/radiance/blob/main/docs/TOOLS.md , 上流 https://codeberg.org/StillDeadcode/radiance/src/branch/main/README.md
+- Strata 公式 `docs/DETAILS.md`: https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md
+- Maya 公式 `README.md` と `docs/SETTINGS.md` / `docs/MODELS.md`: https://github.com/mw00/project-maya/blob/main/README.md , https://github.com/mw00/project-maya/blob/main/docs/SETTINGS.md , https://github.com/mw00/project-maya/blob/main/docs/MODELS.md
+- llama.cpp 公式 `tools/server/README.md`（CLI help と同じ内容）: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+
+## 目録候補（repo id とファイル名のみ・2026-11-28）
+
+依頼の約束: **repo id とファイル名だけを書く**。大きさ・sha・ダウンロード URL の推測値は書かない。
+下表の大きさはすべて `null`（未確認）で、取得の開始時に HF の API から読む（run3 の `size_gib=null` と同じ扱い）。
+`gated` は HF API の `gated` フラグをそのまま転記した。**Web の閲覧だけ**で、重みの取得・実機での起動はしていない。
+各ランタイムで動く形式だけを載せる（Strata は GSQ-RCO・Unsloth UD-*・Q8_0、llama.cpp は GGUF、
+Sly は `sly_radiance_catalog.py` と同じ形式、Maya は Maya 量子化、Radiance は `.rad`）。
+
+### Sly-Radiance（safetensors: MXFP4 GPTQ / Quark AWQ / NVFP4 / ParoQuant ＋ W4A16 ドラフター）
+
+| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ |
+|---|---|---|---|---|---|
+| `slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ` | `model-00001-of-00009.safetensors` 〜 `model-00009-of-00009.safetensors`、`model_mtp.safetensors` | MXFP4 GPTQ（compressed-tensors） | あり（heretic） | false | null |
+| `amd/Qwen3.8-27B-Quark-AWQ-MXFP4` | `model.safetensors` | Quark AWQ MXFP4 | — | false | null |
+| `unsloth/Qwen3.8-27B-NVFP4` | `model.safetensors`、`model_mtp.safetensors` | NVFP4（`RADIANCE_NVFP4_MXFP4=1` で MXFP4 経路） | — | false | null |
+| `z-lab/Qwen3.8-27B-PARO` | `model.safetensors` | ParoQuant | — | false | null |
+| `syvai/Qwen3.8-27B-DFlash2-W4A16` | `model.safetensors` | W4A16（drafter。上のモデルと併用） | — | false | null |
+| `akumaburn/Swift-1.5-Qwen3.8-27b-heretic` | `model-00001-of-00012.safetensors` 〜 `model-00012-of-00012.safetensors`、`model-mtp.safetensors` | 無検閲の元モデル（Sly の heretic 量子化の base_model） | あり（heretic） | false | null（このまま Sly で動くかは**未実測**） |
+
+### Radiance（`.rad` コンテナ）
+
+| repo id | ファイル名 | 無検閲 | gated | 大きさ |
+|---|---|---|---|---|
+| `StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe` | `qwen3.8-next-flash-fp8-iq4r-moe.rad` | — | false | null |
+| `StillDeadcode/qwen3.8-27b-fp8` | `qwen3.8-27b-fp8.rad` | — | false | null |
+| `StillDeadcode/qwen3.6-35b-a3b-fp8` | `qwen3.6-35b-a3b-fp8.rad` | — | false | null |
+| `StillDeadcode/minicpm5-2b-fp8` | `minicpm5-2b-fp8.rad` | — | false | null |
+| `StillDeadcode/minicpm5-2b-bf16` | `minicpm5-2b-bf16.rad` | — | false | null |
+
+無検閲の `.rad` は公式 README に記載が無く、**未確認**（候補なし）。`rad-convert` で作る必要があるなら既存の手作業フロー扱い。
+
+### Strata（GSQ-RCO / Unsloth UD-* / Q8_0）
+
+| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ |
+|---|---|---|---|---|---|
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | — | false | null |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF` | `IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Coder） | — | false | null |
+| `ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Swift 1.5） | — | false | null |
+| `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF` | `Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf`（公式 README の例は revision 固定） | Gyro | — | false | null |
+| `unsloth/Qwen3.8-Flash-Next-GGUF` | `UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` 〜 `00004`、`Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf` 〜 `00006` | Unsloth UD-* / Q8_0 | — | false | null |
+| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-UD-Q4_K_XL.gguf`、`Qwen3.8-27B-Q8_0.gguf` | Unsloth UD-* / Q8_0 | — | false | null |
+| `unsloth/Qwen3.6-35B-A3B-GGUF` | `Qwen3.6-35B-A3B-Q8_0.gguf`、`Qwen3.6-35B-A3B-UD-IQ2_M.gguf` | Q8_0 / Unsloth UD-* | — | false | null |
+| `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` | `UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf` 〜 `00009` | Unsloth UD-* | — | false | null |
+| `OrcaRouter/Qwen3.8-Flash-Next-Uncensored-GGUF` | `Qwen3.8-Flash-Next-Uncensored-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Qwen3.8-Flash-Next-Uncensored-IQ2_M-00001-of-00002.gguf`（`00002` も） | 汎用 GGUF（**既存の手作業変換 `iq_pack.py --compat-bf16` が要る＝既存 PLAN の印を維持**） | あり（Uncensored） | **true** | null |
+| `SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF` | `IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | あり（abliterated） | false | null |
+| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS.gguf`、`Huihui-Qwen3.8-27B-abliterated-Swift-1.5-GSQ-RCO-IQ3_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null |
+| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Strata-deepseek-v4.1-flash-IST-DAS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null |
+
+### Maya（Maya 量子化）
+
+| repo id | ファイル名 | Maya tier | 無検閲 | gated | 大きさ |
+|---|---|---|---|---|---|
+| `peasantsmith/GLM-5.3-Flash-Maya-GGUF` | `Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf` 〜 `00003`、`Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00001-of-00003.gguf` 〜 `00003`、`Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00001-of-00003.gguf` 〜 `00003`、`Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00001-of-00004.gguf` 〜 `00004` | S / S24 / XS / M / L | — | false | null |
+| `peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF` | `GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-00001-of-00003.gguf` 〜 `00003` | Maya-M | あり（Derisked＝拒否を減らす重み編集・実験的） | false | null |
+| `peasantsmith/GLM-5.3-Maya-GGUF` | `Maya-XS/GLM-5.3-Maya-XS-00001-of-00004.gguf` 〜 `00004` | Maya-XS（744B） | — | false | null |
+| `peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF` | `Maya-S/DeepSeek-V4.1-Flash-1017-Maya-S-IQ2_XXS-00001-of-00006.gguf` 〜 `00006`、`Maya-XS/DeepSeek-V4.1-Flash-1017-Maya-XS-v2-IQ1_S-00001-of-00003.gguf` 〜 `00003` | Maya-S / Maya-XS v2 | — | false | null |
+| `peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF` | `Maya-XS/MiniMax-M3.1-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-S/MiniMax-M3.1-Flash-Maya-S-IQ2_XXS-00001-of-00003.gguf` 〜 `00003` | Maya-XS / S | — | false | null |
+| `peasantsmith/Hy4-Flash-Maya-GGUF` | `Maya-XS/Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf` 〜 `00002`、`Maya-S/Hy4-Flash-Maya-S-IQ2_S-00001-of-00002.gguf` 〜 `00002` | Maya-XS / S | — | false | null |
+| `peasantsmith/Ling-3.2-air-Maya-GGUF` | `Ling-3.2-air-Maya-S-IQ2_XXS.gguf`、`Ling-3.2-air-Maya-M-IQ2_S.gguf` | Maya-S / M | — | false | null |
+| `peasantsmith/Inkling-2-Mini-Maya-GGUF` | `Maya-L/Inkling-2-Mini-Maya-L-NVFP4.gguf` | Maya-L | — | false | null |
+| `orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Mix-128G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-128G-00001-of-00005.gguf` 〜 `00005`、`Mix-256G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-256G-00001-of-00007.gguf` 〜 `00007` | abliterated（Maya 公式 README が載せる） | あり（abliterated） | **true**（HF 規約の承諾とトークンが要る／AMD は**未検証**） | null |
+
+### llama.cpp（GGUF）
+
+| repo id | ファイル名 | 無検閲 | gated | 大きさ |
+|---|---|---|---|---|
+| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-Q8_0.gguf`、`Qwen3.8-27B-UD-Q4_K_XL.gguf` | — | false | null |
+| `ggml-org/GLM-4.7-Flash-GGUF` | `GLM-4.7-Flash-Q4_K.gguf`、`GLM-4.7-Flash-Q8_0.gguf` | — | false | null |
+| `ggml-org/gemma-4-E4B-it-GGUF` | `gemma-4-E4B-it-Q8_0.gguf`、`gemma-4-E4B-it-Q4_0.gguf` | — | false | null |
+| `google/gemma-4-12B-it-qat-q4_0-gguf` | `gemma-4-12b-it-qat-q4_0.gguf` | — | false | null |
+| `unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF` | `IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf`（`00002` も） | — | false | null |
+| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` | あり（abliterated） | false | null |
+| `0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF` | `Qwen3.8-27B-Heretic-Q4_K_M.gguf`、`RVN-Q8_0.gguf` | あり（heretic / abliterated / uncensored） | false | null |
+| `huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF` | `UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf` 〜 `00003` | あり（abliterated） | false | null |
+| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf` 〜 `00005` | あり（abliterated） | false | null |
+| `llmfan46/gemma-4-E4B-it-ultra-uncensored-heretic-GGUF` | `gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M.gguf` | あり（ultra uncensored / heretic） | false | null |
+| `AtomicChat/Inkling-2-Mini-Uncensored-GGUF` | `Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf` | あり（Uncensored） | false | null |
+
+## 設定の統一: 共通の並び（2026-11-28 確定）
+
+上の表を元に、指示書の **①モデル ②コンテキスト長 ③同時処理数 ④速さの調整 ⑤起動 ⑥エキスパート** の並びを確定する。
+run3 の `GET /api/v1/models/settings/capabilities` の契約（①〜⑥の順、欄 `{id, label, type, choices?, min?, max?, step?, default, expert}`、
+**ランタイムに無い欄は返さない**、id は保存 API の引数名と同じ）は維持したまま、欄の置き所を決める。
+
+| 節 | 全ランタイムで揃える欄 | 既定（エキスパート切）で見せるもの | エキスパートで開くもの |
+|---|---|---|---|
+| ①モデル | 登録済みモデルを選択（目録からの取得・ファイルからの登録は別の部品） | 選択肢だけ。パスや repo id の自由入力は出さない | 保存先フォルダ・repo id・alias の詳細 |
+| ②コンテキスト長 | 8K / 16K / 32K / 64K / 128K / 256K と「モデルの上限」。上限を超える値は選べない | 選択肢。上限・失敗の印は常時表示 | モデルの上限そのものの数値、rope scaling の実験値 |
+| ③同時に処理する数 | 1 / 2 / 4 / 8 をランタイムの上限で絞って出す（Maya は 1〜4） | 選択肢 | スロット／バッチグループの内部設定 |
+| ④速さの調整 | 概念的な選択だけ: 投機的デコード（なし／標準／強め）、思考の度合い（ランタイムにあるものだけ）、速さのプリセット | 主操作 1 個＋要対応の印のみ。細かい数値は出さない | — |
+| ⑤起動 | 呼ばれたら起動／自動起動／アイドルで止めない | 3 択 | アイドル時間の数値 |
+| ⑥エキスパート | ②〜④で隠した数値・引数・環境変数をすべてここへ。ランタイム固有の項目は原則ここ | 原則非表示 | 下の「ランタイム固有の置き所」を参照 |
+
+### ランタイム固有の置き所
+
+| ランタイム | ④ 速さの調整に出すもの | ⑥ エキスパートに置くもの | 出さないもの |
+|---|---|---|---|
+| Radiance | `--num-speculative-tokens`（3 / 0 相当の選択肢） | `--kv-cache-dtype`、`--host-pool-mib`、`--gpu-headroom-mib`、`--expert-vs-cache-ratio`、`--placement`、`--max-num-batched-tokens`、prefix-cache tiers、`--api-key` | ランタイムに無い `--gpu-memory-utilization` は出さない |
+| Sly-Radiance | DFlash2 の深さ（3 / 5 / 7）、サンプリングのプリセット | `--gpu-memory-utilization`、`--max-num-batched-tokens`、`--kv-cache-dtype`、`--mamba-ssm-cache-dtype`、`--compilation-config.*`、`RADIANCE_*` 環境変数 | **prefix cache は欄として出さない**（利用者の決まりで常時オン。`false` は 422） |
+| Strata | `--spec`（投機の深さ）と思考レベル（none / low / medium / high） | `--kv`、`--kv-streaming` / `--kv-resident` / `--kv-grow`、`--vram-reserve-mib`、`--resident-budget-gib`、`--pcie-frac`、`--prefill`、`--prompt-cache`、`"sampling"` ブロック、`--calibrate` の各値 | NVIDIA 限定の系列（`nvfp4`）はこの PC では出さない |
+| Maya | `reasoning_effort`（保存 API の `Literal` から選択肢を読む）と thinking budget のプリセット | `--kv` / `MAYA_GLM_KV_INT8`、`--kv-streaming` / `--kv-resident`、`MAYA_GLM_RAM_HEADROOM_GB`、`MAYA_GLM_SPLIT`、`--prefill`、`--vram-reserve-mib`、`MAYA_GLM_NO_MTP` / `MAYA_GLM_SPEC_*` | モデルが決める `alias`（`setup_id` から Maya 自身が決める） |
+| llama.cpp | `--spec-type`（なし / draft / ngram の選択）、`--temp` のプリセット | `-ctk` / `-ctv`、`--cache-prompt` / `--cache-reuse` / `--cache-ram`、`-ngl`、`--fit`、`-b` / `-ub` | ランタイムに無い「GPU メモリ割合」の欄は出さない（`--fit` と `-ngl` で代用） |
+
+- **名前と選択肢をそろえる**: 同じ意味の欄は全ランタイムで同じ表示名にする（例「同時に処理する数」「KV キャッシュの形式」）。
+  選択肢の上限・刻み（`step`）は保存 API の検証定数から読み、二重持ちしない（run3/run4 の契約どおり）。
+- **削るより足す**: 設定が少ないランタイムは、上の表にある項目を ④ か ⑥ へ足して揃える。
+  逆にランタイムに無い項目（例 llama.cpp の GPU メモリ割合、Radiance の prefix cache の専用スイッチ）は**出さない**。
+- Sly の prefix cache 以外の「常時オン」項目も、切る選択肢を出さない場合は欄を作らず注記だけにする。
