@@ -133,3 +133,22 @@ def test_drop_and_finish_and_close_clear_stale_tasks(monkeypatch):
     assert out["leader_run"]["status"] == "done" and out["leader_run"]["finish"]["outcome"] == "done"
     assert out["result"]["landed"] is True and out["result"]["landed_outside"] is True   # PR で取り込み済み
     assert [t["status"] for t in team["tasks"]] == ["dropped", "done", "doing", "dropped"]
+
+
+def test_model_label_names_who_works(monkeypatch):
+    """担い手のわかりやすいモデル名（画面のアバター・進み具合・チームリーダーに出す）。
+    利用者 2026-11-28「どのモデルが作業を担当しているか、もしくは担当した作業か分かるようにしてほしい」。"""
+    from app.commander import teams
+
+    monkeypatch.setattr(accounts, "opencode_connection",
+                        lambda name: {"model": "cloud:openrouter/nvidia/nemotron-3.5-super-vl:free"} if name == "api-1" else {"model": "auto"})
+    assert teams.model_label("opencode", "default", "opencode-go/glm-5.3") == "GLM-5.3"
+    assert teams.model_label("opencode", "default", "opencode/hy4-flash-free") == "HY4 Flash（無料）"
+    assert teams.model_label("opencode", "api-1", "") == "nemotron 3.5 super vl（OpenRouter 無料）"
+    assert teams.model_label("opencode", "default", "swift-heretic-sly") == "swift-heretic-sly（ローカル）"
+    assert teams.model_label("opencode", "default", "") == "ローカル LLM（既定）"
+    assert teams.model_label("codex", "default", "") == "Codex" and teams.model_label("claude", "default", "sonnet") == "Claude sonnet"
+    task: dict = {}
+    entry = teams.runs_open(task, {"id": "h1", "kind": "headless", "cli": "opencode", "account": "default",
+                                   "model": "opencode-go/glm-5.3"}, kind="headless")
+    assert entry["model"] == "opencode-go/glm-5.3" and entry["model_label"] == "GLM-5.3"   # 担い手のモデルを記録に残す

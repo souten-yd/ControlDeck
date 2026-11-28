@@ -1149,14 +1149,14 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
       assignee_state: "", leader_managed: true, tier: "implement", ...extra,
     });
     team.members = [
-      { kind: "headless", id: "h0000bbbb", role: "developer", cli: "codex", model: "gpt-a", label: "実装の係" },
+      { kind: "headless", id: "h0000bbbb", role: "developer", cli: "codex", model: "gpt-a", label: "実装の係", model_label: "GLM-5.3" },
       { kind: "headless", id: "h0000cccc", role: "reviewer", cli: "claude", model: "opus", label: "評価の係" },
       { kind: "headless", id: "h0000dddd", role: "researcher", cli: "claude", model: "sonnet", label: "調査の係" },
       { kind: "headless", id: "h0000eeee", role: "developer", cli: "codex", model: "gpt-b", label: "難しい係" },
     ];
     team.tasks = [
       task(1, "現状を調べる", "done", "h0000dddd", { tier: "explore", report: { summary: "調査を終えました", changed_files: [], tests: "", remaining: "" } }),
-      task(3, "API を作る", "doing", "h0000bbbb", { run: { run_id: "r1", status: "running", member: "h0000bbbb", cli: "codex", started_at: 1, last_line: "pytest -q を実行中", progress: [], usage: { input_tokens: 1200, output_tokens: 300, cost_usd: 0.05 }, tail: "", exit_code: null } }),
+      task(3, "API を作る", "doing", "h0000bbbb", { model_label: "GLM-5.3", run: { run_id: "r1", status: "running", member: "h0000bbbb", cli: "codex", started_at: 1, last_line: "pytest -q を実行中", progress: [], usage: { input_tokens: 1200, output_tokens: 300, cost_usd: 0.05 }, tail: "", exit_code: null } }),
       task(4, "全体を評価する", "doing", "h0000cccc", { tier: "review", limited_at: 1764000000 }),
       task(5, "移行を直す", "blocked", "h0000eeee"),
     ];
@@ -1166,6 +1166,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     const expectStatus = async (id: string, kind: string, tag: string, ring: string) => {
       const m = mission.locator(`[data-mission-member="${id}"]`);
       await expect(m).toHaveAttribute("data-mission-status", kind);
+      if (kind === "running") {
+        // どのモデルが担当しているかを普段から出す（利用者 2026-11-28）
+        await expect(m.locator("[data-mission-member-model]")).toHaveText("GLM-5.3");
+      }
       await expect(m.locator("[data-status-tag]")).toHaveText(tag);          // 文字
       await expect(m.locator("[data-avatar-ring]")).toHaveAttribute("data-avatar-ring", ring);  // 形・動き
       return m;

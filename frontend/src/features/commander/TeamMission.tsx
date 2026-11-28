@@ -286,6 +286,9 @@ export function TeamMission({
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
             チームリーダー<StatusTag status={leader} />
+            {team.leader_run?.model_label && (
+              <span data-mission-leader-model className="min-w-0 truncate rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{team.leader_run.model_label}</span>
+            )}
           </p>
           <p data-mission-summary data-mission-attention={summary.attention} className="mt-0.5 min-w-0 break-words text-sm font-semibold">{summary.text}</p>
         </div>
@@ -357,7 +360,9 @@ export function TeamMission({
                 <Avatar initial={title.slice(0, 1)} tone={roleTone(team, m)} status={st.kind} />
                 <span className="block w-full truncate text-xs font-semibold">{title}</span>
                 <StatusTag status={st} />
-                {expert && m.model && <span className="block w-full truncate font-mono text-[10px] text-zinc-500">{m.model}</span>}
+                {/* どのモデルが担当しているか（利用者 2026-11-28）。普段から出す */}
+                {m.model_label && <span data-mission-member-model className="block w-full truncate text-[10px] text-zinc-500 dark:text-zinc-400" title={m.model || m.model_label}>{m.model_label}</span>}
+                {expert && m.model && m.model !== m.model_label && <span className="block w-full truncate font-mono text-[9px] text-zinc-400">{m.model}</span>}
               </button>
             );
           })}

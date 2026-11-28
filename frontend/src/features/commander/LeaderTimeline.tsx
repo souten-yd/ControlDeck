@@ -260,7 +260,10 @@ export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: T
                 {managed.map((t) => (
                   <li key={t.id} data-team-progress-task={t.id} className="flex min-w-0 items-baseline gap-2 text-sm">
                     <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{TIER_LABEL[t.tier ?? "implement"]}</span>
-                    <span className="min-w-0 flex-1 break-words">{t.title}</span>
+                    <span className="min-w-0 flex-1 break-words">{t.title}
+                      {/* 担当した（担当している）モデル。引き継ぎがあれば最後の担い手（利用者 2026-11-28） */}
+                      {t.model_label && <span data-team-progress-model className="ml-1.5 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">· {t.model_label}</span>}
+                    </span>
                     <span className="shrink-0 text-xs font-semibold text-zinc-600 dark:text-zinc-300">{taskPhrase(t)}</span>
                   </li>
                 ))}
