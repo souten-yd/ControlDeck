@@ -938,7 +938,13 @@ def tool_finish(team_id: str, args: dict) -> dict:
         busy = [str(t["id"]) for t in team.get("tasks", []) if t.get("leader_managed") and t.get("status") in ("todo", "doing")]
         team.setdefault("leader_run", {})["finish"] = {"summary": summary, "outcome": args["outcome"], "at": teams._now()}  # noqa: SLF001
         add_timeline(team, "finish", ("完了: " if args["outcome"] == "done" else "止まりました: ") + summary[:150])
-        return {"ok": True, "still_running": busy}
+        checks = team.get("last_team_checks") if isinstance(team.get("last_team_checks"), dict) else {}
+        out = {"ok": True, "still_running": busy, "team_checks": checks.get("status") or "not_run"}
+        if args["outcome"] == "done" and checks.get("status") != "passed":
+            # 2026-11-28 品質の評価 A2: 取り込む Claude の前提。止めはしないが、結果に残して知らせる
+            out["note"] = "チーム全体の確認（run_checks(where=\"team\")）が合格していません。取り込む前に確かめが要ります"
+            add_timeline(team, "checks", "注意: チーム全体の確認が合格しないまま完了にしました")
+        return out
 
     return _mutate(team_id, save)
 

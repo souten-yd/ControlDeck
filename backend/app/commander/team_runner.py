@@ -900,6 +900,34 @@ def _policy_after(team_id: str, task_id: int) -> None:
 
 # ---------------------------------------------------------------- 開始・停止・状態
 
+# 守りの点検表（2026-11-28 品質の評価 A1: AI チームのコードで、パス・リンクの守りの見落としが 2 回あり、
+# チームの中のレビューは見つけなかった）。review の担い手の本文に必ず付ける。
+SECURITY_CHECKLIST = (
+    "【守りの点検表】差分を次の観点で必ず確かめ、見つけたものは報告の「残り」に書くこと:\n"
+    "- パス: 利用者や AI から来るパスを realpath で正規化し、許可の範囲の中か確かめているか（.. ・絶対パス・空）。\n"
+    "- シンボリックリンク: リンクをたどって許可の外（~/.ssh・data_dir・秘密の置き場）を読み書き・コピーしないか。\n"
+    "- 秘密: 鍵・トークン・パスワードをログ・argv・画面・応答・ファイルの写しに出していないか。\n"
+    "- 権限: API・MCP の道具ごとに認証と権限を確かめているか。読み取りの役割に書く道具を渡していないか。\n"
+    "- 外部: 外への通信・取得（npm・pip・モデル・ブラウザ）を勝手にしていないか。\n"
+    "- 実行: shell=True・os.system・文字列の連結でコマンドを作っていないか。root で動かしていないか。"
+)
+
+
+def task_notes(readonly: bool, tier: str) -> str:
+    """担い手の本文の後ろに付ける決まり（読み取り・調べ方・点検表・コミット）。"""
+    notes = []
+    if readonly:
+        notes.append("【読み取りだけ】ファイルを作らない・変えない・消さない。調べた結果と評価を報告に書くこと。")
+        # 2026-11-28 品質の評価 S2: 調べもの 1 本が入力 8〜12 万トークン・17〜33 分かかっていた
+        notes.append("【調べ方】ファイル全体を何本も読み込まない。grep・ファイルの一覧・行の範囲で、必要な所だけ読むこと。")
+    if tier == "review":
+        notes.append(SECURITY_CHECKLIST)
+    if not readonly:
+        notes.append("【コミット】コミットはしなくてよい（箱の中では本体の .git は読み取り専用）。変更をファイルに残せば、"
+                     "結果を集めるときに Nexarch がコミットする。")
+    return "".join("\n\n" + n for n in notes)
+
+
 def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bool = False) -> dict:
     """headless の担当でタスクを実行する（スレッドを始めて、板の表示を返す）。"""
     from app.commander import team_dispatch
@@ -945,8 +973,10 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         task.pop("resume_note", None)
         text = teams.dispatch_text(task, str(team.get("brief") or ""))
         readonly = bool(task.get("readonly"))
-        if readonly:
-            text += "\n\n【読み取りだけ】ファイルを作らない・変えない・消さない。調べた結果と評価を報告に書くこと。"
+        from app.commander import team_roles
+
+        role = team_roles.find_role(team, task.get("role")) if task.get("role") else None
+        text += task_notes(readonly, str((role or {}).get("name") or ""))
         if note:
             text += "\n\n" + note
         task["status"] = "doing"

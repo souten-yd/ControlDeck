@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 281 ファイル、2911 テスト（目的の未記入 93 ファイル）
-- E2E: 152 spec、348 テスト
+- backend: 282 ファイル、2915 テスト（目的の未記入 93 ファイル）
+- E2E: 152 spec、349 テスト
 
 ## backend（backend/tests）
 
@@ -793,13 +793,14 @@
 目的: Nexarch の AI チームへの資料の受け渡し（app/commander/team_inputs.py・run/auto API の input_paths）の試験。 目的: 「大量のファイルを受け渡すときは、場所を指定して読み込ませる」（brief E・2026-11-28 利用者 「場所を指定して読み込ませるなど工夫できないか」）を仕組みで守る。 - 選んだファイル・フォルダは作業場所の .nexarch/inputs/ へ読み取り専用の写しとして置く （シンボリックリンクでの資料の公開はしない・元資料は書かない）。 - チームリーダーにはパスの一覧だけを渡す（大量の資料をプロンプトへ展開しない）。 - 検証: 作業フォルダと同じ決まり（commander.workdir の許可ルート内・realpath・機密禁止の場所は外・リンク逃げ）。 - 上限: 件数・1 件の大きさ・合計（必要以上にコピーしない・ディスクを食い尽くさない）。 - worktree へ .nexarch（依頼全文・資料）を渡し、frontend/node_modules・.venv は作業場所にあればリンクする （今はチームリーダーが手で写している・2026-11-28 の PLAN の要望）。 根拠: 2026-11-28 の依頼（brief E）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
 
 - `test_publish_copies_readonly_and_records_rows` — 目的: 資料が .nexarch/inputs/ へ読み取り専用の写しとして置かれ、板（team.inputs）に記録されること。
-- `test_publish_folder_dereferences_inner_links_and_keeps_structure` — 目的: フォルダの中身も（相対構造を保って）写すこと。中のシンボリックリンクは実体を写す
+- `test_publish_folder_keeps_structure_and_skips_inner_links` — 目的: フォルダの中身も（相対構造を保って）写すこと。中のシンボリックリンクはたどらず写さない
 - `test_publish_rejects_outside_missing_and_duplicates_names` — 目的: ルートの外・リンクで外へ出る道・無い物は断る。名前が重なる資料は別名で置く（上書きしない）。
 - `test_publish_enforces_count_and_size_caps` — 目的: 件数・1 件の大きさ・合計の上限で、必要以上にコピーしないこと（ディスクを食い尽くさない）。
 - `test_share_worktree_hardlinks_inputs_and_links_devdirs` — 目的: 仕事ごとの worktree へ .nexarch（依頼全文・資料）が見えること。
 - `test_create_item_worktree_shares_nexarch` — 目的: implement の仕事の worktree を作るとき、.nexarch が最初から見えること
 - `test_auto_team_with_input_paths_publishes_and_lists_paths` — 目的: 「チームリーダーに頼む」に資料を添えられること（brief E・FilePicker で選んだパスを input_paths へ）。
 - `test_input_paths_validation` — 目的: input_paths の形の検証（文字列のリストだけ・ルートの外は 400）。
+- `test_links_inside_a_folder_are_not_followed` — 資料のフォルダの中のシンボリックリンクはたどらない・写さない（許可の外の秘密が inputs へ写らない）。
 
 ### backend/tests/test_commander_team_output_limit.py
 
@@ -811,6 +812,14 @@
 - `test_failure_reason_names_the_signal`
 - `test_no_rlimit_on_children` — 子のプロセスに RLIMIT_FSIZE を掛けない（ソースに残っていないこと）。
 - `test_leader_goal_accepts_a_real_spec_length` — 依頼の上限は API の入口（20000 字）と同じ。2026-11-28 本番で 5638 字の仕様が「4000 文字以内」で断られた。
+
+### backend/tests/test_commander_team_quality.py
+
+目的: AI チームの品質の改善（2026-11-28 品質の評価の A1〜A3・S2）の試験。 目的: - A1 review の担い手の本文に、守りの点検表（パス・リンク・秘密・権限・外部・実行）が必ず付く。 - S2 読み取りの担い手には「必要な所だけ読む」を、書く担い手には「コミットは Nexarch がする」を付ける。 - A2 finish（done）で、チーム全体の確認が合格していなければ知らせる（止めはしない）。 - A3 組み込みの既定の役割は GLM → 無料（HY4）→ ローカルの順で、hard（チームリーダーの引き継ぎ先）にも入る。 根拠: 評価 `~/ControlDeck-評価/2026-11-28-AIチームのコードの品質と改善の案.md`。AI チームのコードでパス・リンクの 守りの見落としが 2 回あり、チームの中のレビューは見つけなかった。調べもの 1 本が 17〜33 分。Codex の上限で 引き継ぎ先の無い全チームが止まった。利用者「担い手は GLM、無料モデル、ローカル LLM の順」。 既存の試験（t3a〜t3c）は本文の決まりと既定の役割の順を見ていない（docs/test-catalog.md で確認）。
+
+- `test_review_gets_the_security_checklist_and_readonly_reads_narrowly`
+- `test_finish_notes_when_team_checks_did_not_pass`
+- `test_builtin_roles_follow_glm_free_local`
 
 ### backend/tests/test_commander_team_t2b.py
 
@@ -4705,6 +4714,7 @@
 - AI チーム ${label}px: チームの既定（チームリーダー）と保存先を一度だけ選ぶ
 - AI チーム ${label}px: エキスパート切で一文の依頼 → 時系列（計画・進み具合・質問に答える・結果・取り込む）
 - AI チーム ${label}px: エキスパート入で板・MCP の呼び出しの履歴・使用量が出る（止まったら再開）
+- AI チーム ${label}px: 資料を添えてこのチームへ頼む・メンバーの状態を開く・チームの前提を切り替える
 
 ### frontend/e2e/commander.spec.ts
 
