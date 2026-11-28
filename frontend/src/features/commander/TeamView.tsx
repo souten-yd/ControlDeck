@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
+  checkCommand, checkText, collectTask, createTask, createTeam, deleteTask, deleteTeam, dispatchTask, fetchAccounts, fetchTeams, memberKey, putTaskReport,
   ROLE_LABEL, setTeamMembers, setTeamNotify, STATE_LABEL, stopTask, TEAM_ROLES, updateTask, updateTeam,
   type CommanderConsole, type CommanderState, type RunUsage, type TaskStatus, type Team, type TeamMember, type TeamRole, type TeamTask,
 } from "../../api/commander";
@@ -25,6 +25,7 @@ import {
   AutoTeamSheet, endpointText, HandoffSheet, LeaderSheet, RolesPanel, RolesSheet, useExpert,
 } from "./TeamRoles";
 import { LeaderAsk, LeaderTimeline } from "./LeaderTimeline";
+import { TeamMission } from "./TeamMission";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const textareaClass = "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -270,6 +271,14 @@ export function TeamView({
                 label: team.git_init === false ? "git が無い作業場所: 作らない（git init するにする）" : "git が無い作業場所: git init する（作らないにする）",
                 onSelect: () => void toggleField({ git_init: team.git_init === false }, "git の設定を変えました"),
               },
+              {
+                label: team.local_only ? "閉じたチーム（ローカル LLM 以外と Web を使わない）: オン（オフにする）" : "閉じたチーム（ローカル LLM 以外と Web を使わない）: オフ（オンにする）",
+                onSelect: () => void toggleField({ local_only: !team.local_only }, team.local_only ? "閉じたチームをやめました" : "閉じたチームにしました（ローカル LLM 以外と Web を使いません）"),
+              },
+              {
+                label: team.auto_resume === false ? "再起動の後の自動再開: オフ（オンにする）" : "再起動の後の自動再開: オン（オフにする）",
+                onSelect: () => void toggleField({ auto_resume: team.auto_resume === false }, team.auto_resume === false ? "再起動の後に自動で再開します" : "再起動の後に自動で再開しません"),
+              },
               { label: "チームリーダーを任命", onSelect: () => setLeaderSheet(true) },
               { label: "役割を編集（自動の振り分け）", onSelect: () => setRolesSheet(true) },
               {
@@ -295,6 +304,7 @@ export function TeamView({
         />
         {expert && <IconButton variant="primary" label="＋ タスク" onClick={() => setTaskSheet(true)}><IconPlus /></IconButton>}
       </div>
+      <TeamMission team={team} expert={expert} consoles={consoles} consoleName={consoleName} onOpenConsole={onOpenConsole} />
       <LeaderTimeline team={team} expert={expert} onChanged={refresh} onHandoff={setHandoffTask} />
       {showBoard && <>
       {expert && (
@@ -387,6 +397,13 @@ export function TeamView({
             {team.workdir_folder && (
               <Link to={`/project-lab?project=${encodeURIComponent(team.workdir_folder)}`} className="font-semibold text-accent-600 underline dark:text-accent-400">Project Lab で開く</Link>
             )}
+          </p>
+        )}
+        {Boolean(team.inputs?.length) && (
+          <p data-team-inputs className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <span className="font-semibold">資料</span>
+            <span className="num">{team.inputs!.length} 件</span>
+            {expert && <span className="min-w-0 break-all font-mono text-[11px] text-zinc-500">{team.inputs!.map((i) => i.path).join(" / ")}</span>}
           </p>
         )}
       </div>
@@ -834,7 +851,7 @@ function TaskSheet({
   const [manual, setManual] = useState(false);
   const [confirmPass, setConfirmPass] = useState(false);
   const [editChecks, setEditChecks] = useState(false);
-  const [checksDraft, setChecksDraft] = useState((task.checks ?? []).join("\n"));
+  const [checksDraft, setChecksDraft] = useState((task.checks ?? []).map(checkText).join("\n"));
   const [draft, setDraft] = useState({ summary: "", changed: "", tests: "", verify: "", remaining: "" });
 
   const run = async (action: () => Promise<unknown>, done: string) => {
@@ -847,6 +864,12 @@ function TaskSheet({
       show(e instanceof Error ? e.message : "操作できませんでした", "error");
     }
     setBusy(false);
+  };
+  /** 編集した行を確認の指定へ戻す。変えていない行は元の指定（作業フォルダ付き）のまま残す。 */
+  const saveChecks = (text: string) => {
+    const original = new Map((task.checks ?? []).map((spec) => [checkText(spec), spec]));
+    const checks = text.split("\n").map((c) => c.trim()).filter(Boolean).map((c) => original.get(c) ?? c);
+    return updateTask(team.id, task.id, { checks });
   };
   const pass = () => run(() => updateTask(team.id, task.id, { status: "done" }), "合格にしました");
   const closed = task.assignee_state === "closed";
@@ -898,22 +921,24 @@ function TaskSheet({
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">担当の作業フォルダで実行します。パイプや && は使えません（10 個まで）。</p>
             <button
               type="button" disabled={busy} className={`mt-2 w-full ${secondaryButtonClass}`}
-              onClick={() => void run(() => updateTask(team.id, task.id, { checks: checksDraft.split("\n").map((c) => c.trim()).filter(Boolean) }), "確認のコマンドを保存しました")}
+              onClick={() => void run(() => saveChecks(checksDraft), "確認のコマンドを保存しました")}
             >確認のコマンドを保存</button>
           </>
         ) : (task.checks ?? []).length === 0 ? (
           <p className="mt-1 text-xs text-zinc-500">なし（確認は担当の自己申告だけ）</p>
         ) : (
           <ul className="mt-1 grid gap-1">
-            {(task.checks ?? []).map((cmd, i) => {
+            {(task.checks ?? []).map((spec, i) => {
+              const cmd = checkCommand(spec);
+              const text = checkText(spec);
               const row = task.checks_result?.results.find((r) => r.cmd === cmd) ?? task.checks_result?.results[i];
               return (
-                <li key={`${i}-${cmd}`} data-team-check-row className="min-w-0">
+                <li key={`${i}-${text}`} data-team-check-row className="min-w-0">
                   <p className="flex min-w-0 items-start gap-1.5 text-xs">
                     <span aria-hidden className={row ? (row.exit_code === 0 ? "text-emerald-600" : "text-red-600") : "text-zinc-400"}>
                       {row ? (row.exit_code === 0 ? "✓" : "✗") : "・"}
                     </span>
-                    <code className="min-w-0 break-all font-mono">{cmd}</code>
+                    <code className="min-w-0 break-all font-mono">{text}</code>
                     {row && <span className="num shrink-0 text-zinc-500">終了 {row.exit_code}</span>}
                   </p>
                   {row && row.tail && (

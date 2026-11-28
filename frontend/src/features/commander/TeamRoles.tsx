@@ -7,12 +7,13 @@
 import { useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  chooseHandoff, createAutoTeam, emptyEndpoint, fetchAccounts, fetchCommanderSettings, fetchModels, putTeamDefaults, setTeamRoles,
-  setTeamLeader, type Endpoint, type Team, type TeamRoleDef, type TeamTask,
+  chooseHandoff, createAutoTeam, emptyEndpoint, fetchAccounts, fetchCommanderSettings, fetchModelChoices, fetchModels, putTeamDefaults, setTeamRoles,
+  setTeamLeader, MODEL_GROUP_LABEL, MODEL_GROUP_ORDER, type Endpoint, type ModelChoice, type Team, type TeamRoleDef, type TeamTask,
 } from "../../api/commander";
 import { FilePicker } from "../../components/FilePicker";
 import { BottomSheet, primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
+import { MaterialAttach } from "./TeamMaterials";
 import { WORKDIR_SOURCE } from "./NewConsoleSheet";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -75,54 +76,84 @@ function fmtClock(epoch: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// ---------------------------------------------------------------- 担い手の選び手: 「コンソール」と「モデル」の 2 段
+// ---------------------------------------------------------------- 担い手の選び手: 使えるモデルの一覧から 1 つ選ぶ（細かい指定はエキスパート）
+
+const sameChoice = (choice: ModelChoice, ep: Endpoint) => {
+  const c = choice.endpoint;
+  return c.cli === ep.cli && (c.account || "default") === (ep.account || "default")
+    && (c.model || "") === (ep.model || "") && (c.effort || "") === (ep.effort || "");
+};
+
+/** 使えるモデルをまとまり（ローカル・OpenCode・OpenRouter・Claude・Codex）ごとに並べた 1 つの選択。 */
+function ModelChoiceSelect({
+  value, onChange, choices, note, loading, id,
+}: {
+  value: Endpoint; onChange: (value: Endpoint) => void; choices: ModelChoice[]; note?: string;
+  loading: boolean; id: string;
+}) {
+  const selected = choices.find((c) => sameChoice(c, value));
+  const groups = new Map<string, ModelChoice[]>();
+  for (const c of choices) {
+    const key = c.group || "other";
+    groups.set(key, [...(groups.get(key) ?? []), c]);
+  }
+  const order = [...MODEL_GROUP_ORDER.filter((g) => groups.has(g)), ...[...groups.keys()].filter((g) => !MODEL_GROUP_ORDER.includes(g))];
+  return (
+    <>
+      <label className={fieldLabel} htmlFor={id}>モデル（使えるものから選ぶ）</label>
+      <select
+        id={id} data-endpoint-choice value={selected?.id ?? ""}
+        disabled={loading}
+        onChange={(e) => {
+          const next = choices.find((c) => c.id === e.target.value);
+          if (next) onChange({ ...next.endpoint, kind: value.kind });
+        }}
+        className={inputClass}
+      >
+        <option value="" disabled>{loading ? "読み込み中…" : selected ? "いまの設定" : choices.length ? "選んでください" : "選べるモデルがありません"}</option>
+        {order.map((g) => (
+          <optgroup key={g} label={MODEL_GROUP_LABEL[g] ?? g}>
+            {(groups.get(g) ?? []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </optgroup>
+        ))}
+      </select>
+      <p className="mt-1 break-words text-[11px] text-zinc-500 dark:text-zinc-400">{note || (loading ? "" : "選ぶと CLI・接続・モデル・考えるレベルがまとめて決まります。")}</p>
+      {!selected && value.cli && (
+        <p data-endpoint-current className="mt-1 break-words text-[11px] text-zinc-500 dark:text-zinc-400">いまの設定: {endpointText(value)}</p>
+      )}
+    </>
+  );
+}
 
 export function EndpointPicker({
   value, onChange, expert, withKind = true, idPrefix = "ep",
 }: {
   value: Endpoint; onChange: (value: Endpoint) => void; expert: boolean; withKind?: boolean; idPrefix?: string;
 }) {
-  const accounts = useQuery({ queryKey: ["commander-accounts", value.cli], queryFn: () => fetchAccounts(value.cli) });
+  const accounts = useQuery({
+    queryKey: ["commander-accounts", value.cli], queryFn: () => fetchAccounts(value.cli), enabled: expert,
+  });
   const models = useQuery({
     queryKey: ["commander-models", value.cli, value.account], queryFn: () => fetchModels(value.cli, value.account),
     staleTime: 5 * 60_000, enabled: expert,
   });
+  const choices = useQuery({ queryKey: ["commander-model-choices"], queryFn: fetchModelChoices, staleTime: 5 * 60_000 });
   const info = models.data;
   const chosen = info?.models.find((m) => m.id === value.model);
   const efforts = chosen && chosen.efforts.length ? chosen.efforts : info?.efforts ?? [];
   const set = (patch: Partial<Endpoint>) => onChange({ ...value, ...patch });
+  const choiceList = choices.data?.choices ?? [];
   return (
     <div data-endpoint-picker>
-      <fieldset data-endpoint-console className={groupClass}>
-        <legend className={`px-1 ${groupTitle}`}>コンソール</legend>
-        {withKind && (
-          <>
-            <label className={fieldLabel} htmlFor={`${idPrefix}-kind`}>種類</label>
-            <select id={`${idPrefix}-kind`} value={value.kind} onChange={(e) => set({ kind: e.target.value as Endpoint["kind"] })} className={inputClass}>
-              <option value="headless">ヘッドレス（画面なし）</option>
-              <option value="console">画面あり（Nexarch のコンソールを開く）</option>
-            </select>
-          </>
-        )}
-        <label className={fieldLabel} htmlFor={`${idPrefix}-cli`}>CLI</label>
-        <select
-          id={`${idPrefix}-cli`} value={value.cli}
-          onChange={(e) => set({ cli: e.target.value, account: "default", model: "", effort: "" })} className={inputClass}
-        >
-          {CLI_OPTIONS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-        </select>
-        <label className={fieldLabel} htmlFor={`${idPrefix}-account`}>アカウント・接続</label>
-        <select id={`${idPrefix}-account`} value={value.account} onChange={(e) => set({ account: e.target.value, model: "", effort: "" })} className={inputClass}>
-          {(accounts.data ?? [{ name: "default", label: "", title: "", default: true, logged_in: null }]).map((a) => (
-            <option key={a.name} value={a.name}>{a.label || a.title || (a.default ? "既定" : a.name)}</option>
-          ))}
-        </select>
-      </fieldset>
       <fieldset data-endpoint-model className={groupClass}>
         <legend className={`px-1 ${groupTitle}`}>モデル</legend>
-        {expert ? (
+        <ModelChoiceSelect
+          id={`${idPrefix}-choice`} value={value} onChange={onChange}
+          choices={choiceList} note={choices.data?.note} loading={choices.isLoading}
+        />
+        {expert && (
           <>
-            <label className={fieldLabel} htmlFor={`${idPrefix}-model`}>モデル（一覧から選ぶか、名前を入力）</label>
+            <label className={fieldLabel} htmlFor={`${idPrefix}-model`}>モデルを直接指定（一覧に無いもの）</label>
             <input
               id={`${idPrefix}-model`} list={`${idPrefix}-model-list`} value={value.model} maxLength={80} autoComplete="off"
               placeholder="空なら CLI の既定" onChange={(e) => set({ model: e.target.value.trim(), effort: "" })} className={inputClass}
@@ -144,10 +175,35 @@ export function EndpointPicker({
               />
             )}
           </>
-        ) : (
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">モデルと考えるレベルは既定の値で動きます（エキスパートで選べます）。</p>
         )}
       </fieldset>
+      {expert && (
+        <fieldset data-endpoint-console className={groupClass}>
+          <legend className={`px-1 ${groupTitle}`}>コンソール・接続（細かい指定）</legend>
+          {withKind && (
+            <>
+              <label className={fieldLabel} htmlFor={`${idPrefix}-kind`}>種類</label>
+              <select id={`${idPrefix}-kind`} value={value.kind} onChange={(e) => set({ kind: e.target.value as Endpoint["kind"] })} className={inputClass}>
+                <option value="headless">ヘッドレス（画面なし）</option>
+                <option value="console">画面あり（Nexarch のコンソールを開く）</option>
+              </select>
+            </>
+          )}
+          <label className={fieldLabel} htmlFor={`${idPrefix}-cli`}>CLI</label>
+          <select
+            id={`${idPrefix}-cli`} value={value.cli}
+            onChange={(e) => set({ cli: e.target.value, account: "default", model: "", effort: "" })} className={inputClass}
+          >
+            {CLI_OPTIONS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select>
+          <label className={fieldLabel} htmlFor={`${idPrefix}-account`}>アカウント・接続</label>
+          <select id={`${idPrefix}-account`} value={value.account} onChange={(e) => set({ account: e.target.value, model: "", effort: "" })} className={inputClass}>
+            {(accounts.data ?? [{ name: "default", label: "", title: "", default: true, logged_in: null }]).map((a) => (
+              <option key={a.name} value={a.name}>{a.label || a.title || (a.default ? "既定" : a.name)}</option>
+            ))}
+          </select>
+        </fieldset>
+      )}
     </div>
   );
 }
@@ -468,13 +524,14 @@ export function AutoTeamSheet({ expert, onClose, onCreated }: { expert: boolean;
   const show = useToasts((s) => s.show);
   const [goal, setGoal] = useState("");
   const [workdir, setWorkdir] = useState("");
+  const [paths, setPaths] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const { data } = useQuery({ queryKey: ["commander-settings"], queryFn: fetchCommanderSettings });
   const submit = async () => {
     setBusy(true);
     try {
-      const team = await createAutoTeam(goal.trim(), workdir);
+      const team = await createAutoTeam(goal.trim(), workdir, "", paths);
       onCreated(team.id);
       show("チームリーダーに頼みました");
       onClose();
@@ -492,6 +549,7 @@ export function AutoTeamSheet({ expert, onClose, onCreated }: { expert: boolean;
         チームリーダー（{endpointText(data?.default_leader)}）が調べ・計画し、段ごとに担い手へ振って、統合・試験まで進めます。
       </p>
       {data && !data.team_root && <TeamRootBlock expert={expert} />}
+      <MaterialAttach paths={paths} onChange={setPaths} />
       {expert && (
         <div className={groupClass}>
           <p className={groupTitle}>作業場所</p>

@@ -16,13 +16,15 @@
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
+/** 確認のコマンド。文字列か、作業フォルダを指定したもの。 */
+type Check = string | { command: string; cwd?: string };
 interface Task {
   role?: string; blocked_reason?: string;
   id: number; title: string; goal: string; acceptance: string; files: string[]; assignee: string;
   status: string; report: null | { summary: string; changed_files: string[]; tests: string; remaining: string };
   created_at: number; updated_at: number; history: unknown[]; warnings: string[];
   assignee_state?: string; report_ready?: boolean; unverified?: boolean; stalled_at?: number; limited_at?: number;
-  checks?: string[]; attempts?: number;
+  checks?: Check[]; attempts?: number;
   checks_result?: { status: string; ran_at: number; results: { cmd: string; exit_code: number; seconds: number; tail: string }[]; message?: string };
   run?: Record<string, unknown>;
   runs?: Record<string, unknown>[];
@@ -37,6 +39,7 @@ interface TeamState {
   teams: {
     id: string; name: string; created_at: number; notify?: boolean; brief?: string; reset_before_dispatch?: boolean;
     on_limit?: string; codex_without_sandbox?: boolean; fallback?: string[]; max_parallel?: number; local_parallel?: number; auto_run?: boolean;
+    local_only?: boolean; auto_resume?: boolean; inputs?: { path: string; source?: string; label?: string }[];
     workdir?: string; workdir_folder?: string; workdir_name?: string; parallel?: Record<string, number>;
     roles?: Record<string, unknown>[]; leader?: unknown; leader_effective?: unknown; leader_run?: Record<string, unknown>;
     plan?: Record<string, unknown>; timeline?: Record<string, unknown>[]; requests?: Record<string, unknown>[]; mcp_log?: Record<string, unknown>[];
@@ -48,6 +51,7 @@ interface TeamState {
   }[];
   settings?: { resume_message: string; default_resume_message: string; default_leader: unknown; default_roles: unknown[]; team_root: string };
   modelsReqs?: string[];
+  choiceReqs?: number;
   autoPosts?: Record<string, unknown>[];
   askPosts?: Record<string, unknown>[];
   answers?: Record<string, unknown>[];
@@ -83,6 +87,20 @@ const AUTO_ROLES = [
   { id: "r3", name: "試験", count: 1, note: "", running: 0, active_index: null, on_secondary: false, primary_recovers_at: null, primary: null, secondary: [] },
 ];
 
+/** サーバーが返す「使えるモデル」の一覧（まとまりごと）。選ぶと CLI・接続・モデル・考えるレベルが決まる。 */
+const MODEL_CHOICES = [
+  { id: "local:glm", label: "ローカルの GLM", group: "local",
+    endpoint: { kind: "headless", cli: "opencode", account: "gateway", model: "glm", effort: "" }, efforts: [] },
+  { id: "opencode:free", label: "OpenCode（無料）", group: "opencode",
+    endpoint: { kind: "headless", cli: "opencode", account: "free", model: "big", effort: "" }, efforts: [] },
+  { id: "openrouter:deepseek", label: "DeepSeek（OpenRouter）", group: "openrouter",
+    endpoint: { kind: "headless", cli: "opencode", account: "openrouter", model: "deepseek/v4", effort: "" }, efforts: [] },
+  { id: "claude:opus", label: "Claude Opus", group: "claude",
+    endpoint: { kind: "headless", cli: "claude", account: "default", model: "opus", effort: "high" }, efforts: ["low", "medium", "high"] },
+  { id: "codex:gpt", label: "GPT A（Codex）", group: "codex",
+    endpoint: { kind: "headless", cli: "codex", account: "default", model: "gpt-a", effort: "" }, efforts: [] },
+];
+
 async function mockTeams(page: Page, state: TeamState) {
   await page.route(/\/api\/v1\/commander\//, (route) => {
     const request = route.request();
@@ -110,6 +128,10 @@ async function mockTeams(page: Page, state: TeamState) {
           : [{ id: "gpt-a", label: "GPT A", efforts: ["low", "high"], default_effort: "low" }],
       } });
     }
+    if (path === "model-choices" && method === "GET") {
+      state.choiceReqs = (state.choiceReqs ?? 0) + 1;
+      return route.fulfill({ json: { note: "モックのモデル一覧", choices: MODEL_CHOICES } });
+    }
     if (path === "settings" && method === "GET") return route.fulfill({ json: state.settings ?? { resume_message: "続けてください", default_resume_message: "続けてください", default_leader: null, default_roles: [], team_root: "" } });
     if (path === "settings/team-defaults" && method === "PUT") {
       const fields = body();
@@ -124,6 +146,7 @@ async function mockTeams(page: Page, state: TeamState) {
       (state.autoPosts ??= []).push(body());
       const team = {
         id: "t0auto001", name: String(body().goal).slice(0, 20), created_at: 1764000000, notify: true, members: [], tasks: [], roles: AUTO_ROLES,
+        inputs: Array.isArray(body().input_paths) ? (body().input_paths as string[]).map((p) => ({ path: p, source: "workdir" })) : [],
         leader_effective: { kind: "headless", cli: "claude", account: "default", model: "", effort: "" },
         leader_run: { status: "running", endpoint: "Claude Code", started_at: 1764000000 },
       };
@@ -134,6 +157,9 @@ async function mockTeams(page: Page, state: TeamState) {
     if (m && method === "POST") {
       (state.askPosts ??= []).push(body());
       const team = state.teams.find((t) => t.id === m![1])!;
+      if (Array.isArray(body().input_paths)) {
+        team.inputs = (body().input_paths as string[]).map((p) => ({ path: p, source: "workdir" }));
+      }
       team.leader_run = { status: "running", endpoint: "Claude Code" };
       return route.fulfill({ json: team });
     }
@@ -199,6 +225,8 @@ async function mockTeams(page: Page, state: TeamState) {
       if (typeof fields.local_parallel === "number") team.local_parallel = fields.local_parallel;
       if (typeof fields.auto_run === "boolean") team.auto_run = fields.auto_run;
       if (typeof fields.codex_without_sandbox === "boolean") team.codex_without_sandbox = fields.codex_without_sandbox;
+      if (typeof fields.local_only === "boolean") team.local_only = fields.local_only;
+      if (typeof fields.auto_resume === "boolean") team.auto_resume = fields.auto_resume;
       return route.fulfill({ json: team });
     }
     m = path.match(/^teams\/(\w+)\/members$/);
@@ -424,11 +452,11 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.setViewportSize({ width, height });
     await establishSession(page, context);
     const state = seededTeam([
-      { status: "review", title: "確認が通った", checks: ["pytest -q", "ruff check ."], unverified: false,
+      { status: "review", title: "確認が通った", checks: ["pytest -q", { command: "npm test", cwd: "web" }], unverified: false,
         report: { summary: "作った", changed_files: [], tests: "ok", remaining: "なし" },
         checks_result: { status: "passed", ran_at: 1764000000, results: [
           { cmd: "pytest -q", exit_code: 0, seconds: 3.2, tail: "12 passed" },
-          { cmd: "ruff check .", exit_code: 0, seconds: 0.4, tail: "All checks passed!" }] } },
+          { cmd: "npm test", exit_code: 0, seconds: 0.4, tail: "All checks passed!" }] } },
       { status: "doing", title: "確認が落ちて再挑戦", checks: ["pytest -q"], attempts: 1,
         checks_result: { status: "failed", ran_at: 1764000000, results: [
           { cmd: "pytest -q", exit_code: 1, seconds: 2.5, tail: "FAILED tests/test_a.py::test_x - assert 1 == 2" }] } },
@@ -456,6 +484,8 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(detail.locator("[data-team-check-row]")).toHaveCount(2);
     await expect(detail.locator("[data-team-check-row]").first()).toContainText("✓");
     await expect(detail.locator("[data-team-check-row]").first()).toContainText("終了 0");
+    // 作業フォルダ付きの確認は、その場所を添えて見せる
+    await expect(detail.locator("[data-team-check-row]").nth(1)).toContainText("npm test（web）");
     await detail.locator("summary").first().click();
     await expect(detail.getByText("12 passed")).toBeVisible();
     await noOverflow(page);
@@ -476,6 +506,14 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await detail.getByLabel("確認のコマンド（1 行に 1 つ）").fill("pytest -q\nruff check .");
     await detail.getByRole("button", { name: "確認のコマンドを保存" }).click();
     await expect.poll(() => state.teams[0].tasks[2].checks).toEqual(["pytest -q", "ruff check ."]);
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+
+    // 変えずに保存しても、作業フォルダ付きの指定はそのまま残る
+    await page.locator('[data-team-task="1"]').click();
+    detail = page.getByRole("dialog", { name: "#1 確認が通った" });
+    await detail.getByRole("button", { name: "編集" }).click();
+    await detail.getByRole("button", { name: "確認のコマンドを保存" }).click();
+    await expect.poll(() => state.teams[0].tasks[0].checks).toEqual(["pytest -q", { command: "npm test", cwd: "web" }]);
     await page.getByRole("button", { name: "閉じる", exact: true }).click();
 
     // チームの前提（シート）
@@ -728,12 +766,20 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await establishSession(page, context);
     const state: TeamState = { teams: [], dispatched: [], collected: [] };
     await mockTeams(page, state);
+    await mockPickerAndTerminal(page); // 資料の選択（作業フォルダの API）
     await page.goto("/commander?view=team");
 
-    // 一文を書くだけ（チームの画面の一番上の入力）
+    // 一文を書くだけ（チームの画面の一番上の入力）。資料はパスだけを添える
     await page.getByLabel("チームリーダーに頼む").fill("ログイン機能を作りたい");
+    const ask = page.locator("[data-team-ask]");
+    await ask.locator('[data-material-add="dir"]').click();
+    const materialPicker = page.getByRole("dialog", { name: "添えるフォルダを選ぶ" });
+    await materialPicker.getByText("teams", { exact: true }).click();
+    await materialPicker.getByRole("button", { name: "このフォルダを選択" }).click();
+    await expect(ask.locator(`[data-team-material="${ROOT}/teams"]`)).toBeVisible();
     await page.getByRole("button", { name: "頼む", exact: true }).click();
-    await expect.poll(() => state.autoPosts).toEqual([{ goal: "ログイン機能を作りたい", workdir: "", name: "" }]);
+    await expect.poll(() => state.autoPosts).toEqual([{ goal: "ログイン機能を作りたい", workdir: "", name: "", input_paths: [`${ROOT}/teams`] }]);
+    await expect(page.locator("[data-team-inputs]")).toContainText("1 件");
     await expect(page.locator('[data-team-leader-run="running"]')).toContainText("チームリーダーが進めています");
     await noOverflow(page);
 
@@ -770,6 +816,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.keyboard.press("Escape");
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-expert-off.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-expert-off-dark.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: "light" });
 
     // 入: 役割の詳細・自動の振り分けの状態・札・並列の数値・設定が出る
     await page.getByRole("switch", EXPERT_SWITCH).click();
@@ -810,15 +860,26 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     // 「コンソール」と「モデル」は別のかたまり
     await expect(picker.locator("[data-endpoint-console]")).toContainText("コンソール");
     await expect(picker.locator("[data-endpoint-model]")).toContainText("モデル");
+    // まず使えるモデルの一覧（1 つ選ぶだけで CLI・接続・モデル・考えるレベルが決まる・まとまりごと）
+    const choice = picker.locator("[data-endpoint-choice]");
+    await expect(choice).toBeVisible();
+    await expect(choice.locator("optgroup")).toHaveCount(5);
+    await expect(choice.locator("optgroup").nth(0)).toHaveAttribute("label", "ローカル");
+    await expect(choice.locator("optgroup").nth(1)).toHaveAttribute("label", "OpenCode（無料・Go）");
+    await expect(choice.locator("optgroup").nth(4)).toHaveAttribute("label", "Codex");
+    await choice.selectOption("claude:opus");
+    await expect(picker.locator("[data-endpoint-console]").getByLabel("CLI")).toHaveValue("claude");
+    await expect(picker.locator("[data-endpoint-model]").getByLabel(/モデルを直接指定/)).toHaveValue("opus");
+    await expect(picker.locator("[data-endpoint-model]").getByLabel("考えるレベル")).toHaveValue("high");
     await expect(picker.locator("[data-endpoint-console]").getByLabel("種類")).toBeVisible();
     await expect(picker.locator("[data-endpoint-console]").getByLabel("CLI")).toBeVisible();
-    await expect(picker.locator("[data-endpoint-model]").getByLabel(/モデル（一覧/)).toBeVisible();
+    await expect(picker.locator("[data-endpoint-model]").getByLabel(/モデルを直接指定/)).toBeVisible();
     await expect(picker.locator("[data-endpoint-model]").getByLabel("考えるレベル")).toBeVisible();
     // codex を選ぶと、そのモデルの一覧と考えるレベルが自動で出る
     await picker.locator("[data-endpoint-console]").getByLabel("種類").selectOption("console");
     await picker.locator("[data-endpoint-console]").getByLabel("CLI").selectOption("codex");
     await expect.poll(() => state.modelsReqs).toContain("codex/default");
-    await picker.getByLabel(/モデル（一覧/).fill("gpt-a");
+    await picker.getByLabel(/モデルを直接指定/).fill("gpt-a");
     await expect(picker.locator("datalist option")).toHaveCount(1);
     await expect(picker.getByLabel("考えるレベル").locator("option")).toHaveText(["既定", "low", "high"]);
     await picker.getByLabel("考えるレベル").selectOption("high");
@@ -838,7 +899,7 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(leader).toContainText("目標を計画してタスクを配る AI");
     await expect(leader.getByLabel("種類")).toHaveCount(0);
     await leader.getByLabel("CLI").selectOption("claude");
-    await leader.getByLabel(/モデル（一覧/).fill("opus");
+    await leader.getByLabel(/モデルを直接指定/).fill("opus");
     await leader.getByLabel("考えるレベル").selectOption("xhigh");
     await leader.getByRole("button", { name: "任命する" }).click();
     await expect.poll(() => (state.teams[0].leader as { model?: string } | undefined)?.model).toBe("opus");
@@ -862,18 +923,18 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.screenshot({ path: `test-results/commander-team-${label}-no-handoff.png`, fullPage: true });
     await page.locator('[data-team-handoff-open="1"]').click();
     const sheet = page.getByRole("dialog", { name: "引き継ぎ先を選ぶ" });
-    await expect(sheet.locator("[data-endpoint-console]")).toBeVisible();
-    await expect(sheet.locator("[data-endpoint-model]")).toContainText("既定の値で動きます");
-    await expect(sheet.getByLabel(/モデル（一覧/)).toHaveCount(0);
-    await sheet.getByLabel("種類").selectOption("console");
-    await sheet.getByLabel("CLI").selectOption("codex");
+    // 切: 使えるモデルの一覧から 1 つ選ぶだけ（細かい指定は出ない）
+    await expect(sheet.locator("[data-endpoint-console]")).toHaveCount(0);
+    const choice = sheet.locator("[data-endpoint-choice]");
+    await expect(choice).toBeVisible();
+    await choice.selectOption("codex:gpt");
     await sheet.getByLabel(/セカンダリにも追加/).check();
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-handoff-sheet.png`, fullPage: true });
     await sheet.getByRole("button", { name: "引き継いで再開" }).click();
     await expect.poll(() => state.handoffPosts?.length).toBe(1);
     expect(state.handoffPosts![0]).toEqual({
-      endpoint: { kind: "console", cli: "codex", account: "default", model: "", effort: "" }, add_to_secondary: true,
+      endpoint: { kind: "headless", cli: "codex", account: "default", model: "gpt-a", effort: "" }, add_to_secondary: true,
     });
 
     // コンソールのカード（もう一度止まった状態に戻して）
@@ -901,10 +962,9 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await page.getByRole("button", { name: "その他の操作" }).click();
     await page.getByRole("menuitem", { name: "チームの既定（チームリーダー・保存先）" }).click();
     const sheet = page.getByRole("dialog", { name: "チームの既定" });
-    // 既定のチームリーダー（コンソールとモデルが別）
+    // 既定のチームリーダー（使えるモデルの一覧から 1 つ選ぶ）
     await expect(sheet.locator("[data-endpoint-console]")).toBeVisible();
-    await sheet.getByLabel("CLI").first().selectOption("codex");
-    await sheet.getByLabel(/モデル（一覧/).first().fill("gpt-a");
+    await sheet.locator("[data-endpoint-choice]").first().selectOption("codex:gpt");
     await sheet.getByRole("button", { name: "既定のチームリーダーにする" }).click();
     await expect.poll(() => state.defaultsPuts?.length).toBe(1);
     expect(state.defaultsPuts![0]).toEqual({ default_leader: { kind: "headless", cli: "codex", account: "default", model: "gpt-a", effort: "" } });
@@ -933,7 +993,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(again.locator("[data-team-root-path]")).toHaveText(`${ROOT}/teams`);
     await expect(again.locator("[data-team-root]").getByRole("button", { name: "変える" })).toHaveCount(0);
     await expect(again.locator("[data-default-roles]")).toHaveCount(0);
-    await expect(again.getByLabel(/モデル（一覧/)).toHaveCount(0);
+    await expect(again.getByLabel(/モデルを直接指定/)).toHaveCount(0);
+    await expect(again.locator("[data-endpoint-console]")).toHaveCount(0);
+    // 切でも使えるモデルの一覧（1 つ選ぶだけ）は残る
+    await expect(again.locator("[data-endpoint-choice]")).toBeVisible();
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-team-root-set-off.png`, fullPage: true });
   });
@@ -970,6 +1033,7 @@ function timelineTeam(): TeamState {
     mcp_log: [{ at: 1, tool: "team_status", ok: true, seconds: 0.01 }, { at: 2, tool: "delegate", ok: true, seconds: 0.4 }],
     usage_total: { input_tokens: 123456, output_tokens: 7890, cost_usd: 1.23 },
     git: { enabled: true, origin_was_git: true, base_branch: "main", team_branch: "nexarch/t0tl00001" }, autonomy: "ask",
+    members: [{ kind: "headless", id: "h0000bbbb", role: "developer", cli: "codex", model: "gpt-a", label: "実装の係" }],
     result: {
       summary: "画面と API を作り、統合して確認しました", outcome: "done", finished_at: 1764000900, remaining: ["README の更新"],
       checks: { status: "passed", ran_at: 1764000800, commands: ["pytest -q"] },
@@ -1012,6 +1076,20 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(page.locator('[data-team-progress-task="2"]')).toContainText("統合済み");
     await expect(page.locator('[data-team-progress-task="3"]')).toContainText("実装中");
     await expect(page.locator("[data-team-progress]")).toContainText("現状を調べ終えました");
+    // アバターと 6 段の図: どこまで進んだかが一目で分かる（進んでいる段だけ控えめに動く）
+    const mission = page.locator("[data-team-mission]");
+    await expect(mission.locator("[data-mission-stage]")).toHaveCount(6);
+    await expect(mission.locator('[data-mission-stage="explore"]')).toHaveAttribute("data-mission-state", "done");
+    await expect(mission.locator('[data-mission-stage="plan"]')).toHaveAttribute("data-mission-state", "done");
+    await expect(mission.locator('[data-mission-stage="implement"]')).toHaveAttribute("data-mission-state", "active");
+    await expect(mission.locator('[data-mission-stage="verify"]')).toHaveAttribute("data-mission-state", "done");
+    await expect(mission.locator("[data-mission-summary]")).toContainText("実装を 1 人が進めています");
+    await expect(mission.locator('[data-mission-member="h0000bbbb"]')).toContainText("実装の係");
+    // 段を押すとその段の仕事が開く（もう一度押すと閉じる）
+    await mission.locator('[data-mission-stage="implement"]').click();
+    await expect(mission.locator('[data-mission-stage-tasks="implement"]')).toContainText("API を作る");
+    await mission.locator('[data-mission-stage="implement"]').click();
+    await expect(mission.locator('[data-mission-stage-tasks="implement"]')).toHaveCount(0);
     await expect(page.locator('[data-team-result="done"]')).toContainText("画面と API を作り、統合して確認しました");
     await expect(page.locator("[data-team-result-checks]")).toHaveText("合格");
     await expect(page.locator("[data-team-result-changes]")).toContainText("3 件");
@@ -1055,5 +1133,63 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect.poll(() => state.leaderCalls).toEqual(["resume"]);
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-timeline-expert.png`, fullPage: true });
+  });
+
+  test(`AI チーム ${label}px: 資料を添えてこのチームへ頼む・メンバーの状態を開く・チームの前提を切り替える`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = timelineTeam();
+    await mockTeams(page, state);
+    await mockPickerAndTerminal(page); // 資料の選択（作業フォルダの API）
+    await page.goto("/commander?view=team");
+
+    // メンバーのアバターを押すと、その人の状態と持っている仕事が開く
+    const mission = page.locator("[data-team-mission]");
+    await mission.locator('[data-mission-member="h0000bbbb"]').click();
+    const member = mission.locator('[data-mission-member-details="h0000bbbb"]');
+    await expect(member).toContainText("実装の係");
+    await expect(member.locator("[data-mission-member-state]")).toContainText("作業中");
+    await expect(member).toContainText("API を作る");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-mission-member.png`, fullPage: true });
+
+    // 資料（フォルダ）を添えて、このチームへ頼み足す（中身は送らずパスだけ）
+    const ask = page.locator("[data-team-ask]");
+    await ask.locator('[data-material-add="dir"]').click();
+    const picker = page.getByRole("dialog", { name: "添えるフォルダを選ぶ" });
+    await picker.getByText("teams", { exact: true }).click();
+    await picker.getByRole("button", { name: "このフォルダを選択" }).click();
+    const chip = ask.locator(`[data-team-material="${ROOT}/teams"]`);
+    await expect(chip).toBeVisible();
+    // 札から外せる
+    await chip.getByRole("button", { name: `${ROOT}/teams を外す` }).click();
+    await expect(chip).toHaveCount(0);
+    // 選び直してから頼む
+    await ask.locator('[data-material-add="dir"]').click();
+    const pickerAgain = page.getByRole("dialog", { name: "添えるフォルダを選ぶ" });
+    await pickerAgain.getByText("teams", { exact: true }).click();
+    await pickerAgain.getByRole("button", { name: "このフォルダを選択" }).click();
+    await expect(ask.locator(`[data-team-material="${ROOT}/teams"]`)).toBeVisible();
+    await page.getByLabel("チームリーダーに頼む").fill("資料を見て直して");
+    await ask.getByLabel(/このチームへ頼み足す/).check();
+    await page.getByRole("button", { name: "頼む", exact: true }).click();
+    await expect.poll(() => state.askPosts?.at(-1)).toEqual({ goal: "資料を見て直して", input_paths: [`${ROOT}/teams`] });
+    await expect(page.locator("[data-team-inputs]")).toContainText("1 件");
+    await noOverflow(page);
+
+    // チームの前提（閉じたチーム・再起動の後の自動再開）を既存の操作メニューから切り替える
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await page.getByRole("menuitem", { name: /閉じたチーム/ }).click();
+    await expect.poll(() => state.teamPuts).toContainEqual({ local_only: true });
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /閉じたチーム.*オン/ })).toBeVisible();
+    await page.getByRole("menuitem", { name: /再起動の後の自動再開/ }).click();
+    await expect.poll(() => state.teamPuts).toContainEqual({ auto_resume: false });
+    await page.getByRole("button", { name: "チームの操作" }).click();
+    await expect(page.getByRole("menuitem", { name: /再起動の後の自動再開.*オフ/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-${label}-team-settings.png`, fullPage: true });
   });
 }

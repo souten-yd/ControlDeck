@@ -173,6 +173,30 @@ export interface TeamRoleDef {
   primary_recovers_at?: number | null;
 }
 
+/** 役割のモデルの選択肢（サーバーが使えるモデルを前もって抜き出したもの）。
+ * 選ぶと CLI・アカウント（接続）・モデル・考えるレベルがまとめて決まる。group は表示のまとまり。 */
+export type ModelChoiceGroup = "local" | "opencode" | "openrouter" | "claude" | "codex" | "api" | "other";
+export interface ModelChoice {
+  id: string;
+  label: string;
+  group: ModelChoiceGroup | string;
+  endpoint: Endpoint;
+  efforts?: string[];
+}
+export interface ModelChoices {
+  choices: ModelChoice[];
+  note?: string;
+}
+export async function fetchModelChoices(): Promise<ModelChoices> {
+  return api<ModelChoices>("/commander/model-choices");
+}
+export const MODEL_GROUP_LABEL: Record<string, string> = {
+  local: "ローカル", opencode: "OpenCode（無料・Go）", openrouter: "OpenRouter",
+  claude: "Claude", codex: "Codex", api: "API", other: "その他",
+};
+/** まとまりの並び（画面の選択肢の順）。知らないまとまりは後ろへ。 */
+export const MODEL_GROUP_ORDER: readonly string[] = ["local", "opencode", "openrouter", "claude", "codex", "api", "other"];
+
 export interface ModelInfo { id: string; label: string; efforts: string[]; default_effort: string }
 export interface ModelsInfo {
   cli: string;
@@ -304,6 +328,17 @@ export interface TaskRunRecord {
 
 export interface TaskReport { summary: string; changed_files: string[]; tests: string; verify?: string; remaining: string }
 
+/** 確認のコマンド。cwd は作業場所の中の相対パス（省略なら作業場所の直下）。 */
+export interface TaskCheck { command: string; cwd?: string }
+export type CheckSpec = string | TaskCheck;
+/** 確認のコマンドの本文（画面・実行結果の照合に使う）。 */
+export const checkCommand = (c: CheckSpec): string => (typeof c === "string" ? c : c.command);
+/** 確認のコマンドの表示（作業フォルダがあれば添える）。 */
+export const checkText = (c: CheckSpec): string => {
+  const command = checkCommand(c);
+  return typeof c === "string" || !c.cwd ? command : `${command}（${c.cwd}）`;
+};
+
 export interface CheckRow { cmd: string; exit_code: number; seconds: number; tail: string }
 export interface ChecksResult {
   status: "running" | "passed" | "failed" | "error";
@@ -318,8 +353,8 @@ export interface TeamTask {
   goal: string;
   acceptance: string;
   files: string[];
-  /** 確認のコマンド（Nexarch が担当の作業フォルダで実行して合否を決める）。 */
-  checks?: string[];
+  /** 確認のコマンド（Nexarch が担当の作業フォルダで実行して合否を決める）。文字列か、作業フォルダ付きの指定。 */
+  checks?: CheckSpec[];
   /** 確認の結果。checks が無いタスクには無い。 */
   checks_result?: ChecksResult;
   /** 確認が落ちて自動で直させた回数（2 回まで）。 */
@@ -374,6 +409,9 @@ export interface TeamResult {
 }
 export interface McpLogRow { at: number; tool: string; ok: boolean; seconds: number }
 
+/** チームに添える資料。path だけを持ち、中身はチームリーダーが必要なときに読む。 */
+export interface TeamInput { path: string; source?: string; label?: string }
+
 export interface Team {
   id: string;
   name: string;
@@ -384,6 +422,12 @@ export interface Team {
   notify?: boolean;
   /** チームの前提。送り込みの文面の先頭に付く。 */
   brief?: string;
+  /** 資料（/data1tb・/data2tb のファイル・フォルダ）。チームリーダーにはパスの一覧だけを渡す。 */
+  inputs?: TeamInput[];
+  /** 閉じたチーム（ローカル LLM 以外の担い手・外部のモデル・Web の調査を断る）。既定は切。 */
+  local_only?: boolean;
+  /** ControlDeck の起動のとき、再起動で中断されたチームリーダーを自動で再開する（既定は入）。 */
+  auto_resume?: boolean;
   /** 送る前に担当の会話をリセットする（既定 true）。 */
   reset_before_dispatch?: boolean;
   /** 上限で止まったとき: handoff（別の担い手へ引き継ぐ・既定）／wait（回復を待つ）。 */
@@ -429,7 +473,7 @@ export interface TaskFields {
   goal?: string;
   acceptance?: string;
   files?: string[];
-  checks?: string[];
+  checks?: CheckSpec[];
   assignee?: string;
   status?: TaskStatus;
   role?: string;
@@ -445,12 +489,12 @@ export async function createTeam(name: string): Promise<Team> {
   return api<Team>("/commander/teams", { method: "POST", json: { name } });
 }
 /** 目標からチームを作る（チームリーダーが計画する。結果は一覧の leader_run で見る）。workdir が空なら新しい自動の作業場所。 */
-export async function createAutoTeam(goal: string, workdir = "", name = ""): Promise<Team> {
-  return api<Team>("/commander/teams/auto", { method: "POST", json: { goal, workdir, name } });
+export async function createAutoTeam(goal: string, workdir = "", name = "", inputPaths: string[] = []): Promise<Team> {
+  return api<Team>("/commander/teams/auto", { method: "POST", json: { goal, workdir, name, ...(inputPaths.length ? { input_paths: inputPaths } : {}) } });
 }
 /** 既存のチームのチームリーダーに一文を頼む（計画を作って板へ足す。結果は一覧の leader_run で見る）。 */
-export async function askLeader(id: string, goal: string): Promise<Team> {
-  return api<Team>(`${teamUrl(id)}/leader/run`, { method: "POST", json: { goal } });
+export async function askLeader(id: string, goal: string, inputPaths: string[] = []): Promise<Team> {
+  return api<Team>(`${teamUrl(id)}/leader/run`, { method: "POST", json: { goal, ...(inputPaths.length ? { input_paths: inputPaths } : {}) } });
 }
 export async function answerLeaderQuestion(id: string, questionId: string, answer: string): Promise<void> {
   await api(`${teamUrl(id)}/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", json: { answer } });
@@ -481,6 +525,7 @@ export async function updateTeam(
     name?: string; brief?: string; reset_before_dispatch?: boolean; on_limit?: OnLimit; fallback?: string[];
     max_parallel?: number; local_parallel?: number; auto_run?: boolean; codex_without_sandbox?: boolean;
     autonomy?: "high" | "ask"; web_research?: boolean; git_init?: boolean;
+    local_only?: boolean; auto_resume?: boolean;
   },
 ): Promise<Team> {
   return api<Team>(teamUrl(id), { method: "PUT", json: fields });
