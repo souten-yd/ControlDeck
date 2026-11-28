@@ -964,3 +964,21 @@ def test_assistant_tools_create_team_in_conversation_workdir(env, monkeypatch):
                                (agent_mcp.NEXARCH_REQUEST_TOOL, {"text": "x"}, claims, set())):
         with pytest.raises(HTTPException):
             agent_mcp._run_nexarch(name, args, cl, pm)  # noqa: SLF001
+
+
+def test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap(env, sent, monkeypatch):
+    """目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（30 分に 2 回）に数えない。
+    根拠: 2026-11-28、Claude の Release が続いて更新の再起動が 30 分に 2 回を超え、NewsHub のチームの自動の再開が
+    上限で止まった。上限は落ちて再起動を繰り返すのを止めるためのもの。更新は適用の前に data/updates/backup-<時刻> を作る。"""
+    import time
+
+    from app.config import data_dir
+
+    monkeypatch.setattr(team_runner, "_spawn", lambda func, *args: None)
+    team = team_leader.create_and_start("目標を果たす")
+    (data_dir() / "updates" / f"backup-{int(time.time())}").mkdir(parents=True)
+    for _ in range(4):                      # 更新の再起動が続いても止めない
+        out = team_leader.recover_interrupted()
+        assert out["resumed"] == 1 and out["capped"] == 0
+    assert any("本体の更新で再起動" in r["text"] for r in get_team(team["id"])["timeline"])
+    assert team_leader._planned_update_restart(time.time() + 3600) is False   # 古い更新は計画どおりと見ない  # noqa: SLF001

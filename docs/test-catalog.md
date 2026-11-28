@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 291 ファイル、3065 テスト（目的の未記入 93 ファイル）
+- backend: 291 ファイル、3066 テスト（目的の未記入 93 ファイル）
 - E2E: 156 spec、370 テスト
 
 ## backend（backend/tests）
@@ -1050,6 +1050,7 @@
 - `test_through_fake_leader_runs_whole_flow`
 - `test_api_leader_land_answer_resume_and_settings`
 - `test_assistant_tools_create_team_in_conversation_workdir`
+- `test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap` — 目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（30 分に 2 回）に数えない。
 
 ### backend/tests/test_commander_team_watch.py
 
