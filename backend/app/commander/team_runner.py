@@ -50,6 +50,7 @@ POLL_INTERVAL = 0.3
 OUTPUT_FILE_MAX = 50 * 1024 * 1024
 LINE_MAX = 2 * 1024 * 1024
 TAIL_MAX = 2000
+HEAD_MAX = 8000   # 最後の返事の先頭（長いレビューの報告の前半。2026-11-28 チームリーダーの要望）
 CLAUDE_TOOLS = "Bash,Edit,Read,Write,Glob,Grep"
 KILL_GRACE = 5.0
 WAIT_UNKNOWN = 30 * 60
@@ -816,7 +817,9 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
             limited, reset_at = detect_limit(texts) if failing else (False, None)
             if failing and not limited and state and state.limit_hint:
                 limited, reset_at = True, None
-            run["tail"] = (result.get("final") or result.get("stderr") or "")[-TAIL_MAX:]
+            final_text = str(result.get("final") or result.get("stderr") or "")
+            run["tail"] = final_text[-TAIL_MAX:]
+            run["head"] = final_text[:HEAD_MAX] if len(final_text) > TAIL_MAX else ""
             if limited:
                 run["status"] = "limited"
                 run["reset_at"] = reset_at
@@ -867,7 +870,16 @@ def _complete(team_id: str, task_id: int, run_id: str, member: dict, result: dic
                 teams.runs_close(task, "ok", usage=usage, exit_code=code)
                 audit_args = (code, seconds, False, "ok")
                 report = teams.parse_report(str(result.get("final") or "")) or _synth_report(str(result.get("final") or ""))
-                followup = lambda: teams._store_report(team_id, task_id, report, "ヘッドレス", "報告を取り込み（ヘッドレスの実行）")  # noqa: E731
+                queued = str(task.pop("queued_note", "") or "")
+                if queued:
+                    # 走っている間にチームリーダーが足した指示（delegate の note）。報告は残し、その指示でもう一度走らせる
+                    task["report"] = report
+                    task["status"] = "todo"
+                    task["resume_note"] = queued[:teams.TEXT_MAX]
+                    teams._event(task, "走っている間に足された指示で、もう一度", "Nexarch")  # noqa: SLF001
+                    followup = lambda: _restart(team_id, task_id)  # noqa: E731
+                else:
+                    followup = lambda: teams._store_report(team_id, task_id, report, "ヘッドレス", "報告を取り込み（ヘッドレスの実行）")  # noqa: E731
         teams._save(all_teams)
     if audit_args:
         _audit(team_id, task_id, member, *audit_args)

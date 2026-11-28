@@ -618,11 +618,26 @@ def _make_task(team_id: str, *, item: dict | None, title: str, instructions: str
     return _mutate(team_id, save)
 
 
+def _queue_note(team: dict, task_id: int, note: str) -> dict:
+    """走っている・待っている仕事へ指示を覚える。走っていれば今の実行が終わった後にその指示でもう一度、待ちなら次の実行に足す。
+    2026-11-28 チームリーダーの要望: 「E2E 修正の note は実行中 409 で配送できず、完了後に再依頼する」。"""
+    task = next(x for x in team["tasks"] if x["id"] == task_id)
+    key = "queued_note" if task["status"] == "doing" else "resume_note"
+    task[key] = "\n\n".join(x for x in (str(task.get(key) or ""), note) if x)[:teams.TEXT_MAX]
+    teams._event(task, "チームリーダーが指示を足しました（" + ("今の実行の後にもう一度" if key == "queued_note" else "次の実行に足す") + "）", "チームリーダー")  # noqa: SLF001
+    add_timeline(team, "delegate", f"仕事 #{task_id} に指示を足しました（" + ("今の実行の後にもう一度" if key == "queued_note" else "次の実行で") + "）")
+    return {"queued": True}
+
+
 def _redo(team_id: str, task_id: int, note: str) -> dict:
     """振った仕事をもう一度（競合の解消・指摘の反映）。implement は worktree へチームのブランチを取り込んで続きをやらせる。"""
     info = ensure_git(team_id)
     team = _read(team_id)
     task = next(t for t in team["tasks"] if t["id"] == task_id)
+    if task.get("status") in ("doing", "todo"):
+        # 走っている・待っている仕事の worktree でコミットや取り込みをしない（担い手が書いている最中のファイルを巻き込む）。
+        # 指示だけ覚え、今の実行の後（待ちなら次の実行）に渡す（save の中で同じ判定をもう一度する）。
+        return {"task": task_id, "conflicts": [], **_mutate(team_id, lambda t: _queue_note(t, task_id, note))}
     conflicts: list[str] = []
     if task.get("branch") and info.get("enabled") and task.get("cwd"):
         with _git_lock:
@@ -634,8 +649,8 @@ def _redo(team_id: str, task_id: int, note: str) -> dict:
 
     def save(t: dict) -> None:
         task_ = next(x for x in t["tasks"] if x["id"] == task_id)
-        if task_["status"] in ("doing", "todo"):
-            raise ToolError("この仕事は実行中か待ちです", 409)
+        if task_["status"] in ("doing", "todo"):   # 確かめてから save までの間に動き出した
+            return _queue_note(t, task_id, text)
         for key in ("report", "checks_result", "run", "limited_at", "blocked_reason", "notified", "wait_until"):
             task_.pop(key, None)
         task_["report"] = None
@@ -739,8 +754,8 @@ def tool_wait(team_id: str, args: dict) -> dict:
 def tool_read_result(team_id: str, args: dict) -> dict:
     _strict(args, {"run_id", "what"}, {"run_id", "what"})
     what = args["what"]
-    if what not in ("diff", "output_tail", "files"):
-        raise ToolError("what は diff / output_tail / files のどれかです")
+    if what not in ("diff", "output_tail", "files", "report_text"):
+        raise ToolError("what は diff / output_tail / files / report_text のどれかです")
     team = _read(team_id)
     task = _find(team, args["run_id"])
     info = team.get("git") or {}
@@ -756,6 +771,11 @@ def tool_read_result(team_id: str, args: dict) -> dict:
             out["elapsed_s"] = live.get("elapsed")
             out["note"] = "実行中です。output_tail は終わってから入ります（last_line と progress は今の進み具合）"
         return out
+    if what == "report_text":
+        # 最後の返事の先頭と末尾（長いレビューの報告の前半が output_tail では読めなかった。2026-11-28 チームリーダーの要望）
+        report = task.get("report") if isinstance(task.get("report"), dict) else None
+        return {"run_id": str(task["id"]), "report": report, "head": str(run.get("head") or ""), "tail": str(run.get("tail") or ""),
+                "note": "head が空なら、最後の返事は tail に全部入っています"}
     if what == "files":
         if info.get("enabled") and task.get("branch"):
             team_git.commit_all(task["cwd"], f"Nexarch: #{task['id']} {task['title']}")
@@ -983,7 +1003,7 @@ def tool_defs() -> list[dict]:
              ["query", "scope"]),
         tool("delegate", "仕事を担い手へ振る（担い手は段から Nexarch が決める。implement・hard は worktree で書く）。item_id（計画の項目）か "
                          "title+instructions+tier のどちらか（item_id と一緒に他の欄は渡せない。depends_on が終わっていない項目は 409）。"
-                         "振り済みの項目に note（指摘・指示）を付けるともう一度やらせる。files は担当ファイル（同じファイルの仕事は同時に走らない）、"
+                         "振り済みの項目に note（指摘・指示）を付けるともう一度やらせる（走っている間なら、今の実行が終わった後にその指示で、待ちなら次の実行に足す）。files は担当ファイル（同じファイルの仕事は同時に走らない）、"
                          "checks は確認のコマンド（1 行・パイプや && なし。合わないものは捨てる）。wait=true なら終わるまで（最大 600 秒）待って wait と同じ結果を返す。"
                          "それ以外は返り値の run_id を wait へ。",
              {"item_id": {"type": "string"}, "title": {"type": "string", "maxLength": 120},
@@ -994,8 +1014,9 @@ def tool_defs() -> list[dict]:
              "終わったものは 5 行の報告・確認の合否・変更ファイルと行数・使用量・担い手を返す。時間切れでも全部の状態を返し、timed_out=true にする（止めはしない）。",
              {"run_ids": _RUN_IDS, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}, "mode": {"type": "string", "enum": ["all", "any"]}},
              ["run_ids"]),
-        tool("read_result", "仕事の結果を読む。what=diff（差分・大きさの上限つき）・output_tail（出力の末尾）・files（変更ファイルと行数）。",
-             {"run_id": {"type": "string"}, "what": {"type": "string", "enum": ["diff", "output_tail", "files"]}}, ["run_id", "what"]),
+        tool("read_result", "仕事の結果を読む。what=diff（差分・大きさの上限つき）・output_tail（出力の末尾）・files（変更ファイルと行数）・"
+                            "report_text（最後の返事の先頭 8000 字と末尾。長いレビューの報告の前半を読むとき）。",
+             {"run_id": {"type": "string"}, "what": {"type": "string", "enum": ["diff", "output_tail", "files", "report_text"]}}, ["run_id", "what"]),
         tool("run_checks", "確認のコマンドを流す。where=run_id（その仕事の worktree）か \"team\"（チームのブランチ全体）。commands を省くと、run_id なら仕事の checks、"
              "team なら計画の全項目の checks。1 行・パイプや && なしの形だけ流し、捨てたものは dropped に返す。返り値は status（passed・failed・error）と"
              "コマンドごとの終了コード・秒数・出力の末尾。",

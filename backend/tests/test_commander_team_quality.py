@@ -68,3 +68,36 @@ def test_no_handoff_tasks_return_to_todo_after_the_limit_recovers(monkeypatch):
     team["tasks"][0].update(status="blocked", blocked_reason="no_handoff")
     team["limits"] = {}                                                                                   # 上限の記録が無い
     assert team_dispatch.requeue_recovered("tz", 2000.0) == 0
+
+
+def test_note_to_a_running_task_is_queued_and_reruns_after(monkeypatch):
+    """走っている仕事への note は断らずに覚え、worktree をコミット・取り込みしない。今の実行の後にその指示でもう一度。
+    2026-11-28 チームリーダーの要望: 「E2E 修正の note は実行中 409 で配送できず、完了後に再依頼する」。"""
+    team = {"id": "tq", "tasks": [{"id": 3, "status": "doing", "branch": "b", "cwd": "/x", "events": []}], "timeline": []}
+    monkeypatch.setattr(leader_mcp, "ensure_git", lambda team_id: {"enabled": True, "team_branch": "t"})
+    monkeypatch.setattr(leader_mcp, "_read", lambda team_id: team)
+    monkeypatch.setattr(leader_mcp, "_mutate", lambda team_id, fn: fn(team))
+    touched = []
+    monkeypatch.setattr(leader_mcp.team_git, "commit_all", lambda *a, **k: touched.append("commit"))
+    monkeypatch.setattr(leader_mcp.team_git, "start_conflict_merge", lambda *a, **k: touched.append("merge") or [])
+    out = leader_mcp._redo("tq", 3, "E2E を直して")
+    assert out["queued"] is True and touched == []
+    assert team["tasks"][0]["queued_note"] == "E2E を直して" and team["tasks"][0]["status"] == "doing"
+    team["tasks"][0]["status"] = "todo"
+    leader_mcp._redo("tq", 3, "もう 1 つ")
+    assert team["tasks"][0]["resume_note"] == "もう 1 つ"
+
+
+def test_report_text_returns_the_head_of_a_long_answer():
+    """read_result(report_text) は最後の返事の先頭も返す（長いレビューの報告の前半が読めなかった）。"""
+    team = {"id": "tq", "git": {}, "tasks": [{"id": 5, "status": "done", "leader_managed": True, "report": {"summary": "s"},
+                                               "run": {"head": "P1: パスの検証が無い…", "tail": "…残り: なし"}}]}
+    import pytest
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leader_mcp, "_read", lambda team_id: team)
+    try:
+        out = leader_mcp.tool_read_result("tq", {"run_id": "5", "what": "report_text"})
+    finally:
+        mp.undo()
+    assert out["head"].startswith("P1") and out["tail"].endswith("なし") and out["report"]["summary"] == "s"
