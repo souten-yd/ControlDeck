@@ -358,7 +358,7 @@ ROUTES: tuple[Route, ...] = (
           _o("commander/team_inputs.py", "commander/team_leader.py", "commander/team_git.py", "commander/workdir.py", "commander/router.py"), "nexarch",
           "作業フォルダと同じ決まり（許可ルート・realpath・拒否の場所・リンク逃げ）。シンボリックリンクでの資料の公開はしない・元資料は書かない・件数と大きさに上限"),
     Route("nx-team-auto-resume", "backend", "board", "file",
-          "ControlDeck の起動時に、実行中のまま残ったチームリーダーを保存済みの依頼から続きで再開する（自動再開は 30 分に 2 回まで・チームごとに永続）。"
+          "ControlDeck の起動時に、実行中のまま残ったチームリーダーを保存済みの依頼から続きで再開する（自動再開は 1 時間に 6 回まで・本体の更新の再起動は数えない・チームごとに永続）。"
           "続けて失敗したら止めて知らせる。利用者が止めたチームは再開しない",
           ("audit",), _o("commander/team_watch.py", "commander/team_leader.py", "commander/teams.py"), "nexarch",
           "teams.json は置き換えで書き、直前の 1 世代を .bak に残す。壊れていたら .bak から戻して診断に出す"),
