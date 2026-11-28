@@ -160,7 +160,9 @@ for (const [width, height] of [[1280, 900], [320, 700]]) {
   }
 }
 
-test("target controldeck and mirror cannot be chosen when the source is a CodeDEV project", async ({ page, context }) => {
+// 2026-11-28 利用者「ControlDeck のミラーを作るとき以外は、全然違う場所で作る必要がない」: 作業場（本体の複製の箱）の
+// 元は ControlDeck 本体だけ。ふつうのプロジェクトは選択欄の「CodeDEV のプロジェクト」をそのまま選ぶ。
+test("the new workspace is only a copy of ControlDeck; CodeDEV projects are chosen directly", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 800 });
   await establishSession(page, context);
@@ -169,12 +171,7 @@ test("target controldeck and mirror cannot be chosen when the source is a CodeDE
   await page.goto("/assistant");
   const shell = page.locator("[data-assistant-shell]");
   await shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）").selectOption("__ws_new__");
-  await shell.getByLabel("作業場の元").selectOption("codedev:app");
-  await shell.locator("[data-assistant-plus]").click();
-  const menu = page.getByRole("menu", { name: "添付・機能・権限" });
-  await expect(menu.locator('[data-target-option="controldeck"]')).toBeDisabled();
-  await expect(menu.locator('[data-target-option="llm_app"]')).toHaveAttribute("aria-checked", "true");
-  await menu.locator("[data-target-detail]").click();
-  await expect(menu.locator('[data-capability="mirror"]')).toBeDisabled();
-  await expect(menu.locator('[data-capability="mirror"]')).toContainText("ControlDeck 本体のときだけ");
+  await expect(shell.getByLabel("作業場の元")).toHaveText("ControlDeck 本体（origin/main）の複製");
+  await expect(shell.locator("[data-testid=workspace-create]")).toContainText("「CodeDEV のプロジェクト」をそのまま選んでください");
+  await expect(shell.getByLabel("作業フォルダ（OpenCode のプロジェクト）").locator("optgroup[label='CodeDEV のプロジェクト'] option").first()).toBeAttached();
 });
