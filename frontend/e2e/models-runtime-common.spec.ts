@@ -1,5 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
+import { openCardAndAct, withModels } from "./support/catalog";
 
 /** Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。
  *
@@ -59,7 +60,7 @@ const catalogEntry = (id: string, acquire: "hf" | "none") => ({
   fit: "fits",
 });
 
-const catalog = {
+const catalog = withModels({
   runtimes: RUNTIME_IDS.map((id) => ({
     id,
     name: id,
@@ -70,7 +71,7 @@ const catalog = {
     entries: [catalogEntry(`e2e-${id}`, "hf")],
     catalog_ref: `/api/v1/models/catalog/${id}`,
   })),
-};
+});
 
 const field = (id: string, label: string, type: string, expert = false, fallback: unknown = "") => ({
   id, label, type, default: fallback, expert,
@@ -188,17 +189,6 @@ async function openRegisterSheet(page: Page, context: BrowserContext): Promise<{
   return { sheet, jobs };
 }
 
-/** 目録の行の「取得する」を押した後に出る確認パネルの「取得する」を押す。
- *  行にも同名ボタンが残るので `.first()` で拾うと確認パネルが出る前に誤クリックし、
- *  取得ジョブが始まらない（既知の競合）。パネル固有の「やめる」をアンカーに表示を待つ。 */
-async function confirmAcquire(page: Page, runtime = "llama") {
-  const panel = page.locator(`[data-runtime-catalog="${runtime}"] > div`).filter({
-    has: page.getByRole("button", { name: "やめる", exact: true }),
-  });
-  await expect(panel).toBeVisible();
-  await panel.getByRole("button", { name: "取得する", exact: true }).click();
-}
-
 test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す", async ({ page, context }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const { sheet } = await openRegisterSheet(page, context);
@@ -209,7 +199,7 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   // llama.cpp / Strata は共通部品を SegmentedTabs で切り替える。目録 → ファイルの順。
   await expect(sheet.getByRole("button", { name: CATALOG_HEADING })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
-  await expect(sheet.locator('[data-catalog-entry="e2e-llama"]')).toContainText("E2E e2e-llama");
+  await expect(sheet.locator('[data-catalog-model="m-e2e-llama"]')).toContainText("E2E e2e-llama");
   await expect(sheet.locator('[data-runtime-catalog="llama"]')).toHaveAttribute("data-expert", "off");
   await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
   await expect(sheet.locator('[data-runtime-register-file="llama"]')).toBeVisible();
@@ -220,7 +210,7 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   await sheet.getByRole("button", { name: "Strata", exact: true }).click();
   await sheet.getByRole("button", { name: CATALOG_HEADING }).click();
   await expect(sheet.locator('[data-runtime-catalog="strata"]')).toBeVisible();
-  await expect(sheet.locator('[data-catalog-entry="e2e-strata"]')).toContainText("E2E e2e-strata");
+  await expect(sheet.locator('[data-catalog-model="m-e2e-strata"]')).toContainText("E2E e2e-strata");
   await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
   await expect(sheet.locator('[data-runtime-register-file="strata"]')).toBeVisible();
 
@@ -228,16 +218,14 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   // 厳しい見出し列を確認してから開いて中身を見る。
   await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
   await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
-  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="sly-radiance"]')).toBeVisible();
-  await expect(sheet.locator('[data-catalog-entry="e2e-sly-radiance"]')).toContainText("E2E e2e-sly-radiance");
+  await expect(sheet.locator('[data-catalog-model="m-e2e-sly-radiance"]')).toContainText("E2E e2e-sly-radiance");
   await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="sly-radiance"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-settings="sly-radiance"]')).toBeVisible();
   // スイッチを切ると元の Radiance になるが、共通部品の見出し・並びは変わらない。
   await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();
   await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
-  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="radiance"]')).toBeVisible();
   await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="radiance"]')).toBeVisible();
@@ -246,6 +234,7 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   // Maya も同じ見出し・並び（「Maya の目録」のような二重目録は要求違反として許容しない）。
   await sheet.getByRole("button", { name: "Maya", exact: true }).click();
   await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
+  // Maya の目録だけは畳んである（Maya 自身の量子化の一覧が主・2026-11-28）
   await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="maya"]')).toBeVisible();
   await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
@@ -309,9 +298,8 @@ test("取得ジョブ: 停止 → 再開のボタンがモックの API で動�
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
-  await entry.getByRole("button", { name: "取得する" }).click();
-  await confirmAcquire(page);
+  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
 
   const running = sheet.locator('[data-acquire-job="job-1"]');
   await expect(running).toContainText("取得中");
@@ -339,9 +327,8 @@ test("取得ジョブ: 取り消しの API モックと实际操作（320px）",
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
-  await entry.getByRole("button", { name: "取得する" }).click();
-  await confirmAcquire(page);
+  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
 
   const running = sheet.locator('[data-acquire-job="job-1"]');
   await expect(running).toContainText("取得中");
@@ -368,9 +355,8 @@ test("取得ジョブ: 停止済みのジョブも取り消せる（確認ダイ
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
-  await entry.getByRole("button", { name: "取得する" }).click();
-  await confirmAcquire(page);
+  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
   const running = sheet.locator('[data-acquire-job="job-1"]');
   await running.getByRole("button", { name: "停止", exact: true }).click();
   await expect(running).toContainText("停止中（続きから再開できます）");

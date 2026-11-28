@@ -63,12 +63,12 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
 
   // 目録・ファイル選択で決まった値は共通設定のフォームへ渡す（登録自体は下の保存で行う）。
   const catalogSlot = initial ? null : <div className="space-y-3">
-    <SettingsGroup title="目録から取得" description="HF の .rad 候補を ControlDeck から取得します（停止・再開できます）。取得したフォルダは下の設定へ入ります"
-      collapsible defaultOpen={false}>
+    <SettingsGroup title="目録から取得" description="HF から取得します。止めても続きから再開できます"
+      collapsible defaultOpen>
       <RuntimeCatalog runtime="radiance" expert={expert}
         onRegister={(path) => apply({ model_path: path, port })} />
     </SettingsGroup>
-    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から .rad を選びます。名前はファイル名から自動で入り、下の設定へ入ります（保存は最後のボタン）"
+    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から .rad を選びます"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="radiance" mode="file" disabled={running} expert={expert}
         onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "radiance"))}

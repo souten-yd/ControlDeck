@@ -60,7 +60,9 @@ def test_catalog_has_every_runtime_and_no_guessed_sizes():
     assert len(blocks["sly-radiance"]["entries"]) == 6
     # 旧 strata_catalog の全 44 行を出さない。共通目録は GSQ-RCO・Unsloth UD-*・Q8_0 だけ。
     # 旧登録 id / 既存の Strata API はそのまま（互換）。
-    assert len(blocks["strata"]["entries"]) == 37
+    # 2026-11-28: Strata 自身の目録にある系列×量子化と重なる HF の行（12 行）を消した（目録が二重に見えた）。
+    # 残る HF の行は、Strata の目録に無い第三者の無検閲版 2 行だけ。
+    assert len(blocks["strata"]["entries"]) == 25
     catalog_strata = [row for row in blocks["strata"]["entries"] if row["source"] == "catalog"]
     assert len(catalog_strata) == 23
     for row in catalog_strata:
@@ -575,7 +577,8 @@ def test_strata_new_rows_use_only_supported_quantizations():
     """
     new_rows = [entry for entry in runtime_catalog.entries_for("strata")
                 if entry.source == "hf"]
-    assert len(new_rows) >= 10
+    # 2026-11-28: Strata 自身の目録と重なる行は消した（test_model_catalog_models）。残るのは第三者の無検閲版だけ
+    assert len(new_rows) == 2 and all(entry.uncensored for entry in new_rows)
     for entry in new_rows:
         quant = entry.quantization.casefold()
         assert (quant.startswith("ud-") or quant == "q8_0"
@@ -615,7 +618,7 @@ def test_all_five_runtimes_can_start_the_common_hf_job(admin_client, monkeypatch
         ("llama", "unsloth-qwen38-27b-q8_0", {"alias": "llama-x"}),
         ("radiance", "radiance-minicpm5-2b-bf16", {"alias": "rad-x"}),
         ("sly-radiance", "swift-heretic", {"alias": "sly-x"}),
-        ("strata", "gsq-qwen38-q2_0", {"alias": "strata-x"}),
+        ("strata", "gsq-qwen38-abliterated-iq3_xxs", {"alias": "strata-x"}),
         ("maya", "glm-m-derisked", None),
     ]
     for index, (runtime, entry_id, register) in enumerate(cases):
@@ -629,9 +632,9 @@ def test_all_five_runtimes_can_start_the_common_hf_job(admin_client, monkeypatch
         resume = captured[-1]["resume"]
         assert resume["fetch_sizes"] is True and resume["expected_bytes"] == 0
         if runtime in ("strata",):
-            assert resume["quantization"] == "Q2_0"
+            assert resume["quantization"] == "IQ3_XXS"
             assert resume["register"]["family"] == "qwen"
-            assert resume["register"]["model"] == "q2_0"
+            assert resume["register"]["model"] == "iq3_xxs"
 
 
 def test_catalog_files_endpoint_lists_only_the_selected_quantization(admin_client, monkeypatch):
@@ -654,15 +657,15 @@ def test_catalog_files_endpoint_lists_only_the_selected_quantization(admin_clien
 
     monkeypatch.setattr(hf_module, "_repo_tree", fake_tree)
     response = admin_client.get(
-        "/api/v1/models/catalog/strata/entries/gsq-qwen38-q2_0/files"
+        "/api/v1/models/catalog/llama/entries/unsloth-qwen38-27b-q8_0/files"   # Strata の重複行は 2026-11-28 に消した
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert [item["path"] for item in body["files"]] == [
-        "Q2_0/model-Q2_0-00001-of-00002.gguf",
-        "Q2_0/model-Q2_0-00002-of-00002.gguf",
+        "Q8_0/model-Q8_0-00001-of-00002.gguf",
+        "Q8_0/model-Q8_0-00002-of-00002.gguf",
     ]
-    assert body["total_bytes"] == 300
+    assert body["total_bytes"] == 700
 
 
 def test_new_registration_rejects_outside_paths_even_with_wide_files_config(

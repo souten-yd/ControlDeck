@@ -1,18 +1,22 @@
-/** 全ランタイム共通のモデル目録。backend `GET /models/catalog` の行だけをカードにする。
+/** 全ランタイム共通のモデル目録。backend `GET /models/catalog` の models（モデルごとのまとめ）を
+ *  1 モデル 1 枚のカードにし、量子化はカードを開いて選ぶ。
  *
- *  URL・大きさ・sha は目録に無い限り書かない（未確認の行は「取得時に確認」と出す）。
+ *  2026-11-28 利用者「途中から精度が落ちてるし、なんだか目録が変。追加する機能のところ全てやり直して」で
+ *  作り直した（量子化ごとの大きなカードが縦に並び、Strata は二重、開発者のメモが出て、押せない行があった）。
+ *  大きさ・載るかは、カードを開いたときだけ backend が HF から読む（推測の大きさは書かない）。
  *  取得は共通の `POST /models/acquire-jobs`、停止・再開・取り消しはジョブ API。
  *  途中のファイル（.part）は停止では残し、取り消しで消す（docs/PLAN-model-catalog.md）。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog, Skeleton } from "../../components/ui";
+import { IconChevronRight } from "../../components/icons";
 import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import {
-  cancelModelJob, getModelJob, getRuntimeCatalog, getRuntimeCatalogFiles,
+  cancelModelJob, getModelJob, getRuntimeCatalog, getRuntimeCatalogDetails,
   listModelJobs, listRuntimeInstances, resumeModelJob, startRuntimeAcquire, stopModelJob,
-  type ModelJob, type ModelLibrary, type RuntimeCatalogEntry,
+  type ModelJob, type RuntimeCatalogEntry, type RuntimeCatalogModel, type RuntimeCatalogVariant,
 } from "../../api/models";
 
 export interface RuntimeCatalogProps {
@@ -24,27 +28,18 @@ export interface RuntimeCatalogProps {
   expert?: boolean;
 }
 
-const FIT_LABEL: Record<string, string> = {
-  fits: "載る", tight: "ぎりぎり", no: "載らない", unknown: "",
+const FIT: Record<string, { label: string; tone: string }> = {
+  fits: { label: "載る", tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" },
+  tight: { label: "ぎりぎり", tone: "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300" },
+  no: { label: "載らない", tone: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400" },
 };
-
-const gb = (bytes: number) => bytes >= 1e9
-  ? `${(bytes / 1e9).toFixed(1)} GB` : `${(bytes / 1e6).toFixed(0)} MB`;
+const gib = (value: number) => value >= 10 ? `${Math.round(value)} GiB` : `${value.toFixed(1)} GiB`;
 const rateText = (perSec: number) => perSec >= 1e6
   ? `${(perSec / 1e6).toFixed(1)} MB/s` : `${(perSec / 1e3).toFixed(0)} KB/s`;
 const etaText = (seconds: number) => seconds < 60
   ? `残り約${Math.ceil(seconds)}秒` : `残り約${Math.ceil(seconds / 60)}分`;
 const dirname = (path: string) => path.replace(/\/[^/]*$/, "");
 const terminal = (status: string) => !["queued", "running"].includes(status);
-
-interface Pending {
-  entry: RuntimeCatalogEntry;
-  repo: string;
-  files: Array<{ path: string; size: number }>;
-  total_bytes: number;
-  libraries: ModelLibrary[];
-  library_id: string;
-}
 
 interface JobEntry {
   id: string;
@@ -205,14 +200,261 @@ function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismi
   </>;
 }
 
+function FitPill({ fit }: { fit: string }) {
+  const info = FIT[fit];
+  if (!info) return null;
+  return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${info.tone}`}>{info.label}</span>;
+}
+
+function Tag({ children, tone = "zinc" }: { children: React.ReactNode; tone?: "zinc" | "amber" | "accent" }) {
+  const cls = tone === "amber" ? "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200"
+    : tone === "accent" ? "bg-accent-100 text-accent-700 dark:bg-accent-900/40 dark:text-accent-200"
+      : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
+  return <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{children}</span>;
+}
+
+/** カードの 2 行目: 説明・種類の数・大きさの幅・載るか（分かる分だけ）。 */
+function summary(model: RuntimeCatalogModel): string {
+  const parts: string[] = [];
+  if (model.description) parts.push(model.description);
+  if (model.variants.length > 1) parts.push(`${model.variants.length} 種類`);
+  const min = model.size_min_gib;
+  const max = model.size_max_gib;
+  if (min != null && max != null) parts.push(min === max ? `約 ${gib(min)}` : `約 ${gib(min)}〜${gib(max)}`);
+  return parts.join(" · ");
+}
+
+function bestFit(variants: Array<{ fit: string; supported: boolean }>): string {
+  const fits = variants.filter((v) => v.supported).map((v) => v.fit);
+  if (fits.includes("fits")) return "fits";
+  if (fits.includes("tight")) return "tight";
+  if (fits.length && fits.every((f) => f === "no")) return "no";
+  return "unknown";
+}
+
+interface CardProps {
+  runtime: string;
+  model: RuntimeCatalogModel;
+  entries: RuntimeCatalogEntry[];
+  expert: boolean;
+  hardware?: { ram_total_gib: number; vram_total_gib: number };
+  jobs: JobEntry[];
+  registeredPaths: Set<string>;
+  onStartJob: (job: JobEntry) => void;
+  onJobDone: (jobId: string) => void;
+  onJobResumed: (oldId: string, job: JobEntry) => void;
+  onRegister?: (path: string, entry: RuntimeCatalogEntry) => void;
+}
+
+function ModelCard({ runtime, model, entries, expert, hardware, jobs, registeredPaths, onStartJob, onJobDone,
+  onJobResumed, onRegister }: CardProps) {
+  const show = useToasts((s) => s.show);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);   // 利用者が選んだ量子化（選ぶまでは「この PC 向け」）
+  const [library, setLibrary] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canFetchSomething = model.variants.some((v) => v.acquire === "hf" && v.supported);
+  const { data: details, isFetching, isError } = useQuery({
+    queryKey: ["runtime-catalog-details", runtime, model.id],
+    queryFn: () => getRuntimeCatalogDetails(runtime, model.id),
+    enabled: open && canFetchSomething, staleTime: 5 * 60_000, retry: false,
+  });
+  // 目録の値に、開いたときに読んだ大きさ・載るか・取得済みを重ねる
+  const variants: Array<RuntimeCatalogVariant & { local_path: string }> = model.variants.map((v) => {
+    const d = details?.variants.find((item) => item.id === v.id);
+    return d ? { ...v, size_gib: d.size_gib ?? v.size_gib, fit: d.fit, supported: d.supported, reason: d.reason || v.reason,
+      state: d.local_path && registeredPaths.has(d.local_path) ? "registered" : d.state, local_path: d.local_path }
+      : { ...v, local_path: "" };
+  });
+  // この PC 向け: 大きさが分かったら、載るうちで一番大きい（精度の高い）量子化。分からなければ目録の推奨
+  const recommendedId = (() => {
+    const usable = variants.filter((v) => v.supported && v.fit === "fits" && (v.size_gib ?? v.memory_gib) != null);
+    // 目録が「標準」と言う量子化（Sly の heretic MXFP4 など）が載るなら、それを先に選ぶ
+    const standard = usable.find((v) => v.label.includes("標準"));
+    if (standard) return standard.id;
+    if (!usable.length) return model.recommended_variant;
+    return usable.reduce((a, b) => ((b.memory_gib ?? b.size_gib ?? 0) > (a.memory_gib ?? a.size_gib ?? 0) ? b : a)).id;
+  })();
+  const selected = picked ?? recommendedId ?? variants[0]?.id;
+  const setSelected = (id: string) => setPicked(id);
+  const variant = variants.find((v) => v.id === selected) ?? variants[0];
+  const entry = entries.find((item) => item.id === variant?.id);
+  const myJobs = jobs.filter((job) => model.variants.some((v) => v.id === job.entry.id));
+  const running = myJobs.some((job) => job.entry.id === variant?.id);
+  const anyDownloaded = variants.some((v) => v.state !== "available");
+  const fit = bestFit(variants);
+  const libraries = (details?.libraries ?? []).filter((item) => item.mounted);
+  const ram = hardware?.ram_total_gib;
+  const vram = hardware?.vram_total_gib;
+
+  const start = async () => {
+    if (!variant || !entry) return;
+    setBusy(true);
+    try {
+      const result = await startRuntimeAcquire({ runtime, entry_id: variant.id, library_id: library, files: [] });
+      onStartJob({ id: result.job_id, entry });
+      show("取得を始めました（画面を閉じても続きます）");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "取得を始められませんでした", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const action = (() => {
+    if (!variant) return null;
+    if (!variant.supported) return { label: variant.reason || "このランタイムでは使えません", disabled: true, run: () => {} };
+    if (variant.state === "registered") return { label: "登録済み", disabled: true, run: () => {} };
+    if (variant.acquire === "runtime") {
+      return { label: "登録する（初回の起動で取得）", disabled: !onRegister || !entry,
+        run: () => entry && onRegister?.("", entry) };
+    }
+    if (variant.state === "downloaded" && variant.local_path) {
+      return { label: "登録へ進む（取得済み）", disabled: !onRegister || !entry,
+        run: () => entry && onRegister?.(variant.local_path, entry) };
+    }
+    if (variant.acquire === "hf") {
+      return { label: busy ? "始めています…" : variant.size_gib != null ? `取得する（約 ${gib(variant.size_gib)}）` : "取得する",
+        disabled: busy || running, run: () => void start() };
+    }
+    return { label: "目録から取得できません（手元のファイルから登録してください）", disabled: true, run: () => {} };
+  })();
+
+  return (
+    <li className={`overflow-hidden rounded-2xl border bg-white transition-colors dark:bg-zinc-900 ${open
+      ? "border-accent-300 shadow-sm dark:border-accent-800" : "border-zinc-200 dark:border-zinc-800"}`}
+      data-catalog-model={model.id}>
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className="flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left">
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className="min-w-0 break-words text-sm font-semibold">{model.name}</span>
+            {model.recommended && <Tag tone="accent">おすすめ</Tag>}
+            {model.uncensored && <Tag tone="amber">無検閲</Tag>}
+            {model.gated && <Tag>要トークン</Tag>}
+            {model.kind === "drafter" && <Tag>先読み</Tag>}
+            {anyDownloaded && <Tag tone="accent">取得済み</Tag>}
+          </span>
+          {summary(model) && <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">{summary(model)}</span>}
+        </span>
+        <FitPill fit={fit} />
+        <IconChevronRight aria-hidden className={`h-5 w-5 shrink-0 text-zinc-400 ${open ? "rotate-90" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-zinc-100 px-4 pb-4 pt-3 dark:border-zinc-800">
+          <div role="radiogroup" aria-label={`${model.name} の量子化`} className="space-y-1.5">
+            {variants.map((v) => {
+              const active = v.id === variant?.id;
+              return (
+                <button key={v.id} type="button" role="radio" aria-checked={active} onClick={() => setSelected(v.id)}
+                  data-catalog-variant={v.id}
+                  className={`flex min-h-11 w-full items-center gap-3 rounded-xl border px-3 py-2 text-left ${active
+                    ? "border-accent-500 bg-accent-50 dark:border-accent-600 dark:bg-accent-950/30"
+                    : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50"}`}>
+                  <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border-2 ${active ? "border-accent-600" : "border-zinc-300 dark:border-zinc-600"}`}>
+                    {active && <span className="h-2 w-2 rounded-full bg-accent-600" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className={`text-sm ${v.supported ? "" : "text-zinc-400"}`}>
+                        {/* 量子化の名前（UD-Q4_K_XL など）はハイフンで折らない。折るのは語の間だけ */}
+                        {v.label.split(" ").map((word, i) => <span key={i}>{i ? " " : ""}<span className="whitespace-nowrap">{word}</span></span>)}
+                      </span>
+                      {v.uncensored && !model.uncensored && <Tag tone="amber">無検閲</Tag>}
+                      {v.id === recommendedId && model.variants.length > 1 && <Tag>この PC 向け</Tag>}
+                      {v.state === "downloaded" && <Tag tone="accent">取得済み</Tag>}
+                      {v.state === "registered" && <Tag tone="accent">登録済み</Tag>}
+                    </span>
+                    {(v.note || (!v.supported && v.reason)) && (
+                      <span className="mt-0.5 block text-[11px] text-zinc-500">{v.supported ? v.note : v.reason}</span>
+                    )}
+                  </span>
+                  <span className="num shrink-0 text-xs text-zinc-500">
+                    {v.size_gib != null ? `約 ${gib(v.size_gib)}`
+                      : isFetching && v.acquire === "hf" ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600" aria-label="大きさを読んでいます" />
+                        : ""}
+                  </span>
+                  <FitPill fit={v.supported ? v.fit : ""} />
+                </button>
+              );
+            })}
+          </div>
+          {isError && <p className="text-[11px] text-zinc-500">大きさを読めませんでした。量子化はそのまま選べます。</p>}
+
+          {variant?.supported && variant.fit === "no" && ram != null && vram != null && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              この PC のメモリ（RAM {Math.round(ram)} GiB＋VRAM {Math.round(vram)} GiB）では足りない見込みです。小さい量子化を選んでください。
+            </p>
+          )}
+          {variant?.acquire === "runtime" && variant.supported && (
+            <p className="text-[11px] text-zinc-500">登録すると、最初に起動したときに Strata がモデルを取得します{variant.size_gib != null && `（約 ${gib(variant.size_gib)}）`}。</p>
+          )}
+          {variant?.acquire === "hf" && variant.state === "available" && libraries.length > 1 && (
+            <label className="block text-xs text-zinc-600 dark:text-zinc-300">保存先
+              <select aria-label="取得の保存先" value={library} onChange={(e) => setLibrary(e.target.value)}
+                className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <option value="">既定のライブラリ</option>
+                {libraries.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </select>
+            </label>
+          )}
+
+          {myJobs.map(({ id, entry: jobEntry, restored }) => (
+            <AcquireJobCard key={id} jobId={id} title={`${model.name} ${variants.find((v) => v.id === jobEntry.id)?.label ?? ""}`}
+              restored={restored}
+              onFinished={(job, wasRestored) => {
+                if (job.status === "interrupted") {
+                  if (!wasRestored) show("停止しました。続きから再開できます", "info");
+                  return;
+                }
+                const files = (job.result?.files as string[] | undefined) ?? [];
+                const weight = weightPath(jobEntry, files);
+                void qc.invalidateQueries({ queryKey: ["runtime-catalog-details", runtime, model.id] });
+                onJobDone(id);
+                if (job.status !== "succeeded" || !weight) {
+                  if (!wasRestored && job.status !== "canceled") show(job.error || "取得できませんでした", "error");
+                  return;
+                }
+                if (!wasRestored) {
+                  show(`${model.name} を取得しました。続けて設定を決めます`);
+                  onRegister?.(jobEntry.format === "safetensors" ? dirname(weight) : weight, jobEntry);
+                }
+              }}
+              onDismiss={() => onJobDone(id)}
+              onResumed={(newId) => onJobResumed(id, { id: newId, entry: jobEntry })} />
+          ))}
+
+          {action && !running && (
+            <button type="button" disabled={action.disabled} onClick={action.run} data-testid="catalog-primary"
+              className="min-h-12 w-full rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none dark:disabled:bg-zinc-800 dark:disabled:text-zinc-400">
+              {action.label}
+            </button>
+          )}
+
+          {expert && (
+            <div className="space-y-1 rounded-xl bg-zinc-50 p-3 text-[11px] text-zinc-500 dark:bg-zinc-800/50" data-catalog-expert>
+              {variant?.repo && <p className="break-all font-mono">{variant.repo}</p>}
+              {variant?.files.length ? <p className="break-all font-mono">{variant.files.join(", ")}</p> : null}
+              {variant?.local_path && <p className="break-all font-mono">{variant.local_path}</p>}
+              {model.note_expert && <p>{model.note_expert}</p>}
+              <p className="font-mono">{variant?.id}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
 export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: RuntimeCatalogProps) {
   const storedExpert = useExpert();
   const expert = expertProp ?? storedExpert;
-  const show = useToasts((s) => s.show);
-  const [pending, setPending] = useState<Pending | null>(null);
-  const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState<JobEntry[]>([]);
-  const [acquired, setAcquired] = useState<Record<string, string[]>>({});
+  const [query, setQuery] = useState("");
+  const [hideNoFit, setHideNoFit] = useState(true);
+  const [onlyUncensored, setOnlyUncensored] = useState(false);
 
   const { data: catalog, isLoading, error } = useQuery({
     queryKey: ["runtime-catalog"], queryFn: getRuntimeCatalog, staleTime: 60_000,
@@ -226,17 +468,19 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
     staleTime: 30_000, retry: false,
   });
   const block = catalog?.runtimes.find((item) => item.id === runtime);
-  const entries = block?.entries ?? [];
+  const entries = useMemo(() => block?.entries ?? [], [block]);
+  const models = useMemo(() => block?.models ?? [], [block]);
+  const instanceRuntime = runtime === "llama" ? "llama.cpp" : runtime;
+  const registeredPaths = useMemo(() => new Set((instances?.instances ?? [])
+    .filter((item) => item.runtime === instanceRuntime).flatMap((item) => [item.model_path, dirname(item.model_path)])),
+  [instances, instanceRuntime]);
 
   useEffect(() => {
     // 同じ名前の行が別ランタイムにあっても取り違えないよう repo で照合する（無ければ title）。
-    const matchJob = (job: ModelJob) => entries.find((entry) => {
-      const repo = (job.result as { repo?: string } | undefined)?.repo;
-      return repo ? repo === entry.repo : job.title.includes(entry.name);
-    });
     const restored: JobEntry[] = (savedJobs ?? []).flatMap((job) => {
-      if (job.kind !== "model.hf_download" || ["succeeded", "canceled"].includes(job.status)) return [];
-      const match = matchJob(job);
+      if (job.kind !== "model.hf_download" || ["succeeded", "canceled", "failed"].includes(job.status)) return [];
+      const repo = (job.result as { repo?: string } | undefined)?.repo;
+      const match = entries.find((entry) => (repo ? repo === entry.repo : job.title.includes(entry.name)));
       return match ? [{ id: job.id, entry: match, restored: true }] : [];
     });
     if (restored.length) {
@@ -245,180 +489,69 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
         return [...restored.filter((item) => !known.has(item.id)), ...current];
       });
     }
-    const successful = (savedJobs ?? []).flatMap((job) => {
-      if (job.status !== "succeeded") return [];
-      const match = matchJob(job);
-      const files = (job.result?.files as string[] | undefined) ?? [];
-      const weight = match && files.length ? weightPath(match, files) : "";
-      return weight ? [[match!.id, [weight]]] : [];
-    });
-    if (successful.length) setAcquired((current) => ({ ...Object.fromEntries(successful), ...current }));
-    // entries は参照が変わるので id 列で比較する。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedJobs, entries.map((entry) => entry.id).join(",")]);
+  }, [savedJobs, entries]);
 
-  const open = async (entry: RuntimeCatalogEntry) => {
-    setBusy(true);
-    try {
-      const list = await getRuntimeCatalogFiles(runtime, entry.id);
-      setPending({ entry, ...list, library_id: "" });
-    } catch (e) {
-      show(e instanceof Error ? e.message : "ファイル一覧を取得できませんでした", "error");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const shown = models.filter((model) => {
+    if (query.trim() && !`${model.name} ${model.description} ${model.variants.map((v) => v.label).join(" ")}`
+      .toLowerCase().includes(query.trim().toLowerCase())) return false;
+    if (onlyUncensored && !model.uncensored && !model.variants.some((v) => v.uncensored)) return false;
+    if (hideNoFit && bestFit(model.variants) === "no") return false;
+    return true;
+  });
+  const hidden = hideNoFit ? models.filter((model) => bestFit(model.variants) === "no").length : 0;
+  const anyUncensored = models.some((model) => model.uncensored || model.variants.some((v) => v.uncensored));
 
-  const start = async () => {
-    if (!pending) return;
-    setBusy(true);
-    try {
-      const result = await startRuntimeAcquire({
-        runtime, entry_id: pending.entry.id, library_id: pending.library_id,
-        files: pending.files.map((file) => file.path),
-      });
-      setJobs((current) => [{ id: result.job_id, entry: pending.entry }, ...current]);
-      setPending(null);
-      show("取得を始めました（停止・再開できます）");
-    } catch (e) {
-      show(e instanceof Error ? e.message : "取得を始められませんでした", "error");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const dropJob = (jobId: string) => setJobs((current) => current.filter((item) => item.id !== jobId));
-  const onFinished = (jobId: string, entry: RuntimeCatalogEntry) => (job: ModelJob, restored: boolean) => {
-    // 停止は意図した操作なので失敗扱いにしない。再開できるようカードは残す。
-    // 画面を開き直しただけで再表示した Job はトーストを出さない（利用者の操作ではない）。
-    if (job.status === "interrupted") {
-      if (!restored) show("停止しました。続きから再開できます", "info");
-      return;
-    }
-    const files = (job.result?.files as string[] | undefined) ?? [];
-    const weight = weightPath(entry, files);
-    if (job.status !== "succeeded" || !weight) {
-      if (!restored) show(job.error || `${entry.name} を取得できませんでした`, "error");
-      dropJob(jobId);
-      return;
-    }
-    setAcquired((current) => ({ ...current, [entry.id]: [weight] }));
-    dropJob(jobId);
-    if (!restored) show(`${entry.name} を取得しました`);
-  };
-
-  const instanceRuntime = runtime === "llama" ? "llama.cpp" : runtime;
-  const registered = (entry: RuntimeCatalogEntry) => {
-    const weight = weightPath(entry, acquired[entry.id] ?? []);
-    if (!weight) return false;
-    const candidates = [weight, dirname(weight)];
-    return (instances?.instances ?? []).some((item) =>
-      item.runtime === instanceRuntime && candidates.includes(item.model_path));
-  };
+  const chip = (on: boolean) => `min-h-9 rounded-full border px-3 text-xs ${on
+    ? "border-accent-600 bg-accent-600 text-white"
+    : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"}`;
 
   return (
     <div className="space-y-3" data-runtime-catalog={runtime} data-expert={expert ? "on" : "off"}>
-      {error && <p className="text-xs text-red-600">{error instanceof Error ? error.message : "目録を取得できませんでした"}</p>}
+      {error && <p className="text-xs text-red-600">{error instanceof Error ? error.message : "目録を読めませんでした"}</p>}
       {isLoading && <Skeleton className="h-20" />}
-      {!isLoading && entries.length === 0 && (
-        <p className="rounded-xl border border-dashed border-zinc-200 p-3 text-xs text-zinc-500 dark:border-zinc-700">
-          {block?.search_ref
-            ? "このランタイムには推奨モデルの目録がありません。HF 検索、または下の「ファイルから登録」を使ってください。"
-            : "このランタイムには推奨モデルの目録がありません。下の「ファイルから登録」を使ってください。"}
+      {block && !block.installed && (
+        <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+          このランタイムはまだ導入されていません。導入してから登録してください。
         </p>
       )}
-      {block?.catalog_ref && (
-        <p className="text-[11px] text-zinc-500">全ての候補はランタイム本体の目録から確認できます
-          {expert && <span className="font-mono">（{block.catalog_ref}）</span>}。</p>
-      )}
-      {block && !block.installed && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-300">このランタイムはまだ導入されていません。</p>
-      )}
-
-      {pending && (
-        <div className="space-y-2 rounded-xl border border-accent-300 p-3 dark:border-accent-800">
-          <p className="min-w-0 truncate font-mono text-xs">{pending.repo}</p>
-          <p className="num text-[11px] text-zinc-500">
-            ファイル {pending.files.length} 件 · 合計 {gb(pending.total_bytes)}（HF から取得時に確認）
-          </p>
-          {pending.libraries.length > 0 && (
-            <label className="block text-xs">保存先
-              <select aria-label="取得の保存先" value={pending.library_id}
-                onChange={(e) => setPending({ ...pending, library_id: e.target.value })}
-                className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-                <option value="">既定のライブラリ</option>
-                {pending.libraries.filter((library) => library.mounted).map((library) => (
-                  <option key={library.id} value={library.id}>{library.label}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" disabled={busy} onClick={() => void start()}
-              className="min-h-11 flex-1 rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
-              {busy ? "確認中…" : "取得する"}
+      {models.length > 0 && (
+        <div className="space-y-2">
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="モデル名で探す"
+            aria-label="モデル名で探す"
+            className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button type="button" aria-pressed={hideNoFit} onClick={() => setHideNoFit(!hideNoFit)} className={chip(hideNoFit)}>
+              載らないものを隠す
             </button>
-            <button type="button" disabled={busy} onClick={() => setPending(null)}
-              className="min-h-11 rounded-xl border border-zinc-300 px-4 text-sm dark:border-zinc-700">やめる</button>
+            {anyUncensored && (
+              <button type="button" aria-pressed={onlyUncensored} onClick={() => setOnlyUncensored(!onlyUncensored)} className={chip(onlyUncensored)}>
+                無検閲だけ
+              </button>
+            )}
+            <span className="ml-auto text-[11px] text-zinc-500">
+              {shown.length} 件{hidden > 0 && `（載らない ${hidden} 件を隠しています）`}
+            </span>
           </div>
         </div>
       )}
-
+      {!isLoading && models.length === 0 && (
+        <p className="rounded-xl border border-dashed border-zinc-200 p-3 text-xs text-zinc-500 dark:border-zinc-700">
+          このランタイムにはおすすめの目録がありません。「手元のファイルから」を使ってください。
+        </p>
+      )}
       <ul className="space-y-2">
-        {entries.map((entry) => {
-          const done = registered(entry);
-          const canFetch = entry.supported && entry.acquire === "hf" && !!entry.repo;
-          return <li key={entry.id} className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700"
-            data-catalog-entry={entry.id}>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="min-w-0 flex-1 text-sm font-medium">{entry.name}</span>
-              {entry.uncensored && <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">無検閲寄り</span>}
-              {entry.kind === "drafter" && <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] dark:bg-zinc-800">先読み</span>}
-              {FIT_LABEL[entry.fit] && <span className="shrink-0 text-[10px] text-zinc-500">{FIT_LABEL[entry.fit]}</span>}
-              {!entry.supported && <span className="shrink-0 text-[10px] text-zinc-500">未対応</span>}
-            </div>
-            <p className="num mt-1 text-[11px] text-zinc-500">
-              {entry.quantization || entry.format}
-              {entry.size_gib !== null && ` · 約${entry.size_gib} GiB`}
-              {entry.size_gib === null && canFetch && " · 大きさは取得時に確認"}
-              {entry.memory_gib !== null && ` · 目安 ${entry.memory_gib} GiB`}
-            </p>
-            {entry.note && <p className="mt-1 text-[11px] text-zinc-500">{entry.note}</p>}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {done && <span className="min-h-11 content-center text-xs text-emerald-600">登録済み</span>}
-              {!done && acquired[entry.id]?.[0] && onRegister && (
-                <button type="button" onClick={() => {
-                  // README・config ではなく実際の重みを入口にする（分割モデルは先頭シャード）。
-                  const file = weightPath(entry, acquired[entry.id]);
-                  // safetensors はフォルダ単位で登録する（Sly は config.json のあるフォルダ）。
-                  onRegister(entry.format === "safetensors" ? dirname(file) : file, entry);
-                }}
-                  className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
-                  登録する
-                </button>
-              )}
-              {canFetch && !done && (
-                <button type="button" disabled={busy || !!pending} onClick={() => void open(entry)}
-                  className="min-h-11 rounded-lg bg-accent-600 px-3 text-xs font-medium text-white disabled:opacity-40">
-                  取得する
-                </button>
-              )}
-              {!canFetch && entry.acquire === "runtime" && (
-                <span className="text-[11px] text-zinc-500">初回起動時にランタイムが取得します。登録画面で選んでください。</span>
-              )}
-            </div>
-          </li>;
-        })}
+        {shown.map((model) => (
+          <ModelCard key={model.id} runtime={runtime} model={model} entries={entries} expert={expert}
+            hardware={catalog?.hardware} jobs={jobs} registeredPaths={registeredPaths}
+            onStartJob={(job) => setJobs((current) => [job, ...current])}
+            onJobDone={(jobId) => setJobs((current) => current.filter((item) => item.id !== jobId))}
+            onJobResumed={(oldId, job) => setJobs((current) => [job, ...current.filter((item) => item.id !== oldId)])}
+            onRegister={onRegister} />
+        ))}
       </ul>
-
-      {jobs.map(({ id, entry, restored }) => (
-        <AcquireJobCard key={id} jobId={id} title={entry.name} restored={restored}
-          onFinished={onFinished(id, entry)}
-          onDismiss={() => dropJob(id)}
-          onResumed={(newId) => setJobs((current) => [
-            { id: newId, entry }, ...current.filter((item) => item.id !== id),
-          ])} />
-      ))}
+      {block?.catalog_ref && expert && (
+        <p className="text-[11px] text-zinc-500">全部の候補はランタイム本体の目録にあります（<span className="font-mono">{block.catalog_ref}</span>）。</p>
+      )}
     </div>
   );
 }

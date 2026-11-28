@@ -392,6 +392,7 @@ ROUTES: tuple[Route, ...] = (
     Route("ext-github-research", "workflows", "github", "egress", "GitHub の調査（リポジトリ・Issue の検索）", ("confidential", "ssrf_guard"),
           _o("workflows/github_research.py"), "external"),
     Route("ext-hf-search", "models_mgmt", "hf", "egress", "Hugging Face のモデル検索", ("confidential",), _o("models_mgmt/hf_search.py"), "external"),
+    Route("ext-hf-catalog-details", "models_mgmt", "hf", "egress", "Models の目録のカードを開いたときに、量子化ごとのファイルの大きさを読む（24 時間覚える）", ("confidential",), _o("models_mgmt/catalog_details.py"), "external"),
     Route("ext-hf-download", "backend", "hf", "egress",
           "モデルの取得（目録・検索からの HuggingFace の metadata 問い合わせと resolve の本体。llama.cpp・Radiance・Sly-Radiance・Strata・Maya の全 5 ランタイムが共通の取得 Job を使い、停止・再開・取り消しも同じ道）",
           ("auth", "audit", "path_check", "ssrf_guard", "confidential"),

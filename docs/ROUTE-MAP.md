@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 126 本、ノード: 44 個
+- ルート: 127 本、ノード: 44 個
 
 ## 守りの印（guards）
 
@@ -289,7 +289,7 @@ flowchart LR
 | `nx-codex-usage` | 使用率のファイル（usage・Codex の記録） | backend（FastAPI） | file | Codex の sessions の記録（rollout）の最後の rate_limits を読む | `no_secrets` | `backend/app/commander/usage.py` | auth.json など鍵のファイルは読まない |
 | `nx-accounts` | backend（FastAPI） | CLI アカウントのフォルダ（ログインの鍵が入る） | file | CLI アカウントのフォルダを作る・消す・ログイン済みかをファイルの有無だけで判定 | `auth` `audit` `no_secrets` | `backend/app/commander/accounts.py`<br>`backend/app/commander/router.py` | 中身（auth.json・.credentials.json）は読まない・返さない |
 
-### 外部への通信の出口（16 本）
+### 外部への通信の出口（17 本）
 
 ```mermaid
 flowchart LR
@@ -309,6 +309,7 @@ flowchart LR
   backend -->|"ext-web-collector (egress)"| web
   workflows -->|"ext-github-research (egress)"| github
   models_mgmt -->|"ext-hf-search (egress)"| hf
+  models_mgmt -->|"ext-hf-catalog-details (egress)"| hf
   backend -->|"ext-hf-download (egress)"| hf
   news -->|"ext-news-sources (egress)"| web
   knowledge -->|"ext-knowledge-sources (egress)"| web
@@ -329,6 +330,7 @@ flowchart LR
 | `ext-web-collector` | backend（FastAPI） | 公開インターネット（Web・学術・フォーラム） | egress | Web 収集（取得・ブラウザ・robots・データ API） | `confidential` `ssrf_guard` | `backend/app/web_collector/egress.py`<br>`backend/app/web_collector/browser.py`<br>`backend/app/web_collector/fetch.py`<br>`backend/app/web_collector/data_api.py`<br>`backend/app/web_collector/robots.py` | 出口（guarded_client）が内部アドレスを断つ。接続の直前に ensure_external_allowed |
 | `ext-github-research` | Workflow エンジン・Project Lab | GitHub | egress | GitHub の調査（リポジトリ・Issue の検索） | `confidential` `ssrf_guard` | `backend/app/workflows/github_research.py` |  |
 | `ext-hf-search` | モデル管理 | Hugging Face | egress | Hugging Face のモデル検索 | `confidential` | `backend/app/models_mgmt/hf_search.py` |  |
+| `ext-hf-catalog-details` | モデル管理 | Hugging Face | egress | Models の目録のカードを開いたときに、量子化ごとのファイルの大きさを読む（24 時間覚える） | `confidential` | `backend/app/models_mgmt/catalog_details.py` |  |
 | `ext-hf-download` | backend（FastAPI） | Hugging Face | egress | モデルの取得（目録・検索からの HuggingFace の metadata 問い合わせと resolve の本体。llama.cpp・Radiance・Sly-Radiance・Strata・Maya の全 5 ランタイムが共通の取得 Job を使い、停止・再開・取り消しも同じ道） | `auth` `audit` `path_check` `ssrf_guard` `confidential` | `backend/app/models_mgmt/hf.py` | 出口は guarded transport（web_collector/egress）: 名前解決→全アドレス検査→検査済み IP へ接続。redirect は自動で追わず各段を https か確認してから追う。metadata の問い合わせ・取得・再開の前に ensure_external_allowed（秘密の会話・オフライン調査では止まる）。量子化のサブフォルダは tree API で全片を列挙し、選んだ量子化だけを取得する |
 | `ext-news-sources` | ニュース機能 | 公開インターネット（Web・学術・フォーラム） | egress | ニュースの取得（RSS・ページ・Google ニュース・画像） | `ssrf_guard` | `backend/app/news/sources.py`<br>`backend/app/news/probe.py`<br>`backend/app/news/gnews.py`<br>`backend/app/news/images.py`<br>`backend/app/news/sourcemgr.py` | 公開情報だけ。出口は guarded_client |
 | `ext-knowledge-sources` | ナレッジ・特許・規格 | 公開インターネット（Web・学術・フォーラム） | egress | 特許・論文の公開データ（EPO・USPTO・特許庁）の取り込み | `ssrf_guard` `no_secrets` | `backend/app/knowledge/sources.py` | キーは暗号化して保存。取り込んだ文書は既定で confidential |

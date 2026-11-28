@@ -201,6 +201,67 @@ export interface RuntimeCatalogEntry {
   fit: "fits" | "tight" | "no" | "unknown" | string;
 }
 
+/** 目録のモデルの量子化（カードの中で選ぶ行）。id は取得・登録の API に渡す目録の行の id。 */
+export interface RuntimeCatalogVariant {
+  id: string;
+  label: string;
+  quantization: string;
+  acquire: "hf" | "runtime" | "none";
+  size_gib: number | null;
+  memory_gib: number | null;
+  fit: "fits" | "tight" | "no" | "unknown" | string;
+  supported: boolean;
+  reason: string;
+  repo: string;
+  format: string;
+  kind: "model" | "drafter";
+  family: string;
+  files: string[];
+  state: "available" | "downloaded" | "registered";
+  uncensored: boolean;
+  /** 量子化ごとに違う説明（カードの説明と違うときだけ） */
+  note: string;
+}
+
+/** 目録のモデル（画面の 1 枚のカード）。2026-11-28 に量子化ごとのカードから作り直した。 */
+export interface RuntimeCatalogModel {
+  id: string;
+  name: string;
+  description: string;
+  /** 開発者向けのメモ（エキスパートだけ表示） */
+  note_expert: string;
+  uncensored: boolean;
+  gated: boolean;
+  kind: "model" | "drafter";
+  recommended: boolean;
+  recommended_variant: string;
+  size_min_gib: number | null;
+  size_max_gib: number | null;
+  variants: RuntimeCatalogVariant[];
+}
+
+export interface RuntimeCatalogDetailsVariant {
+  id: string;
+  size_gib: number | null;
+  fit: string;
+  supported: boolean;
+  reason: string;
+  state: "available" | "downloaded" | "registered";
+  local_path: string;
+}
+
+export interface RuntimeCatalogDetails {
+  model_id: string;
+  variants: RuntimeCatalogDetailsVariant[];
+  hardware: { ram_total_gib: number | null; vram_total_gib: number | null };
+  libraries: ModelLibrary[];
+}
+
+/** カードを開いたときだけ読む（HF の大きさ。backend が 24 時間覚える）。 */
+export const getRuntimeCatalogDetails = (runtime: string, modelId: string) =>
+  api<RuntimeCatalogDetails>(
+    `/models/catalog/${encodeURIComponent(runtime)}/details?model=${encodeURIComponent(modelId)}`);
+
 export interface RuntimeCatalogBlock {
   id: string;
   name: string;
@@ -208,6 +269,8 @@ export interface RuntimeCatalogBlock {
   formats: string[];
   acquire: "hf" | "runtime" | "none";
   entries: RuntimeCatalogEntry[];
+  /** モデルごとにまとめた目録（画面はこちらを使う） */
+  models?: RuntimeCatalogModel[];
   /** 動的な全一覧（Maya の probe など）への既存 API。 */
   catalog_ref?: string;
   /** HF 検索の既存 API（目録に推奨行が無いランタイム）。 */

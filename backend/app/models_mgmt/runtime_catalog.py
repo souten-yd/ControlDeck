@@ -367,7 +367,14 @@ def entries_for(runtime: str) -> list[Entry]:
     if runtime == "sly-radiance":
         return _sly_entries()
     if runtime == "strata":
-        return _strata_entries() + _researched_entries("strata")
+        own = _strata_entries()
+        # Strata 自身の目録にある組み合わせ（系列×量子化）は、Strata が初回の起動で取る行だけにする。
+        # HF から取る同じ行も並べていて、目録が二重に見えた（2026-11-28 利用者「目録が変」）。
+        # 第三者の無検閲版など、Strata の目録に無いものだけ HF の行を残す。
+        known = {(entry.family, entry.quantization.casefold()) for entry in own}
+        extra = [entry for entry in _researched_entries("strata")
+                 if entry.uncensored or (entry.family, entry.quantization.casefold()) not in known]
+        return own + extra
     if runtime == "maya":
         return _maya_entries()
     return []
@@ -417,6 +424,193 @@ def _installed(runtime: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------- モデルごとのまとめ（画面の単位）
+#
+# 2026-11-28 利用者「途中から精度が落ちてるし、なんだか目録が変。追加する機能のところ全てやり直して」。
+# 量子化ごとに 1 枚のカードを並べていたのを、モデルごとの 1 枚にまとめ、量子化はカードの中で選ぶ。
+# 開発者向けのメモ（引数・環境変数・内部の経路）は note_expert に分け、利用者には出さない。
+
+# Strata の系列の画面の名前と説明（strata_catalog の名前は登録済みの一覧と共用なので、ここで言い換える）
+_STRATA_MODEL: dict[str, tuple[str, str]] = {
+    "qwen": ("Qwen3.8-Flash-Next", "Strata の標準。GSQ-RCO で小さく速い"),
+    "coder": ("Qwen3.8-Flash-Next Coder", "コード向け。コード以外と英語以外の言語は弱い"),
+    "swift": ("Swift 1.5", "思考を短くした fine-tune"),
+    "unsloth": ("Qwen3.8-Flash-Next（Unsloth 版）", "Unsloth の量子化。大きめで精度寄り"),
+    "qwen36": ("Qwen3.6-35B-A3B", "35B（有効 3B）の MoE。Flash-Next より小さい"),
+}
+
+# 複数の repo を 1 つのモデルにまとめる行（同じ重みの量子化違い）: entry id → (group, モデル名, 量子化の名前)
+_GROUP_OVERRIDE: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("sly-radiance", "swift-heretic"): ("sly:qwen38-27b", "Qwen3.8-27B", "Swift-1.5 heretic MXFP4（標準）"),
+    ("sly-radiance", "quark-awq"): ("sly:qwen38-27b", "Qwen3.8-27B", "Quark AWQ MXFP4（AMD）"),
+    ("sly-radiance", "nvfp4"): ("sly:qwen38-27b", "Qwen3.8-27B", "NVFP4（Unsloth）"),
+    ("sly-radiance", "paroquant"): ("sly:qwen38-27b", "Qwen3.8-27B", "ParoQuant"),
+    ("sly-radiance", "dflash2"): ("sly:dflash2", "先読み DFlash2", "W4A16"),
+    ("radiance", "radiance-minicpm5-2b-fp8"): ("radiance:minicpm5-2b", "MiniCPM5-2B", "FP8"),
+    ("radiance", "radiance-minicpm5-2b-bf16"): ("radiance:minicpm5-2b", "MiniCPM5-2B", "BF16"),
+}
+
+# 目録の note のうち、利用者に見せてよい言い換え（無いものは開発者向けとしてエキスパートだけに出す）
+_USER_NOTE: dict[str, str] = {
+    "abliterated（無検閲）": "拒否を減らす編集をした版（無検閲）",
+    "heretic / abliterated / uncensored": "拒否を減らす編集をした版（無検閲）",
+    "ultra uncensored / heretic": "拒否を減らす編集をした版（無検閲）",
+    "Uncensored": "拒否を減らす編集をした版（無検閲）",
+    "拒否を減らす重みの編集（Derisked）・実験的。登録は Maya 本体の目録（probe）から行う":
+        "拒否を減らす重みの編集（Derisked）をした実験的な版",
+    "HF の規約の承諾とトークンが要る（gated）。AMD は未検証":
+        "HF で規約の承諾とトークンが要ります。AMD では未検証",
+    "README の標準モデル。拒否を減らす編集（heretic）済み。5GiB ごとの分割":
+        "標準のモデル。拒否を減らす編集（heretic）済み",
+    "上のどのモデルとも使える先読みモデル（drafter）": "Qwen3.8-27B のどの量子化とも組める先読みのモデル",
+}
+
+_PAREN = __import__("re").compile(r"（[^）]*）")
+
+
+def _plain(name: str) -> str:
+    return " ".join(_PAREN.sub("", name).split())
+
+
+def _common_prefix(names: list[str]) -> str:
+    """語（空白区切り）の共通の先頭。"""
+    words = [n.split() for n in names]
+    out: list[str] = []
+    for column in zip(*words):
+        if all(w == column[0] for w in column):
+            out.append(column[0])
+        else:
+            break
+    return " ".join(out)
+
+
+def _strip_markers(text: str) -> str:
+    """無検閲・gated の印（画面では札で出す）を名前から外す。"""
+    for mark in ("（無検閲・gated）", "（無検閲寄り）", "（無検閲）"):
+        text = text.replace(mark, "")
+    return " ".join(text.split())
+
+
+def _group_key(entry: "Entry") -> str:
+    override = _GROUP_OVERRIDE.get((entry.runtime, entry.id))
+    if override:
+        return override[0]
+    if entry.acquire == "runtime" and entry.family:
+        return f"{entry.runtime}:family:{entry.family}"
+    if entry.repo:
+        return f"{entry.runtime}:repo:{entry.repo.casefold()}"
+    return f"{entry.runtime}:id:{entry.id}"
+
+
+def _names(group: list["Entry"]) -> tuple[str, list[str]]:
+    """モデルの名前と、各行の量子化の名前。"""
+    first = group[0]
+    override = _GROUP_OVERRIDE.get((first.runtime, first.id))
+    if override:
+        return override[1], [_GROUP_OVERRIDE.get((e.runtime, e.id), ("", "", e.quantization or "標準"))[2]
+                             for e in group]
+    if first.acquire == "runtime" and first.family:
+        from app.models_mgmt import strata_catalog
+
+        name = _STRATA_MODEL.get(first.family, (strata_catalog.short_name(first.family), ""))[0]
+        return name, [e.name.split(" · ", 1)[-1] for e in group]
+    plains = [_plain(e.name) for e in group]
+    if len(group) > 1:
+        prefix = _common_prefix(plains)
+    else:
+        words = plains[0].split()
+        quant = first.quantization.casefold()
+        prefix = " ".join(words[:-1]) if len(words) > 1 and quant and words[-1].casefold() == quant else plains[0]
+    prefix = prefix or plains[0]
+    labels = []
+    for entry in group:
+        rest = _strip_markers(entry.name)
+        rest = rest[len(prefix):].strip() if rest.startswith(prefix) else (entry.quantization or "")
+        labels.append(rest or entry.quantization or "標準")
+    return prefix, labels
+
+
+def _description(group: list["Entry"]) -> tuple[str, str]:
+    """利用者向けの説明 1 行と、開発者向けのメモ（エキスパート）。"""
+    first = group[0]
+    if first.acquire == "runtime" and first.family in _STRATA_MODEL:
+        description = _STRATA_MODEL[first.family][1]
+        return description, "" if first.note and first.note in description else first.note
+    users, experts = [], []
+    for entry in group:
+        if not entry.note:
+            continue
+        if entry.note in _USER_NOTE:
+            if _USER_NOTE[entry.note] not in users:
+                users.append(_USER_NOTE[entry.note])
+        elif entry.supported and entry.note not in experts:
+            experts.append(entry.note)
+    # 量子化ごとに違う説明はカードの説明にしない（量子化の行に出す。_variant_note）
+    if len(group) > 1 and len({_USER_NOTE.get(e.note, "") for e in group}) > 1:
+        users = []
+    return "・".join(users), " / ".join(experts)
+
+
+def _variant_note(group: list["Entry"], entry: "Entry") -> str:
+    """量子化の行に出す 1 行（カードの説明と違うときだけ）。"""
+    if len(group) > 1 and len({_USER_NOTE.get(e.note, "") for e in group}) > 1:
+        return _USER_NOTE.get(entry.note, "")
+    return ""
+
+
+def _recommended(variants: list[dict]) -> str:
+    """最初に選んでおく量子化: この PC に載るうちで一番大きい（精度が高い）もの。分からなければ先頭。"""
+    usable = [v for v in variants if v["supported"]]
+    fitting = [v for v in usable if v["fit"] == "fits"]
+    pool = fitting or usable or variants
+    sized = [v for v in pool if (v["memory_gib"] or v["size_gib"]) is not None]
+    if sized:
+        return max(sized, key=lambda v: v["memory_gib"] or v["size_gib"] or 0)["id"]
+    return pool[0]["id"] if pool else ""
+
+
+def models_for(runtime: str, ram: float | None, vram: float | None) -> list[dict]:
+    """ランタイムの目録をモデルごとにまとめる（画面の 1 枚のカード）。"""
+    groups: dict[str, list[Entry]] = {}
+    for entry in entries_for(runtime):
+        groups.setdefault(_group_key(entry), []).append(entry)
+    out = []
+    for index, (key, group) in enumerate(groups.items()):
+        name, labels = _names(group)
+        description, note_expert = _description(group)
+        variants = []
+        for entry, label in zip(group, labels):
+            row = entry.api_row(_fit_for(entry, ram, vram))
+            variants.append({
+                "id": entry.id, "label": label, "quantization": entry.quantization,
+                "acquire": entry.acquire if entry.supported else "none",
+                "size_gib": entry.size_gib, "memory_gib": entry.memory_gib, "fit": row["fit"],
+                "supported": entry.supported,
+                "reason": "" if entry.supported else (_USER_NOTE.get(entry.note) or "このランタイムではまだ使えません"),
+                "repo": entry.repo, "format": entry.format, "kind": entry.kind, "family": entry.family,
+                "files": list(entry.files), "state": "available",
+                "uncensored": entry.uncensored, "note": _variant_note(group, entry),
+            })
+        sizes = [v["size_gib"] for v in variants if v["size_gib"] is not None]
+        out.append({
+            "id": key, "name": name, "description": description, "note_expert": note_expert,
+            # 全部が無検閲のときだけカードに札。一部だけなら量子化の行に札（Sly の Qwen3.8-27B は heretic だけ）
+            "uncensored": all(e.uncensored for e in group),
+            "gated": any("gated" in e.name or "gated" in e.note for e in group),
+            "kind": group[0].kind,
+            # おすすめは Strata の標準（自身の目録の qwen 系列）だけ。同じ系列名の第三者の無検閲版には付けない
+            "recommended": runtime == "strata" and group[0].family == "qwen" and group[0].acquire == "runtime",
+            "recommended_variant": _recommended(variants),
+            "size_min_gib": min(sizes) if sizes else None, "size_max_gib": max(sizes) if sizes else None,
+            "variants": variants, "_order": index,
+        })
+    # おすすめ → 載るものがある → 目録の順
+    out.sort(key=lambda m: (not m["recommended"], not any(v["fit"] == "fits" for v in m["variants"]), m["_order"]))
+    for item in out:
+        item.pop("_order")
+    return out
+
+
 def api_payload() -> dict:
     """GET /api/v1/models/catalog の本体（同期処理なので endpoint は def にする）。"""
     from app.models_mgmt import strata_catalog
@@ -428,6 +622,7 @@ def api_payload() -> dict:
         block = {
             "id": spec["id"], "name": spec["name"], "installed": _installed(spec["id"]),
             "formats": list(spec["formats"]), "acquire": spec["acquire"], "entries": rows,
+            "models": models_for(spec["id"], ram, vram),
         }
         if spec.get("catalog_ref"):
             block["catalog_ref"] = spec["catalog_ref"]

@@ -73,14 +73,18 @@ export function Toggle({ label, hint, value, disabled = false, onChange }: { lab
 export function SettingsGroup({ title, description, children, collapsible = false, defaultOpen = true }: {
   title: string; description?: string; children: React.ReactNode; collapsible?: boolean; defaultOpen?: boolean;
 }) {
+  // 畳んだ枠の中身は、開いたときに初めて描く（一度開いたら閉じても残す）。畳んだ目録が裏で読み込まれ、
+  // 見えない同じ名前が別の一覧と重なっていた（2026-11-28 目録の作り直し）。
+  const [opened, setOpened] = useState(defaultOpen);
   if (collapsible) {
     return (
-      <details open={defaultOpen} className="group rounded-xl border border-zinc-200 dark:border-zinc-700">
+      <details open={defaultOpen} onToggle={(e) => { if (e.currentTarget.open) setOpened(true); }}
+        className="group rounded-xl border border-zinc-200 dark:border-zinc-700">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-semibold">
           <span className="flex-1">{title}{description && <span className="block text-[11px] font-normal text-zinc-500">{description}</span>}</span>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" className="text-zinc-400 transition-transform group-open:rotate-90" aria-hidden><path d="m9 6 6 6-6 6" /></svg>
         </summary>
-        <div className="space-y-3 border-t border-zinc-100 px-3 py-3 dark:border-zinc-800">{children}</div>
+        <div className="space-y-3 border-t border-zinc-100 px-3 py-3 dark:border-zinc-800">{opened ? children : null}</div>
       </details>
     );
   }

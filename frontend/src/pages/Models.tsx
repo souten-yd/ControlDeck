@@ -24,7 +24,7 @@ import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "..
 import { SlyRadianceDetailSheet, SlyRadianceRegisterPanel, useSlyRadianceState } from "../features/models/SlyRadiancePanel";
 import { MayaSDetailSheet, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { MayaModelSheet, MayaRegisterPanel } from "../features/models/MayaRegisterPanel";
-import { deleteLlamaInstance, duplicateLlamaInstance, getRuntimeCatalog, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
+import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
 // 共通3部品（目録・ファイル登録・設定）。Strata / llama.cpp の登録と個別設定はこれへ寄せる。
 // どの量子化が使えるかは backend の目録・inspect が持つので、ここに固定一覧は持たない。
 import { RuntimeCatalog } from "../features/models/RuntimeCatalog";
@@ -2125,12 +2125,12 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
           values={pending.values}
           onDone={onClose}
           note={<div className="space-y-1">
-            {pending.runtime === "strata" && (
+            {pending.runtime === "strata" && !pending.values.model_path && (
               <p className="text-[11px] text-zinc-500">
-                初回ロード時に Strata が重みを取得します。系列・量子化は目録の行に合わせてください（GSQ-RCO / Unsloth UD-* / Q8_0）。
+                最初に起動したときに、Strata がモデルを取得します（大きいので時間がかかります）。
               </p>
             )}
-            <button type="button" onClick={() => setPending(null)} className="min-h-11 text-xs text-zinc-500 underline">登録方法を選び直す</button>
+            <button type="button" onClick={() => setPending(null)} className="min-h-11 text-xs text-zinc-500 underline">モデルを選び直す</button>
           </div>}
         />
       )}
@@ -2196,9 +2196,6 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
             onReady(toValues(path, runtime === "strata" ? strataAlias(entry.id) : aliasFrom(entry.name),
               runtime === "strata" ? { family: family || "qwen", model: model || entry.quantization } : {}));
           }} />
-          {/* Strata の目録行は acquire="runtime"。共通目録は HF 取得後の登録だけを扱うので、
-              同じ目録 API の行から「初回ロード時に取得する」登録もできるようにする。 */}
-          {runtime === "strata" && <StrataCatalogRegister port={port} onReady={onReady} />}
         </>
       )}
       {tab === "file" && (
@@ -2215,39 +2212,6 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
       {tab === "legacy" && (runtime === "llama"
         ? <LlamaRuntimePanel registrationOnly />
         : <StrataRegisterPanel onDone={onClose} />)}
-    </div>
-  );
-}
-
-/** Strata の目録（backend の GET /models/catalog）から、初回ロード時に取得する登録を作る。
- *  目録データは共通 API から読み、固定の一覧は持たない。 */
-function StrataCatalogRegister({ port, onReady }: { port: number; onReady: (values: SettingValues) => void }) {
-  const { data } = useQuery({ queryKey: ["runtime-catalog"], queryFn: getRuntimeCatalog, staleTime: 60_000 });
-  const entries = (data?.runtimes.find((item) => item.id === "strata")?.entries ?? [])
-    .filter((entry) => entry.supported);
-  const [selected, setSelected] = useState("");
-  const entry = entries.find((item) => item.id === selected) ?? entries[0];
-  const [family, model] = (entry?.id ?? "qwen/iq2_xs").split("/", 2);
-  const alias = strataAlias(entry?.id ?? "qwen/iq2_xs");
-  return (
-    <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
-      <p className="text-xs font-medium">目録から登録（初回ロード時に Strata が重みを取得します）</p>
-      {entries.length === 0 ? (
-        <p className="text-[11px] text-zinc-500">登録できる目録行がありません。「ファイルから登録」を使ってください。</p>
-      ) : (
-        <>
-          <select aria-label="Strata の目録から選ぶ" value={entry?.id ?? ""}
-            onChange={(event) => setSelected(event.target.value)}
-            className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-            {entries.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
-          <button type="button" disabled={!entry}
-            onClick={() => onReady({ alias, model_path: "", family, model, port })}
-            className="min-h-11 w-full rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
-            登録する
-          </button>
-        </>
-      )}
     </div>
   );
 }
