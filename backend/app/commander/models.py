@@ -168,3 +168,47 @@ def list_models(cli: str, account: str = "default") -> dict:
     with _lock:
         _cache[key] = (now, result)
     return result
+
+
+# ---------------------------------------------------------------- 役割用のモデルの統合一覧（B）
+
+ROLE_GROUPS = ("local", "opencode", "openrouter", "claude", "codex")
+
+
+def role_choices() -> dict:
+    """役割の設定に並べる、使えるモデルの統合一覧（2026-11-28 利用者「使えるモデルを事前に抽出して選択肢から
+    選べるように。役割を決める所でモデルを選べるとよい」）。
+
+    - group: local（ゲートウェイのローカル）・opencode（Zen・Go）・openrouter（外部）・claude（CLI の別名）・codex（models_cache）。
+    - 選んだ choice の endpoint（kind・cli・account・model・effort）は、そのまま役割の endpoint へ渡せる形
+      （選択で CLI・接続が決まる。アカウントの細かい選び方はエキスパートの設定で上書きできる）。
+    - 同じモデルが複数の接続にあるときは先頭（既定側）の接続だけを出す。
+    - 外へは何も取りに行かない。一覧は list_models（5 分覚える・鍵のファイルは読まない）の結果を種類ごとに分けるだけ。
+    """
+    from app.commander import accounts
+    from app.integrations.opencode import model_choice
+
+    choices: list[dict] = []
+    seen: set[str] = set()
+
+    def add(cli: str, account: str, model: str, label: str, group: str, efforts: list[str]) -> None:
+        if f"{cli}:{model}" in seen:
+            return
+        seen.add(f"{cli}:{model}")
+        choices.append({"id": f"{cli}:{account}:{model}", "label": str(label)[:80], "group": group,
+                        "endpoint": {"kind": "headless", "cli": cli, "account": account, "model": model, "effort": ""},
+                        "efforts": list(efforts)})
+
+    for m in list_models("claude", accounts.DEFAULT_ACCOUNT)["models"]:
+        add("claude", accounts.DEFAULT_ACCOUNT, str(m["id"]), str(m["label"]), "claude", m["efforts"])
+    for row in accounts.list_accounts(accounts.CLIS["codex"]):
+        for m in list_models("codex", str(row["name"]))["models"]:
+            add("codex", str(row["name"]), str(m["id"]), str(m["label"]), "codex", m["efforts"])
+    for row in accounts.opencode_connections():
+        for m in list_models("opencode", str(row["name"]))["models"]:
+            model = str(m["id"])
+            group = "opencode" if model_choice.is_zen(model) else ("openrouter" if model.startswith("cloud:") else "local")
+            add("opencode", str(row["name"]), model, str(m["label"]), group, m["efforts"])
+    note = ("Claude は別名のほか完全なモデル名も入力できます / Codex の一覧は models_cache.json から（読めなければ名前を入力） / "
+            "OpenCode の考えるレベルはモデルの variant")
+    return {"choices": choices, "note": note}

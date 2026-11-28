@@ -2,6 +2,54 @@
 
 2026-11-27 利用者「AI チームを作りたい。どうしたら情報の橋渡しができるのか。リーダーはローカル LLM やフロンティアモデルを自由に設定したい。どういう形が使いやすいか。調査検討してブラッシュアップして」。
 
+## 2026-11-28 devx: 画面・道具・守り・再開・モデル選び（計画のみ・未検証）
+
+利用者（2026-11-28）の 7 つの要望（グラフィカルな画面・OpenCode の守り・道具の配分・停止と再開・モデルの選択肢・資料の受け渡し・検索の評価と改良）に対する計画。**この節を書いた時点ではコード・試験・画面・実機は未着手で、下の表の A〜F はすべて未検証**。実装が入ったら状態を書き換え、`docs/implementation-status.md` と `docs/HANDOFF-nexarch-devx.md` を同じコミットで直す。実装完了・試験成功を先取りして書かない。
+
+### 作るもの（A〜F）
+
+| # | 作るもの | 中身（要約） | 主に触る場所 | 状態 |
+|---|---|---|---|---|
+| A | チームの画面の作り直し | チームリーダーと担い手をアバターつきのカードと段（調べる→計画→実装→評価→統合→試験）で見せ、動いている所が控えめな動きで分かる（`prefers-reduced-motion` を守る）。文字は 1 行の要約だけにし、詳しい報告・差分・確認の結果・履歴は押して開く（ボトムシートか広がる枠）。エキスパートで今の細かい表示を全部出す。動いている・待っている（質問・許可・上限）・止まった（失敗・中断・閉じた）・終わったを、色・形・動きの 3 つで分ける（色だけに頼らない）。止まった・失敗・要対応はエキスパートを切っていても常に出す | `frontend/src/features/commander/`（`ConsoleTile.tsx` は別チームの担当なので最小） | 未着手 |
+| B | 役割ごとのモデルの選択肢 | 役割の設定に、いつも見える「モデル」の選択肢を 1 つ置く。中身は使えるモデルを前もって抜き出して種類ごとにまとめたもの（ローカル・OpenCode の無料／Go・OpenRouter・Claude・Codex）。選べば CLI・接続は自動で決まる。アカウントを細かく選ぶのはエキスパートだけ | `commander/models.py`・`integrations/opencode/model_choice.py`・`TeamRoles.tsx` | 未着手 |
+| C | 道具の配分と守り | 担い手の OpenCode に ControlDeck の MCP（`control_deck.research`・`knowledge_search` ほか、ふつうの OpenCode の会話と同じもの）を付ける（`_runtime_config(owner_user_id=…)`。チームを作った利用者の権限。作った利用者が分からないチームは付けない）。Claude・Codex の担い手にも同じ道具を MCP の橋渡しで渡す。読み取りの役割（explore・review）には書く道具を渡さない。箱（podman）と `--auto` は今のまま。チームの設定 `web_research` を担い手の Web の道具にも効かせる。チームに「閉じたチーム（ローカルだけ）」の切り替えを足す（入にすると、ローカル LLM 以外の担い手・外部のモデル・Web の調査を断る。既定は切） | `commander/team_runner.py`・`team_leader.py`・`integrations/opencode/provider.py`・`addons/agent_mcp.py`・`route_map.py` | 未着手 |
+| D | 再起動・更新から自動で続きを再開 | ControlDeck の起動のとき、再起動で中断されたチームリーダーを自動で再開する（チームの設定「自動で再開」既定は入。1 チームにつき 30 分に 2 回まで。失敗が続いたら止めて通知）。中断された担い手の仕事も配り手が自動で配り直し、本文に「前回は途中で中断。worktree の変更はそのまま残っている。git status と diff を見て続きから」を足す。teams.json は原子的に書き、書き込みの直前に 1 世代のバックアップ（teams.json.bak）を残し、壊れていたら .bak から読む。保存の途中で落ちても前の状態が読めることを試験で確かめる。中断・自動の再開が一目で分かる印（要対応は常に出す） | `commander/teams.py`・`resume.py`・起動の処理・`TeamView.tsx` | 未着手 |
+| E | 資料の受け渡しと worktree | 「チームリーダーに頼む」に「資料を添える」（/data1tb・/data2tb のファイル・フォルダを FilePicker で選ぶ）。選んだものは作業場所の `.nexarch/inputs/` から読み取り専用で見られるようにし（シンボリックリンクではなく、箱から見えるパスで）、チームリーダーにはパスの一覧だけを渡す。担い手の worktree を作るとき、作業場所の `.nexarch/`（依頼の全文・資料）が見えるようにし、`frontend/node_modules`・`.venv` が作業場所にあればリンクする。確認のコマンドに作業フォルダ（作業場所の中の相対パス）を指定できるようにする | `commander/team_runner.py`・`team_checks.py`・`TeamView.tsx` | 未着手 |
+| F | チームリーダーの道具の説明 | `.nexarch/prompt-audit.diff` の `leader_mcp.py`・`team_leader.py` の塊を取り込み、道具の説明を実際の動きに合わせる（`AGENTS.md` の塊は入れない） | `commander/leader_mcp.py`・`team_leader.py` | 未着手 |
+
+機能を損なわない条件（A）: 頼む・止める・再開・質問に答える・取り込む・引き継ぎ先を選ぶ、が今と同じ手数以内。ダーク／ライト・320px と 1280px。E2E はエキスパートの切と入の両方を撮る。
+
+### 調査: 進み具合の見せ方の比較（2026-11-28）
+
+読み方: 「特徴」はリーダーの `research(web)` が公式資料を読んで確かめた**事実**（2026-11-28。出典は各行の URL）。「採用したい点」はこの計画の**提案**で、まだ実装していない。「限界・注意」は読んだ範囲での注意で、**未確認を含む**。
+
+| 製品 | 特徴（公式で読んだ事実） | 採用したい点（提案） | 限界・注意 | 出典 |
+|---|---|---|---|---|
+| Hermes Agent | ストリーム表示の TUI。実行の中断と方向転換。サブエージェントの設定 | 実行中の流れを 1 本の時系列で見せ、止めずに方向を変えられる操作を画面に置く | TUI 中心。チームの板・複数 CLI の横断は持たない（読んだ範囲） | https://github.com/NousResearch/hermes-agent |
+| ChatDev | 2.0 は DevAll。1.0 の「仮想ソフト会社」は `chatdev1.0` ブランチ（ピクセル絵の会社の画面） | 役割を組織として見せる考え方（誰が何を担当しているかの地図） | **1.0 のピクセル画面を現行版と混同しない**。2.0 の画面は別物 | https://github.com/OpenBMB/ChatDev |
+| MetaGPT | product manager・architect・project manager・engineer の役割と SOP（決まった手順と成果物） | 段の名前と成果物の型を SOP として画面の段に写す（今の explore／implement／review／hard の段と対応づける） | 役割と手順が固定で、モデルを横断して自由に割り当てる形ではない | https://github.com/FoundationAgents/MetaGPT |
+| CrewAI | flows・state persistence（状態の永続化）・observability（観測） | 工程の状態と記録を画面に出す。再起動後の続きの表示の手本にする | Studio の具体画面は**未確認**（`/en/platform/crew-studio` はトップへ戻る）。Studio の画面を根拠にしない | https://docs.crewai.com/ |
+| AutoGen Studio | ドラッグ＆ドロップの TeamBuilder。メッセージフローのグラフ・ライブ表示・停止。**prototype** | メッセージの流れ図＋ライブ＋停止の組み合わせ | prototype（API・画面が変わりやすい）。そのままは取り込まない | https://microsoft.github.io/autogen/stable/user-guide/autogenstudio-user-guide/index.html |
+| OpenHands | agent-canvas: 会話・files・terminal・モデル管理を切り替える 1 画面 | 1 画面の中で会話・ファイル・端末・モデルを切り替える整理（詳細を開く枠の参考） | 単一エージェント中心。チームの板は持たない | https://docs.openhands.dev/openhands/usage/agent-canvas/overview |
+| Devin | session tools: Progress に工程の詳細・commands・code・browser を統合 | 「進み具合」に工程の詳細と道具の実行（コマンド・コード・ブラウザ）をまとめて出す | 商用。画面の作りは参考にするだけ | https://docs.devin.ai/work-with-devin/devin-session-tools |
+| Conductor | parallel-agents: 担い手ごとに独立した branch／worktree、レビュー | 並列の担い手ごとに branch／worktree を分け、レビューを並べて見せる（T4 と同じ方向） | 形態（クラウドかローカルか・料金・ローカル LLM の可否）は**未確認** | https://www.conductor.build/docs/concepts/parallel-agents |
+
+この表から画面 A に取り込む順（提案）: (1) 段の流れとカード（MetaGPT の SOP・ChatDev の組織）→ (2) 動いている／止まっているの 3 つの印（Hermes・AutoGen のライブ）→ (3) 詳細を押して開く（OpenHands・Devin の統合表示）→ (4) 並列の branch／worktree とレビューの並び（Conductor）。色だけに頼らず、形と動きでも分ける。
+
+### 検索（research）の評価と小改善の提案（2026-11-28）
+
+このチームの調べもので `control_deck.research` を実際に使った結果（リーダーの記録）:
+
+- **事実**: 複数の製品をまとめて調べる検索はノイズが多く、製品ごとの公式 URL を個別に読む方が有効だった。URL の本文は約 6000 文字で末尾が途切れた。`[R番号]` の形で出典を書くよう促しても、検索の返り値に番号が無いため対応づけられなかった。
+- **提案（backend 担当へ。この節では未実装）**: (1) 検索の返り値の各項目に通し番号（`[R1]`…）を付ける、(2) ページを読む返り値に URL と取得日を必ず含める、(3) 長い本文は「続き（次の範囲）」の案内か範囲指定を返す、(4) まとめ検索より個別 URL を優先する案内を道具の説明に書く。効果（出典の対応づけの取りこぼし・読み直しの回数）と処理時間を測ってから入れる（`AGENTS.md`「機能を取り込む条件」）。
+
+### 確かめ方（A〜F 共通）
+
+- 集中の試験 → 関連の回帰 → `./deck.sh test` → `cd frontend && npm run build` → 実画面（320px・1280px、エキスパートの切と入）→ `env -u CONTROL_DECK_CONFIG ./deck.sh dev-check --base origin/main --skip-visual` が「合格」。
+- 新しい道（C の MCP の配分・E の資料・D の自動の再開）は `backend/app/route_map.py` に書いて `./deck.sh route-map`。試験は目的と根拠を docstring に書き、`./deck.sh test-catalog` で重複を確かめる。
+- D は「保存の途中で落ちても前の状態が読める」ことを試験で確かめる。A は止まった・失敗・要対応がエキスパートを切っていても出ることを E2E で確かめる。
+- 効果と処理時間は実データの前後で測り、数字を PR に書く（`AGENTS.md`「機能を取り込む条件」）。
+
 ## 目標（2026-11-27 利用者「勝手に完成している状態を目指して欲しい。ユーザーの負担はない形」）
 
 **利用者は目標を 1 行書くだけ。あとはチームが計画・実装・確認・レビュー・合流まで自動で進め、人は任意で見るだけ。**

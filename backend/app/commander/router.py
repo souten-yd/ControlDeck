@@ -408,6 +408,10 @@ class _TeamUpdate(BaseModel):
     codex_without_sandbox: bool | None = None
     git_init: bool | None = None
     web_research: bool | None = None
+    # 閉じたチーム（ローカルだけ）: ローカル LLM 以外の担い手・外部のモデル・Web の調査を断る。既定は切
+    local_only: bool | None = None
+    # 再起動で中断されたチームリーダーを自動で続きから再開する。既定は入
+    auto_resume: bool | None = None
     autonomy: str | None = Field(default=None, max_length=10)
 
 
@@ -424,14 +428,19 @@ class _TeamLeader(BaseModel):
 
 
 class _AutoTeam(BaseModel):
-    """目標からチームを作る（チームリーダーが計画する）。作業場所が空なら新しい自動の作業場所。"""
+    """目標からチームを作る（チームリーダーが計画する）。作業場所が空なら新しい自動の作業場所。
+
+    input_paths はチームへ渡す資料（ファイル・フォルダ）。作業場所の .nexarch/inputs へ写し、
+    チームリーダーにはパスの一覧だけを渡す（brief E）。"""
     goal: str = Field(max_length=20000)
     name: str = Field(default="", max_length=200)
     workdir: str = Field(default="", max_length=4096)
+    input_paths: list[str] | None = Field(default=None, max_length=20)
 
 
 class _LeaderRun(BaseModel):
     goal: str = Field(max_length=20000)
+    input_paths: list[str] | None = Field(default=None, max_length=20)
 
 
 class _Answer(BaseModel):
@@ -460,7 +469,8 @@ class _TaskBody(BaseModel):
     goal: str | None = Field(default=None, max_length=20000)
     acceptance: str | None = Field(default=None, max_length=20000)
     files: list[str] | None = Field(default=None, max_length=200)
-    checks: list[str] | None = Field(default=None, max_length=100)
+    # 文字列（従来）と {command, cwd}（作業フォルダを指定・brief E）の両方を受ける
+    checks: list[str | dict[str, Any]] | None = Field(default=None, max_length=100)
     assignee: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
     role: str | None = Field(default=None, max_length=16)
@@ -497,7 +507,8 @@ def create_team(
     body: _TeamName, request: Request,
     user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
 ):
-    team = _team_call(teams.create_team, body.name, workdir_path=body.workdir, created_by=body.created_by)
+    team = _team_call(teams.create_team, body.name, workdir_path=body.workdir, created_by=body.created_by,
+                      owner_user_id=user.id)
     _team_audit(db, user, request, "create", team["id"], name=team["name"], created_by=body.created_by)
     return team
 
@@ -525,6 +536,17 @@ def list_models(cli: str, account: str = "default", user: User = Depends(require
         return model_list.list_models(cli, account)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/model-choices")
+def model_choices(user: User = Depends(require_permission("terminal.use"))):
+    """役割の設定に並べるモデルの統合一覧（local・OpenCode・OpenRouter・Claude・Codex を 1 つにまとめたもの）。
+
+    選んだ choice の endpoint をそのまま役割の endpoint へ渡せる（選択で CLI・接続が決まる）。外へは何も取りに行かない。"""
+    del user
+    from app.commander import models as model_list
+
+    return model_list.role_choices()
 
 
 @router.put("/settings/team-defaults")
@@ -562,7 +584,8 @@ def create_auto_team(
     """目標からチームを作る。チームを作ってチームリーダーを走らせる（結果は一覧の router_run で見る）。"""
     from app.commander import team_leader
 
-    team = _team_call(team_leader.create_and_start, body.goal, body.name, body.workdir)
+    team = _team_call(team_leader.create_and_start, body.goal, body.name, body.workdir, owner_user_id=user.id,
+                      input_paths=body.input_paths)
     _team_audit(db, user, request, "auto", team["id"], name=team["name"], goal_length=len(body.goal))
     return team
 
@@ -575,8 +598,9 @@ def run_team_leader(
     """既存のチームへチームリーダーで計画を足す。"""
     from app.commander import team_leader
 
-    team = _team_call(team_leader.start, team_id, body.goal)
-    _team_audit(db, user, request, "leader.run", team_id, goal_length=len(body.goal))
+    team = _team_call(team_leader.start, team_id, body.goal, input_paths=body.input_paths)
+    _team_audit(db, user, request, "leader.run", team_id, goal_length=len(body.goal),
+                inputs=len(team.get("inputs") or []))
     return team
 
 

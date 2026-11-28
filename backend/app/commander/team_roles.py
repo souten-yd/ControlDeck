@@ -296,6 +296,8 @@ def pick_for_task(team: dict, task: dict, now: float | None = None) -> tuple[str
     now = now or time.time()
     role = find_role(team, task.get("role"))
     eps = chain(role) if role else []
+    if team.get("local_only"):  # 閉じたチーム: ローカル LLM の endpoint だけ（brief C・2026-11-28）
+        eps = [e for e in eps if not teams.endpoint_local_problem(e)]
     if role is None or not eps:
         return "legacy", None
     if doing_in_role(team, role) >= int(role.get("count") or 1):
@@ -316,6 +318,8 @@ def pick_for_task(team: dict, task: dict, now: float | None = None) -> tuple[str
 def next_after_limit(team: dict, task: dict, role: dict, limited_keys: set[str], now: float) -> dict | None:
     """上限で止まった担い手の次の担い手（chain の使える次の endpoint）。無ければ None。"""
     for index, ep in enumerate(chain(role)):
+        if team.get("local_only") and teams.endpoint_local_problem(ep):
+            continue  # 閉じたチーム: ローカル LLM の endpoint だけ（brief C・2026-11-28）
         if cooling_until(team, ep, now) is not None or endpoint_key(ep) in limited_keys:
             continue
         member = ensure_member(team, role, ep)

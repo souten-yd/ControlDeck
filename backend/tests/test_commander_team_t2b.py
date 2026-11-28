@@ -102,11 +102,13 @@ def sent(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_store():
     path = teams._path()
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
     yield
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
 
 
 def _team(client, sid="aa000001", **task_fields) -> tuple[str, int]:
@@ -212,6 +214,43 @@ def test_checks_validation(admin_client, fake):
     assert r.status_code == 400
     r = admin_client.put(f"{url}/{num}", headers=CSRF_HEADERS, json={"checks": []})
     assert r.status_code == 200 and r.json()["checks"] == []
+
+
+def test_checks_accept_working_folder(admin_client, fake, work):
+    """目的: 確認のコマンドに作業フォルダ（作業場所の中の相対パス）を指定できること（brief E・2026-11-28）。
+
+    {command, cwd} の形で渡す。cwd は実行場所（worktree・作業フォルダ）の中の相対パスで、実行時に
+    realpath で検証する（リンクで外へ出られない）。今は `env -C backend …` で回避していた
+    （docs/PLAN-nexarch-team.md「使いながら見つけた直し」2026-11-28）。
+    根拠: 2026-11-28 の依頼（brief E）「checks は既存文字列を維持し {command:string,cwd:string} も受け、
+    cwd は worktree 内相対 realpath 検証」。"""
+    (work / "backend").mkdir()
+    in_backend = f"{PY} -c \"import os,sys; sys.exit(0 if os.path.basename(os.getcwd())=='backend' else 1)\""
+    tid, num = _team(admin_client, checks=[{"command": in_backend, "cwd": "backend"}, OK])
+    assert _task(admin_client, tid, num)["checks"][0] == {"command": in_backend, "cwd": "backend"}
+    _report(admin_client, tid, num)
+    result = _task(admin_client, tid, num)["checks_result"]
+    assert result["status"] == "passed" and result["results"][0]["exit_code"] == 0, result
+    # 形の検証: 知らない欄・絶対パス・.. ・コマンドなしは断る
+    url = f"{API}/{tid}/tasks"
+
+    def post(checks):
+        return admin_client.post(url, headers=CSRF_HEADERS, json={"title": "t", "checks": checks})
+
+    for bad in ({"command": "ls"}, {"cwd": "backend"}, {"command": "ls", "cwd": "/etc"},
+                {"command": "ls", "cwd": "../x"}, {"command": "ls", "cwd": "a\\b"},
+                {"command": "ls", "extra": 1}, {"command": 5, "cwd": "b"}, {"command": "ls", "cwd": 5}):
+        assert post([bad]).status_code in (400, 422), bad
+    assert post([{"command": OK, "cwd": "backend"}]).status_code == 201
+    # 実行時の検証: リンクで外へ出る cwd は実行できない（failed として扱う・出力に理由を残す）
+    outside = work.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    (work / "linkout").symlink_to(outside)
+    esc_tid, esc_num = _team(admin_client, checks=[{"command": OK, "cwd": "linkout"}])
+    _report(admin_client, esc_tid, esc_num)
+    result = _task(admin_client, esc_tid, esc_num)["checks_result"]
+    assert result["status"] == "failed" and result["results"][0]["exit_code"] != 0
+    assert "cwd" in result["results"][0]["tail"]
 
 
 # ---------------------------------------------------------------- 実行

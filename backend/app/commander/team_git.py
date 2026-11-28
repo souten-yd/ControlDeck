@@ -95,8 +95,11 @@ def _exclude(path: Path) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
-        if WT_DIR + "/" not in existing.splitlines():
-            target.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + WT_DIR + "/\n", encoding="utf-8")
+        lines = existing.splitlines()
+        add = [line for line in (WT_DIR + "/", ".nexarch/") if line not in lines]
+        if add:
+            target.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n")
+                             + "".join(line + "\n" for line in add), encoding="utf-8")
     except OSError:
         logger.warning("worktree の除外を書けませんでした")
 
@@ -177,7 +180,12 @@ def _copy_includes(src: Path, dest: Path) -> int:
 
 
 def create_item_worktree(workdir: str, info: dict, team_id: str, n: int) -> tuple[str, str]:
-    """implement の仕事 n の worktree とブランチ（チームのブランチの今の先頭から）。(パス, ブランチ)。あれば使い回す。"""
+    """implement の仕事 n の worktree とブランチ（チームのブランチの今の先頭から）。(パス, ブランチ)。あれば使い回す。
+
+    worktree へ .nexarch（依頼全文・資料）と node_modules・.venv のリンクを渡す（brief E・2026-11-28。
+    今まではチームリーダーが手で写していた）。"""
+    from app.commander import team_inputs
+
     path = Path(workdir).resolve()
     branch = branch_name(team_id, n)
     wt = wt_root(path) / str(n)
@@ -188,6 +196,10 @@ def create_item_worktree(workdir: str, info: dict, team_id: str, n: int) -> tupl
         else:
             _ok(path, "worktree", "add", "-b", branch, str(wt), info["team_branch"])
         _copy_includes(path, wt)
+    try:
+        team_inputs.share_worktree(str(path), str(wt))
+    except OSError as exc:
+        logger.warning("worktree へ .nexarch を渡せませんでした: %s", exc)
     return str(wt), branch
 
 

@@ -105,7 +105,9 @@ def _run_nexarch(name: str, arguments: dict[str, Any], claims: dict[str, Any], p
             raise HTTPException(status_code=422, detail="text（頼むこと）だけを渡してください")
         try:
             folder = project_lab.resolve_project(str(project_id))
-            team = team_leader.create_for_assistant(arguments["text"], str(folder))
+            owner = claims.get("actor_user_id")
+            team = team_leader.create_for_assistant(
+                arguments["text"], str(folder), owner_user_id=owner if isinstance(owner, int) else 0)
         except (project_lab.ProjectLabError, teams.TeamError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"team_id": team["id"], "status": "running", "note": "頼みました。nexarch_team_status で進み具合を見られます"}
@@ -470,6 +472,9 @@ async def _run_research(arguments: dict[str, Any], user: User, claims: dict[str,
         planned = research.plan(arguments, settings, project_path=project_path)
     except research.ResearchRefused as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    block = _team_research_block(worker_scope(claims), planned["sources"])
+    if block:
+        raise HTTPException(status_code=403, detail=block)
     body = SearchBody(
         query=planned["question"], mode="deep", depth=planned["depth"],
         base_url=str(settings.get("base_url") or ""), model=str(settings.get("model") or ""),
@@ -512,6 +517,69 @@ def issue_opencode_token(user_id: int, correlation_id: str, *, project_id: str |
         project_id=project_id,
         ttl_seconds=MCP_TOKEN_TTL_SECONDS,
     )
+
+
+# Nexarch の AI チームの担い手の token（brief C・2026-11-28）。subject が opencode:team-<team>-<task>[-ro] なら
+# チームと仕事に結びつく担い手で、-ro は読み取りの役割（explore・review）。サーバー側で書く道具を断るのに使う。
+TEAM_WORKER_SUBJECT = re.compile(r"^opencode:team-(t[0-9a-f]{8})-(\d{1,6})(-ro)?$")
+
+
+def agent_mcp_url() -> str:
+    """ControlDeck の MCP の口（担い手の橋渡しが指す先。本番のポート）。"""
+    from app.config import get_config
+
+    return f"http://127.0.0.1:{get_config().server.port}/api/v1/addons/agent-mcp"
+
+
+def issue_worker_token(user_id: int, team_id: str, task_id: int, *, readonly: bool = False) -> str:
+    """担い手の短命 token（期限は OpenCode の会話と同じ・作成した利用者に結びつく・チームと仕事が subject に入る）。"""
+    return issue_opencode_token(user_id, f"team-{team_id}-{task_id}" + ("-ro" if readonly else ""))
+
+
+def worker_scope(claims: dict[str, Any] | None) -> dict | None:
+    """チームの担い手の token なら {team, task, readonly}。そうでなければ None（ふつうの OpenCode の会話）。"""
+    match = TEAM_WORKER_SUBJECT.fullmatch(str((claims or {}).get("sub") or ""))
+    if match is None:
+        return None
+    return {"team": match.group(1), "task": int(match.group(2)), "readonly": match.group(3) is not None}
+
+
+# 読み取りの担い手（explore・review）には渡さない・呼んでも断る道具（サーバー側で拒否）。
+# report・research・knowledge・lab の見る道具は結果を出すだけなので渡す。
+_WORKER_WRITE_TOOLS = frozenset({
+    NEXARCH_REQUEST_TOOL, LAB_RUN_START_TOOL, LAB_RUN_STOP_TOOL,
+    PROJECT_OUTPUT_GRANT_TOOL, PROJECT_INPUT_GRANT_TOOL,
+})
+
+
+def _reject_readonly_worker(scope: dict | None, name: str) -> None:
+    """読み取りの担い手（explore・review）には書く道具を渡さない（サーバー側で断る）。"""
+    if scope and scope["readonly"] and name in _WORKER_WRITE_TOOLS:
+        raise HTTPException(status_code=404, detail=f"読み取りの担い手には提供していない道具です: {name}")
+
+
+def _team_research_block(scope: dict | None, sources: list) -> str:
+    """チームの担い手の調査で、外へ出る情報源がチームの設定に反するときの理由。空なら通す。
+
+    チームの設定（web_research・local_only）はチームリーダーの research(web) と同じ決まりを担い手にも適用する。
+    チームが消えた後の token は、ふつうの会話と同じ扱い（グローバルの許可だけ見る）。"""
+    if not scope:
+        return ""
+    from app.integrations.opencode.research import EXTERNAL_SOURCES
+
+    if not any(source in EXTERNAL_SOURCES for source in sources or []):
+        return ""
+    try:
+        from app.commander import leader_mcp
+
+        team = leader_mcp._read(scope["team"])  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return ""
+    if team.get("local_only"):
+        return "このチームは閉じたチーム（ローカルだけ）なので、Web の調査はできません"
+    if team.get("web_research", True) is False:
+        return "このチームでは Web の調査が禁止されています（設定 web_research が false）"
+    return ""
 
 
 RENEW_HEADER = "X-Control-Deck-MCP-Token"
@@ -752,9 +820,14 @@ async def list_tools(
     user, claims = _bearer_user(authorization, db, request)
     _offer_renewal(response, claims)
     permissions = user_permissions(user)
+    scope = worker_scope(claims)
+    readonly_worker = bool(scope and scope["readonly"])
     threshold = _contract_threshold()
-    tools = await execution.agent_mcp_tools(permissions, contract_threshold=threshold)
+    # Add-on の道具（動的）は読み取りの担い手へは出さない（書く・重い処理が多いので、役割に合わない）
+    tools = [] if readonly_worker else await execution.agent_mcp_tools(permissions, contract_threshold=threshold)
     for factory in (_project_output_tool, _project_input_tool):
+        if readonly_worker:
+            continue
         project_tool = factory(claims.get("project_id"), permissions)
         if project_tool is not None:
             tools.append(project_tool)
@@ -769,7 +842,7 @@ async def list_tools(
     if "workflows.run" in permissions:
         tools.append(_knowledge_tool())
         tools.append(_news_knowledge_tool())
-    tools.extend(_lab_tools(permissions))
+    tools.extend(t for t in _lab_tools(permissions) if not (readonly_worker and t["name"] in _WORKER_WRITE_TOOLS))
     tools.extend(_nexarch_tools(claims.get("project_id"), permissions))
     return {"tools": tools}
 
@@ -785,6 +858,9 @@ async def call_tool(
     user, claims = _bearer_user(authorization, db, request)
     _offer_renewal(response, claims)
     permissions = user_permissions(user)
+    scope = worker_scope(claims)
+    if scope and scope["readonly"]:
+        _reject_readonly_worker(scope, body.name)
     if body.name == CONTRACT_TOOL:
         if _contract_threshold() <= 0 or set(body.arguments) != {"name"}:
             raise HTTPException(status_code=404, detail="tool contract toolが見つかりません")
@@ -885,6 +961,9 @@ async def call_tool(
             metadata={"project_id": project_id, "path_depth": len(Path(str(relative_path)).parts)},
         )
         return result
+    if scope and scope["readonly"]:
+        # Add-on の道具（動的）はすべて書く・重い処理なので、読み取りの担い手には断る
+        raise HTTPException(status_code=404, detail=f"読み取りの担い手には Add-on の道具は使えません: {body.name}")
     target = await execution.agent_mcp_target(body.name, permissions)
     if target is None:
         raise HTTPException(status_code=404, detail="Add-on agent toolが見つかりません")

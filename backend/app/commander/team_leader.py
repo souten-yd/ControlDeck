@@ -25,7 +25,7 @@ import shlex
 import threading
 import time
 
-from app.commander import leader_mcp, team_git, team_roles, team_runner, teams, workdir
+from app.commander import leader_mcp, team_git, team_inputs, team_roles, team_runner, teams, workdir
 from app.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,9 @@ MAX_RESUMES = 3
 MAX_CRASH_RETRIES = 1
 REQUESTS_KEPT = 20
 SHELL_OPERATORS = {"|", "||", "&&", "&", ";", ">", ">>", "<", "<<", "2>", "2>&1"}
+# 再起動からの自動再開の上限（brief D・2026-11-28）: 30 分に 2 回まで（teams.json へ永続）。
+AUTO_RESUME_WINDOW = 30 * 60
+AUTO_RESUME_MAX = 2
 
 
 def mcp_url() -> str:
@@ -69,7 +72,7 @@ PROMPT = """あなたは Nexarch のチームリーダーです。利用者の�
 
 【進め方】
 1. team_status を最初に呼ぶ（状態・計画・質問が分かる。再開のときも同じ）。
-2. 調べる: 作業場所は Read・Glob・Grep で読める。広い調べものは explore へ振る。Web・資料は research。
+2. 調べる: 作業場所のファイルは読める（書かない）。広い調べものは explore へ振る。Web・資料・コードの検索は research。
 3. write_plan で計画を書く（利用者の画面に出る）。項目ごとに tier・depends_on・files・checks（確認のコマンド。1 行・パイプや && なし）。
 4. delegate で仕事を振る。独立した implement は同時に振ってよい（worktree で隔離される）。wait で結果を待つ。
 5. 結果を確かめる: wait の 5 行の報告と確認の合否・変更ファイル、必要なら read_result(diff)。足りなければ note つきで delegate して直させる。
@@ -140,6 +143,7 @@ def _set_status(team_id: str, status: str, reason: str = "", notify: str = "") -
         nonlocal notify_text
         run = team.setdefault("leader_run", {})
         run.update({"status": status, "ended_at": teams._now(), "reason": reason[:200]})  # noqa: SLF001
+        run.pop("stop_requested", None)  # 止めた印は状態が確定したので外す
         if notify and team.get("notify", True) is not False:
             notify_text = f"Nexarch: チーム『{team['name'][:40]}』{notify}"
         if status in ("failed", "stopped"):
@@ -226,6 +230,12 @@ def _loop(team_id: str, goal: str, follow_up: bool) -> None:
         allow_no_sandbox = team.get("codex_without_sandbox", True) is not False
         now = time.time()
         chain = _chain(team)
+        if team.get("local_only"):  # 閉じたチーム: ローカル LLM の endpoint だけ（brief C・2026-11-28）
+            chain = [e for e in chain if not teams.endpoint_local_problem(e)]
+            if not chain:
+                _set_status(team_id, "failed", "閉じたチームですが、ローカル LLM のチームリーダーがいません",
+                            "のチームリーダーを動かせるローカルの担い手がありません（閉じたチーム）")
+                return
         ep = next((e for e in chain if team_roles.cooling_until(team, e, now) is None), None)
         if ep is None:
             _set_status(team_id, "failed", "チームリーダーの担い手が全部上限です", "のチームリーダーを動かせる担い手がありません（上限）")
@@ -305,13 +315,35 @@ def _audit(team_id: str, ep: dict, seconds: float, result: str) -> None:
 
 # ---------------------------------------------------------------- 入口
 
-def start(team_id: str, goal: object, *, resume: bool = False) -> dict:
+def goal_with_inputs(goal: str, rows: list[dict]) -> str:
+    """チームリーダーへ渡す依頼に、資料のパスの一覧を足す（中身は展開しない・brief E）。"""
+    if not rows:
+        return goal
+    lines = ["【資料】次の資料は作業場所の .nexarch/inputs に置いてあります（読むだけ・書き換えない）:"]
+    lines += [f"- {row['path']}" for row in rows if isinstance(row, dict) and isinstance(row.get("path"), str)]
+    return goal + "\n\n" + "\n".join(lines)
+
+
+def start(team_id: str, goal: object, *, resume: bool = False, input_paths: object = None) -> dict:
     """チームリーダーを別スレッドで始める（画面は一覧を見て進み具合を知る）。走っている間は断る。
 
-    既にこのチームに計画・結果があれば「続きの依頼」（頼み足し）として、team_status から読ませる。"""
+    既にこのチームに計画・結果があれば「続きの依頼」（頼み足し）として、team_status から読ませる。
+    input_paths があれば資料を作業場所の .nexarch/inputs へ写し、リーダーにはパスの一覧だけを渡す。"""
     text = teams.clean_text(goal, "依頼", GOAL_MAX)
     if not text:
         raise teams.TeamError("依頼を入力してください")
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        team = teams._find_team(all_teams, team_id)  # noqa: SLF001
+        run = team.get("leader_run")
+        if isinstance(run, dict) and run.get("status") == "running":
+            raise teams.TeamError("チームリーダーは実行中です", 409)
+        existing_inputs = list(team.get("inputs") or [])
+    # コピーは板のロックの外で（大きな資料で他のチームの操作を止めない）
+    rows = existing_inputs
+    if input_paths is not None or existing_inputs:
+        workdir_path = teams.ensure_workdir(team_id)
+        rows = team_inputs.publish(workdir_path, text, input_paths, existing=existing_inputs)
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         team = teams._find_team(all_teams, team_id)  # noqa: SLF001
@@ -323,17 +355,22 @@ def start(team_id: str, goal: object, *, resume: bool = False) -> dict:
         requests = team.setdefault("requests", [])
         requests.append({"at": teams._now(), "text": text[:600]})  # noqa: SLF001
         del requests[:-REQUESTS_KEPT]
-        team["leader_run"] = {"status": "running", "n": int((run or {}).get("n") or 0), "goal": text, "started_at": teams._now(),  # noqa: SLF001
-                              "endpoint": team_roles.endpoint_label(ep), "resumes": 0, "crashes": 0, "finish": None}
+        goal_text = goal_with_inputs(text, rows)
+        if rows:
+            team["inputs"] = rows
+        team["leader_run"] = {"status": "running", "n": int((run or {}).get("n") or 0), "goal": goal_text,  # noqa: SLF001
+                              "started_at": teams._now(), "endpoint": team_roles.endpoint_label(ep),
+                              "resumes": 0, "crashes": 0, "finish": None}
         team.pop("result", None)
         leader_mcp.add_timeline(team, "request", "依頼: " + text[:200])
         teams._save(all_teams)  # noqa: SLF001
         view = dict(team)
-    team_runner._spawn(_worker, team_id, text, follow_up)  # noqa: SLF001
+    team_runner._spawn(_worker, team_id, goal_text, follow_up)  # noqa: SLF001
     return view
 
 
-def create_and_start(goal: object, name: object = "", work_path: object = "") -> dict:
+def create_and_start(goal: object, name: object = "", work_path: object = "", *, owner_user_id: int = 0,
+                     input_paths: object = None) -> dict:
     """「頼む」: チームを作り（役割・チームリーダーは既定を写す。名前は依頼から短く）、チームリーダーを走らせる。"""
     goal_text = teams.clean_text(goal, "依頼", GOAL_MAX)
     if not goal_text:
@@ -347,22 +384,35 @@ def create_and_start(goal: object, name: object = "", work_path: object = "") ->
             path = str(workdir.resolve_dir(work_path))
         except (OSError, ValueError) as exc:
             raise teams.TeamError(f"作業場所を使えません: {exc}") from exc
-    team = teams.create_team(title, workdir_path=path)
-    return start(team["id"], goal_text)
+    team = teams.create_team(title, workdir_path=path, owner_user_id=owner_user_id)
+    return start(team["id"], goal_text, input_paths=input_paths)
 
 
-def create_for_assistant(goal: object, work_path: str) -> dict:
+def create_for_assistant(goal: object, work_path: str, *, owner_user_id: int = 0) -> dict:
     """AI アシスタントの会話の OpenCode の作業場所でチームを作って頼む（保存先は会話の作業場所そのまま）。"""
     goal_text = teams.clean_text(goal, "依頼", GOAL_MAX)
     if not goal_text:
         raise teams.TeamError("依頼を入力してください")
-    team = teams.create_team(" ".join(goal_text.split())[:teams.NAME_MAX], workdir_path=work_path, created_by="assistant")
+    team = teams.create_team(" ".join(goal_text.split())[:teams.NAME_MAX], workdir_path=work_path, created_by="assistant",
+                             owner_user_id=owner_user_id)
     return start(team["id"], goal_text)
 
 
 def stop(team_id: str) -> bool:
-    """チームリーダー（と走っている仕事）を止める。"""
+    """チームリーダー（と走っている仕事）を止める。
+
+    印（stop_requested）を先に板へ残す: 止めた直後に ControlDeck が再起動しても、自動の再開で
+    利用者が止めたはずのものが動き出さないように（brief D・2026-11-28）。"""
     teams._find_team(teams._load(), team_id)  # noqa: SLF001
+
+    def mark(team: dict) -> None:
+        if isinstance(team.get("leader_run"), dict):
+            team["leader_run"]["stop_requested"] = True
+
+    try:
+        leader_mcp._mutate(team_id, mark)  # noqa: SLF001
+    except leader_mcp.ToolError:
+        pass
     return team_runner.stop_run(team_id, 0)
 
 
@@ -389,20 +439,64 @@ def land(team_id: str) -> dict:
     return leader_mcp._read(team_id)  # noqa: SLF001
 
 
-def recover_interrupted() -> int:
-    """ControlDeck の再起動で止まった（running のままの）チームリーダーの実行を失敗にする（画面の「再開」で続けられる）。"""
-    count = 0
+def recover_interrupted() -> dict:
+    """ControlDeck の起動時: 再起動で中断されたチームリーダーを記録し、自動で続きから再開する（brief D・2026-11-28）。
+
+    - running のままプロセスが無いものを interrupted にする（画面の「再開」でも続けられる）。
+    - チームの設定 auto_resume（既定入）なら resume と同じ道で続きから。30 分に 2 回まで（teams.json へ永続）。
+      超えたら failed にして通知（連続失敗で止める）。利用者が止めたもの（stop_requested）は再開しない。
+    - 返り値: {"leaders", "resumed", "capped", "stopped"}（集計。見張りの loop のログ・試験で使う）。
+    """
+    out = {"leaders": 0, "resumed": 0, "capped": 0, "stopped": 0}
+    notify_capped: list[dict] = []
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         for team in all_teams:
             run = team.get("leader_run")
-            if isinstance(run, dict) and run.get("status") == "running" and not team_runner.is_active(team["id"], 0):
-                run.update({"status": "failed", "ended_at": teams._now(), "reason": "ControlDeck の再起動で中断されました"})  # noqa: SLF001
-                leader_mcp.add_timeline(team, "stop", "ControlDeck の再起動でチームリーダーが中断されました（再開できます）")
-                count += 1
-        if count:
+            if not (isinstance(run, dict) and run.get("status") == "running") or team_runner.is_active(team["id"], 0):
+                continue
+            out["leaders"] += 1
+            if run.pop("stop_requested", None):  # 利用者が止めた → 再開しない
+                run.update({"status": "stopped", "ended_at": teams._now(), "reason": "利用者が止めました"})  # noqa: SLF001
+                leader_mcp.add_timeline(team, "stop", "利用者が止めたので、再起動後も自動では再開しません")
+                out["stopped"] += 1
+                continue
+            run.update({"status": "interrupted", "ended_at": teams._now(),  # noqa: SLF001
+                        "reason": "ControlDeck の再起動で中断されました"})
+            leader_mcp.add_timeline(team, "stop", "ControlDeck の再起動でチームリーダーが中断されました")
+            if team.get("auto_resume", True) is False:
+                continue
+            log = [row for row in team.get("auto_resume_log", []) if isinstance(row, dict)]
+            now = time.time()
+            recent = sum(1 for row in log if now - float(row.get("at") or 0) < AUTO_RESUME_WINDOW)
+            if recent >= AUTO_RESUME_MAX:
+                run.update({"status": "failed", "reason": f"自動で再開できる回数の上限（30 分で {AUTO_RESUME_MAX} 回）に達しました"})  # noqa: SLF001
+                leader_mcp.add_timeline(team, "stop", f"再起動からの自動再開が続いたので止めました（30 分で {AUTO_RESUME_MAX} 回）")
+                out["capped"] += 1
+                if team.get("notify", True) is not False:
+                    notify_capped.append({"title": "Nexarch",
+                                          "message": f"Nexarch: チーム『{team['name'][:40]}』のチームリーダーが再起動後に続けて止まるので、自動の再開をやめました（結果を見てください）"})
+                continue
+            log.append({"at": now})
+            del log[:-20]
+            team["auto_resume_log"] = log
+            run["startup_pending"] = True  # 排他の外で resume する（下）
+            leader_mcp.add_timeline(team, "resume", f"再起動があったので自動で再開します（30 分で {AUTO_RESUME_MAX} 回のうち {recent + 1} 回目）")
+            out["resumed"] += 1
+        if out["leaders"]:
             teams._save(all_teams)  # noqa: SLF001
-    return count
+    # 再開は排他の外で（resume が板を読み書きし、実行のスレッドも始まる）
+    for team in teams._load():  # noqa: SLF001
+        run = team.get("leader_run") or {}
+        if not run.pop("startup_pending", None):
+            continue
+        try:
+            resume(team["id"])
+        except teams.TeamError as exc:
+            logger.info("中断したチームリーダーを自動で再開できませんでした（画面の「再開」で続けられます）: %s", exc)
+    if notify_capped:
+        team_runner._notify(notify_capped)  # noqa: SLF001
+    return out
 
 
 def resume(team_id: str) -> dict:

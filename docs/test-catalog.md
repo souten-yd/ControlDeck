@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 280 ファイル、2887 テスト（目的の未記入 93 ファイル）
+- backend: 281 ファイル、2911 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -30,6 +30,7 @@
 - `test_managed_project_id_accepts_only_direct_codedev_child`
 - `test_project_output_grant_tool_is_project_scoped_and_opaque`
 - `test_project_input_grant_tool_reads_only_files_inside_the_project` — project へ置いた絵を Add-on に読ませる券。
+- `test_team_worker_readonly_scope_rejects_write_tools` — 目的: Nexarch のチームの担い手が ControlDeck の MCP を使うとき、読み取りの役割（explore・review）には
 - `test_published_tool_schema_drops_length_bounds_but_validation_keeps_them` — モデルへ出すスキーマから長さ制約を落とす（検証側の制約は残す）。
 - `test_mcp_token_renews_itself_while_the_session_is_in_use` — OpenCode の session は何日も開く。使われている限り期限で切らさない。
 - `test_mcp_token_renewal_refuses_claims_it_cannot_trust`
@@ -787,6 +788,19 @@
 - `test_console_list_carries_state_and_last_line` — コンソールの一覧に状態・最後の行・上限の行が付く（画面は tmux の capture-pane）。
 - `test_narrow_screen_with_queued_message_is_still_working` — 幅が狭くて中断の案内が切れても、作業中の行（記号＋動詞…＋経過時間）で作業中と判定する。
 
+### backend/tests/test_commander_team_inputs.py
+
+目的: Nexarch の AI チームへの資料の受け渡し（app/commander/team_inputs.py・run/auto API の input_paths）の試験。 目的: 「大量のファイルを受け渡すときは、場所を指定して読み込ませる」（brief E・2026-11-28 利用者 「場所を指定して読み込ませるなど工夫できないか」）を仕組みで守る。 - 選んだファイル・フォルダは作業場所の .nexarch/inputs/ へ読み取り専用の写しとして置く （シンボリックリンクでの資料の公開はしない・元資料は書かない）。 - チームリーダーにはパスの一覧だけを渡す（大量の資料をプロンプトへ展開しない）。 - 検証: 作業フォルダと同じ決まり（commander.workdir の許可ルート内・realpath・機密禁止の場所は外・リンク逃げ）。 - 上限: 件数・1 件の大きさ・合計（必要以上にコピーしない・ディスクを食い尽くさない）。 - worktree へ .nexarch（依頼全文・資料）を渡し、frontend/node_modules・.venv は作業場所にあればリンクする （今はチームリーダーが手で写している・2026-11-28 の PLAN の要望）。 根拠: 2026-11-28 の依頼（brief E）。隔離テストは env -u CONTROL_DECK_CONFIG で流す。
+
+- `test_publish_copies_readonly_and_records_rows` — 目的: 資料が .nexarch/inputs/ へ読み取り専用の写しとして置かれ、板（team.inputs）に記録されること。
+- `test_publish_folder_dereferences_inner_links_and_keeps_structure` — 目的: フォルダの中身も（相対構造を保って）写すこと。中のシンボリックリンクは実体を写す
+- `test_publish_rejects_outside_missing_and_duplicates_names` — 目的: ルートの外・リンクで外へ出る道・無い物は断る。名前が重なる資料は別名で置く（上書きしない）。
+- `test_publish_enforces_count_and_size_caps` — 目的: 件数・1 件の大きさ・合計の上限で、必要以上にコピーしないこと（ディスクを食い尽くさない）。
+- `test_share_worktree_hardlinks_inputs_and_links_devdirs` — 目的: 仕事ごとの worktree へ .nexarch（依頼全文・資料）が見えること。
+- `test_create_item_worktree_shares_nexarch` — 目的: implement の仕事の worktree を作るとき、.nexarch が最初から見えること
+- `test_auto_team_with_input_paths_publishes_and_lists_paths` — 目的: 「チームリーダーに頼む」に資料を添えられること（brief E・FilePicker で選んだパスを input_paths へ）。
+- `test_input_paths_validation` — 目的: input_paths の形の検証（文字列のリストだけ・ルートの外は 400）。
+
 ### backend/tests/test_commander_team_output_limit.py
 
 目的: AI チームの実行・確認のコマンドの「出力の上限」の試験。 目的: 2026-11-28 に本番で、チームリーダーの Codex が始めて 1 秒で落ちた（終了コード -25 = SIGXFSZ）。 子のプロセスに RLIMIT_FSIZE（50MB）を掛けていたので、Codex が自分の記録（~/.codex/logs_2.sqlite 66MB）を 書いた瞬間に落ちた。上限は「出力のファイル」だけに効かせる。次を守る: - 子が出力以外の大きなファイルを書いても落ちない（実行・確認のコマンドの両方）。 - 出力が上限を超えたら止め、失敗の理由に「出力が…MB を超えた」と出る。 - シグナルで落ちたときは、理由にシグナルの名前が出る（-25 だけでは分からない）。 根拠: 本番の失敗の記録（leader_run.reason「実行が落ちました（終了コード -25）」）。 既存の試験（t2b・t3a）は小さな出力しか扱わず、上限は見ていない（docs/test-catalog.md で確認）。
@@ -807,6 +821,7 @@
 - `test_reset_command_per_cli_then_wait_then_body`
 - `test_reset_off_and_unknown_cli_do_not_send_reset`
 - `test_checks_validation`
+- `test_checks_accept_working_folder` — 目的: 確認のコマンドに作業フォルダ（作業場所の中の相対パス）を指定できること（brief E・2026-11-28）。
 - `test_passed_keeps_review_and_records_results`
 - `test_failed_runs_stop_at_first_failure_and_keep_output_tail`
 - `test_output_tail_is_limited_to_2000`
@@ -851,6 +866,10 @@
 - `test_checks_pass_in_team_workdir`
 - `test_stop_kills_running_process`
 - `test_recover_interrupted_marks_and_waits_for_dispatcher`
+- `test_interrupted_worktree_task_note_tells_to_continue_from_changes` — 目的: 再起動で中断された担い手の仕事を配り直すとき、worktree の変更がそのまま残っていることを
+- `test_worker_tools_mcp_launch_args` — 目的: 担い手（claude・codex・opencode）に ControlDeck の MCP を渡す引数が正しいこと（brief C・2026-11-28）。
+- `test_start_run_passes_tools_mcp_bound_to_owner_and_run` — 目的: 担い手の MCP が「チームを作った利用者」の権限で・チームと仕事に結びつく短命 token で渡ること。
+- `test_local_only_blocks_non_local_workers` — 目的: 閉じたチーム（local_only・既定切）では、ローカル LLM 以外の担い手・外部のモデルを断ること。
 - `test_limit_detection_and_reset_time`
 - `test_stream_state_tolerates_garbage_and_each_cli`
 - `test_candidates_default_order_never_same_member`
@@ -893,6 +912,9 @@
 - `test_models_opencode_lists_gateway_and_connection_default`
 - `test_models_result_cached_five_minutes`
 - `test_models_api`
+- `test_role_choices_groups_and_endpoints` — 目的: 役割の設定で「モデル」を 1 つの選択肢から選べるようにする（B。2026-11-28 利用者
+- `test_role_choices_zen_without_key_not_listed` — Zen の鍵が無いときは opencode（Zen）の group を出さない（起動できないものを選ばせない）。
+- `test_role_choices_api`
 - `test_claude_argv_gets_model_and_effort_only_when_set`
 - `test_codex_argv_gets_model_and_reasoning_effort`
 - `test_opencode_argv_model_and_variant`
@@ -956,7 +978,10 @@
 - `test_leader_limit_moves_to_secondary_which_resumes_from_team_status`
 - `test_leader_all_endpoints_limited_fails_and_notifies`
 - `test_leader_start_validation_and_double_run`
+- `test_startup_auto_resume_of_interrupted_leader` — 目的: ControlDeck の再起動で中断されたチームリーダーを、自動で続きから再開すること（brief D）。
 - `test_leader_launch_error_fails_with_reason`
+- `test_tool_descriptions_match_actual_behavior` — 目的: チームリーダーの道具の説明が、実際の動きと合うことを守る。
+- `test_local_only_blocks_web_research_and_leader_endpoints` — 目的: 閉じたチーム（local_only・既定切）で、チームリーダーの Web の調査を断ることと、
 - `test_through_fake_leader_runs_whole_flow`
 - `test_api_leader_land_answer_resume_and_settings`
 - `test_assistant_tools_create_team_in_conversation_workdir`
@@ -997,6 +1022,8 @@
 
 - `test_requires_login`
 - `test_storage_mode_and_broken_json`
+- `test_storage_keeps_backup_and_recovers_from_corruption` — 目的: チームの板（teams.json）が壊れても、前の 1 世代（teams.json.bak）から復元できること。
+- `test_team_owner_user_id_and_local_only_setting` — 目的: チームに作成した利用者（owner_user_id）を確実に残すことと、閉じたチーム（local_only）の設定。
 - `test_name_and_text_validation`
 - `test_members_only_consoles_one_leader_and_role_marks`
 - `test_overlap_warnings`
@@ -1026,6 +1053,7 @@
 - `test_symlink_escape_is_refused_and_hidden`
 - `test_data_dir_and_denied_places_are_refused`
 - `test_make_directory_audited_and_conflict`
+- `test_resolve_path_accepts_files_inside_roots_and_blocks_escape` — 目的: 資料の受け渡し（brief E・2026-11-28）でファイルも選べるように、検証つきで実体のパスを返すこと。
 - `test_create_consoles_validates_with_workdir_roots`
 - `test_opencode_opens_nexarch_workdir_outside_files_roots` — Nexarch の作業フォルダ（files の許可ルートの外でも）で OpenCode を開ける。検証済みの実体のパスを渡す。
 - `test_tui_command_validated_project_must_be_a_real_absolute_dir` — tui_command の validated_project は実体の絶対パスだけ（リンク・相対は断る）。
@@ -2884,6 +2912,7 @@
 - `test_research_project_must_be_inside_codedev`
 - `test_research_tool_runs_deep_research_and_keeps_a_report`
 - `test_research_tool_can_be_turned_off`
+- `test_team_worker_research_respects_team_settings` — 目的: Nexarch のチームの担い手の精密調査（control_deck.research）が、チームの設定に従うこと。
 - `test_context7_is_off_until_turned_on`
 - `test_reviewer_cannot_edit_and_gets_ast_grep`
 - `test_github_cli_only_when_allowed`

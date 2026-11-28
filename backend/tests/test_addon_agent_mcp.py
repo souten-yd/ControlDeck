@@ -422,6 +422,73 @@ def test_project_input_grant_tool_reads_only_files_inside_the_project(admin_clie
     assert denied.status_code == 404
 
 
+def test_team_worker_readonly_scope_rejects_write_tools(monkeypatch):
+    """目的: Nexarch のチームの担い手が ControlDeck の MCP を使うとき、読み取りの役割（explore・review）には
+    書く道具（実行を始める・Add-on の道具）をサーバー側で断ること。
+
+    - 担い手の token は subject（opencode:team-<team>-<task>[-ro]）でチーム・仕事・読み取りかが分かる。
+      権限（利用者の permission）だけに頼ると、CLI 側の設定ミス・道具の追加で抜けが出るので、
+      サーバー側（MCP の口）で断る。
+    - 読み取りの担い手には見せる道具だけを一覧へ出し、書く道具を呼んでも 404。
+    - 読み取りでない担い手（implement・hard）は従来どおり使える。
+    根拠: 2026-11-28 の依頼（brief C）「担い手 OpenCode/Claude/Codex に ControlDeck MCP を短命・チーム/実行に
+    結びつく権限で渡し、explore/review の書く道具をサーバー側で拒否」。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.addons import agent_mcp
+    from app.database import SessionLocal, get_db
+    from app.models import User
+    from sqlalchemy import select
+
+    async def no_addon_tools(_permissions, **_options):
+        return []
+
+    monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", no_addon_tools)
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.username == "admin")).scalar_one()
+    sub = FastAPI()
+    sub.include_router(agent_mcp.router, prefix="/api/v1")
+
+    def database():
+        with SessionLocal() as db:
+            yield db
+
+    sub.dependency_overrides[get_db] = database
+    local_client = TestClient(sub)
+
+    def bearer(token: str) -> dict:
+        return {"Authorization": f"Bearer {token}", "X-Requested-With": "ControlDeck"}
+
+    ro = agent_mcp.issue_worker_token(user.id, "t0123abcd", 5, readonly=True)
+    rw = agent_mcp.issue_worker_token(user.id, "t0123abcd", 6)
+    assert agent_mcp.worker_scope({"sub": f"opencode:team-t0123abcd-5-ro"}) == \
+        {"team": "t0123abcd", "task": 5, "readonly": True}
+    assert agent_mcp.worker_scope({"sub": f"opencode:team-t0123abcd-6"}) == \
+        {"team": "t0123abcd", "task": 6, "readonly": False}
+    assert agent_mcp.worker_scope({"sub": "opencode:tui-3"}) is None
+    ro_tools = [t["name"] for t in local_client.get("/api/v1/addons/agent-mcp/tools", headers=bearer(ro)).json()["tools"]]
+    assert agent_mcp.LAB_RUN_START_TOOL not in ro_tools and agent_mcp.LAB_RUN_STOP_TOOL not in ro_tools
+    assert agent_mcp.LAB_PROJECTS_TOOL in ro_tools and agent_mcp.LAB_RUN_STATUS_TOOL in ro_tools
+    assert agent_mcp.REPORT_TOOL in ro_tools and agent_mcp.KNOWLEDGE_TOOL in ro_tools
+    denied = local_client.post(
+        "/api/v1/addons/agent-mcp/call", headers=bearer(ro),
+        json={"name": agent_mcp.LAB_RUN_START_TOOL, "arguments": {"project_id": "p", "profile_id": "d"}},
+    )
+    assert denied.status_code == 404
+    rw_tools = [t["name"] for t in local_client.get("/api/v1/addons/agent-mcp/tools", headers=bearer(rw)).json()["tools"]]
+    assert agent_mcp.LAB_RUN_START_TOOL in rw_tools and agent_mcp.LAB_RUN_STOP_TOOL in rw_tools
+    # Add-on の道具（動的）も読み取りの担い手には出さない・呼べない
+    async def fake_addon_tools(_permissions, **_options):
+        return [{"name": "media.forge", "description": "x", "inputSchema": {"type": "object"}}]
+
+    monkeypatch.setattr(agent_mcp.execution, "agent_mcp_tools", fake_addon_tools)
+    ro_tools = [t["name"] for t in local_client.get("/api/v1/addons/agent-mcp/tools", headers=bearer(ro)).json()["tools"]]
+    assert "media.forge" not in ro_tools
+    called = local_client.post("/api/v1/addons/agent-mcp/call", headers=bearer(ro),
+                               json={"name": "media.forge", "arguments": {}})
+    assert called.status_code == 404
+
+
 def test_published_tool_schema_drops_length_bounds_but_validation_keeps_them(monkeypatch):
     """モデルへ出すスキーマから長さ制約を落とす（検証側の制約は残す）。
 
