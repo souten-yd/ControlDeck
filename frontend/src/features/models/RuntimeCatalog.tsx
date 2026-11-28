@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog, Skeleton } from "../../components/ui";
 import { IconChevronRight } from "../../components/icons";
+import { api } from "../../api/client";
 import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import {
@@ -30,10 +31,12 @@ export interface RuntimeCatalogProps {
 
 const FIT: Record<string, { label: string; tone: string }> = {
   fits: { label: "載る", tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" },
+  slow: { label: "遅い", tone: "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300" },
   tight: { label: "ぎりぎり", tone: "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300" },
   no: { label: "載らない", tone: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400" },
 };
-const gib = (value: number) => value >= 10 ? `${Math.round(value)} GiB` : `${value.toFixed(1)} GiB`;
+/** 大きさ（GB = 10^9 バイト。Strata・Maya・HF の表示と同じ単位） */
+const gib = (value: number) => value >= 10 ? `${Math.round(value)} GB` : `${value.toFixed(1)} GB`;
 const rateText = (perSec: number) => perSec >= 1e6
   ? `${(perSec / 1e6).toFixed(1)} MB/s` : `${(perSec / 1e3).toFixed(0)} KB/s`;
 const etaText = (seconds: number) => seconds < 60
@@ -227,6 +230,7 @@ function summary(model: RuntimeCatalogModel): string {
 function bestFit(variants: Array<{ fit: string; supported: boolean }>): string {
   const fits = variants.filter((v) => v.supported).map((v) => v.fit);
   if (fits.includes("fits")) return "fits";
+  if (fits.includes("slow")) return "slow";
   if (fits.includes("tight")) return "tight";
   if (fits.length && fits.every((f) => f === "no")) return "no";
   return "unknown";
@@ -234,6 +238,9 @@ function bestFit(variants: Array<{ fit: string; supported: boolean }>): string {
 
 interface CardProps {
   runtime: string;
+  /** 「無検閲だけ」で絞っているとき、カードを開いたら無検閲の量子化を先に見せる */
+  preferUncensored?: boolean;
+  downloadRoot?: string;
   model: RuntimeCatalogModel;
   entries: RuntimeCatalogEntry[];
   expert: boolean;
@@ -247,13 +254,16 @@ interface CardProps {
 }
 
 function ModelCard({ runtime, model, entries, expert, hardware, jobs, registeredPaths, onStartJob, onJobDone,
-  onJobResumed, onRegister }: CardProps) {
+  onJobResumed, onRegister, preferUncensored, downloadRoot }: CardProps) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<string | null>(null);   // 利用者が選んだ量子化（選ぶまでは「この PC 向け」）
   const [library, setLibrary] = useState("");
   const [busy, setBusy] = useState(false);
+  // 系列 → 検閲あり／無検閲 → 量子化（2026-11-28 利用者「大きな種類を選ばせ、検閲・無検閲、量子化を選べるように」）
+  const both = !!model.has_uncensored && !!model.has_censored;
+  const [mode, setMode] = useState<"censored" | "uncensored">(preferUncensored && model.has_uncensored ? "uncensored" : "censored");
   const canFetchSomething = model.variants.some((v) => v.acquire === "hf" && v.supported);
   const { data: details, isFetching, isError } = useQuery({
     queryKey: ["runtime-catalog-details", runtime, model.id],
@@ -267,18 +277,21 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
       state: d.local_path && registeredPaths.has(d.local_path) ? "registered" : d.state, local_path: d.local_path }
       : { ...v, local_path: "" };
   });
-  // この PC 向け: 大きさが分かったら、載るうちで一番大きい（精度の高い）量子化。分からなければ目録の推奨
+  const shown = both ? variants.filter((v) => (mode === "uncensored") === v.uncensored) : variants;
+  // この PC 向け: ランタイム本体のおすすめ（Strata）。無ければ、載るうちで一番大きい（精度の高い）量子化
   const recommendedId = (() => {
-    const usable = variants.filter((v) => v.supported && v.fit === "fits" && (v.size_gib ?? v.memory_gib) != null);
+    const own = shown.find((v) => v.recommended && v.supported);
+    if (own) return own.id;
+    const usable = shown.filter((v) => v.supported && v.fit === "fits" && (v.size_gib ?? v.memory_gib) != null);
     // 目録が「標準」と言う量子化（Sly の heretic MXFP4 など）が載るなら、それを先に選ぶ
     const standard = usable.find((v) => v.label.includes("標準"));
     if (standard) return standard.id;
-    if (!usable.length) return model.recommended_variant;
+    if (!usable.length) return shown[0]?.id;
     return usable.reduce((a, b) => ((b.memory_gib ?? b.size_gib ?? 0) > (a.memory_gib ?? a.size_gib ?? 0) ? b : a)).id;
   })();
-  const selected = picked ?? recommendedId ?? variants[0]?.id;
+  const selected = picked && shown.some((v) => v.id === picked) ? picked : recommendedId ?? shown[0]?.id;
   const setSelected = (id: string) => setPicked(id);
-  const variant = variants.find((v) => v.id === selected) ?? variants[0];
+  const variant = shown.find((v) => v.id === selected) ?? shown[0];
   const entry = entries.find((item) => item.id === variant?.id);
   const myJobs = jobs.filter((job) => model.variants.some((v) => v.id === job.entry.id));
   const running = myJobs.some((job) => job.entry.id === variant?.id);
@@ -302,6 +315,23 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
     }
   };
 
+  // Maya は本体の「ダウンロードして登録」（Maya の量子化・n-gram 表・DSpark などをそろえて登録まで）
+  const startMaya = async () => {
+    if (!variant || !entry || !downloadRoot) return;
+    setBusy(true);
+    try {
+      const folder = `${downloadRoot.replace(/\/+$/, "")}/${variant.folder_name || variant.repo.split("/").pop()}`;
+      const result = await api<{ job_id: string }>("/features/maya-s/models/download-jobs",
+        { method: "POST", json: { setup_id: variant.id, folder } });
+      onStartJob({ id: result.job_id, entry });
+      show("取得と登録を始めました（画面を閉じても続きます）");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "取得を始められませんでした", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const action = (() => {
     if (!variant) return null;
     if (!variant.supported) return { label: variant.reason || "このランタイムでは使えません", disabled: true, run: () => {} };
@@ -313,6 +343,10 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
     if (variant.state === "downloaded" && variant.local_path) {
       return { label: "登録へ進む（取得済み）", disabled: !onRegister || !entry,
         run: () => entry && onRegister?.(variant.local_path, entry) };
+    }
+    if (variant.acquire === "maya") {
+      return { label: busy ? "始めています…" : variant.size_gib != null ? `取得して登録（約 ${gib(variant.size_gib)}）` : "取得して登録",
+        disabled: busy || running || !downloadRoot, run: () => void startMaya() };
     }
     if (variant.acquire === "hf") {
       return { label: busy ? "始めています…" : variant.size_gib != null ? `取得する（約 ${gib(variant.size_gib)}）` : "取得する",
@@ -333,7 +367,8 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
             {model.recommended && <Tag tone="accent">おすすめ</Tag>}
             {model.uncensored && <Tag tone="amber">無検閲</Tag>}
             {model.gated && <Tag>要トークン</Tag>}
-            {model.kind === "drafter" && <Tag>先読み</Tag>}
+            {(model.tags ?? []).filter((t) => t !== "画像も読む" || runtime !== "strata").map((t) => <Tag key={t}>{t}</Tag>)}
+            {model.has_uncensored && !model.uncensored && <Tag tone="amber">無検閲あり</Tag>}
             {anyDownloaded && <Tag tone="accent">取得済み</Tag>}
           </span>
           {summary(model) && <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">{summary(model)}</span>}
@@ -344,8 +379,19 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
 
       {open && (
         <div className="space-y-3 border-t border-zinc-100 px-4 pb-4 pt-3 dark:border-zinc-800">
+          {both && (
+            <div role="tablist" aria-label="検閲" className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800">
+              {(["censored", "uncensored"] as const).map((m) => (
+                <button key={m} type="button" role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
+                  className={`min-h-10 rounded-lg text-sm ${mode === m
+                    ? "bg-white font-semibold shadow-sm dark:bg-zinc-950" : "text-zinc-600 dark:text-zinc-300"}`}>
+                  {m === "censored" ? "通常" : "無検閲"}
+                </button>
+              ))}
+            </div>
+          )}
           <div role="radiogroup" aria-label={`${model.name} の量子化`} className="space-y-1.5">
-            {variants.map((v) => {
+            {shown.map((v) => {
               const active = v.id === variant?.id;
               return (
                 <button key={v.id} type="button" role="radio" aria-checked={active} onClick={() => setSelected(v.id)}
@@ -362,19 +408,22 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
                         {/* 量子化の名前（UD-Q4_K_XL など）はハイフンで折らない。折るのは語の間だけ */}
                         {v.label.split(" ").map((word, i) => <span key={i}>{i ? " " : ""}<span className="whitespace-nowrap">{word}</span></span>)}
                       </span>
-                      {v.uncensored && !model.uncensored && <Tag tone="amber">無検閲</Tag>}
-                      {v.id === recommendedId && model.variants.length > 1 && <Tag>この PC 向け</Tag>}
+                      {v.uncensored && !model.uncensored && !both && <Tag tone="amber">無検閲</Tag>}
+                      {v.id === recommendedId && shown.length > 1 && v.fit === "fits" && <Tag>この PC 向け</Tag>}
                       {v.state === "downloaded" && <Tag tone="accent">取得済み</Tag>}
                       {v.state === "registered" && <Tag tone="accent">登録済み</Tag>}
+                    </span>
+                    {/* 容量（ダウンロード）と必要メモリ（ランタイム本体の目安）を 1 行に */}
+                    <span className="num mt-0.5 block text-[11px] text-zinc-500">
+                      {/* 数字と単位の途中で折らない（区切りの「·」の後ろだけで折る） */}
+                      {v.size_gib != null ? <span className="whitespace-nowrap">容量 {gib(v.size_gib)}</span>
+                        : isFetching && v.acquire === "hf" ? "容量を読んでいます…" : ""}
+                      {v.memory_gib != null && <> · <span className="whitespace-nowrap">メモリ {gib(v.memory_gib)}</span></>}
+                      {v.maker && <> · <span className="whitespace-nowrap">{v.maker} の版</span></>}
                     </span>
                     {(v.note || (!v.supported && v.reason)) && (
                       <span className="mt-0.5 block text-[11px] text-zinc-500">{v.supported ? v.note : v.reason}</span>
                     )}
-                  </span>
-                  <span className="num shrink-0 text-xs text-zinc-500">
-                    {v.size_gib != null ? `約 ${gib(v.size_gib)}`
-                      : isFetching && v.acquire === "hf" ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600" aria-label="大きさを読んでいます" />
-                        : ""}
                   </span>
                   <FitPill fit={v.supported ? v.fit : ""} />
                 </button>
@@ -383,9 +432,12 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
           </div>
           {isError && <p className="text-[11px] text-zinc-500">大きさを読めませんでした。量子化はそのまま選べます。</p>}
 
+          {variant?.supported && variant.fit === "slow" && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-300">GPU に収まらない分を RAM や SSD から読むので、遅くなります。</p>
+          )}
           {variant?.supported && variant.fit === "no" && ram != null && vram != null && (
             <p className="text-xs text-amber-700 dark:text-amber-300">
-              この PC のメモリ（RAM {Math.round(ram)} GiB＋VRAM {Math.round(vram)} GiB）では足りない見込みです。小さい量子化を選んでください。
+              この PC のメモリ（RAM {Math.round(ram)} GB＋VRAM {Math.round(vram)} GB）では足りない見込みです。小さい量子化を選んでください。
             </p>
           )}
           {variant?.acquire === "runtime" && variant.supported && (
@@ -546,7 +598,7 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
             onStartJob={(job) => setJobs((current) => [job, ...current])}
             onJobDone={(jobId) => setJobs((current) => current.filter((item) => item.id !== jobId))}
             onJobResumed={(oldId, job) => setJobs((current) => [job, ...current.filter((item) => item.id !== oldId)])}
-            onRegister={onRegister} />
+            onRegister={onRegister} preferUncensored={onlyUncensored} downloadRoot={block?.download_root} />
         ))}
       </ul>
       {block?.catalog_ref && expert && (

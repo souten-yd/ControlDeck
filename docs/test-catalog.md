@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 287 ファイル、3047 テスト（目的の未記入 93 ファイル）
-- E2E: 155 spec、366 テスト
+- backend: 287 ファイル、3052 テスト（目的の未記入 93 ファイル）
+- E2E: 155 spec、367 テスト
 
 ## backend（backend/tests）
 
@@ -2539,16 +2539,21 @@
 
 ### backend/tests/test_model_catalog_models.py
 
-目的: 目的: Models の目録をモデルごとにまとめた形（/models/catalog の models）と、カードを開いたときの詳細 （量子化ごとの大きさ・載るか・取得済み）を確かめる。 根拠: 2026-11-28 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能の ところ全てやり直して」。本番の目録では Strata が二重（Strata が取る行と HF から取る行）、開発者向けのメモ （「Qwen 用の引数は渡さない」「RADIANCE_NVFP4_MXFP4=1」）が画面に出て、大半の行で大きさが空だった。
+目的: 目的: Models の目録（系列 → 検閲あり／無検閲 → 量子化。容量・必要メモリ・載るか）を、ランタイム本体の目録の 実データで確かめる。 根拠: 2026-11-28 利用者「目録はまず大きな種類（Qwen・Hy4・Inkling など）を選ばせ、検閲・無検閲、量子化を選べる ように。載るかどうかと容量を調査して、Strata・Maya・Radiance それぞれの目録を作って。Maya は DeepSeek・GLM・ （Tencent の）Hy4 など。llama.cpp は目録をやめて従来のファイル選択に戻す」。調査は docs/research-model-catalog-20261128.md。 試験データ: tests/fixtures/strata-catalog-0.2.23.json（本番の Strata 0.2.23 の `Catalog().rows()`）・ tests/fixtures/maya-catalog-1.1.84.json（本番の Maya 1.1.84 の probe）。
 
-- `test_strata_has_no_duplicate_model_and_quantization` — Strata 自身の目録にある系列×量子化は 1 つだけ（HF から取る同じ行を捨てる）。第三者の無検閲版は残す。
-- `test_developer_notes_are_kept_out_of_user_text` — 引数・環境変数・内部の経路のメモは note_expert へ。利用者向けの文（名前・説明・量子化の名前と説明）に出さない。
-- `test_same_weights_from_several_repos_are_one_card_with_per_variant_marks` — Sly の Qwen3.8-27B の 4 つの量子化（別々の repo）は 1 枚。無検閲は heretic の行だけなのでカードには付けない。
-- `test_catalog_payload_keeps_entries_and_adds_models` — 取得・登録の API は今までの行の id を使うので entries は残し、models の variant の id は entries の id と同じ。
-- `test_details_reads_sizes_once_and_marks_missing_quantizations` — 開いたときだけ HF の一覧から量子化ごとの大きさと載るかを読み、24 時間覚える。HF に無い量子化は選べない印。
-- `test_details_reports_downloaded_when_all_files_are_complete` — 取得先に HF と同じ大きさのファイルが全部あれば「取得済み」と登録の入口（先頭の片）を返す。途中なら返さない。
-- `test_details_does_not_touch_network_for_rows_strata_fetches_itself` — Strata が初回の起動で取る行は、Strata の目録の値を使い HF を読まない。
-- `test_fit_by_size` — 大きさから載るかの目安。llama.cpp は VRAM に収まれば載る、RAM と合わせてならぎりぎり（遅い）。
+- `test_llama_has_no_catalog` — llama.cpp は目録をやめた（手元のファイルを選んで登録する）。
+- `test_strata_families_come_from_strata_itself` — Strata の系列は本体の目録から: Hy4-Flash・Inkling・Ornith・Gyro を含む。NVIDIA だけの NVFP4 と提供終了は出さない。
+- `test_strata_uncensored_variants_sit_in_the_same_family` — 無検閲版は同じ系列のカードの中（検閲あり／無検閲を切り替える）。必要メモリと判定は公式の同じ量子化から。
+- `test_maya_families_come_from_maya_itself` — Maya は本体の probe から: GLM・DeepSeek・MiniMax・Hy4。Derisked は GLM の無検閲。未公開は選べない。登録済みを出す。
+- `test_radiance_lists_text_models_with_sizes` — Radiance は作者の文章の LLM（画像・動画・音楽は載せない）。大きさは HF の一覧の値・載るかは VRAM と比べる。
+- `test_user_text_has_no_developer_notes` — 利用者向けの文（系列名・説明・量子化の名前）に、引数・環境変数・内部の経路を出さない。
+- `test_catalog_payload_keeps_entries_and_adds_models` — 取得・登録の API は今までの行の id を使うので entries は残し、models の variant の id は entries と同じ。
+- `test_strata_falls_back_to_the_hand_table_when_strata_cannot_be_read` — Strata 本体の目録を読めないとき（未導入・時間切れ）は手の表（strata_catalog）で出す。
+- `test_fit_by_size` — GPU に置くランタイムの目安: VRAM に収まれば載る、RAM と合わせて収まれば遅い、それ以外は載らない。
+- `test_details_reads_sizes_once_and_marks_missing` — Radiance の行は開いたときに HF の一覧で取得済みかを見る（24 時間覚える）。HF に無いファイルは選べない印。
+- `test_details_reports_downloaded` — 取得先に HF と同じ大きさのファイルがそろっていれば取得済みと登録の入口を返す。足りなければ返さない。
+- `test_details_do_not_touch_network_for_rows_runtimes_fetch_themselves` — Strata が初回の起動で取る行・Maya の行は、本体の値を使い HF を読まない。
+- `test_acquire_uses_listed_files_for_the_inkling_heretic` — 目録にファイル名を書いた行（Inkling の無検閲版は本体と DSpark の 2 つ）は、そのファイルを取る（DSpark を漏らさない）。
 
 ### backend/tests/test_model_choice.py
 
@@ -3733,7 +3738,7 @@
 
 目的: ランタイム共通の目録・設定の形・ファイルからの登録の読み取り（run3 共通バックエンド API）。 目的: Models 画面の共通部品（RuntimeCatalog・RuntimeSettings・RuntimeRegisterFromFile）が 読む 3 つの API を守る。 - 目録は全ランタイムを並べ、載せる repo は確認済みのものだけにする。大きさの分からない行は size_gib を null にし、推測値（URL・大きさ・sha）を書かない（取得の開始時に HF の API から読む）。 - 設定の形は 6 つの並びを全ランタイムで揃え、欄の id・選択肢・上限を実際の保存 API （LlamaInstanceBody・RadianceModelBody・SlyRadianceModelBody・StrataModelBody・ MayaInstanceSettingsBody / MayaRegisterBody）と一致させる。 ランタイムに無い欄（Sly の prefix cache など）は出さず、always_on に理由を書く。 - ファイルからの登録は新規選択を /data1tb と /data2tb の中だけにし、realpath で symlink の 外抜けを断る。GGUF ヘッダ・config.json は読む量と件数を制限して読む。 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。 追加（Nexarch #19）: 調査済みの repo id とファイル名を実 API へ反映し、llama.cpp と Radiance の空目録を解消する。Maya の owner の誤記（peasmith）を直し、Strata の新行は GSQ-RCO・Unsloth UD-*・Q8_0 だけに絞る。全 5 ランタイムから共通の HF 取得 Job を 停止・再開・取り消しできる道を接続する。根拠: docs/PLAN-model-catalog.md「目録候補」と .nexarch/brief-runtime-unify.md「大きさ・sha は取得の開始時に HF の API から読む」。
 
-- `test_catalog_has_every_runtime_and_no_guessed_sizes` — 目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
+- `test_catalog_has_every_runtime_and_no_guessed_sizes` — 目的: 目録が 5 ランタイムを並べ、出どころの確かな行だけを載せること。
 - `test_catalog_entries_are_looked_up_by_runtime` — 目的: 取得の API が目録の行をランタイム＋id で引けること（別ランタイムの id を混ぜない）。
 - `test_capabilities_share_the_same_section_order` — 目的: 全ランタイムの設定画面が同じ 6 つの並びで出ること（バラバラにしない）。
 - `test_capability_fields_match_the_save_api` — 目的: 設定の欄の id・選択肢・上限を、実際の保存 API の検証と同じにすること。
@@ -3751,8 +3756,8 @@
 - `test_acquire_rejects_rows_without_a_hf_repo_and_maya_register` — 目的: HF から取れない行（Strata など）と Maya の取得後登録を共通 API で断ること。
 - `test_acquire_job_reads_sizes_at_start_and_keeps_the_runtime` — 目的: 目録の行から作る取得 Job が、大きさを推測せず開始時に読み、登録先のランタイムを残すこと。
 - `test_rad_file_is_offered_to_radiance_only` — 目的: Radiance の .rad を Sly-Radiance（safetensors フォルダ）へ、Sly のフォルダを
-- `test_researched_rows_keep_only_confirmed_repo_ids_and_file_names` — 目的: 調査済みの repo id とファイル名がそのまま API に出ること。
-- `test_strata_new_rows_use_only_supported_quantizations` — 目的: Strata の新規行が GSQ-RCO・Unsloth UD-*・Q8_0 だけであること。
+- `test_researched_rows_keep_only_confirmed_repo_ids_and_file_names` — 目的: 調査で確かめた repo id・ファイル名・大きさがそのまま API に出ること。
+- `test_strata_new_rows_use_only_supported_quantizations` — 目的: Strata の HF の行（第三者の無検閲版）が、Strata の動かせる量子化（GSQ-RCO・Unsloth UD）だけであること。
 - `test_all_five_runtimes_can_start_the_common_hf_job` — 目的: 全 5 ランタイムが共通の取得 Job を始め、停止・再開・取消の道に載ること。
 - `test_catalog_files_endpoint_lists_only_the_selected_quantization` — 目的: GGUF の量子化行のファイル一覧がサブフォルダの分割全片だけを返すこと。
 - `test_new_registration_rejects_outside_paths_even_with_wide_files_config` — 目的: 新規登録 API が Files の許可ルートを広く設定しても 2 ルート外を断ること。
@@ -5104,11 +5109,12 @@
 
 ### frontend/e2e/model-add.spec.ts
 
-目的: 目的: Models の「モデル登録」の目録を、本番と同じ目録のデータ（fixtures/model-catalog-20261128.json。 作り直した backend の api_payload を本番の PC の RAM・VRAM で組み立てたもの）で確かめる。 1 モデル 1 枚のカード・Strata の重複が無い・開くと量子化を選べて主のボタンが 1 つ・開発者のメモや 内部の項目名が出ない・320px で崩れない、を見る。 根拠: 2026-11-28 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能の ところ全てやり直して」。前回は模擬の 1 行だけで画面を確かめていて、本番の目録の崩れを見逃した。
+目的: 目的: Models の「モデル登録」の目録（系列 → 検閲あり／無検閲 → 量子化。容量・メモリ・載るか）を、本番と同じ 目録のデータ（fixtures/model-catalog-20261128.json。backend の api_payload を、本番から読んだ Strata 0.2.23 の 目録・Maya 1.1.84 の probe と本番の PC の RAM・VRAM で組み立てたもの）で確かめる。 根拠: 2026-11-28 利用者「目録はまず大きな種類（Qwen・Hy4・Inkling など）を選ばせ、検閲・無検閲、量子化を選べる ように。載るかどうかと容量を調査して目録を作って。llama.cpp は目録をやめて従来のファイル選択に戻す」。
 
-- Strata: 重複の無いモデルのカード → 開いて量子化を選ぶ → 登録（${width}px ${scheme}）
-- llama.cpp: 開いたときだけ大きさを読み、取得のボタンに大きさが出る（${width}px ${scheme}）
-- 全ランタイム: 開発者のメモ・内部の項目名が通常の画面に出ず、エキスパートの欄も出ない
+- Strata: 系列 → 通常／無検閲 → 量子化（${width}px ${scheme}）
+- Maya: GLM・DeepSeek・MiniMax・Hy4 を取得して登録（${width}px ${scheme}）
+- llama.cpp は目録を出さず、手元のファイルを選んで登録する
+- Radiance: 作者の文章の LLM を系列ごとに・無検閲の切り替え・開発者のメモが出ない
 
 ### frontend/e2e/model-display-name.spec.ts
 

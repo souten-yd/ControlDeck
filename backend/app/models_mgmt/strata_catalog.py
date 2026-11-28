@@ -69,6 +69,7 @@ _UNSLOTH = (
     _q("ud-q2_k_xl", None, None), _q("ud-iq3_xxs", None, None), _q("ud-q3_k_xl", None, None),
     _q("ud-iq4_xs", 94.0, 72.0), _q("ud-q4_k_xl", 111.0, 88.0), _q("ud-q5_k_xl", 158.0, 108.0),
     _q("ud-q6_k_xl", 169.0, 118.0), _q("q8_0", 188.0, 136.0),
+    _q("ud-iq4_xs-v31", 93.7, 61.4),       # Strata 0.2.23（Unsloth Dynamic v3.1 の新しいファイル）
 )
 # Inkling はファイルがそのまま GPU と RAM に載る（公式の表の「File size」）。メモリの目安はファイルの大きさにする。
 _INKLING = (
@@ -77,6 +78,7 @@ _INKLING = (
     _q("ud-iq4_xs", 15.7, 15.7), _q("ud-q3_k_xl", 13.6, 13.6), _q("ud-iq3_xxs", 11.7, 11.7),
     _q("ud-q2_k_xl", 9.1, 9.1), _q("ud-iq2_xxs", 8.5, 8.5), _q("ud-iq1_m", 8.0, 8.0),
     _q("ud-iq1_s", 7.8, 7.8),
+    _q("gsq-rco-iq3_s", 12.6, 11.4),       # Strata 0.2.23（ISTA-DASLab/Inkling-2-Mini-GSQ-RCO-GGUF）
 )
 
 _FAMILIES: tuple[Family, ...] = (
@@ -93,6 +95,11 @@ _FAMILIES: tuple[Family, ...] = (
     Family("qwen36", "Qwen3.6-35B-A3B（Unsloth）", "Qwen3.6-35B-A3B",
            "other", True, (_q("ud-q4_k_xl", 22.9, 32.0), _q("ud-q6_k_xl", 32.6, 44.0),
                            _q("q8_0", 37.8, 52.0)), "ファイルで選ぶ別の経路。Qwen 用の引数は渡さない"),
+    # Strata 0.2.23 で増えた系列（本体の目録・2026-11-28 調査。docs/research-model-catalog-20261128.md）。
+    # Qwen3.6 と同じ別のエンジン（Strata の own_path_fit.py: OWN_PATH_FAMILIES['ornith']）。
+    Family("ornith", "Ornith-1.5-35B-A3B", "Ornith-1.5-35B-A3B",
+           "other", True, (_q("q4_k_m", 21.7, 21.2), _q("q5_k_m", 25.3, 24.6), _q("q6_k", 29.2, 28.2),
+                           _q("q8_0", 37.8, 36.2))),
     Family("hy4-flash", "Tencent Hy4-Flash", "Tencent Hy4-Flash",
            "other", True, (_q("sq-64", 62.0 + 67.6, 64.0 + 8.0),
                            _q("sq-96", 89.6 + 67.6, 96.0),

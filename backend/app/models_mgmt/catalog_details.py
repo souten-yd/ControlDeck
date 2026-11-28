@@ -50,28 +50,10 @@ def _cache_write(data: dict) -> None:
 
 
 def fit_by_size(runtime: str, size_gib: float | None, ram: float | None, vram: float | None) -> str:
-    """重みの大きさから「載るか」の目安（KV などの分に 1.15 倍の余裕を見る）。
+    """大きさからの「載るか」の目安（目録と同じ判定。runtime_catalog.fit_by_size）。"""
+    from app.models_mgmt import runtime_catalog
 
-    GPU だけで動くもの（Radiance・Sly-Radiance）は VRAM と、RAM にも置けるもの（llama.cpp・Maya・
-    Strata の GGUF）は VRAM で収まれば fits、RAM と合わせて収まれば tight（遅くなる）で比べる。
-    """
-    from app.models_mgmt import sly_radiance_catalog as sly
-
-    if not size_gib:
-        return sly.UNKNOWN
-    need = size_gib * 1.15
-    if runtime in ("radiance", "sly-radiance"):
-        return sly.fit(size_gib, vram)
-    if not vram and not ram:
-        return sly.UNKNOWN
-    if runtime == "llama" and vram and vram >= need:
-        return sly.FITS
-    capacity = (ram or 0.0) + (vram or 0.0)
-    if runtime != "llama" and capacity >= need * 1.1:
-        return sly.FITS               # Maya・Strata は RAM と VRAM を合わせて使う前提の作り
-    if capacity >= need:
-        return sly.TIGHT
-    return sly.NO_FIT
+    return runtime_catalog.fit_by_size(size_gib, ram, vram)
 
 
 def _roots() -> list[Path]:
@@ -123,6 +105,11 @@ def _local(entry, files: list[dict]) -> str:
 async def _files_for(entry) -> list[dict]:
     from app.models_mgmt import hf
 
+    if entry.files and entry.format == "gguf":
+        # 目録にファイル名を書いた行（Inkling の無検閲版は本体と DSpark の 2 つ）はそのファイルだけ
+        wanted = set(entry.files)
+        listed = [item for item in await hf.list_model_files(entry.repo) if item["path"] in wanted]
+        return listed if len(listed) == len(wanted) else []
     if entry.quantization and entry.format == "gguf":
         return await hf.list_quantization_files(entry.repo, quantization=entry.quantization)
     listed = await hf.list_model_files(entry.repo)
@@ -152,6 +139,7 @@ async def model_details(runtime: str, model_id: str) -> dict:
         row = {"id": variant["id"], "size_gib": variant["size_gib"], "fit": variant["fit"],
                "supported": variant["supported"], "reason": variant["reason"], "state": "available", "local_path": ""}
         if entry is None or not entry.supported or entry.acquire != "hf" or not entry.repo:
+            # Strata が初回の起動で取る行・Maya の行は本体の値（通信しない）
             if entry is not None:
                 row["fit"] = runtime_catalog._fit_for(entry, ram, vram)  # noqa: SLF001 - 同じ判定を使う
             out.append(row)
@@ -178,8 +166,9 @@ async def model_details(runtime: str, model_id: str) -> dict:
                 row.update({"supported": False, "reason": "HF に見つかりません（目録の誤りの見込み）"})
             else:
                 total = sum(int(f["size"]) for f in hit["files"])
-                row["size_gib"] = round(total / GIB, 1) if total else None
-                row["fit"] = fit_by_size(runtime, row["size_gib"], ram, vram)
+                row["size_gib"] = round(total / 1e9, 1) if total else row["size_gib"]
+                # 本体の判定がある行（Strata の無検閲版は公式の同じ量子化の判定）はそれを使う
+                row["fit"] = entry.fit or fit_by_size(runtime, row["size_gib"], ram, vram)
                 local = await asyncio.to_thread(_local, entry, hit["files"])
                 if local:
                     row.update({"state": "downloaded", "local_path": local})

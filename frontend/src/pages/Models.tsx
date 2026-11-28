@@ -2116,7 +2116,7 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
         );
       })()}
       {commonRuntime && !pending && (
-        <CommonRegisterPanel runtime={commonRuntime}
+        <CommonRegisterPanel key={commonRuntime} runtime={commonRuntime}
           onReady={(values) => setPending({ runtime: commonRuntime, values })} onClose={onClose} />
       )}
       {commonRuntime && pending && (
@@ -2156,7 +2156,7 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
   onClose: () => void;
 }) {
   const expert = useExpert();
-  const [tab, setTab] = useState<"catalog" | "file" | "legacy">("catalog");
+  const [tab, setTab] = useState<"catalog" | "file" | "legacy">(runtime === "llama" ? "file" : "catalog");
   const { data: llamaSt } = useQuery({
     queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status"),
     enabled: runtime === "llama",
@@ -2172,8 +2172,6 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
     : (strataSt?.instances ?? []).map((item) => item.port);
   const base = runtime === "llama" ? 8080 : 8095;
   const port = nextPort(base, ports);
-  const aliasFrom = (name: string) => name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "").slice(0, 48);
   const toValues = (path: string, alias: string, extra: SettingValues = {}): SettingValues => ({
     alias, model_path: path, port, ...extra,
   });
@@ -2185,16 +2183,22 @@ function CommonRegisterPanel({ runtime, onReady, onClose }: {
           llama.cpp が未導入です。エキスパートを有効にして「従来の登録」から導入してください。
         </p>
       )}
-      <SegmentedTabs className="mb-3" value={tab} onChange={setTab}
-        tabs={[["catalog", "目録から取得"], ["file", "ファイルから登録"],
-          ...(expert ? [["legacy", "従来の登録"]] as const : [])] as const} />
-      {tab === "catalog" && (
+      {/* llama.cpp は目録を使わず、手元のファイルを選んで登録する（2026-11-28 利用者「ラマは目録いらなくて、従来通りの
+          ファイル選択して登録する制度に戻して」）。Strata は目録とファイルの 2 つ。 */}
+      {(runtime === "strata" || expert) && (
+        <SegmentedTabs className="mb-3" value={runtime === "llama" && tab === "catalog" ? "file" : tab} onChange={setTab}
+          tabs={[...(runtime === "strata" ? [["catalog", "目録から取得"]] as const : []), ["file", "ファイルから登録"],
+            ...(expert ? [["legacy", "従来の登録"]] as const : [])] as const} />
+      )}
+      {tab === "catalog" && runtime === "strata" && (
         <>
           <RuntimeCatalog runtime={runtime} onRegister={(path, entry) => {
-            // Strata の目録 id は "<系列>/<量子化>"（backend の strata_catalog と同じ）。
+            // 系列と量子化は目録の行が持つ（第三者の無検閲版も、本体の同じ系列・量子化の設定で動かす）
             const [family, model] = entry.id.split("/", 2);
-            onReady(toValues(path, runtime === "strata" ? strataAlias(entry.id) : aliasFrom(entry.name),
-              runtime === "strata" ? { family: family || "qwen", model: model || entry.quantization } : {}));
+            const fam = entry.family || family || "qwen";
+            const quant = (entry.quantization || model || "").toLowerCase();
+            onReady(toValues(path, strataAlias(`${fam}-${quant}${entry.uncensored ? "-uncensored" : ""}`),
+              { family: fam, model: quant }));
           }} />
         </>
       )}
