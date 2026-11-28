@@ -5,8 +5,10 @@
  *  根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。
  *        AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
  *  更新: Nexarch #24。旧「Sly-Radiance目録のモデル／同時実行数／量子化／先読みのフォルダ／詳しい設定」は
- *        共通 UI では「目録から取る」の行と共通フィールド（エキスパート）に置き換わったので、その導線へ追随した。
- *        旧 /models/sly-radiance/catalog は削除済み（#13）。共通 /models/catalog をモックする。 */
+ *        共通 UI では「目録から取得」の行と共通フィールド（エキスパート）に置き換わったので、その導線へ追随した。
+ *        旧 /models/sly-radiance/catalog は削除済み（#13）。共通 /models/catalog をモックする。
+ *  更新: レビュー #25 / 2026-11-28。目録の見出しを「目録から取得」へ固定し、Sly の prefix cache は
+ *        常時オンの決まり（切る選択肢を出さない）を画面と保存本文の両方で明示的に確かめる。 */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
@@ -92,8 +94,14 @@ for (const width of [320, 1280]) {
     await expect(slySwitch).toHaveAttribute("aria-checked", "false");
     await expect(sheet.locator('[data-runtime-catalog="sly-radiance"]')).toHaveCount(0);
     await slySwitch.click();
+    // prefix cache は常時オン（2026-11-28 利用者の決まり）。Sly の共通設定が出たところで、
+    // 切るトグル／欄が無いことと常時オンの注記を明示的に確かめる。
+    await expect(sheet.locator('[data-runtime-settings="sly-radiance"]')).toBeVisible();
+    await expect(sheet.getByText(/prefix cache は常にオンです/)).toBeVisible();
+    await expect(sheet.getByRole("checkbox", { name: /prefix cache/i })).toHaveCount(0);
+    await expect(sheet.getByLabel(/prefix cache/i)).toHaveCount(0);
     // 目録・ファイル登録は閉じた <details> の <summary> なので、開いてから中身を見る。
-    await sheet.locator("summary").filter({ hasText: /^目録から取る/ }).click();
+    await sheet.locator("summary").filter({ hasText: /^目録から取得/ }).click();
     const catalog = sheet.locator('[data-runtime-catalog="sly-radiance"]');
     await expect(catalog.locator('[data-catalog-entry="swift-heretic"]')).toContainText("無検閲寄り");
     await expect(catalog.locator('[data-catalog-entry="minicpm-v"]')).toContainText("未対応");

@@ -3,7 +3,10 @@
  *  目的: 目録の量子化ごとの案内（不足ファイル・フォルダ名の規則・ライセンス）が出て、ファイルが揃った
  *        量子化だけ登録できること。未準備のモデルでは一覧に準備カードを出さないこと。
  *  根拠: 2026-11-18 の Maya 登録画面と、Nexarch #11（共通目録・登録・設定への置換）。
- *        #24 で旧ラベル・旧導線を共通 UI に追随させた。API は page.route で模擬し、実モデルの取得はしない。
+ *        #24 で旧ラベル・旧導線を共通 UI に追随させた。レビュー #25 / 2026-11-28 の要修正で、
+ *        フォルダ欄は既定（エキスパート切）では読むだけになったため、欄を触る試験ではエキスパートを入れる。
+ *        ダウンロードを伴う登録は確認ダイアログを挟む（利用者の明示操作）。
+ *        API は page.route で模擬し、実モデルの取得はしない。
  *
  *  共有の注意: 共通 RuntimeSettings の保存／登録ボタンは「登録する」（初期値がある個別設定は「設定を保存」）。
  *              旧「登録」ボタンは存在しない。 */
@@ -68,6 +71,10 @@ function catalog(folder: string) {
 for (const width of [320, 1280]) {
   test(`Maya のモデルを手元のファイルから登録できる（${width}px）`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
+    // フォルダ欄（text/path）はエキスパートのときだけ編集できる（UI ルール「不要な表示は隠す」）。
+    await page.addInitScript(() => {
+      try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+    });
     await page.setViewportSize({ width, height: 900 });
     await establishSession(page, context);
     await page.route("**/api/v1/features/maya-s/model", (route) => route.fulfill({ json: {
@@ -142,6 +149,10 @@ for (const width of [320, 1280]) {
 for (const width of [320, 1280]) {
   test(`Maya のモデルをダウンロードして登録できる・一覧に準備カードを出さない（${width}px）`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
+    // フォルダ欄を触るのでエキスパートを入れる（既定は切）。
+    await page.addInitScript(() => {
+      try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+    });
     await page.setViewportSize({ width, height: 900 });
     await establishSession(page, context);
     // Maya is installed but the first model is not prepared: the list must not show a setup card.
@@ -172,15 +183,19 @@ for (const width of [320, 1280]) {
     await sheet.getByRole("radio", { name: /MiniMax|Maya-XS.*93 GB/ }).last().click();
     await expect(sheet.getByText("約 93 GB · 空き 206.3 GB")).toBeVisible();
     await expect(sheet.getByText("保存先: /data1tb/LLM")).toBeVisible();
-    // 共通 UI では「ダウンロードして登録」はボタンではなく見積もりの見出しに変わり、
-    // ダウンロードは下部の共通「登録する」ボタン（利用者の明示操作）から始まる。
-    // 旧 UI にあった専用の確認ダイアログ「ダウンロードを開始」は共通登録シートには無い
-    // （#21 の UI 修正中に報告する実装の不足。モックで隠さないため、ここでは消えたことを前提にしない）。
+    // 共通 UI では「ダウンロードして登録」は見積もりの見出しで、ダウンロードは下部の共通
+    // 「登録する」ボタン（利用者の明示操作）から始まる。押すと高負荷な取得の確認ダイアログが出る
+    // （レビュー #25 / 2026-11-28 の UI 修正）。量子化を選んだだけでは何も始まらない。
     await expect(sheet.getByText("ダウンロードして登録", { exact: true })).toBeVisible();
-    expect(sent).toBeNull();  // 量子化を選んだだけでは何もダウンロードしない
+    expect(sent).toBeNull();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `${SHOTS}/maya-download-confirm-${width}.png` });
     await sheet.getByTestId("runtime-settings-save").click();
+    const confirm = page.getByRole("alertdialog", { name: "MiniMax-M3.1-Flash · Maya-XS をダウンロードして登録" });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByText(/約 93 GB/)).toBeVisible();
+    expect(sent).toBeNull();  // 承認するまでは取得しない
+    await confirm.getByRole("button", { name: "ダウンロードを開始" }).click();
     await expect.poll(() => sent?.setup_id).toBe("minimax-maya-xs");
     expect(sent).toMatchObject({ folder: "/data1tb/LLM", context: 65536, gpu_index: 0 });
   });

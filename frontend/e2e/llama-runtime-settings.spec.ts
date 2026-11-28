@@ -1,8 +1,10 @@
-/** 目的: llama.cpp の個別設定で保存すると、読み取り専用の状態項目（model_path・loaded など）を
- *        除外した本文だけが PUT されること。422 の詳細が画面に出ること。
- *        Ollama のロード状態が表示とライフサイクルボタンに反映されること。
+/** 目的: llama.cpp の個別設定（共通 RuntimeSettings）で保存すると、読み取り専用の状態項目
+ *        （loaded・runtime_status・base_url など）を除いた本文だけが PUT されること。
+ *        422 の詳細が画面に出ること。Ollama のロード状態が表示とライフサイクルボタンに反映されること。
  *  根拠: 状態項目を送ると保存 API が extra inputs で 422 になる不具合の回帰確認。
- *  #24: 共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 */
+ *        レビュー #25 / 2026-11-28 の要修正: 旧個別パネルの「詳細」見出し・旧ラベルは共通
+ *        RuntimeSettings の「エキスパート」（capability の expert 欄）へ置き換わったので追随した。
+ *        隔離環境には llama.cpp の登録が無いため、ステータスは page.route で模擬して skip せず実行する。 */
 import { expect, test } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;
@@ -10,6 +12,31 @@ const password = process.env.CONTROL_DECK_E2E_PASSWORD;
 
 test("llama.cpp instance save excludes read-only status fields", async ({ page }) => {
   test.skip(!username || !password, "CONTROL_DECK_E2E_USER/PASSWORD are required");
+
+  await page.addInitScript(() => {
+    try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+  });
+  const instance = {
+    alias: "e2e-llama", model_path: "/data1tb/LLM/model.gguf", port: 8080, ctx_size: 4096,
+    deep_research_ctx_size: 0, n_predict: 2048, n_parallel: 1, role: "llm", loaded: false,
+    base_url: "http://127.0.0.1:8080/v1", runtime_status: "STOPPED", unit: "", selected: false,
+    last_used_at: null,
+  };
+  await page.route("**/api/v1/models/llama/status", route => route.fulfill({ json: {
+    installed: true, backend: "rocm", selected_alias: instance.alias, instances: [instance],
+  } }));
+  // 一覧は選択中のランタイムで切り替わる。隔離環境の既定は Ollama なので llama.cpp へ寄せる。
+  await page.route("**/api/v1/models/runtime-environment", async route => {
+    const env = await (await route.fetch()).json();
+    env.policy = { ...env.policy, selected_runtime: "llama.cpp", selected_backend: "rocm" };
+    await route.fulfill({ json: env });
+  });
+  // 一覧に individual settings へのボタンを出すため、登録済みモデルも模擬する。
+  await page.route("**/api/v1/models/providers/*/models", route => route.fulfill({ json:
+    route.request().url().includes("/llama.cpp/")
+      ? [{ id: instance.alias, name: instance.alias, size_bytes: 0, loaded: false,
+        details: { runtime: "llama.cpp" } }]
+      : [] }));
 
   await page.goto("/models");
   await page.getByLabel("ユーザー名").fill(username!);
@@ -40,21 +67,18 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
 
   const status = await page.evaluate(async () => (await fetch("/api/v1/models/llama/status")).json());
   const alias = status.selected_alias as string;
-  // 検証用の環境（./deck.sh e2e）には llama.cpp のモデルが登録されていない。個別設定の保存は登録のある環境でだけ確かめる
-  test.skip(!alias, "llama.cpp のモデルが登録されていない環境");
+  expect(alias).toBe("e2e-llama");
   await page.getByRole("button", { name: `${alias}の個別設定を開く` }).click();
   const sheet = page.getByRole("dialog", { name: `${alias} · 個別設定`, exact: true });
-  // 使う頻度の低い項目は「詳細」に畳んである。
-  await sheet.locator("summary", { hasText: "詳細" }).click();
-  await expect(sheet.getByText("Deep Research専用CTX", { exact: true })).toBeVisible();
-  await expect(sheet.getByLabel("コンテキスト長（CTX）").locator("option[value='262144']")).toHaveCount(1);
-  await expect(sheet.getByLabel("最大出力トークン").locator("option[value='262144']")).toHaveCount(1);
-  await expect(sheet.getByText("通常CTXへ自動復元")).toBeVisible();
-  await sheet.getByRole("button", { name: "保存", exact: true }).click();
+  // 共通 UI では使う頻度の低い数値は expert 欄（旧「詳細」）として同じ画面に出る。
+  await expect(sheet.getByLabel("Deep Research 用の長さ（数値入力）", { exact: true })).toBeVisible();
+  await expect(sheet.getByLabel("最大出力トークン（数値入力）", { exact: true })).toHaveValue("2048");
+  await sheet.getByLabel("Deep Research 用の長さ（数値入力）", { exact: true }).fill("16384");
+  await sheet.getByTestId("runtime-settings-save").click();
   await expect.poll(() => submitted).not.toBeNull();
 
-  expect(submitted).toMatchObject({ ctx_size: expect.any(Number), deep_research_ctx_size: expect.any(Number) });
-  for (const key of ["model_path", "alias", "port", "auto_start", "idle_exclude", "selected", "loaded", "unit", "runtime_status", "base_url", "last_used_at"]) {
+  expect(submitted).toMatchObject({ ctx_size: 4096, deep_research_ctx_size: 16384, n_predict: 2048 });
+  for (const key of ["loaded", "runtime_status", "base_url", "unit", "last_used_at", "selected"]) {
     expect(submitted).not.toHaveProperty(key);
   }
 
@@ -64,7 +88,10 @@ test("llama.cpp instance save excludes read-only status fields", async ({ page }
     contentType: "application/json",
     body: JSON.stringify({ detail: [{ loc: ["body", "deep_research_ctx_size"], msg: "入力値を確認してください" }] }),
   }));
-  await sheet.getByRole("button", { name: "保存", exact: true }).click();
+  // 保存に成功するとシートは閉じる（共通 UI の onDone）。422 の表示は開き直して確かめる。
+  await page.getByRole("button", { name: `${alias}の個別設定を開く` }).click();
+  const reopened = page.getByRole("dialog", { name: `${alias} · 個別設定`, exact: true });
+  await reopened.getByTestId("runtime-settings-save").click();
   await expect(page.getByText("deep_research_ctx_size: 入力値を確認してください")).toBeVisible();
 });
 

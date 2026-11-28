@@ -10,6 +10,8 @@
  * API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。
  * #24 更新: 共通 UI では詳細な系列・量子化の選択はエキスパートの「従来の登録」に置かれた
  * （不要な表示は隠す決まり）。導線を「モデル登録 → Strata → 従来の登録」へ更新した。
+ * レビュー #25 / 2026-11-28 更新: 目録見出し「目録から取得」への統一とエキスパート導線の確認を受け、
+ * 共通 UI の回帰（models-runtime-common.spec.ts）と重複しないよう、従来の登録の目録データだけを確かめる。
  */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";

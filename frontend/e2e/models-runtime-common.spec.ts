@@ -7,8 +7,8 @@ import { establishSession, hasSession } from "./support/session";
  *   - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで
  *     同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。
  *     目録の見出しは「目録から取得」へ統一する要求なのでその文言に期待を固定する
- *     （docs/PLAN-model-catalog.md「共通の並び」）。実装にはいまだに「目録から取る／探す」と
- *     Maya の二重目録（「Maya の目録」）が残る。要求を緩めず、不一致は #21 へ報告する。
+ *     （docs/PLAN-model-catalog.md「共通の並び」）。レビュー #25 / 2026-11-28 の UI 修正で
+ *     旧「目録から取る／探す」と Maya の二重目録は解消済み（緩めずに同じ文言へ固定する）。
  *   - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、
  *     ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。
  *   - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと
@@ -23,10 +23,11 @@ import { establishSession, hasSession } from "./support/session";
  *  API は page.route で差し替え、本物の設定・外部への取得は一切行わない。目録モックの
  *  Radiance も acquire="hf"（supported かつ repo ありという実 API 契約どおり。#19 で実装も hf 化）。
  *
- *  ※ この環境では frontend/node_modules のリンク先（ホストの共有 node_modules）が箱から見えず
- *    実行不能（箱内で見えないので自分では導入しない）。spec と実行コマンドのみを残し、
- *    結果は「未検証」とする。実行コマンド:
- *      env -u CONTROL_DECK_CONFIG \
+ *  更新: レビュー #25 / 2026-11-28 の要修正。目録の見出し「目録から取得」を維持し、
+ *        停止済み（interrupted + can_resume）のジョブにも「取り消し」を出し、破壊操作なので
+ *        確認ダイアログ（「取得を取り消す」/「取り消す」）を挟む導線へ追随した。
+ *  実行コマンド（この箱では /dev/shm が読み取り専用なので一時 shim を PYTHONPATH に付ける）:
+ *      env -u CONTROL_DECK_CONFIG PYTHONPATH=<一時 shim> \
  *        PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \
  *        ./deck.sh e2e models-runtime-common.spec.ts
  */
@@ -265,7 +266,9 @@ async function reachCommonSettings(page: Page, sheet: Sheet, runtime: (typeof RU
     const picker = page.getByRole("dialog", { name: FILE_PICKER_TITLE });
     // initialPath が残るとルート一覧ではなくフォルダ内が開く。どちらでもモデルを選べるようにする。
     const rootButton = picker.getByRole("button", { name: "/data1tb", exact: true });
-    if (await rootButton.count()) await rootButton.click();
+    await expect(rootButton).toBeVisible();
+    await rootButton.click();
+    await expect(picker.getByRole("button", { name: "model.gguf" })).toBeVisible();
     await picker.getByRole("button", { name: "model.gguf" }).click();
     await expect(picker).toBeHidden();
     await sheet.locator(`[data-runtime-register-file="${runtime}"]`).getByRole("button", { name: "登録する" }).click();
@@ -347,6 +350,11 @@ test("取得ジョブ: 取り消しの API モックと实际操作（320px）",
   await expect(running.getByRole("button", { name: "取り消し", exact: true })).toBeEnabled();
 
   await running.getByRole("button", { name: "取り消し", exact: true }).click();
+  // 取り消しは破壊操作（途中の .part を消す）なので確認ダイアログを挟む。
+  const confirm = page.getByRole("alertdialog", { name: "取得を取り消す" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByText(/\.part/)).toBeVisible();
+  await confirm.getByRole("button", { name: "取り消す", exact: true }).click();
   await expect(page.getByText("取り消しました（途中のファイルは削除されます）")).toBeVisible();
   expect(jobs.calls).toContain("cancel");
   // 取り消しは終端: 再開の記録が残らず、ジョブカードも片付けられる（停止とは別の道）。
@@ -354,6 +362,36 @@ test("取得ジョブ: 取り消しの API モックと实际操作（320px）",
   expect(jobs.calls).not.toContain("stop");
   expect(jobs.calls).not.toContain("resume");
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
+test("取得ジョブ: 停止済みのジョブも取り消せる（確認ダイアログ・320px）", async ({ page, context }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  const { sheet, jobs } = await openRegisterSheet(page, context);
+
+  const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
+  await entry.getByRole("button", { name: "取得する" }).click();
+  await confirmAcquire(page);
+  const running = sheet.locator('[data-acquire-job="job-1"]');
+  await running.getByRole("button", { name: "停止", exact: true }).click();
+  await expect(running).toContainText("停止中（続きから再開できます）");
+  // 停止しても再開の記録（.part）は残る。取り消しはその記録を消す破壊操作なので確認を挟む。
+  await expect(running.getByRole("button", { name: "再開", exact: true })).toBeEnabled();
+  await expect(running.getByRole("button", { name: "取り消し", exact: true })).toBeEnabled();
+
+  const confirm = page.getByRole("alertdialog", { name: "取得を取り消す" });
+  await running.getByRole("button", { name: "取り消し", exact: true }).click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "キャンセル" }).click();
+  await expect(sheet.locator('[data-acquire-job="job-1"]')).toBeVisible();
+  expect(jobs.calls).not.toContain("cancel");
+
+  await running.getByRole("button", { name: "取り消し", exact: true }).click();
+  await confirm.getByRole("button", { name: "取り消す", exact: true }).click();
+  await expect(page.getByText("取り消しました（途中のファイルは削除されます）")).toBeVisible();
+  expect(jobs.calls).toContain("cancel");
+  // 停止している間にカードが terminal 扱いになった後なので、カードは残るが再開はできない。
+  await expect(sheet.locator('[data-acquire-job="job-1"]')).toContainText("取り消しました");
+  await expect(running.getByRole("button", { name: "再開", exact: true })).toHaveCount(0);
 });
 
 test("ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ", async ({ page, context }) => {
