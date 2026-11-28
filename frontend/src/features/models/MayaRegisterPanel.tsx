@@ -248,11 +248,12 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     <RuntimeSettings runtime="maya" expert={expert}
       values={values} onValuesChange={setValues}
       modelSlot={modelSlot} save={save} onDone={onDone}
-      note={pick ? <p className="text-[11px] text-zinc-500">
-        {pick.ready && !pick.registered ? "ファイルが揃っています。登録には数分〜十数分かかります（エンジンの準備を含む）"
-          : canDownload ? `足りないファイルをダウンロードしてから登録します（約 ${pick.download_gb} GB・空き ${pick.free_gb} GB）`
-            : "ファイルが揃うと登録できます"}
-      </p> : undefined} />
+      note={<p className="text-[11px] text-zinc-500">
+        {!pick ? "フォルダを選び、Maya の目録からモデルを選んでください（フォルダを変えると選択は解けます）"
+          : pick.ready && !pick.registered ? "ファイルが揃っています。登録には数分〜十数分かかります（エンジンの準備を含む）"
+            : canDownload ? `足りないファイルをダウンロードしてから登録します（約 ${pick.download_gb} GB・空き ${pick.free_gb} GB）`
+              : "ファイルが揃うと登録できます"}
+      </p>} />
     {picker && <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode="dir" title="Maya のモデルのフォルダを選択（/data1tb・/data2tb）"
       initialPath={folder || "/data1tb/LLM"}
       onSelect={chooseFolder} onClose={() => setPicker(false)} />}

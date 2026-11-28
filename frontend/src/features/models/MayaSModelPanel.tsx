@@ -105,7 +105,7 @@ export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
     <BottomSheet title="GLM-5.3-Flash · Maya-S · 個別設定" onClose={onClose} wide>
-      {status ? <div className="space-y-3"><DisplayNameField runtime="maya-s" alias="maya-s" /><MayaSettingsForm status={status} mode="detail" onDone={onClose} /></div>
+      {status ? <div className="space-y-3"><DisplayNameField runtime="maya-s" alias="maya-s" /><MayaSettingsForm status={status} onDone={onClose} /></div>
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
   );
@@ -113,8 +113,8 @@ export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
 
 /** capability に無い Maya 固有の欄（model_path・drafting・ram_headroom_gb）は
  *  「旧パス維持」のためにそのまま保持し、保存のときに既存の API へ渡す。 */
-function MayaSettingsForm({ status, mode, onDone }: {
-  status: MayaStatus; mode: "existing" | "detail"; onDone: () => void;
+function MayaSettingsForm({ status, onDone }: {
+  status: MayaStatus; onDone: () => void;
 }) {
   const qc = useQueryClient();
   const expert = useExpert();
@@ -150,7 +150,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
     }
     // 既存の保存 API（extra="forbid"）へは MayaSettings の欄だけを渡す。
     await api("/features/maya-s/settings", { method: "PUT", json: next });
-    const prepare = mode === "existing" || !status.configured
+    const prepare = !status.configured
       || (!!modelPath.trim() && modelPath.trim() !== String(legacy.model_path ?? "").trim());
     if (prepare) {
       await api("/features/maya-s/model/existing-jobs", { method: "POST", json: {} });
@@ -163,7 +163,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
   };
 
   const modelSlot = <div className="space-y-3">
-    <SettingsGroup title="モデル" description={mode === "detail" ? "GGUFを変えたときは保存と一緒に準備し直します" : "手元の Maya-S の GGUF（分割モデルは先頭ファイル）"}>
+    <SettingsGroup title="モデル" description="GGUFを変えたときは保存と一緒に準備し直します（分割モデルは先頭ファイル）">
       <div className="flex gap-2">
         <input aria-label="Maya-S GGUFパス" value={modelPath} disabled={locked}
           onChange={(e) => apply({ model_path: e.target.value })}
@@ -190,7 +190,7 @@ function MayaSettingsForm({ status, mode, onDone }: {
   // capability に無い欄と注意は、エキスパート（または要対応の印）として最後に置く。
   const note = <div className="space-y-3">
     {locked && <p className="rounded-xl bg-amber-50 p-2.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-      起動中です。起動と停止の設定は変えられます。ほかの設定は、モデルを停止してから変えてください。</p>}
+      モデルが起動中、または準備ジョブの実行中です。起動と停止の設定は変えられます。ほかの設定は、停止・完了してから変えてください。</p>}
     {expert && <SettingsGroup title="Maya 固有" collapsible defaultOpen={false}>
       <label className="block text-xs">投機デコード（MTP）
         <select aria-label="Maya-S 投機デコード" value={String(values.drafting ?? legacy.drafting)} disabled={locked}
@@ -210,13 +210,11 @@ function MayaSettingsForm({ status, mode, onDone }: {
   </div>;
 
   return <>
-    {mode === "detail" && (
-      <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動」の設定だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
-        ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
-        ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
-        ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
-      ]} />
-    )}
+    <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動」の設定だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
+      ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
+      ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
+      ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
+    ]} />
     <RuntimeSettings runtime="maya" expert={expert}
       initial={initial} values={values} onValuesChange={setValues}
       modelSlot={modelSlot} save={save} onDone={onDone} note={note} />
