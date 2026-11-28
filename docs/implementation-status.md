@@ -1,5 +1,9 @@
 # 実装状況
 
+## 2026-11-29 チームリーダーへ伝える・チームの画面が落ちる不具合
+- 走っているチームリーダーへ伝える口（`POST /commander/teams/{id}/leader/note`・画面の「チームリーダーに伝える」）。`team_status`・`wait` の `new_notes` で届き、`wait` は伝言が来たら早く戻る。読むまで `finish` は 409。
+- #731 で `TeamView` の早い return の後に置いた `useNavigate()` を前へ（React #310 でチームの画面が落ちていた）。`docs/ISSUES.md` に記録。
+- 試験: `test_commander_leader_notes.py`・`commander-team.spec.ts`（27 件）。
 ## 2026-11-28 AI チームの自動の再開の上限を 1 時間に 6 回へ
 - 利用者「30 分に 2 回は何の制限か。安全のためなら上限を上げて」。上限は、チームリーダーを再開すると ControlDeck が落ちる、を繰り返して使用量（費用）を空回りさせないためのもの。本体の更新の再起動は v0.197 から数えない。30 分に 2 回から 1 時間に 6 回へ上げた（`team_leader.AUTO_RESUME_WINDOW`・`AUTO_RESUME_MAX`）。
 ## 2026-11-28 本体の更新の再起動は、AI チームの自動の再開の上限に数えない
