@@ -250,6 +250,21 @@ _RESEARCHED: tuple[tuple, ...] = (
 # Maya-M Derisked の repo（公式 docs/MODELS.md の owner は peasantsmith。旧表記は誤り）。
 MAYA_DERISKED_REPO = "peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF"
 STRATA_GSQ_REPO = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+# 共通目録の Strata 行は、公式目録のうちこの PC で取得して起動できるものだけ:
+# GSQ-RCO（ISTA-DASLab / Coder / Swift）と Unsloth の UD-* と Q8_0。
+# Gyro・SQ-*・NVFP4・Inkling などは旧 strata_catalog に残す（登録 API の互換は壊さない）。
+_STRATA_GSQ_FAMILIES = frozenset({"qwen", "coder", "swift"})
+_STRATA_UNSLOTH_FAMILIES = frozenset({"unsloth", "qwen36"})
+
+
+def _strata_row_allowed(family_id: str, quant_id: str) -> bool:
+    """旧 strata_catalog の行のうち共通目録に載せるものだけを通す。"""
+    if family_id in _STRATA_GSQ_FAMILIES:
+        return True                      # GSQ-RCO の量子化はすべて対象
+    if family_id in _STRATA_UNSLOTH_FAMILIES:
+        quant = quant_id.casefold()
+        return quant.startswith("ud-") or quant == "q8_0"
+    return False
 
 
 @dataclass(frozen=True)
@@ -317,6 +332,8 @@ def _strata_entries() -> list[Entry]:
         if not strata_catalog.visible(family.id, nvidia):
             continue
         for quant in family.quantizations:
+            if not _strata_row_allowed(family.id, quant.id):
+                continue
             out.append(Entry(
                 runtime="strata", id=f"{family.id}/{quant.id}",
                 name=f"{family.short_name} · {quant.label}",

@@ -791,7 +791,30 @@ def llama_vision_detection(
     }
 
 
-def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
+def _enforce_new_selection(values: dict, *, existing: dict | None = None,
+                           keys: tuple[str, ...] = ("model_path",)) -> None:
+    """新規登録・パス変更のモデルパスを 2 ルート制限（model_paths）で検証する。
+
+    Files の allowed_roots が広く設定されていても、新しく選ぶパスは常に
+    model_paths.SELECTION_ROOTS（/data1tb と /data2tb）の中でなければならない。
+    既存の登録をそのまま再保存するとき（PUT でパスが変わらないとき）は検証しない
+    （旧登録の表示・再保存・起動を壊さない。2026-11-27 利用者の決まり）。
+    """
+    from app.models_mgmt import model_paths
+
+    for key in keys:
+        raw = values.get(key)
+        if not raw:
+            continue
+        if existing is not None and str(existing.get(key) or "") == str(raw):
+            continue
+        try:
+            values[key] = str(model_paths.resolve_selection(str(raw)))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _llama_instance_patch(body: LlamaInstanceBody, *, existing: dict | None = None) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     from app.files import service as files
 
@@ -808,6 +831,10 @@ def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
         if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
             raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
         patch[key] = str(resolved)
+    _enforce_new_selection(
+        patch, existing=existing,
+        keys=("model_path", "mmproj_path", "spec_draft_model_path"),
+    )
     return patch
 
 
@@ -881,8 +908,8 @@ def llama_update_instance(
     from app.models_mgmt import llama
 
     try:
-        llama.get_instance(alias)
-        result = llama.save_instance(alias, _llama_instance_patch(body))
+        existing = llama.get_instance(alias)
+        result = llama.save_instance(alias, _llama_instance_patch(body, existing=existing))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1563,6 +1590,7 @@ def strata_create_instance(
 ):
     from app.models_mgmt import strata_gateway
 
+    _enforce_new_selection({"model_path": body.model_path})
     try:
         result = strata_gateway.save_instance(
             body.alias, family=body.family, model=body.model,
@@ -1588,7 +1616,9 @@ def strata_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     try:
+        existing = strata_gateway.get_instance(alias)
         payload = body.model_dump()
+        _enforce_new_selection(payload, existing=existing)
         for key in {"kv_resident", "ram_keep_gib"} - body.model_fields_set:
             payload.pop(key)
         result = strata_gateway.save_instance(**payload, replace=True)
@@ -1694,6 +1724,7 @@ def radiance_create_instance(
 ):
     from app.models_mgmt import radiance
     values = body.model_dump()
+    _enforce_new_selection(values)
     try:
         result = radiance.save_instance(values.pop("alias"), **values)
     except radiance.RadianceError as exc:
@@ -1712,6 +1743,10 @@ def radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=radiance.get_instance(alias))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = radiance.save_instance(alias, **values, replace=True)
@@ -1840,6 +1875,7 @@ def sly_radiance_create_instance(
 ):
     from app.models_mgmt import sly_radiance
     values = body.model_dump()
+    _enforce_new_selection(values, keys=("model_path", "drafter_path"))
     try:
         result = sly_radiance.save_instance(values.pop("alias"), **values)
     except sly_radiance.SlyRadianceError as exc:
@@ -1858,6 +1894,11 @@ def sly_radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=sly_radiance.get_instance(alias),
+                               keys=("model_path", "drafter_path"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = sly_radiance.save_instance(alias, **values, replace=True)

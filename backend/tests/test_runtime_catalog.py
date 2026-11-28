@@ -58,7 +58,16 @@ def test_catalog_has_every_runtime_and_no_guessed_sizes():
     assert len(blocks["llama"]["entries"]) >= 10
     assert len(blocks["radiance"]["entries"]) == 5
     assert len(blocks["sly-radiance"]["entries"]) == 6
-    assert len(blocks["strata"]["entries"]) >= 44
+    # 旧 strata_catalog の全 44 行を出さない。共通目録は GSQ-RCO・Unsloth UD-*・Q8_0 だけ。
+    # 旧登録 id / 既存の Strata API はそのまま（互換）。
+    assert len(blocks["strata"]["entries"]) == 37
+    catalog_strata = [row for row in blocks["strata"]["entries"] if row["source"] == "catalog"]
+    assert len(catalog_strata) == 23
+    for row in catalog_strata:
+        family, quant = row["id"].split("/", 1)
+        assert runtime_catalog._strata_row_allowed(family, quant), row["id"]  # noqa: SLF001
+    assert not any(row["id"].startswith(("gyro/", "inkling-2-mini/", "hy4-flash/", "nvfp4/"))
+                   for row in catalog_strata)
 
     for runtime, block in blocks.items():
         ids = [row["id"] for row in block["entries"]]
@@ -654,3 +663,58 @@ def test_catalog_files_endpoint_lists_only_the_selected_quantization(admin_clien
         "Q2_0/model-Q2_0-00002-of-00002.gguf",
     ]
     assert body["total_bytes"] == 300
+
+
+def test_new_registration_rejects_outside_paths_even_with_wide_files_config(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 新規登録 API が Files の許可ルートを広く設定しても 2 ルート外を断ること。
+
+    根拠: レビュー #18「POST 新規登録で 2 ルート制限を迂回」。Files の allowed_roots は
+    画面ごとの設定で広げられる（試験の conftest も sandbox を指定している）。新規選択は
+    model_paths.SELECTION_ROOTS（/data1tb と /data2tb）を別に見て、API でも守る。
+    既存登録の再保存はパスを変えなければ通す（2026-11-27 利用者の決まり）。
+    """
+    from pathlib import Path
+
+    from app.files import service as files
+    from app.models_mgmt import llama
+    from tests.conftest import CSRF_HEADERS, _sandbox
+
+    gguf = _sandbox / "wide-files.gguf"
+    gguf.write_bytes(b"GGUF")
+    # 偽の permissive な Files 設定: どのパスも通す。それでも 2 ルート制限は効く。
+    monkeypatch.setattr(files, "resolve", lambda raw, **kw: Path(raw))
+
+    cases = [
+        ("llama", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("radiance", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("sly-radiance", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("strata", {"alias": "x", "family": "qwen", "model": "q2_0",
+                    "model_path": str(gguf), "port": 8201}),
+    ]
+    for runtime, body in cases:
+        response = admin_client.post(f"/api/v1/models/{runtime}/instances", json=body,
+                                     headers=CSRF_HEADERS)
+        assert response.status_code == 422, (runtime, response.text)
+        assert "新しく選べる" in response.json()["detail"]
+
+    # 旧登録はそのまま再保存できる（パスが変わらないので新規制限はかからない）。
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "old.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("old", {"alias": "old", "model_path": str(gguf), "port": 8201})
+    saved: list[dict] = []
+    monkeypatch.setattr(llama, "save_instance",
+                        lambda alias, patch: saved.append(patch) or patch)
+    response = admin_client.put("/api/v1/models/llama/instances/old",
+                                json={"alias": "old", "model_path": str(gguf)},
+                                headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert saved[0]["model_path"] == str(gguf)
+
+    # パスを変えるときは新規制限がかかる。
+    changed = str(_sandbox / "changed.gguf")
+    Path(changed).write_bytes(b"GGUF")
+    response = admin_client.put("/api/v1/models/llama/instances/old",
+                                json={"alias": "old", "model_path": changed},
+                                headers=CSRF_HEADERS)
+    assert response.status_code == 422, response.text

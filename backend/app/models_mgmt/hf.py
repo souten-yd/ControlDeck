@@ -189,19 +189,30 @@ async def list_repo_files(repo: str, revision: str = "main") -> list[dict]:
     return sorted(groups.values(), key=lambda g: g["name"].lower())
 
 
-def _quantization_matches(path: str, quantization: str) -> bool:
+def _quantization_matches(path: str, quantization: str,
+                          exact_folders: frozenset[str] | None = None) -> bool:
     """量子化 id がパス（サブフォルダ名またはファイル名）に含まれるかを区切り付きで判定する。
 
     `Q2_0` が `IQ2_0` や `Q2_00` に部分一致しないように、`-` `_` `.` `/` を境界として扱う。
     Unsloth のサブフォルダ（UD-Q4_K_XL/…）と Maya の tier（Maya-M/…）の両方に効く。
+
+    `exact_folders` は同じ repo に在るフォルダ名の集合。選択した量子化と**正確に一致する
+    フォルダが repo に在るときは、そこだけを採用する**（Maya-M を選んだときに
+    Maya-M-Derisked のような別 variant まで「部分一致」で拾わないため）。正確なフォルダが
+    無い場合だけ、最上位に直接置かれた GGUF のファイル名を区切り付きで照合する。
     """
     quant = (quantization or "").strip().strip("/").casefold()
     if not quant or "/" in quant or "\\" in quant or quant.startswith("."):
         return False
-    pattern = re.compile(r"(?:^|[-_./])" + re.escape(quant) + r"(?=$|[-_./])", re.I)
     segments = [(part.casefold(), part) for part in path.split("/")]
-    for folded, raw in segments[:-1]:         # サブフォルダ名
-        if folded == quant or pattern.search(raw):
+    folders = {folded for folded, _ in segments[:-1]}
+    if quant in folders:
+        return True                          # 正確な量子化フォルダ（最も確実）
+    if exact_folders is not None and quant in exact_folders:
+        return False                         # 別 variant の部分一致を拾わない
+    pattern = re.compile(r"(?:^|[-_./])" + re.escape(quant) + r"(?=$|[-_./])", re.I)
+    for _folded, raw in segments[:-1]:
+        if pattern.search(raw):
             return True
     return bool(pattern.search(segments[-1][1]))   # 最上位に直接置かれた GGUF
 
@@ -217,11 +228,19 @@ async def list_quantization_files(repo: str, revision: str = "main",
     if not (quantization or "").strip():
         raise HfError("量子化が指定されていません")
     entries = await _repo_tree(repo, revision)
+    gguf = [item for item in entries
+            if item.get("type") == "file"
+            and str(item.get("path") or "").lower().endswith(".gguf")]
+    # この repo にあるフォルダ名を先に集める。選択した量子化のフォルダが在ればそれだけを取る
+    # （同名の別 variant を部分一致で混ぜない）。フォルダが無いときだけファイル名で照合する。
+    exact_folders = frozenset(
+        part.casefold()
+        for item in gguf
+        for part in str(item["path"]).split("/")[:-1]
+    )
     files = [{"path": str(item["path"]), "size": int(item.get("size") or 0)}
-             for item in entries
-             if item.get("type") == "file"
-             and str(item.get("path") or "").lower().endswith(".gguf")
-             and _quantization_matches(str(item["path"]), quantization)]
+             for item in gguf
+             if _quantization_matches(str(item["path"]), quantization, exact_folders)]
     files.sort(key=lambda item: item["path"])
     if not files:
         raise HfError(f"量子化 {quantization} の GGUF が repo にありません")
@@ -230,19 +249,27 @@ async def list_quantization_files(repo: str, revision: str = "main",
 
 
 def _ensure_complete_shards(paths: list[str]) -> None:
-    """分割 GGUF の全片が揃っているか確認する（1 片だけでは起動できない）。"""
-    groups: dict[str, dict[str, int]] = {}
+    """分割 GGUF の全片が揃っているか確認する（1 片だけでは起動できない）。
+
+    片数だけでは合格させない。同じフォルダ・同じ stem・同じ total の index が 1..total を
+    過不足なく満たすこと（重複 index や別フォルダの混在は「揃った」と数えない）を検証する。
+    """
+    groups: dict[tuple[str, str, int], set[int]] = {}
     for path in paths:
-        match = _SHARD_RE.match(path.rsplit("/", 1)[-1])
+        parent, _, name = path.rpartition("/")
+        match = _SHARD_RE.match(name)
         if match is None:
             continue
-        group = groups.setdefault(match.group("stem"), {"have": 0, "total": int(match.group("total"))})
-        group["have"] += 1
-    for stem, group in groups.items():
-        if group["have"] != group["total"]:
-            raise HfError(
-                f"分割 GGUF の一部がありません: {stem}（{group['have']}/{group['total']} 片）"
-            )
+        key = (parent, match.group("stem"), int(match.group("total")))
+        groups.setdefault(key, set()).add(int(match.group("index")))
+    for (parent, stem, total), indices in groups.items():
+        wanted = set(range(1, total + 1))
+        if indices != wanted:
+            missing = sorted(wanted - indices)
+            extra = sorted(indices - wanted)
+            detail = f"不足 {missing}" if missing else f"重複・不正 {extra}"
+            label = f"{parent}/{stem}" if parent else stem
+            raise HfError(f"分割 GGUF の一部がありません: {label}（{detail}、{total} 片必要）")
 
 
 def _ensure_free_space(destination: Path, expected_bytes: int) -> None:
@@ -505,7 +532,13 @@ def _register_strata(register: dict, saved: list[str]) -> str:
 
 
 def _register_dispatch(register: dict, saved: list[str]) -> str:
-    """取得後の登録を runtime 別の adapter へ回す。無指定は従来どおり llama.cpp（互換）。"""
+    """取得後の登録を runtime 別の adapter へ回す。無指定は従来どおり llama.cpp（互換）。
+
+    Maya は取得した GGUF を Maya 本体の probe から登録する担当（#21）が受ける。
+    ここでは保存 API を持たないので受け付けず、経路をエラーと契約に明記する:
+    `GET /api/v1/features/maya-s/catalog` で候補を選び、
+    `POST /api/v1/features/maya-s/models/register-jobs` で登録する。
+    """
     runtime = str(register.get("runtime") or "llama")
     if runtime == "llama":
         return _register_llama(register, saved)
@@ -515,8 +548,11 @@ def _register_dispatch(register: dict, saved: list[str]) -> str:
         return _register_sly_radiance(register, saved)
     if runtime == "strata":
         return _register_strata(register, saved)
-    # Maya の登録は Maya 本体の目録（probe）から行う。ここでは受け付けない。
-    raise HfError(f"取得後の登録に対応していないランタイムです: {runtime}")
+    # Maya の登録は Maya 本体の目録（probe）から行う（#21 の担当）。ここでは受け付けない。
+    raise HfError(
+        f"取得後の登録に対応していないランタイムです: {runtime}。"
+        "Maya は /api/v1/features/maya-s/models/register-jobs から登録してください"
+    )
 
 
 async def download(job, repo: str, files: list[str], *, library_id: str = "",
@@ -536,11 +572,11 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
     files = _validate_files([str(path) for path in files])
     if not re.fullmatch(r"[\w.\-]{1,100}", revision or ""):
         raise HfError("revision が不正です")
+    listed: list[dict] | None = None
     if fetch_sizes:
         # 「ファイル全部」は目録の行（files=[]）から始まる。この分岐が空の検査より
         # 先に来るよう、空の検査は中で行う（先に置くと files=[] が必ず断られていた）。
         ensure_external_allowed("Hugging Face のモデル取得")
-        listed = None
         if not files:
             if quantization:
                 # 目録の量子化行: サブフォルダの分割全片を列挙し、選んだ量子化だけを取る。
@@ -561,6 +597,10 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
                 if not _quantization_matches(path, quantization):
                     raise HfError(f"量子化 {quantization} に属さないファイルです: {path}")
             _ensure_complete_shards(files)
+        if listed is None:
+            # 明示指定の files でも、既存ファイルの大きさ検証に使う一覧を 1 度だけ読む。
+            listed = [item for item in await _repo_tree(repo, revision)
+                      if item.get("type") == "file"]
         expected_bytes = await _fetch_file_sizes(repo, revision, files, listed=listed)
         job.log(f"HF の API から大きさを確認しました: 約 {expected_bytes / 1e9:.1f}GB")
     elif not files:
@@ -574,15 +614,29 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
     if expected_bytes:
         _ensure_free_space(destination_dir, expected_bytes)
 
+    # HF の tree を読めたときは 1 ファイルずつの大きさも持つ。既存ファイルを「取得済み」と
+    # して飛ばす前に、symlink・通常ファイルでないもの・大きさの違うものを弾く（途中で
+    # 壊れた残り物をそのまま使わない）。
+    expected_sizes = {str(item["path"]).rsplit("/", 1)[-1]: int(item.get("size") or 0)
+                      for item in (listed or [])}
+
     saved: list[str] = []
     pending: list[tuple[str, Path]] = []
     done = 0
     for path in files:
         target = destination_dir / path.rsplit("/", 1)[-1]
         saved.append(str(target))
-        if target.exists():
-            done += target.stat().st_size
-            job.log(f"既にあります: {target.name}")
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise HfError(f"保存先がファイルではありません: {target.name}")
+        expected_size = expected_sizes.get(target.name)
+        if target.is_file():
+            actual = target.stat().st_size
+            if expected_size is not None and actual != expected_size:
+                job.log(f"大きさが違うため取り直します: {target.name}")
+                pending.append((path, target))
+            else:
+                done += actual
+                job.log(f"既にあります: {target.name}")
         else:
             pending.append((path, target))
 
@@ -611,6 +665,8 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
     result = {"repo": repo, "files": saved, "registered": ""}
     if register and saved:
         job.set_progress("モデルを登録中", 1, 1)
-        result["registered"] = _register_dispatch(register, saved)
+        # 保存 API は同期的な設定読み書き・ポート走査を伴う。async の中で直接呼ぶと
+        # event loop を止める（AGENTS.md 9）ので threadpool へ出す。
+        result["registered"] = await asyncio.to_thread(_register_dispatch, register, saved)
     job.set_progress("完了", 1, 1)
     return result

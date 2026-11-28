@@ -588,3 +588,82 @@ def test_register_chooses_a_free_port_for_radiance_and_strata(tmp_path, monkeypa
     hf._register_dispatch(
         {"runtime": "strata", "alias": "s", "family": "qwen", "model": "q2_0"}, [str(saved)])
     assert ports == [8101, 8101]
+
+
+def test_shard_set_rejects_duplicate_index_and_mixed_folders():
+    """目的: 分割片は「同じフォルダ・同じ stem・同じ total の 1..total」が揃うこと。
+
+    根拠: リーダーの diff 確認（2026-11-28）。片数だけ見ると、index の重複や別フォルダの
+    混在でも「揃った」と判定され、起動できない組み合わせを取得してしまう。
+    """
+    good = ["Q2_0/model-00001-of-00002.gguf", "Q2_0/model-00002-of-00002.gguf"]
+    hf._ensure_complete_shards(good)                       # 正しい組は通る
+
+    for bad in (
+        ["Q2_0/model-00001-of-00002.gguf"] * 2,             # index 1 の重複
+        ["Q2_0/model-00001-of-00002.gguf",                  # 別フォルダの混在
+         "Q8_0/model-00002-of-00002.gguf"],
+        ["Q2_0/model-00001-of-00002.gguf",                  # total が食い違う
+         "Q2_0/model-00002-of-00003.gguf"],
+    ):
+        with pytest.raises(hf.HfError, match="分割"):
+            hf._ensure_complete_shards(bad)
+
+
+def test_quantization_does_not_pick_a_sibling_variant(monkeypatch):
+    """目的: Maya-M を選んだときに Maya-M-Derisked まで拾わないこと。
+
+    根拠: リーダーの diff 確認（2026-11-28）。同じ repo に別 variant のフォルダが並ぶと、
+    部分一致で両方を取ってしまう（選択した量子化だけを取る約束に反する）。
+    """
+    import asyncio
+
+    tree = [
+        {"type": "file", "path": "Maya-M/GLM-Maya-M-00001-of-00002.gguf", "size": 10},
+        {"type": "file", "path": "Maya-M/GLM-Maya-M-00002-of-00002.gguf", "size": 20},
+        {"type": "file", "path": "Maya-M-Derisked/GLM-Derisked-00001-of-00002.gguf", "size": 30},
+        {"type": "file", "path": "Maya-M-Derisked/GLM-Derisked-00002-of-00002.gguf", "size": 40},
+    ]
+    _tree(monkeypatch, tree)
+    files = asyncio.run(hf.list_quantization_files("owner/name", quantization="Maya-M"))
+    assert [item["path"] for item in files] == [
+        "Maya-M/GLM-Maya-M-00001-of-00002.gguf",
+        "Maya-M/GLM-Maya-M-00002-of-00002.gguf",
+    ]
+    other = asyncio.run(hf.list_quantization_files("owner/name", quantization="Maya-M-Derisked"))
+    assert len(other) == 2 and all("Derisked" in item["path"] for item in other)
+
+
+def test_invalid_existing_target_is_not_treated_as_downloaded(tmp_path, monkeypatch):
+    """目的: symlink・大きさ違いの既存ファイルを「取得済み」として飛ばさないこと。
+
+    根拠: 先行点検（2026-11-28）。壊れた残り物があったとき、そのまま使うと起動できない
+    重みを登録してしまう。HF の tree から読んだ大きさと照合して取り直す。
+    """
+    import asyncio
+
+    from app.models_mgmt import libraries
+
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
+    target = tmp_path / "owner--name" / "model.gguf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"OLD")                       # HF の大きさ 5 と違う
+
+    monkeypatch.setattr(hf.httpx, "AsyncClient",
+                        lambda **kwargs: _tree_and_stream_client(
+                            [{"type": "file", "path": "model.gguf", "size": 5}], [b"FRESH"])())
+    result = asyncio.run(hf.download(_DownloadJob(), "owner/name", ["model.gguf"],
+                                     fetch_sizes=True))
+    assert target.read_bytes() == b"FRESH", result
+
+    link_source = tmp_path / "real.gguf"
+    link_source.write_bytes(b"REAL")
+    target.unlink()
+    target.symlink_to(link_source)
+
+    def no_client(**kwargs):
+        raise AssertionError("不正な既存ファイルは取得済み扱いにしない")
+
+    monkeypatch.setattr(hf.httpx, "AsyncClient", no_client)
+    with pytest.raises(hf.HfError, match="保存先がファイルではありません"):
+        asyncio.run(hf.download(_DownloadJob(), "owner/name", ["model.gguf"]))
