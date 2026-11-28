@@ -307,9 +307,9 @@ def test_empty_files_takes_every_top_level_file_and_reads_its_size_at_start(
     monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
     entries = [
         {"type": "directory", "path": "sub", "size": 0},
-        {"type": "file", "path": "README.md", "size": 100},
+        {"type": "file", "path": "README.md", "size": 4},          # 中身（b"DATA"）と同じ大きさ。足りないと完成にしない
         {"type": "file", "path": ".hidden", "size": 5},
-        {"type": "file", "path": "model-00001.safetensors", "size": 200},
+        {"type": "file", "path": "model-00001.safetensors", "size": 4},
         {"type": "file", "path": "sub/inner.safetensors", "size": 300},
     ]
     monkeypatch.setattr(hf.httpx, "AsyncClient",
@@ -319,8 +319,8 @@ def test_empty_files_takes_every_top_level_file_and_reads_its_size_at_start(
     result = asyncio.run(hf.download(job, "owner/name", [], fetch_sizes=True))
     saved = sorted(path.rsplit("/", 1)[-1] for path in result["files"])
     assert saved == ["README.md", "model-00001.safetensors"]   # 隠しファイル・サブフォルダは扱わない
-    # 開始時に読んだ合計（100 + 200）を、進み具合の分母に使う。
-    assert any(args[2] == 300 for args, _ in job.progress if len(args) > 2), job.progress
+    # 開始時に読んだ合計（4 + 4）を、進み具合の分母に使う。
+    assert any(args[2] == 8 for args, _ in job.progress if len(args) > 2), job.progress
 
 
 def test_part_is_kept_on_stop_and_removed_on_cancel(tmp_path, monkeypatch):
@@ -503,14 +503,16 @@ def test_download_quantization_takes_only_the_selected_subdirectory(tmp_path, mo
     monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
     monkeypatch.setattr(hf, "_ensure_free_space", lambda *args: None)
     monkeypatch.setattr(hf.httpx, "AsyncClient",
-                        lambda **kwargs: _tree_and_stream_client(_quantized_tree(), [b"GGUF"])())
+                        lambda **kwargs: _tree_and_stream_client(
+                            [{**item, "size": 4} if item["path"].endswith(".gguf") else item for item in _quantized_tree()],
+                            [b"GGUF"])())   # 大きさは中身（b"GGUF"）と同じ。足りないと完成にしない
     job = _DownloadJob()
     result = asyncio.run(hf.download(job, "owner/name", [], fetch_sizes=True,
                                      quantization="Q2_0"))
     saved = [path.rsplit("/", 1)[-1] for path in result["files"]]
     assert saved == ["model-Q2_0-00001-of-00002.gguf", "model-Q2_0-00002-of-00002.gguf"]
     assert not any("IQ2_XS" in name for name in saved)
-    assert any(args[2] == 300 for args, _ in job.progress if len(args) > 2), job.progress
+    assert any(args[2] == 8 for args, _ in job.progress if len(args) > 2), job.progress
 
 
 def test_download_refuses_files_from_another_quantization(tmp_path, monkeypatch):
@@ -728,3 +730,33 @@ def test_hf_file_endpoints_return_403_when_external_research_is_blocked(
 
     search = admin_client.get("/api/v1/models/hf/search", params={"q": "qwen"})
     assert search.status_code == 403, search.text
+
+
+def test_quantization_filename_match_does_not_pick_other_quants_or_mmproj():
+    """量子化の照合が別の量子化（Q4_K→Q4_K_M・Q4_0→Q4_0_4_4）と視覚の投影（mmproj）を拾わない。
+    2026-11-28 Claude のレビュー: `_` を境界にしていたため、数 GB 余計に落とし、登録に使う本体が違うものになりえた。"""
+    from app.models_mgmt.hf import _quantization_matches as m
+
+    assert m("X-Q4_K.gguf", "Q4_K") and not m("X-Q4_K_M.gguf", "Q4_K")
+    assert m("X-Q4_0.gguf", "Q4_0") and not m("X-Q4_0_4_4.gguf", "Q4_0")
+    assert m("X-Q8_0.gguf", "Q8_0") and not m("mmproj-X-Q8_0.gguf", "Q8_0")
+    assert m("X-Q4_K_M-00001-of-00003.gguf", "Q4_K_M") and m("X-Q4_K_M.gguf.part", "Q4_K_M")
+    assert not m("X-IQ4_XS.gguf", "Q4_XS")
+    assert m("UD-Q4_K_XL/X-UD-Q4_K_XL-00001-of-00002.gguf", "UD-Q4_K_XL")
+
+
+def test_short_download_is_not_finished(tmp_path, monkeypatch):
+    """受け取った大きさが HF の報告に届かないとき、完成にせず .part を残す（再開で続きを取る）。
+    2026-11-28 Claude のレビュー: 接続が途中で切れても例外にならず、足りないファイルが完成として登録されえた。"""
+    import asyncio
+
+    from app.models_mgmt import libraries
+
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(hf, "_ensure_free_space", lambda *args: None)
+    tree = [{"type": "file", "path": "model.safetensors", "size": 10}]
+    monkeypatch.setattr(hf.httpx, "AsyncClient", lambda **kwargs: _tree_and_stream_client(tree, [b"DATA"])())
+    with pytest.raises(hf.HfError):
+        asyncio.run(hf.download(_DownloadJob(), "owner/name", [], fetch_sizes=True))
+    folder = tmp_path / "owner--name"
+    assert not (folder / "model.safetensors").exists() and (folder / "model.safetensors.part").exists()

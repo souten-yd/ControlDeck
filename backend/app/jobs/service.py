@@ -1266,6 +1266,23 @@ async def _resume_stopped_unlocked(job_id: str) -> Job:
     return job
 
 
+def resume_records(kind: str) -> list[dict]:
+    """再開の記録（実行中・待ち・停止中・中断の Job が持つ）のうち kind のものの params（同期）。"""
+    out: list[dict] = []
+    try:
+        paths = [p for p in _resume_dir().iterdir() if p.suffix == ".json" and not p.name.startswith(".")]
+    except OSError:
+        return out
+    for path in paths:
+        try:   # 読むだけ（起動時の整理と違い、形の悪い記録も消さない）
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("kind") == kind and isinstance(doc.get("params"), dict):
+            out.append({**doc["params"], "_job_id": path.stem})
+    return out
+
+
 def resume_record_ids() -> set[str]:
     """再開の記録が残っている Job の id（API の can_resume 用。同期・呼び出し側で to_thread）。"""
     try:

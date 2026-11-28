@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 286 ファイル、3036 テスト（目的の未記入 93 ファイル）
+- backend: 286 ファイル、3039 テスト（目的の未記入 93 ファイル）
 - E2E: 154 spec、362 テスト
 
 ## backend（backend/tests）
@@ -1882,6 +1882,8 @@
 - `test_invalid_existing_target_is_not_treated_as_downloaded` — 目的: symlink・大きさ違いの既存ファイルを「取得済み」として飛ばさないこと。
 - `test_download_does_not_write_more_than_the_reported_size` — 目的: HF の API が報告した大きさより多い応答が来ても、その分は書き込まないこと。
 - `test_hf_file_endpoints_return_403_when_external_research_is_blocked` — 目的: ファイル一覧（と検索）が ExternalResearchBlocked を 500 ではなく 403 に
+- `test_quantization_filename_match_does_not_pick_other_quants_or_mmproj` — 量子化の照合が別の量子化（Q4_K→Q4_K_M・Q4_0→Q4_0_4_4）と視覚の投影（mmproj）を拾わない。
+- `test_short_download_is_not_finished` — 受け取った大きさが HF の報告に届かないとき、完成にせず .part を残す（再開で続きを取る）。
 
 ### backend/tests/test_hf_search.py
 
@@ -1979,6 +1981,7 @@
 - `test_mark_resume_paused_reports_oserror_instead_of_silently_succeeding` — 目的: 停止の印の読み取り・書き込みで OSError が起きたら、飲まずに失敗すること。
 - `test_stop_reports_a_failed_pause_mark` — 目的: 停止の印が書けないとき stop() が ValueError（API は 409）で失敗し、
 - `test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit` — 目的: POST /models/acquire-jobs が本物の jobs.create を event loop 上で呼び、
+- `test_resume_records_lists_params_of_the_kind` — 取得の二重起動を弾くため、実行中・停止中の Job の再開の記録を kind ごとに読める。
 
 ### backend/tests/test_jobs_stream_cleanup.py
 

@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-28 LLM ランタイムの共通化の取り込み（Claude のレビューと直し）
+- Nexarch のランタイムのチーム（30 件の仕事）の成果を、Claude が差分を全部読んで取り込んだ。守りの点検（パス・symlink・秘密・権限・外部取得・shell）は合格。
+- Claude が直した不具合:
+  - 量子化の照合: ファイル名では、量子化の直後を `.gguf`・分割の印・`.part` に限定。Q4_K が Q4_K_M に、Q4_0 が Q4_0_4_4 に当たり、mmproj まで落としていた。
+  - 二重起動: 同じ取得先・同じ repo の取得が実行中・停止中なら 409（`jobs.resume_records`）。同じ `.part` へ 2 つの Job が追記して壊し、取り消しで相手の `.part` を消していた。
+  - 大きさ: 受け取った大きさが HF の報告と合わなければ、完成にせず `.part` を残す（再開で続きを取る）。
+  - 画面: 選んだランタイムを塗りつぶしで示した（`aria-pressed`）。読み込みの前に内部の項目名（alias・model_path）を案内に出さないようにした。
+- 残り（P3・台帳）: 取得先のルートの検査・`/register/inspect` の権限・Maya の register-jobs の検証。
 ## 2026-11-28 AI アシスタントの「▶ 実行」を画面の中で実行・出力表示・sudo のパスワードをポップアップで渡す
 - 利用者「コンソールコマンドを実行してと出るとき、ボタンでユーザ側が実行できるように。管理者パスワードが要るときはポップアップで入力できるように」。
 - backend（`terminals/run.py`）: `POST /terminals/run`（作成と貼り付け・終わりの印 `__CD_RUN_DONE__:<終了コード>` を別行で貼る）、`GET /terminals/run/{sid}`（出力・done・exit_code・password_prompt）、`POST .../input`（パスワードを標準入力で tmux へ）、`POST .../stop`。管理者（terminal.use と settings.manage）・作った本人だけ（印 `run_owner`。違えば 404）。監査はコマンドの本文を残さず長さと指紋・cwd だけ。

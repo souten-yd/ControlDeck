@@ -57,6 +57,11 @@ const REQUIRED_BY_RUNTIME: Record<string, string[]> = {
   maya: ["setup_id", "folder"],
 };
 
+// 設定の形に名前が無いときの言い換え（内部の id を利用者に見せない）
+const FALLBACK_LABEL: Record<string, string> = {
+  alias: "モデル名", model_path: "モデルのファイル", setup_id: "モデル", folder: "モデルのフォルダ",
+};
+
 export function RuntimeSettings({
   runtime, initial, values, onValuesChange, modelSlot, save, beforeSave, onDone, note,
   disabled = false, expert: expertProp,
@@ -88,7 +93,9 @@ export function RuntimeSettings({
   const requiredIds = REQUIRED_BY_RUNTIME[runtime] ?? [];
   const missing = requiredIds.filter((id) => empty(form[id]));
   const missingLabels = missing.map((id) =>
-    (cap?.sections ?? []).flatMap((section) => section.fields).find((field) => field.id === id)?.label ?? id);
+    (cap?.sections ?? []).flatMap((section) => section.fields).find((field) => field.id === id)?.label
+      ?? FALLBACK_LABEL[id] ?? "必要な項目");
+
 
   const setField = (id: string, value: unknown) => {
     const next = { ...form, [id]: value };
@@ -248,7 +255,8 @@ export function RuntimeSettings({
         </p>
       ))}
       {note}
-      <SheetActions note={missing.length ? `①で ${missingLabels.join("・")} を決めてください`
+      {/* 設定の形を読む前は項目の名前が無い（内部の id を見せない）ので案内を出さない */}
+      <SheetActions note={missing.length && cap ? `① で${missingLabels.join("と")}を決めてください`
         : runtime === "maya" && !save ? "Maya は専用の登録画面から保存します" : undefined}>
         <button type="button" data-testid="runtime-settings-save" onClick={() => void doSave()}
           disabled={!cap || saving || disabled || missing.length > 0 || (runtime === "maya" && !save)} className={primaryButton}>

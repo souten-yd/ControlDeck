@@ -218,7 +218,14 @@ def _quantization_matches(path: str, quantization: str,
     for _folded, raw in segments[:-1]:
         if pattern.search(raw):
             return True
-    return bool(pattern.search(segments[-1][1]))   # 最上位に直接置かれた GGUF
+    # 最上位に直接置かれた GGUF。ファイル名では量子化の直後を「.gguf」「.part」か分割の印（-00001-of-）に限る。
+    # `_` を境界にすると Q4_K が Q4_K_M に、Q4_0 が Q4_0_4_4 に当たり、別の量子化まで落とす
+    # （2026-11-28 Claude のレビュー）。視覚の投影（mmproj）は本体ではないので量子化で選ばない。
+    name = segments[-1][1]
+    if name.casefold().startswith("mmproj"):
+        return False
+    tail = re.compile(r"(?:^|[-_.])" + re.escape(quant) + r"(?=(?:-\d{5}-of-\d{5})?\.gguf(?:\.part)?$|$)", re.I)
+    return bool(tail.search(name))
 
 
 async def list_quantization_files(repo: str, revision: str = "main",
@@ -366,8 +373,8 @@ async def _download_file(job, client: httpx.AsyncClient, url: str, destination: 
     context, response = await _open_stream(client, url, headers)
     try:
         if response.status_code == 416:  # 既に全部取得済み
-            if expected_size and temp.stat().st_size > expected_size:
-                raise HfError(f"報告された大きさを超えています: {label}")
+            if expected_size and temp.stat().st_size != expected_size:
+                raise HfError(f"途中のファイルの大きさが報告と合いません: {label}")
             temp.replace(destination)
             return destination.stat().st_size
         if response.status_code >= 400:
@@ -398,6 +405,9 @@ async def _download_file(job, client: httpx.AsyncClient, url: str, destination: 
                     raise HfError(f"報告された大きさを超える応答です: {label}（{expected_size} バイト）")
     finally:
         await context.__aexit__(None, None, None)
+    if expected_size and temp.stat().st_size != expected_size:
+        # 接続が途中で切れても例外にならないことがある。足りないまま完成にしない（.part は残し、再開で続きを取る）
+        raise HfError(f"受け取った大きさが報告と合いません: {label}（{temp.stat().st_size} / {expected_size} バイト）")
     temp.replace(destination)
     return received
 

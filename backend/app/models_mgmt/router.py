@@ -2084,6 +2084,12 @@ async def models_acquire(
         "quantization": entry.quantization if entry.format == "gguf" else "",
         "register": register,
     }
+    # 同じ取得先・同じ repo の取得が実行中・停止中なら弾く。2 つの Job が同じ .part へ追記して壊し、
+    # 取り消しで相手の .part まで消すため（2026-11-28 Claude のレビュー）。続きは Job の再開で。
+    others = await asyncio.to_thread(jobs.resume_records, "model.hf_download")
+    for other in others:
+        if other.get("repo") == entry.repo and (other.get("library_id") or None) == (body.library_id or None):
+            raise HTTPException(status_code=409, detail="同じモデルの取得が実行中か停止中です。Job の画面から再開・取り消しをしてください")
     # jobs.create は中で asyncio.create_task で runner を立てるので event loop 上で呼ぶ
     # 必要がある（threadpool から呼ぶと RuntimeError: no running event loop で 500 になる）。
     # 同期 DB 書き込みの audit.record だけを threadpool へ出す（jobs/router.py と同じ）。

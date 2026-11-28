@@ -1395,3 +1395,17 @@ def test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit(
     assert job.result == {"ok": True}
     assert loop_threads and audit_threads
     assert audit_threads[0] != loop_threads[0]           # audit だけ threadpool へ
+
+
+def test_resume_records_lists_params_of_the_kind(tmp_path, monkeypatch):
+    """取得の二重起動を弾くため、実行中・停止中の Job の再開の記録を kind ごとに読める。
+    2026-11-28 Claude のレビュー: 同じ repo の取得を 2 回押すと同じ .part へ追記して壊し、取り消しで相手の .part まで消した。"""
+    import json
+    from app.jobs import service
+
+    monkeypatch.setattr(service, "_resume_dir", lambda: tmp_path)
+    (tmp_path / "a1.json").write_text(json.dumps({"kind": "model.hf_download", "params": {"repo": "o/r", "library_id": None}}))
+    (tmp_path / "b2.json").write_text(json.dumps({"kind": "other", "params": {"repo": "o/r"}}))
+    (tmp_path / ".tmp.json").write_text("{")
+    got = service.resume_records("model.hf_download")
+    assert got == [{"repo": "o/r", "library_id": None, "_job_id": "a1"}]

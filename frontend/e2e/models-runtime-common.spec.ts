@@ -436,22 +436,27 @@ for (const width of [320, 1280]) {
         const suffix = `${width}-${scheme}-${expert ? "expert" : "normal"}`;
 
         await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
+        await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-llama-${suffix}.png` });
 
         await sheet.getByRole("button", { name: "Strata", exact: true }).click();
         await expect(sheet.locator('[data-runtime-catalog="strata"]')).toBeVisible();
+        await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-strata-${suffix}.png` });
 
         await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
         await expect(sheet.locator('[data-runtime-settings="sly-radiance"]')).toBeVisible();
+        await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-radiance-${suffix}.png` });
 
         await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();
         await expect(sheet.locator('[data-runtime-settings="radiance"]')).toBeVisible();
+        await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-radiance-plain-${suffix}.png` });
 
         await sheet.getByRole("button", { name: "Maya", exact: true }).click();
         await expect(sheet.locator('[data-runtime-settings="maya"]')).toBeVisible();
+        await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-maya-${suffix}.png` });
 
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);

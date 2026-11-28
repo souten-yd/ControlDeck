@@ -2087,11 +2087,13 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
     <BottomSheet title="モデル登録" onClose={onClose} wide>
       <div className="mb-3 flex flex-wrap gap-2">
         {(["llama.cpp", "strata", "radiance", "maya-s"] as const).map((choice) => (
-          <button key={choice} type="button" onClick={() => choose(choice)}
+          <button key={choice} type="button" onClick={() => choose(choice)} aria-pressed={runtime === choice}
             disabled={(choice === "strata" && !strataState?.runtime.installed)
               || (choice === "radiance" && !radianceState?.runtime.installed && !slyState?.runtime.installed)
               || (choice === "maya-s" && !mayaStatus?.installed)}
-            className={`rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice ? "border-accent-500" : "border-zinc-400"}`}>
+            className={`min-h-11 rounded-xl border px-4 py-2 text-sm disabled:opacity-40 ${runtime === choice
+              ? "border-accent-600 bg-accent-600 font-medium text-white shadow-sm"
+              : "border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"}`}>
             {RUNTIME_LABEL[choice]}
           </button>
         ))}
