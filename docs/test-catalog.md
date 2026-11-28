@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2880 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2883 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -2794,6 +2794,14 @@
 - `test_chat_web_mode_becomes_plain_chat_in_secret_conversation` — 明示の「Web」「学術」でも、秘密の会話は検索をせず普通の会話にして、止めていることを示す。
 - `test_send_in_secret_conversation_uses_local_model_and_refuses_opencode`
 - `test_pressing_midway_cancels_running_generation`
+
+### backend/tests/test_opencode_box_git_worktree.py
+
+目的: 箱の OpenCode から、git の worktree（Nexarch のチームの担い手の作業場所）で git と依頼の全文が見える、の試験。 目的: 担い手の worktree の `.git` が指す `<repo>/.git/worktrees/<名前>` と、チームの `.nexarch/` を箱につなぐ。 本体の `.git` は読み取り専用で、書けるのはその worktree の分だけ。`.git` が本体の外を指していたらつながない。 根拠: 2026-11-28 本番の AI チームで、担い手から「箱の中で brief・git・venv が見えなかった」と報告があった。 本体の `.git/config` を書けると、ホストの git の filter などからコードが走るので、読み取り専用にする。 既存の試験（test_opencode_*）は worktree を扱っていない（docs/test-catalog.md で確認）。
+
+- `test_worktree_inside_repo_gets_its_git_and_brief`
+- `test_plain_repo_and_outside_pointers_get_nothing`
+- `test_launch_mounts_git_readonly_and_worktree_writable`
 
 ### backend/tests/test_opencode_chat_server.py
 
