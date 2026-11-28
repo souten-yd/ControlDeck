@@ -23,6 +23,18 @@ import time
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
+
+# ポートの衝突を呼び出し側が文言の部分一致ではなく厳密に判定できるように、文言を定数にする
+# （run4 のレビュー: 再試行の判定が "ポート" の部分一致で、文言の変更に弱かった）。
+PORT_DUPLICATE_MESSAGE = "{label}内でポートが重複しています"
+PORT_TAKEN_BY_OTHER_RUNTIME_MESSAGE = "別のローカルランタイムがポートを使用しています"
+
+
+def _port_conflict(error: type[RuntimeError], message: str) -> RuntimeError:
+    """ポート衝突の例外に印を付ける（呼び出し側が文言ではなく印で再試行を決められる）。"""
+    exc = error(message)
+    exc.port_conflict = True  # type: ignore[attr-defined]
+    return exc
 from typing import Callable
 
 import httpx
@@ -292,11 +304,11 @@ def register(runtime: str, alias: str, wanted: dict, *, replace: bool, read: Cal
     elif alias in items:
         raise error("同じ別名は既に登録されています")
     if any(item.get("port") == port for key, item in items.items() if key != alias):
-        raise error(f"{label}内でポートが重複しています")
+        raise _port_conflict(error, PORT_DUPLICATE_MESSAGE.format(label=label))
     if not replace and local_llm.find(alias) is not None:
         raise error("同じ別名を使用する別のLLMがあります")
     if local_llm.port_taken_by_other_runtime(port, runtime):
-        raise error("別のローカルランタイムがポートを使用しています")
+        raise _port_conflict(error, PORT_TAKEN_BY_OTHER_RUNTIME_MESSAGE)
     items[alias] = wanted
     write(items)
 

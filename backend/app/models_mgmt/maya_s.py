@@ -12,6 +12,7 @@ import contextlib
 from contextlib import contextmanager
 from functools import wraps
 import json
+import logging
 import os
 import platform
 import re
@@ -24,6 +25,8 @@ import urllib.request
 from pathlib import Path
 
 from app.config import data_dir
+
+logger = logging.getLogger(__name__)
 
 _REPO = "https://github.com/mw00/project-maya.git"
 _RELEASE = "https://api.github.com/repos/mw00/project-maya/releases/latest"
@@ -991,7 +994,17 @@ def get_settings() -> dict:
                 "reasoning_effort": "high"}
     path = root() / "settings.json"
     if path.is_file() and not path.is_symlink():
-        defaults.update(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # 壊れた settings.json で API 全体を落とさない（書き込みは非原子的）。既定で続け、
+            # 次回の保存で作り直す。直すべき異常なのでログには残す。
+            logger.warning("Maya の settings.json を読めませんでした。既定で続けます: %s", path)
+        else:
+            if isinstance(stored, dict):
+                defaults.update(stored)
+            else:
+                logger.warning("Maya の settings.json が辞書ではありません。既定で続けます: %s", path)
     return defaults
 
 

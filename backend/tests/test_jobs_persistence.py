@@ -1,4 +1,10 @@
-"""ジョブ基盤の DB 永続化・再起動復元・API のテスト。"""
+"""ジョブ基盤の DB 永続化・再起動復元・API のテスト。
+
+目的: 停止済み取得 Job の取り消しで所有する .part だけを消し、停止の印が書けない
+ときに失敗を隠さず、同期 DB 書き込みが event loop を止めないことを守る。
+根拠: レビュー #25 の要修正 1・2・4 / 2026-11-28（docs/PLAN-model-catalog.md
+「決めた意味」、AGENTS.md 9）。HF 側の契約は test_hf_download.py が担う。
+"""
 import asyncio
 import time
 
@@ -480,6 +486,39 @@ def _use_tmp_resume_dir(monkeypatch, tmp_path):
     return root
 
 
+def _fake_hf_cleanup(tmp_path):
+    """偽 HF の途中ファイルの cleanup（hf.py 側が登録する契約を模す）。
+
+    params の repo/files だけから所有する .part を求め、完成済みのファイル・別 Job の
+    part・symlink は触らない（Nexarch #20 の「対象 Job が所有する part だけを消す」）。
+    """
+    from app.security.paths import is_within, normalize
+
+    root = tmp_path / "models"
+    root.mkdir(exist_ok=True)
+
+    def cleanup(params):
+        repo = str(params.get("repo") or "")
+        if not repo:
+            return
+        raw = root / repo.replace("/", "--")
+        if raw.is_symlink():
+            return                         # 保存先が symlink なら何も触らない
+        destination = normalize(str(raw))
+        if not is_within(destination, normalize(str(root))):
+            return
+        for name in params.get("files") or []:
+            target = destination / str(name).rsplit("/", 1)[-1]
+            part = target.with_suffix(target.suffix + ".part")
+            if part.is_symlink() or not part.is_file():
+                continue                   # symlink・FIFO・無いものは辿らない/消さない
+            if not is_within(normalize(str(part)), normalize(str(root))):
+                continue
+            part.unlink(missing_ok=True)
+
+    return cleanup, root
+
+
 def _admin_id() -> int:
     from app.database import SessionLocal
     from app.models import User
@@ -491,7 +530,7 @@ def _admin_id() -> int:
 def _seed_interrupted(
     root, tmp_path, *, kind: str, params: dict, owner_user_id: int | None,
     attempts: int = 0, created_at: float | None = None, title: str = "続きの試験",
-    status: str = "interrupted", job_id: str | None = None,
+    status: str = "interrupted", job_id: str | None = None, paused: bool = False,
 ) -> str:
     """再起動で中断された Job の行と、再開用の記録を用意する（再起動の直前の状態）。"""
     import json
@@ -510,7 +549,7 @@ def _seed_interrupted(
     (root / f"{job_id}.json").write_text(json.dumps({
         "kind": kind, "params": params, "owner_user_id": owner_user_id,
         "title": title, "created_at": time.time() if created_at is None else created_at,
-        "attempts": attempts,
+        "attempts": attempts, "paused": paused,
     }, ensure_ascii=False), encoding="utf-8")
     return job_id
 
@@ -604,6 +643,245 @@ def test_canceled_resumable_job_is_not_resumed(client, monkeypatch, tmp_path):
     assert jobs.cancel(job.id)
     assert not path.exists()
     assert _run(jobs.resume_after_startup()) == []
+
+
+def test_stop_keeps_the_record_and_resume_starts_a_new_job(client, monkeypatch, tmp_path):
+    """目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
+
+    根拠: 利用者の要望（2026-11-28）で停止と取り消しの意味を分けた。停止で記録を消すと
+    続きから再開できず、取り消しと同じになる（docs/PLAN-model-catalog.md「決めた意味」）。
+    """
+    import json
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_shutdown_started", False)
+    started = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await asyncio.sleep(30)
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "続き"))
+
+    async def scenario():
+        job = jobs.create("test.resume", "止める", factory({}), resume={"alias": "m1"})
+        await asyncio.wait_for(started.wait(), 5)
+        assert await jobs.stop(job.id) == "interrupted"
+        assert job.status == "interrupted"
+        doc = json.loads((root / f"{job.id}.json").read_text(encoding="utf-8"))
+        assert doc["paused"] is True and doc["params"] == {"alias": "m1"}
+        assert job.id in jobs.resume_record_ids()
+
+        # 停止の印が付いた記録は、起動時の自動再開では拾わない（利用者だけが再開する）。
+        assert await jobs.resume_after_startup() == []
+
+        started.clear()
+        new_job = await jobs.resume_stopped(job.id)
+        assert new_job.id != job.id and new_job.title == "続き"
+        await asyncio.wait_for(started.wait(), 5)
+        assert not (root / f"{job.id}.json").exists()      # 元の記録は次の Job へ引き継いだ
+        assert (root / f"{new_job.id}.json").exists()
+        assert await jobs.stop(new_job.id) == "interrupted"
+        return job.id, new_job.id
+
+    old_id, new_id = _run(scenario())
+    row = _job_row(old_id)
+    assert row.status == "interrupted"
+    assert f"Job {new_id} で続きから再開しました" in row.error
+
+
+def test_resume_stopped_refuses_a_concurrent_second_request(client, monkeypatch):
+    """目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
+
+    根拠: run4 のレビュー（minor）「resume の読み取り〜作成〜記録の削除が非原子的で、
+    同時に押すと Job が二重に作られ得る」。再開は数 GB の取り直しを伴うので、二重に走らせない。
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_unlocked(job_id):
+        started.set()
+        await release.wait()
+        return "resumed"
+
+    monkeypatch.setattr(jobs, "_resume_stopped_unlocked", fake_unlocked)
+
+    async def scenario():
+        first = asyncio.create_task(jobs.resume_stopped("job-concurrent"))
+        await asyncio.wait_for(started.wait(), 5)
+        with pytest.raises(ValueError, match="再開の処理中"):
+            await jobs.resume_stopped("job-concurrent")
+        release.set()
+        assert await first == "resumed"
+        assert "job-concurrent" not in jobs._resuming
+
+    _run(scenario())
+
+
+def test_paused_resume_record_is_dropped_after_the_retention(client, monkeypatch, tmp_path):
+    """目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+
+    根拠: run4 の再レビュー（minor）「paused の記録を自動再開から外すだけで削除しないため、
+    停止したまま放置すると /jobs の走査（resume_record_ids）の費用が増え続ける」。
+    新しい記録（再開できる）は残す。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    old = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None,
+        created_at=time.time() - jobs.PAUSED_RESUME_MAX_AGE_SECONDS - 60, paused=True)
+    fresh = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None, paused=True)
+
+    assert jobs._collect_resume_candidates() == []
+    assert not (root / f"{old}.json").exists()
+    assert (root / f"{fresh}.json").exists()
+
+
+def test_stopped_job_can_be_canceled_and_cannot_be_resumed(client, monkeypatch, tmp_path):
+    """目的: 停止した Job を取り消せること。取り消しは再開の記録（paused の印つき）を
+    消して、再開できない終端（canceled）にすること。
+
+    根拠: Nexarch #20 のレビュー（P1）「停止済みジョブを取消できるか」。停止の後に
+    取り消す道が無いと、再開の記録と途中のファイル（.part）が 30 日の期限まで残り
+    続けるだけになる。docs/PLAN-model-catalog.md「決めた意味」（2026-11-28）:
+    停止は記録を残す。取り消しは記録を消して終端にする。取り消したのに再開できる
+    （paused の記録が残る）のは契約の不整合。停止済みの runner はもう走っていないので、
+    取り消しが所有する .part を消さないと 30 日の期限まで残る（リーダーの差分確認）。
+    別 Job の part・完成ファイル・symlink を守ることも偽 HF の cleanup で確かめる。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_shutdown_started", False)
+    started = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await asyncio.sleep(30)
+
+        return run
+
+    cleanup, models = _fake_hf_cleanup(tmp_path)
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "続き", cleanup=cleanup))
+
+    # 偽 HF の保存先: 自分の part・別 Job の part・完成済みファイル・symlink の part。
+    dest = models / "org--model"
+    dest.mkdir()
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    params = {"repo": "org/model", "files": ["own.gguf"]}
+
+    async def scenario():
+        job = jobs.create("test.resume", "止めてから取消", factory({}), resume=params)
+        await asyncio.wait_for(started.wait(), 5)
+        assert await jobs.stop(job.id) == "interrupted"
+        assert (root / f"{job.id}.json").exists()        # 停止は記録を残す
+        assert own_part.is_file()                       # 停止では part を残す
+
+        assert await jobs.cancel_and_wait(job.id) is True
+        assert job.status == "canceled"
+        assert not (root / f"{job.id}.json").exists()   # 取り消しは記録を消す
+        assert not own_part.exists()                    # 取り消しは所有する part を消す
+        assert other_part.is_file()                     # 別 Job の part は残す
+        assert done.is_file()                           # 完成済みファイルは残す
+        assert linked.is_symlink()                      # symlink は辿らない
+        with pytest.raises(ValueError):
+            await jobs.resume_stopped(job.id)           # 再開はもうできない
+        return job.id
+
+    job_id = _run(scenario())
+    row = _job_row(job_id)
+    assert row.status == "canceled"
+    assert _run(jobs.resume_after_startup()) == []      # 起動時の自動再開にも出ない
+
+
+def test_stopped_job_left_in_db_after_restart_can_be_canceled_by_api(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 再起動でメモリから消えた停止中の Job も、API の取り消しで行と再開の記録を
+    消せること。
+
+    根拠: 停止 → 再起動 → 取り消しの流れ。メモリが消えても行（interrupted）と paused の
+    記録が残るのが再開の契約（resume_stopped は DB の行から作り直す）。取り消しだけ
+    409 では、記録を消す方法が 30 日の期限まで無い（#20 のレビュー）。再起動後は
+    runner が居ないので、API の取り消しが所有する .part を消すまでが契約（同じく
+    リーダーの差分確認）。別 Job の part・完成ファイル・symlink は守る。
+    """
+    from tests.conftest import CSRF_HEADERS
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    cleanup, models = _fake_hf_cleanup(tmp_path)
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(lambda params: None, lambda params: "続き",
+                                            cleanup=cleanup))
+    dest = models / "org--model"
+    dest.mkdir()
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    job_id = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={"repo": "org/model", "files": ["own.gguf"]},
+                               owner_user_id=None, paused=True)
+
+    body = admin_client.get(f"/api/v1/jobs/{job_id}").json()
+    assert body["status"] == "interrupted" and body["can_resume"] is True
+    assert own_part.is_file()                       # 再起動後も停止の part は残る
+
+    response = admin_client.post(f"/api/v1/jobs/{job_id}/cancel", headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert not (root / f"{job_id}.json").exists()
+    assert not own_part.exists()                    # 取り消しで所有する part を消す
+    assert other_part.is_file()                     # 別 Job の part は残す
+    assert done.is_file()                           # 完成済みファイルは残す
+    assert linked.is_symlink()                      # symlink は辿らない
+
+    body = admin_client.get(f"/api/v1/jobs/{job_id}").json()
+    assert body["status"] == "canceled"
+    assert body["can_resume"] is False
+
+
+def test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
+
+    根拠: 画面は can_resume で「再開」を出す（docs/PLAN-model-catalog.md）。終わった Job や
+    取り消した Job に出すと、押しても 409 になる。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    stopped = _seed_interrupted(root, tmp_path, kind="test.resume",
+                                params={"n": 1}, owner_user_id=None)
+    finished = _seed_interrupted(root, tmp_path, kind="test.resume",
+                                 params={"n": 1}, owner_user_id=None, status="succeeded")
+
+    rows = {row["id"]: row for row in admin_client.get("/api/v1/jobs?kind=test.resume").json()}
+    assert rows[stopped]["can_resume"] is True
+    assert rows[finished]["can_resume"] is False
+    assert admin_client.get(f"/api/v1/jobs/{stopped}").json()["can_resume"] is True
+    assert admin_client.get(f"/api/v1/jobs/{finished}").json()["can_resume"] is False
+
+    # 取り消す（記録を消す）と、再開の対象から外れる。
+    jobs._remove_resume_file(stopped)
+    assert admin_client.get(f"/api/v1/jobs/{stopped}").json()["can_resume"] is False
 
 
 def test_shutdown_does_not_cancel_resumable_job(client, monkeypatch, tmp_path):
@@ -837,6 +1115,8 @@ def test_huggingface_download_runner_forwards_saved_params(monkeypatch):
     """目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
 
     根拠: 再開の道が通常の取得と同じ処理を通る（m3-spec.md 2026-11-26）。通信はしない。
+    2026-11-28: 大きさを Job の開始時に HF の API から読む目録の取得（fetch_sizes=true）が
+    加わった。古い記録（fetch_sizes 無し）は従来どおり渡された値を使う。
     """
     from app.models_mgmt import hf, resume
 
@@ -857,9 +1137,14 @@ def test_huggingface_download_runner_forwards_saved_params(monkeypatch):
     assert result == {"ok": True}
     assert calls == {
         "repo": "org/model-GGUF", "files": ["m-Q4_K_M.gguf"], "revision": "main",
-        "library_id": "lib1", "expected_bytes": 123,
+        "library_id": "lib1", "expected_bytes": 123, "fetch_sizes": False,
         "register": params["register"],
     }
+    # 目録からの取得（fetch_sizes=true）: 再開でも「開始時に HF から大きさを読む」を引き継ぐ。
+    calls.clear()
+    runner = resume.huggingface_download_runner({**params, "fetch_sizes": True, "expected_bytes": 0})
+    _run(runner(jobs.Job(id="hf-resume2", kind="model.hf_download", title="t")))
+    assert calls["fetch_sizes"] is True and calls["expected_bytes"] == 0
 
 
 def test_hf_download_endpoint_creates_resumable_job_without_secret(admin_client, monkeypatch, tmp_path):
@@ -904,3 +1189,209 @@ def test_hf_download_endpoint_creates_resumable_job_without_secret(admin_client,
 
     _run(wait_file_gone())
     assert not (root / f"{job_id}.json").exists()
+
+
+def test_hf_cancel_uses_registered_real_cleanup_to_remove_own_part(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 停止済みの HF 取得 Job を取り消すと、登録済みの**実 cleanup**が
+    その Job の .part だけを消すこと。
+
+    根拠: レビュー #25 の要修正 1 / 2026-11-28。jobs 側の cleanup 契約だけでは
+    `register_resumable("model.hf_download", ..., cleanup=)` が繋がらず、本番の
+    取り消しで数 GB の .part が残る。ここでは cleanup を偽物に差し替えず、本番と
+    同じ登録（`jobs._resumable_kinds`）を通す。保存先だけを tmp へ向ける。
+    """
+    from app.models_mgmt import libraries
+    from tests.conftest import CSRF_HEADERS
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    models = tmp_path / "models"
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: models)
+
+    spec = jobs._resumable_kinds["model.hf_download"]
+    assert spec.cleanup is not None                  # 登録が切れていないことを先に確かめる
+
+    dest = models / "org--model"
+    dest.mkdir(parents=True)
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    job_id = _seed_interrupted(
+        root, tmp_path, kind="model.hf_download",
+        params={"repo": "org/model", "files": ["own.gguf"], "revision": "main",
+                "library_id": "", "expected_bytes": 0, "register": None},
+        owner_user_id=None, paused=True)
+
+    response = admin_client.post(f"/api/v1/jobs/{job_id}/cancel", headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert not own_part.exists()                    # 実 cleanup が自分の part を消す
+    assert other_part.is_file()                     # 別 Job の part は残す
+    assert done.is_file()                           # 完成済みファイルは残す
+    assert linked.is_symlink()                      # symlink は辿らない
+    assert outside.is_file()                        # symlink の先も触らない
+    assert not (root / f"{job_id}.json").exists()
+    assert _job_row(job_id).status == "canceled"
+
+
+def test_hf_catalog_cleanup_matches_only_the_selected_quantization(tmp_path, monkeypatch):
+    """目的: 目録の行（files=[] + 量子化）の取り消しでも、実 cleanup が選択した
+    量子化の .part だけを消すこと。
+
+    根拠: レビュー #25 の要修正 1 / 2026-11-28。目録からの取得は開始時に HF の tree
+    から分割全片を決めるので、再開の記録だけではファイル名が分からない。量子化名で
+    汎用に照合し、他量子化の .part を消さない（辞書や例外の追加で直さない）。
+    """
+    from app.models_mgmt import libraries
+
+    models = tmp_path / "models"
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: models)
+    destination = models / "org--model"
+    destination.mkdir(parents=True)
+    own = [destination / f"model-Q2_0-0000{i}-of-00002.gguf.part" for i in (1, 2)]
+    foreign = destination / "model-Q8_0-00001-of-00002.gguf.part"
+    for path in [*own, foreign]:
+        path.write_bytes(b"PARTIAL")
+    linked = destination / "model-Q2_0-linked.gguf.part"
+    linked.symlink_to(tmp_path / "elsewhere.gguf")
+
+    # 本番登録の cleanup をそのまま呼ぶ（test 用の偽実装を差し込まない）。
+    cleanup = jobs._resumable_kinds["model.hf_download"].cleanup
+    assert cleanup is not None
+    cleanup({"repo": "org/model", "files": [], "quantization": "Q2_0", "library_id": ""})
+
+    assert not any(path.exists() for path in own)
+    assert foreign.is_file()                        # 選ばなかった量子化は残す
+    assert linked.is_symlink()                      # symlink は辿らない
+
+
+def test_mark_resume_paused_reports_oserror_instead_of_silently_succeeding(
+        client, monkeypatch, tmp_path):
+    """目的: 停止の印の読み取り・書き込みで OSError が起きたら、飲まずに失敗すること。
+
+    根拠: レビュー #25 の要修正 4 / 2026-11-28。印が書けないのに「停止しました」と
+    返すと、再開できず .part だけが残る。壊れた記録（ValueError）は従来どおり無視する。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    job_id = _seed_interrupted(root, tmp_path, kind="test.resume", params={"n": 1},
+                               owner_user_id=None)
+    path = root / f"{job_id}.json"
+    path.unlink()
+    path.mkdir()                                    # 読み取りが IsADirectoryError になる
+    with pytest.raises(OSError):
+        jobs._mark_resume_paused(job_id, True)
+
+    path.rmdir()
+    path.write_text('{"kind": "test.resume", "params": {"n": 1}, "owner_user_id": null, '
+                    '"title": "t", "created_at": 1.0, "attempts": 0}', encoding="utf-8")
+    # 書き込み側の OSError もそのまま返す。
+    monkeypatch.setattr(jobs.os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        jobs._mark_resume_paused(job_id, True)
+
+
+def test_stop_reports_a_failed_pause_mark(client, monkeypatch, tmp_path):
+    """目的: 停止の印が書けないとき stop() が ValueError（API は 409）で失敗し、
+    pause_requested を戻して中途半端な状態を残さないこと。
+
+    根拠: レビュー #25 の要修正 4 / 2026-11-28。内部の OSError をそのまま投げると
+    API は 500 になり、利用者へ理由が伝わらない。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await gate.wait()
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.stop-mark",
+                        jobs._ResumableKind(factory, lambda params: "停止"))
+
+    async def scenario():
+        job = jobs.create("test.stop-mark", "停止の印の試験", factory({}), resume={"n": 1})
+        await asyncio.wait_for(started.wait(), 5)
+        path = root / f"{job.id}.json"
+        path.unlink()
+        path.mkdir()
+        with pytest.raises(ValueError, match="停止の印"):
+            await jobs.stop(job.id)
+        assert job.pause_requested is False
+        gate.set()
+        await asyncio.gather(job.task, return_exceptions=True)
+
+    _run(scenario())
+
+
+def test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit(
+        admin_client, monkeypatch, tmp_path):
+    """目的: POST /models/acquire-jobs が本物の jobs.create を event loop 上で呼び、
+    同期 DB 書き込みの audit.record だけを threadpool へ出すこと。
+
+    根拠: レビュー #25 の要修正 2 / 2026-11-28。当初の指示どおり jobs.create を
+    to_thread で呼ぶと、内部の asyncio.create_task が loop を要求して
+    RuntimeError: no running event loop で本番が 500 になる（2026-11-28 実測）。
+    だから create は loop に残し、threadpool へ出すのは audit.record だけにする。
+    create を偽らず、作られた Job が最後まで走るところまで確かめる。
+    """
+    import threading
+    import time
+
+    from app.audit import service as audit
+    from app.models_mgmt import hf, runtime_catalog
+    from tests.conftest import CSRF_HEADERS
+
+    _use_tmp_resume_dir(monkeypatch, tmp_path)          # 本番の再開記録を触らない
+
+    async def fake_download(job, repo, files, **kwargs):
+        return {"ok": True}
+
+    monkeypatch.setattr(hf, "download", fake_download)   # 外部通信だけを塞ぐ
+
+    loop_threads: list[int] = []
+    real_get_entry = runtime_catalog.get_entry
+
+    def traced_get_entry(*args, **kwargs):
+        loop_threads.append(threading.get_ident())       # endpoint 本体のスレッド
+        return real_get_entry(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_catalog, "get_entry", traced_get_entry)
+
+    audit_threads: list[int] = []
+    real_record = audit.record
+
+    def traced_record(*args, **kwargs):
+        audit_threads.append(threading.get_ident())
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(audit, "record", traced_record)
+
+    response = admin_client.post(
+        "/api/v1/models/acquire-jobs",
+        json={"runtime": "sly-radiance", "entry_id": "swift-heretic",
+              "register": {"alias": "swift", "port": 8123}},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    job = jobs.get(job_id)
+    assert job is not None                              # 本物の create が作った Job
+    for _ in range(500):
+        if job.status not in ("queued", "running"):
+            break
+        time.sleep(0.01)
+    assert job.status == "succeeded"
+    assert job.result == {"ok": True}
+    assert loop_threads and audit_threads
+    assert audit_threads[0] != loop_threads[0]           # audit だけ threadpool へ

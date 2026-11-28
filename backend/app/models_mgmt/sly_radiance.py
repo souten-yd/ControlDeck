@@ -355,6 +355,10 @@ def save_instance(alias: str, *, model_path: str, port: int, drafter_path: str =
     if int(prefill_chunk) not in CHUNKS or reasoning_effort not in REASONING_EFFORTS \
             or quantization not in QUANT_SWITCHES:
         raise SlyRadianceError("prefill の chunk・思考の既定・量子化の切り替えが不正です")
+    if not prefix_cache:
+        # 利用者の決まり（2026-11-28・docs/PLAN-model-catalog.md「決めた意味」）:
+        # Sly の prefix cache は常にオン。切る値は受け付けない（router の層でも断る）。
+        raise SlyRadianceError("prefix cache は常にオンです（切る設定はありません）")
     wanted = {"model_path": str(_resolve_folder(model_path, "モデル")),
               "drafter_path": str(_resolve_folder(drafter_path, "先読みモデル")) if drafter_path.strip() else "",
               "port": int(port), "context": int(context), "kv_cache": kv_cache,
@@ -429,8 +433,9 @@ def serve_args(alias: str, cfg: dict) -> list[str]:
              "--compilation-config.cudagraph_mode", "FULL_DECODE_ONLY",
              "--compilation-config.cudagraph_capture_sizes",
              json.dumps(_capture_sizes(seqs, spec if drafter is not None else 0), separators=(",", ":"))]
-    if cfg.get("prefix_cache", True):
-        args.append("--enable-prefix-caching")
+    # prefix cache は常にオン（利用者の決まり 2026-11-28）。既存の設定に false が残っていても
+    # 起動 argv には必ず付ける（save_instance は false を断るが、古い記録を読むときはここが守る）。
+    args.append("--enable-prefix-caching")
     # Text only: the multimodal profile is skipped and images are refused.
     args += ["--skip-mm-profiling", "--enable-mm-embeds",
              "--limit-mm-per-prompt.image", "0", "--limit-mm-per-prompt.video", "0",

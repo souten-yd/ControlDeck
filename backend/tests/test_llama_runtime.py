@@ -278,9 +278,11 @@ def test_llama_config_api_rejects_untyped_args_and_bad_values(admin_client):
 
 def test_llama_multi_instance_api(admin_client, monkeypatch):
     from app.applications import systemd as sd
-    from app.models_mgmt import llama
+    from app.models_mgmt import llama, model_paths
     from tests.conftest import CSRF_HEADERS, _sandbox
 
+    # 新規登録の 2 ルート制限は API でも効く（review #18）。試験用の sandbox を選べるRootにする。
+    monkeypatch.setattr(model_paths, "SELECTION_ROOTS", (str(_sandbox),))
     config_path = _sandbox / "llama-multi-test.json"
     gguf_a = _sandbox / "catalog-a.gguf"
     gguf_b = _sandbox / "catalog-b.gguf"
@@ -332,9 +334,10 @@ def test_llama_multi_instance_api(admin_client, monkeypatch):
 
 
 def test_llama_vision_detection_is_same_folder_and_disabled_by_default(admin_client, monkeypatch):
-    from app.models_mgmt import llama
+    from app.models_mgmt import llama, model_paths
     from tests.conftest import CSRF_HEADERS, _sandbox
 
+    monkeypatch.setattr(model_paths, "SELECTION_ROOTS", (str(_sandbox),))
     model_dir = _sandbox / "vision-detection"
     model_dir.mkdir()
     monkeypatch.setattr(llama, "_config_path", lambda: model_dir / "llama-runtime.json")

@@ -167,9 +167,10 @@ def test_openai_payload_carries_reasoning_effort():
 
 
 def test_llama_instance_api_accepts_think(admin_client, monkeypatch):
-    from app.models_mgmt import llama
+    from app.models_mgmt import llama, model_paths
     from tests.conftest import CSRF_HEADERS, _sandbox
 
+    monkeypatch.setattr(model_paths, "SELECTION_ROOTS", (str(_sandbox),))
     gguf = _sandbox / "think-api.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(llama, "_config_path", lambda: _sandbox / "think-api.json")

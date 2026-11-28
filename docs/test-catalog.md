@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 284 ファイル、2977 テスト（目的の未記入 93 ファイル）
-- E2E: 153 spec、355 テスト
+- backend: 286 ファイル、3036 テスト（目的の未記入 93 ファイル）
+- E2E: 154 spec、362 テスト
 
 ## backend（backend/tests）
 
@@ -1855,7 +1855,7 @@
 
 ### backend/tests/test_hf_download.py
 
-目的: HuggingFace からの GGUF 取得。
+目的: HuggingFace からの GGUF 取得。 目的（Nexarch #19 で追加）: 量子化ごとにサブフォルダが分かれた repo でも、選んだ量子化の 分割全片だけを列挙・取得し、repo 全体の他量子化を落とさないこと。取得後の登録は既存の 5 ランタイムの保存 API へ渡すこと。根拠: docs/PLAN-model-catalog.md「目録候補」の Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が 置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。 充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。 目的（レビュー #25 / 2026-11-28 で追加）: HF の API が報告した大きさより多い応答を 受け取っても書き込まず、秘密の会話ではファイル一覧の取得が 500 ではなく 403 で 断られること。根拠: 報告値を超える応答でディスクを埋められることと、 ensure_external_allowed の ExternalResearchBlocked が HfError でないため 500 に なっていたこと。
 
 - `test_repo_files_lists_only_gguf_variants`
 - `test_sharded_gguf_is_grouped_with_total_size` — 分割GGUFは1つだけ落としても使えないので、まとめて扱う。
@@ -1864,8 +1864,24 @@
 - `test_gated_repo_reports_token_requirement`
 - `test_free_space_is_checked_before_downloading` — 入らないものを落とし始めない（途中で詰まると中途半端に残る）。
 - `test_download_saves_under_repo_directory_and_can_register`
+- `test_sly_register_avoids_used_ports_and_retries_only_on_conflict` — 目的: 取得後の Sly 登録が使用中のポートを避けて空きを選び、再試行は衝突の印だけで行うこと。
 - `test_download_skips_files_already_present`
 - `test_presets_find_files_across_libraries` — 既定ライブラリが変わっても、別の場所にある既存GGUFを再取得しない。
+- `test_empty_files_takes_every_top_level_file_and_reads_its_size_at_start` — 目的: 目録の行から始まる files=[] の取得が、repo の最上位ファイル全部を落とし、
+- `test_part_is_kept_on_stop_and_removed_on_cancel` — 目的: 途中のファイル（.part）を、停止・サーバー停止では残し、取り消しでは消すこと。
+- `test_redirect_keeps_token_only_on_the_first_host` — 目的: 取得の redirect で、gated repo のトークン（Authorization）を CDN など別ホストへ
+- `test_download_rejects_bad_repo_revision_and_escaping_paths` — 目的: 取得の repo・revision・ファイル名の不正値（パスの逃げ出し・URL への細工）を、
+- `test_quantization_files_lists_all_shards_in_subdirectories` — 目的: サブフォルダの分割 GGUF を全片列挙し、他量子化を混ぜないこと。
+- `test_quantization_files_refuses_an_incomplete_shard_set` — 目的: 分割片が 1 片だけの量子化を「取得できる」と出さないこと。
+- `test_download_quantization_takes_only_the_selected_subdirectory` — 目的: files=[] + 量子化指定で、その量子化の分割全片だけを取得すること。
+- `test_download_refuses_files_from_another_quantization` — 目的: 明示指定された files に他量子化が混ざっていたら取得の前に断ること。
+- `test_register_dispatch_covers_all_five_runtimes` — 目的: 取得後の登録が既存の 5 ランタイムの保存 API へ正しく渡ること。
+- `test_register_chooses_a_free_port_for_radiance_and_strata` — 目的: ポート未指定の取得後登録が、既存 API の必須 port を空きポートで埋めること。
+- `test_shard_set_rejects_duplicate_index_and_mixed_folders` — 目的: 分割片は「同じフォルダ・同じ stem・同じ total の 1..total」が揃うこと。
+- `test_quantization_does_not_pick_a_sibling_variant` — 目的: Maya-M を選んだときに Maya-M-Derisked まで拾わないこと。
+- `test_invalid_existing_target_is_not_treated_as_downloaded` — 目的: symlink・大きさ違いの既存ファイルを「取得済み」として飛ばさないこと。
+- `test_download_does_not_write_more_than_the_reported_size` — 目的: HF の API が報告した大きさより多い応答が来ても、その分は書き込まないこと。
+- `test_hf_file_endpoints_return_403_when_external_research_is_blocked` — 目的: ファイル一覧（と検索）が ExternalResearchBlocked を 500 ではなく 403 に
 
 ### backend/tests/test_hf_search.py
 
@@ -1926,7 +1942,7 @@
 
 ### backend/tests/test_jobs_persistence.py
 
-目的: ジョブ基盤の DB 永続化・再起動復元・API のテスト。
+目的: ジョブ基盤の DB 永続化・再起動復元・API のテスト。 目的: 停止済み取得 Job の取り消しで所有する .part だけを消し、停止の印が書けない ときに失敗を隠さず、同期 DB 書き込みが event loop を止めないことを守る。 根拠: レビュー #25 の要修正 1・2・4 / 2026-11-28（docs/PLAN-model-catalog.md 「決めた意味」、AGENTS.md 9）。HF 側の契約は test_hf_download.py が担う。
 
 - `test_job_persisted_to_db` — ジョブ作成→完了が DB に記録され、get_any で再取得できる。
 - `test_bounded_event_journal_uses_monotonic_cursor` — 300件で先頭を捨ててもcursorが止まらず、新規deltaを購読できる。
@@ -1942,6 +1958,12 @@
 - `test_resumable_job_saves_only_resume_params_privately` — 目的: 再開できる Job の作成で、再開に要る引数だけを 0600 の JSON に残すこと。
 - `test_finished_resumable_job_forgets_record` — 目的: 成功・失敗で終わった Job の再開用の記録を消すこと。
 - `test_canceled_resumable_job_is_not_resumed` — 目的: 利用者が止めた Job の記録は消し、再起動の後に勝手に再開しないこと。
+- `test_stop_keeps_the_record_and_resume_starts_a_new_job` — 目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
+- `test_resume_stopped_refuses_a_concurrent_second_request` — 目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
+- `test_paused_resume_record_is_dropped_after_the_retention` — 目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+- `test_stopped_job_can_be_canceled_and_cannot_be_resumed` — 目的: 停止した Job を取り消せること。取り消しは再開の記録（paused の印つき）を
+- `test_stopped_job_left_in_db_after_restart_can_be_canceled_by_api` — 目的: 再起動でメモリから消えた停止中の Job も、API の取り消しで行と再開の記録を
+- `test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record` — 目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
 - `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
 - `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
 - `test_startup_stops_after_three_resume_attempts` — 目的: 自動の再開を 3 回試したら、それ以上作り直さず理由を Job に残すこと。
@@ -1952,6 +1974,11 @@
 - `test_model_download_jobs_are_registered_as_resumable` — 目的: HF 取得と Strata 初回起動の Job が、自動再開の仕組みに載っていること。
 - `test_huggingface_download_runner_forwards_saved_params` — 目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
 - `test_hf_download_endpoint_creates_resumable_job_without_secret` — 目的: 画面から始めた HF 取得が再開可能な Job になり、 HF のトークンを記録しないこと。
+- `test_hf_cancel_uses_registered_real_cleanup_to_remove_own_part` — 目的: 停止済みの HF 取得 Job を取り消すと、登録済みの**実 cleanup**が
+- `test_hf_catalog_cleanup_matches_only_the_selected_quantization` — 目的: 目録の行（files=[] + 量子化）の取り消しでも、実 cleanup が選択した
+- `test_mark_resume_paused_reports_oserror_instead_of_silently_succeeding` — 目的: 停止の印の読み取り・書き込みで OSError が起きたら、飲まずに失敗すること。
+- `test_stop_reports_a_failed_pause_mark` — 目的: 停止の印が書けないとき stop() が ValueError（API は 409）で失敗し、
+- `test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit` — 目的: POST /models/acquire-jobs が本物の jobs.create を event loop 上で呼び、
 
 ### backend/tests/test_jobs_stream_cleanup.py
 
@@ -2550,6 +2577,18 @@
 - `test_validate_forces_a_default`
 - `test_unconfigured_policy_synthesizes_builtin_library` — 未設定環境では従来の data_dir/models/gguf が既定になる（後方互換）。
 - `test_library_api_routes`
+
+### backend/tests/test_model_paths_bounds.py
+
+目的: 登録前の読み取り（model_paths）が読む量・件数・型・子の symlink を厳密に守ることの試験。 目的: 新規選択の検証と登録前の読み取り（app/models_mgmt/model_paths.py）が、細工した・ 壊れたファイル・フォルダで長く回ったり、選んだフォルダの外を実体として読んだりしないこと。 量・件数・型の上限と、子（フォルダの中のファイル）の symlink の拒否を確かめる。 inspect は同期 endpoint の threadpool で動くので、1 件が長く止まると他の要求まで遅れる。 根拠: Nexarch #20（2026-11-28）のレビュー残件（P1）。 - config.json が子 symlink でもそのまま開いていた（resolve したフォルダの外を読める）。 - フォルダの大きさの走査（glob・stat）に件数の上限が無く、symlink も追いかけていた。 - GGUF の文字列配列は件数（count）だけのループで、総読取の上限が各要素の間に効いて いなかった（大きなファイルで長時間止められた）。 - .rad と config.json は名前だけで形式を認定していた。 同じ観点の既存の試験は test-catalog で探して無いことを確認した（test_runtime_catalog.py は 正しい入力の読み取りと、選択のルートの外・上位の symlink の拒否だけを確かめている）。
+
+- `test_gguf_string_array_with_a_lying_count_stops_quickly` — 目的: 文字列配列の件数（count）を大きく偽った GGUF ヘッダを短い時間で打ち切ること。
+- `test_gguf_keeps_reading_keys_after_a_legitimate_array` — 目的: 上限内の本物の文字列配列（語彙など）の後も、続く鍵を読み続けること。
+- `test_gguf_string_length_over_budget_is_cut_before_reading_or_seeking` — 目的: 文字列の長さが残り予算・実ファイルの範囲を超えたら、読む前・seek する前に
+- `test_config_json_symlink_is_rejected_and_the_folder_is_not_safetensors` — 目的: 選んだフォルダの子（config.json）が symlink なら読まず、safetensors と
+- `test_folder_with_junk_config_json_is_not_safetensors` — 目的: config.json の中身が読める JSON オブジェクトでないなら safetensors と
+- `test_config_json_fifo_does_not_hang_inspect` — 目的: config.json が名前付きパイプ（FIFO）でも inspect が止まらないこと。
+- `test_folder_size_is_bounded_and_ignores_symlinked_children` — 目的: フォルダの大きさの走査が子の symlink を数えず、件数の上限で止まること。
 
 ### backend/tests/test_model_thinking.py
 
@@ -3674,6 +3713,34 @@
 - `test_every_tmux_injection_file_is_a_tmux_owner`
 - `test_route_map_doc_matches_the_data`
 
+### backend/tests/test_runtime_catalog.py
+
+目的: ランタイム共通の目録・設定の形・ファイルからの登録の読み取り（run3 共通バックエンド API）。 目的: Models 画面の共通部品（RuntimeCatalog・RuntimeSettings・RuntimeRegisterFromFile）が 読む 3 つの API を守る。 - 目録は全ランタイムを並べ、載せる repo は確認済みのものだけにする。大きさの分からない行は size_gib を null にし、推測値（URL・大きさ・sha）を書かない（取得の開始時に HF の API から読む）。 - 設定の形は 6 つの並びを全ランタイムで揃え、欄の id・選択肢・上限を実際の保存 API （LlamaInstanceBody・RadianceModelBody・SlyRadianceModelBody・StrataModelBody・ MayaInstanceSettingsBody / MayaRegisterBody）と一致させる。 ランタイムに無い欄（Sly の prefix cache など）は出さず、always_on に理由を書く。 - ファイルからの登録は新規選択を /data1tb と /data2tb の中だけにし、realpath で symlink の 外抜けを断る。GGUF ヘッダ・config.json は読む量と件数を制限して読む。 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。 追加（Nexarch #19）: 調査済みの repo id とファイル名を実 API へ反映し、llama.cpp と Radiance の空目録を解消する。Maya の owner の誤記（peasmith）を直し、Strata の新行は GSQ-RCO・Unsloth UD-*・Q8_0 だけに絞る。全 5 ランタイムから共通の HF 取得 Job を 停止・再開・取り消しできる道を接続する。根拠: docs/PLAN-model-catalog.md「目録候補」と .nexarch/brief-runtime-unify.md「大きさ・sha は取得の開始時に HF の API から読む」。
+
+- `test_catalog_has_every_runtime_and_no_guessed_sizes` — 目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
+- `test_catalog_entries_are_looked_up_by_runtime` — 目的: 取得の API が目録の行をランタイム＋id で引けること（別ランタイムの id を混ぜない）。
+- `test_capabilities_share_the_same_section_order` — 目的: 全ランタイムの設定画面が同じ 6 つの並びで出ること（バラバラにしない）。
+- `test_capability_fields_match_the_save_api` — 目的: 設定の欄の id・選択肢・上限を、実際の保存 API の検証と同じにすること。
+- `test_capability_ids_are_unique_and_defaults_fit_the_choices` — 目的: 同じ設定を 2 つの節に出さないこと。数値の既定が範囲内・選択の既定が選択肢内に
+- `test_acquire_register_rejects_what_the_sly_save_api_rejects` — 目的: 取得ジョブの登録引数（AcquireRegister）が、Sly-Radiance の保存 API と同じ値を
+- `test_acquire_register_rejects_fields_the_runtime_would_ignore` — 目的: 取得後の登録で、そのランタイムが使わない欄を 422 にすること。
+- `test_maya_capabilities_survive_a_broken_settings_file` — 目的: Maya の settings.json が壊れていても、既定へ戻して共通の設定 API を返すこと。
+- `test_sly_prefix_cache_is_always_on_and_has_no_field` — 目的: Sly の prefix cache を切る欄を設定の形に出さず、常時オンとだけ注記すること。
+- `test_radiance_speculative_tokens_defaults_to_auto` — 目的: Radiance の先読みの既定を保存 API と同じ「自動（null）」にすること。
+- `test_inspect_reads_gguf_header_and_says_which_runtimes_can_use_it` — 目的: GGUF を選んだとき、ヘッダから量子化・文脈長・系列を読み、使えるランタイムを返すこと。
+- `test_inspect_reads_a_safetensors_folder_config` — 目的: config.json のあるフォルダを Sly 用（safetensors）と判定し、量子化の方式を読むこと。
+- `test_new_selection_is_refused_outside_the_allowed_roots` — 目的: 新規の選択・登録を /data1tb と /data2tb の中だけにし、symlink で外へ抜けさせないこと。
+- `test_broken_gguf_does_not_stop_the_register_screen` — 目的: 壊れたファイル・GGUF でないファイルでも例外にせず、形式 unknown として返すこと。
+- `test_common_models_api_is_exposed` — 目的: 目録・設定の形・ファイルの読み取りが認証つきの API から見えること。
+- `test_acquire_rejects_rows_without_a_hf_repo_and_maya_register` — 目的: HF から取れない行（Strata など）と Maya の取得後登録を共通 API で断ること。
+- `test_acquire_job_reads_sizes_at_start_and_keeps_the_runtime` — 目的: 目録の行から作る取得 Job が、大きさを推測せず開始時に読み、登録先のランタイムを残すこと。
+- `test_rad_file_is_offered_to_radiance_only` — 目的: Radiance の .rad を Sly-Radiance（safetensors フォルダ）へ、Sly のフォルダを
+- `test_researched_rows_keep_only_confirmed_repo_ids_and_file_names` — 目的: 調査済みの repo id とファイル名がそのまま API に出ること。
+- `test_strata_new_rows_use_only_supported_quantizations` — 目的: Strata の新規行が GSQ-RCO・Unsloth UD-*・Q8_0 だけであること。
+- `test_all_five_runtimes_can_start_the_common_hf_job` — 目的: 全 5 ランタイムが共通の取得 Job を始め、停止・再開・取消の道に載ること。
+- `test_catalog_files_endpoint_lists_only_the_selected_quantization` — 目的: GGUF の量子化行のファイル一覧がサブフォルダの分割全片だけを返すこと。
+- `test_new_registration_rejects_outside_paths_even_with_wide_files_config` — 目的: 新規登録 API が Files の許可ルートを広く設定しても 2 ルート外を断ること。
+
 ### backend/tests/test_runtime_policy.py
 
 目的: **未記入**
@@ -3833,6 +3900,8 @@
 - `test_shared_with_radiance_runtime_groups`
 - `test_a_loaded_sly_model_is_freed_for_another_runtime`
 - `test_stop_removes_a_container_left_in_removing` — 停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
+- `test_prefix_cache_is_always_on_in_both_layers` — 目的: Sly の prefix cache を切る値を保存 API の型（router）と save_instance の両層で断り、
+- `test_port_conflict_is_marked_for_the_acquire_retry` — 目的: ポート衝突の例外に印（port_conflict）が付き、取得後の登録が文言に頼らず再試行できること。
 
 ### backend/tests/test_speech_engines.py
 
@@ -4932,7 +5001,7 @@
 
 目的: ホームのテロップを「実機のモバイルに近い条件」（390x844・DPR 3・タッチ・CPU を遅く）で 15 秒測る。API・WebSocket はモック。 目的: 3 秒ごとのメトリクス更新と重なっても、①テロップの DOM が 1 件も作り直されない（mutation 0・animate の付け直し 0） ②長いコマ（> 33ms）の数と最大が小さい ③transform が流れの途中で巻き戻らない。結果は test-results/home-marquee-mobile-*.json。 根拠: 2026-11-25 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。 */
 
-- ホームのテロップはモバイル条件（CPU ${rate} 倍遅く${multi ? 
+- ホームのテロップはモバイル条件（CPU ${rate} 倍遅く${multi ?
 
 ### frontend/e2e/home-marquee-smooth.spec.ts
 
@@ -4978,7 +5047,7 @@
 
 ### frontend/e2e/llama-runtime-settings.spec.ts
 
-目的: **未記入**
+目的: 目的: llama.cpp の個別設定（共通 RuntimeSettings）で保存すると、読み取り専用の状態項目 （loaded・runtime_status・base_url など）を除いた本文だけが PUT されること。 422 の詳細が画面に出ること。Ollama のロード状態が表示とライフサイクルボタンに反映されること。 根拠: 状態項目を送ると保存 API が extra inputs で 422 になる不具合の回帰確認。 レビュー #25 / 2026-11-28 の要修正: 旧個別パネルの「詳細」見出し・旧ラベルは共通 RuntimeSettings の「エキスパート」（capability の expert 欄）へ置き換わったので追随した。 隔離環境には llama.cpp の登録が無いため、ステータスは page.route で模擬して skip せず実行する。 */
 
 - llama.cpp instance save excludes read-only status fields
 - Ollama running state updates the indicator and lifecycle button
@@ -4991,14 +5060,14 @@
 
 ### frontend/e2e/maya-ds4-vision.spec.ts
 
-目的: 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。 画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」 「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
+目的: 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。 画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」 「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。 更新: Nexarch #24。個別設定には「表示名の保存」（無効）と下端の「保存」が並ぶため、 目的の設定保存は .last() で指定する（曖昧な「保存」単体では strict mode 違反）。 レビュー #25 / 2026-11-28: 目的と根拠を明示し、Maya の個別設定が共通 UI になっても 画像の読み取りだけが保存される回帰を実際に実行して通す。 */
 
 - DS-XS shows the vision badge and its read-images switch at ${width}px
 - a DeepSeek model without the vision tower cannot switch images on
 
 ### frontend/e2e/maya-register.spec.ts
 
-目的: **未記入**
+目的: Maya のモデル登録（手元のファイル／ダウンロード）を、共通 UI の導線で確かめる。 目的: 目録の量子化ごとの案内（不足ファイル・フォルダ名の規則・ライセンス）が出て、ファイルが揃った 量子化だけ登録できること。未準備のモデルでは一覧に準備カードを出さないこと。 根拠: 2026-11-18 の Maya 登録画面と、Nexarch #11（共通目録・登録・設定への置換）。 #24 で旧ラベル・旧導線を共通 UI に追随させた。レビュー #25 / 2026-11-28 の要修正で、 フォルダ欄は既定（エキスパート切）では読むだけになったため、欄を触る試験ではエキスパートを入れる。 ダウンロードを伴う登録は確認ダイアログを挟む（利用者の明示操作）。 API は page.route で模擬し、実モデルの取得はしない。 共有の注意: 共通 RuntimeSettings の保存／登録ボタンは「登録する」（初期値がある個別設定は「設定を保存」）。 旧「登録」ボタンは存在しない。 */
 
 - Maya のモデルを手元のファイルから登録できる（${width}px）
 - Maya のモデルをダウンロードして登録できる・一覧に準備カードを出さない（${width}px）
@@ -5024,9 +5093,21 @@
 
 ### frontend/e2e/model-provider-common.spec.ts
 
-目的: **未記入**
+目的: 目的: Ollama のモデル取得と個別設定の保存が、共通プロバイダ経由の API だけを呼ぶこと。 320px / PC 幅で横にはみ出さないこと。API は page.route で差し替え、実取得・実保存は行わない。 根拠: 共通プロバイダ整備（Nexarch #5 以降）で旧個別ルートが廃されたことの回帰確認。 #24: 11 spec を調査したが、この spec は共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 レビュー #25 / 2026-11-28: 目的と根拠を明示し、共通プロバイダの回帰として実際に実行して通す （安易な skip はしない）。 */
 
 - uses the common provider routes for pull and model configuration
+
+### frontend/e2e/models-runtime-common.spec.ts
+
+目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28、同日補強）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 目録の見出しは「目録から取得」へ統一する要求なのでその文言に期待を固定する （docs/PLAN-model-catalog.md「共通の並び」）。レビュー #25 / 2026-11-28 の UI 修正で 旧「目録から取る／探す」と Maya の二重目録は解消済み（緩めずに同じ文言へ固定する）。 - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。 - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 確認パネルの「取得する」は目録の行と同名なので、確認パネル固有の「やめる」を待ってから 押す（既知の競合: 行のボタンを誤クリックしてジョブが始まらない）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。目録モックの Radiance も acquire="hf"（supported かつ repo ありという実 API 契約どおり。#19 で実装も hf 化）。 更新: レビュー #25 / 2026-11-28 の要修正。目録の見出し「目録から取得」を維持し、 停止済み（interrupted + can_resume）のジョブにも「取り消し」を出し、破壊操作なので 確認ダイアログ（「取得を取り消す」/「取り消す」）を挟む導線へ追随した。 実行コマンド（この箱では /dev/shm が読み取り専用なので一時 shim を PYTHONPATH に付ける）: env -u CONTROL_DECK_CONFIG PYTHONPATH=<一時 shim> \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
+
+- モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す
+- 共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ?
+- 取得ジョブ: 停止 → 再開のボタンがモックの API で動く（320px）
+- 取得ジョブ: 取り消しの API モックと实际操作（320px）
+- 取得ジョブ: 停止済みのジョブも取り消せる（確認ダイアログ・320px）
+- ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ
+- 画面写真: ${width}px ${scheme} エキスパート${expert ?
 
 ### frontend/e2e/models-swap-queue.spec.ts
 
@@ -5042,7 +5123,7 @@
 - keeps Workflows below the logo with an iPhone standalone safe area
 - migrates the saved Play destination to Workflows
 - pins up to six favorites at the top of the drawer
-- sidebar has no 
+- sidebar has no
 
 ### frontend/e2e/navigation-visibility.spec.ts
 
@@ -5116,7 +5197,7 @@
 - ニュース: ホームのカード・見出しは新しいタブで open を記録・まとめが今日の分でなければ出さない・メニュー・設定の入口
 - ニュース: 記事が無いとき「今すぐ取得する」が出る
 - ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
-- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
+- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ?
 - ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
 - ニュース: まとめは話題ごとの傾向・主な技術・注目点と「3 行」、英語の概要は「訳」の印、設定に重点の欄（${width}px）
 
@@ -5230,7 +5311,7 @@
 
 ### frontend/e2e/runtime-preferred-model.spec.ts
 
-目的: **未記入**
+目的: 目的: ランタイムごとの起動モデル（preferred_models）を「LLM 共通設定」から選んで保存でき、 未準備のモデルは選べないこと。320px / 1280px で横にはみ出さないこと。 根拠: ランタイム切替時に起動モデルを固定したいという利用者の要望の回帰確認。 #24: 共通 UI の現在のランタイムカード名・コンボボックス名と一致しており変更不要（回帰のみ）。 レビュー #25 / 2026-11-28: 目的と根拠を明示し、共通設定の回帰として実際に実行して通す （安易な skip はしない）。 */
 
 - runtime startup preferences can be selected and saved at ${width}px
 
@@ -5289,7 +5370,7 @@
 
 ### frontend/e2e/sly-radiance.spec.ts
 
-目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（HF の取得 Job）→ 取得したフォルダがフォームへ入る、 フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、登録の本文が API の形（同時に答える数 1〜8・ 先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
+目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（共通の取得 Job）→ 取得したフォルダが 共通設定のフォームへ入る、フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、 登録の本文が API の形（同時に答える数 1〜8・先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。 320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。 更新: Nexarch #24。旧「Sly-Radiance目録のモデル／同時実行数／量子化／先読みのフォルダ／詳しい設定」は 共通 UI では「目録から取得」の行と共通フィールド（エキスパート）に置き換わったので、その導線へ追随した。 旧 /models/sly-radiance/catalog は削除済み（#13）。共通 /models/catalog をモックする。 更新: レビュー #25 / 2026-11-28。目録の見出しを「目録から取得」へ固定し、Sly の prefix cache は 常時オンの決まり（切る選択肢を出さない）を画面と保存本文の両方で明示的に確かめる。 */
 
 - Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）
 - Sly-Radiance は Radiance のカードの中のスイッチ（320px）
@@ -5305,17 +5386,17 @@
 
 ### frontend/e2e/strata-catalog.spec.ts
 
-目的: Strata のモデル登録画面が backend の目録 API（GET /api/v1/models/strata/catalog）から 全系列・全量子化を読み、1280px と 320px の両方で崩れずに選べることを確かめる。 量子化の選択肢には id に加えてダウンロード目安・メモリ目安・「載る／ぎりぎり／載らない／不明」が出る。 手作業が要る orca は選べない案内表示になり、Inkling では 0.2.22 の思考欄が残る。 目録の取得失敗時は alert を出して保存ボタンを無効にする。 根拠: 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。Strata 0.2.22 の 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す） と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。 API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。
+目的: Strata のモデル登録画面が backend の目録 API（GET /api/v1/models/strata/catalog）から 全系列・全量子化を読み、1280px と 320px の両方で崩れずに選べることを確かめる。 量子化の選択肢には id に加えてダウンロード目安・メモリ目安・「載る／ぎりぎり／載らない／不明」が出る。 手作業が要る orca は選べない案内表示になり、Inkling では 0.2.22 の思考欄が残る。 目録の取得失敗時は alert を出して保存ボタンを無効にする。 根拠: 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。Strata 0.2.22 の 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す） と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。 API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。 #24 更新: 共通 UI では詳細な系列・量子化の選択はエキスパートの「従来の登録」に置かれた （不要な表示は隠す決まり）。導線を「モデル登録 → Strata → 従来の登録」へ更新した。 レビュー #25 / 2026-11-28 更新: 目録見出し「目録から取得」への統一とエキスパート導線の確認を受け、 共通 UI の回帰（models-runtime-common.spec.ts）と重複しないよう、従来の登録の目録データだけを確かめる。
 
 - Strata catalog shows all families and quantizations at ${width}px
 - Strata catalog failure shows an alert and disables save at 1280px
 
 ### frontend/e2e/strata-memory-settings.spec.ts
 
-目的: **未記入**
+目的: 目的: Strata のメモリ計画（KV の常駐トークン／RAM の残し量／同時実行数／コンテキスト）を 共通 RuntimeSettings から保存でき、エキスパートの欄として現れること。 320px / 1280px で横にはみ出さないこと。Inkling では Qwen 専用のメモリ欄を出さず、 思考と先読みの選択肢だけを保存すること。 根拠: Strata の KV 確保量が分かりにくいという利用者の指摘と、Nexarch #12 の共通設定化。 レビュー #25 / 2026-11-28 の要修正（旧 「従来の設定画面（すべての引数）」 は削除済み）。 旧個別パネルの <details><summary> と専用ラベル（StrataKVのVRAM保持長など）を 期待していたため、capability に基づく共通 UI（②コンテキスト / ③同時に処理する数 / ④速さの調整 / ⑥エキスパート）へ追随した。API は page.route で模擬し、実取得はしない。 */
 
 - Strata memory planning and settings at ${width}px
-- Strata registration offers Inkling 2 Mini with thinking and without Qwen-only memory settings
+- Strata settings offer Inkling 2 Mini with thinking and without Qwen-only memory settings
 
 ### frontend/e2e/terminal-attachment.spec.ts
 
