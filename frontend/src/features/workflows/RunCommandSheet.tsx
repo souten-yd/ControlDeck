@@ -31,10 +31,21 @@ export function dangerNotes(command: string): string[] {
   return notes;
 }
 
-interface RunState { output: string; done: boolean; exit_code: number | null; password_prompt: boolean }
+export interface RunState { output: string; done: boolean; exit_code: number | null; password_prompt: boolean }
 
 /** 確認のシート。実行する場所は呼び出し側が決めたもの（その会話の作業場か、無ければホーム） */
-export function RunCommandSheet({ request, placeLabel, placeValue, onClose, onOpenTerminal }: {
+/** 実行の結果を、チャットに貼る文にする（長い出力は末尾を残す。LLM が全部読めるよう本文に入れる） */
+export const ATTACH_MAX_CHARS = 12_000;
+export function runResultText(command: string, state: RunState): string {
+  let output = state.output.replace(/\s+$/, "");
+  if (output.length > ATTACH_MAX_CHARS) output = `…（前半を省略）\n${output.slice(-ATTACH_MAX_CHARS)}`;
+  const status = state.done ? `終了コード ${state.exit_code}` : "実行中の途中まで";
+  // 出力に ``` があっても閉じないように、囲いは出力より長くする
+  const fence = "`".repeat(Math.max(3, ...[...output.matchAll(/`{3,}/g)].map((m) => m[0].length + 1)));
+  return `ターミナルで実行した結果（${status}）:\n\n${fence}sh\n${command}\n${fence}\n\n${fence}text\n${output || "（出力なし）"}\n${fence}\n`;
+}
+
+export function RunCommandSheet({ request, placeLabel, placeValue, onClose, onOpenTerminal, onAttach }: {
   request: RunCommandRequest;
   /** シートに見せる場所の名前（作業場の名前・「ホーム」） */
   placeLabel: string;
@@ -42,6 +53,8 @@ export function RunCommandSheet({ request, placeLabel, placeValue, onClose, onOp
   placeValue: string | null;
   onClose: () => void;
   onOpenTerminal: (sessionId: string) => void;
+  /** 結果をチャットの入力欄に添付する（押したときだけ。無ければボタンを出さない） */
+  onAttach?: (text: string) => void;
 }) {
   const show = useToasts((s) => s.show);
   const [working, setWorking] = useState(false);
@@ -191,16 +204,22 @@ export function RunCommandSheet({ request, placeLabel, placeValue, onClose, onOp
             <>
               {!finished && (
                 <button type="button" data-testid="run-stop" onClick={() => void act("/stop")}
-                  className="min-h-11 rounded-lg border border-red-300 px-4 text-sm text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30">
+                  className="whitespace-nowrap min-h-11 rounded-lg border border-red-300 px-4 text-sm text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30">
                   止める
                 </button>
               )}
+              {onAttach && state && (state.output.trim() || finished) && (
+                <button type="button" data-testid="run-attach" onClick={() => { onAttach(runResultText(request.command, state)); show("結果をチャットの入力欄に添付しました", "success"); }}
+                  className="whitespace-nowrap min-h-11 rounded-lg border border-sky-300 px-4 text-sm text-sky-700 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950/30">
+                  チャットに添付
+                </button>
+              )}
               <button type="button" data-testid="run-open-terminal" onClick={() => onOpenTerminal(sid)}
-                className="min-h-11 flex-1 rounded-lg border border-zinc-300 px-4 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                className="whitespace-nowrap min-h-11 flex-1 basis-32 rounded-lg border border-zinc-300 px-4 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
                 ターミナルで開く
               </button>
               <button type="button" data-testid="run-close" onClick={() => void closeSession()}
-                className="min-h-11 rounded-lg bg-zinc-800 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-white">
+                className="whitespace-nowrap min-h-11 rounded-lg bg-zinc-800 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-white">
                 閉じる
               </button>
             </>

@@ -103,3 +103,32 @@ test("inline run: cancelling the password popup sends Ctrl-C", async ({ page, co
   await expect.poll(() => calls.stop).toBe(1);
   expect(calls.input).toHaveLength(0);
 });
+
+// 目的: 実行の結果を「チャットに添付」で入力欄へ入れられること（押したときだけ。送るのは利用者）。
+//       コマンド・終了コード・出力が入り、パスワードは入らない。
+// 根拠: 2026-11-28 利用者「ターミナルで実行した結果をチャットに添付して報告できるようにして。しなくても良い。ボタン押すと」。
+test("inline run: attach the result to the chat input", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E credentials required");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  await open(page);
+  await page.locator('[data-testid="code-run"]').first().click();
+  const sheet = page.getByRole("dialog", { name: "ターミナルで実行" });
+  await sheet.getByTestId("run-command-confirm").click();
+  await sheet.getByTestId("run-command-confirm").click();
+  const pw = page.getByTestId("run-password");
+  await pw.fill(SECRET);
+  await page.getByRole("button", { name: "送る" }).click();
+  await expect(sheet.getByTestId("run-status")).toContainText("終了（コード 0）");
+  const composer = page.locator("[data-assistant-composer] textarea").first();
+  await expect(composer).toHaveValue("");                 // 押すまで何も入らない
+  await sheet.getByTestId("run-attach").click();
+  const text = await composer.inputValue();
+  expect(text).toContain("終了コード 0");
+  expect(text).toContain("sudo apt update");
+  expect(text).toContain("完了");
+  expect(text).not.toContain(SECRET);
+  await page.screenshot({ path: "test-results/assistant-run-attach-320.png" });
+  await sheet.getByTestId("run-close").click();
+  await expect(composer).toHaveValue(text);               // 閉じても入力欄に残る（送るのは利用者）
+});

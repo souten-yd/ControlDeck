@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 286 ファイル、3039 テスト（目的の未記入 93 ファイル）
-- E2E: 154 spec、362 テスト
+- E2E: 154 spec、363 テスト
 
 ## backend（backend/tests）
 
@@ -4758,6 +4758,7 @@
 
 - inline run: output, password popup, finish (${width}px ${scheme})
 - inline run: cancelling the password popup sends Ctrl-C
+- inline run: attach the result to the chat input
 
 ### frontend/e2e/assistant-secret-lock-topbar.spec.ts
 

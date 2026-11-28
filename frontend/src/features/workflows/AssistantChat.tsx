@@ -1879,7 +1879,8 @@ export default function AssistantChat() {
       )}
       {runRequest && (
         <RunCommandSheet request={runRequest} placeLabel={runPlaceLabel} placeValue={runPlaceValue}
-          onClose={() => setRunRequest(null)} onOpenTerminal={openRunInTerminal} />
+          onClose={() => setRunRequest(null)} onOpenTerminal={openRunInTerminal}
+          onAttach={(text) => setInput((current) => current.trim() ? `${current.replace(/\s+$/, "")}\n\n${text}` : text)} />
       )}
       {deletingConversation && (
         <ConfirmDialog
