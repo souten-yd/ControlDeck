@@ -130,7 +130,7 @@ def test_validate_rejects_path_outside_allowed_roots(tmp_path, monkeypatch):
     entry = {"id": "bad", "label": "B", "volume_uuid": "", "subpath": "",
              "path": "/definitely/not/allowed", "default": True}
     monkeypatch.setattr(libraries, "detect_volumes", lambda: [])
-    with pytest.raises(libraries.LibraryError, match="allowed_roots"):
+    with pytest.raises(libraries.LibraryError, match="allowed_roots|の中だけです"):
         libraries.validate_entries([entry])
 
 

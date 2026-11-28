@@ -637,6 +637,34 @@ class MayaDownloadBody(BaseModel):
     gpu_index: int = Field(default=0, ge=0, le=15)
     # 登録済みのモデルを新しい版のファイルで準備し直す（その alias）。空なら新しく登録する。
     replace: str = Field(default="", max_length=64)
+    # 目録の「取得して登録」: 取得先のフォルダ（<置き場>/<repo の名前>）がまだ無ければ作る（2026-11-28。
+    # 利用者「ダウンロードしようとしたら存在しないと出る」）。作れるのは /data1tb・/data2tb の中の、既にある親の直下だけ。
+    create_folder: bool = False
+
+
+def _make_model_folder(folder: str) -> None:
+    """取得先のフォルダを作る。親は /data1tb・/data2tb の中の既にあるフォルダ（realpath・symlink 検証込み）、名前は英数字と ._- だけ。"""
+    import re
+    from pathlib import Path
+
+    from app.files.service import FileAccessError
+    from app.models_mgmt import model_paths
+
+    path = Path(folder)
+    if (not path.is_absolute() or ".." in path.parts or not re.fullmatch(r"[\w.\-]{1,120}", path.name)
+            or path.name in (".", "..")):
+        raise HTTPException(status_code=422, detail="取得先のフォルダ名が不正です")
+    try:
+        parent = model_paths.resolve_selection(str(path.parent))
+    except (FileAccessError, PermissionError, FileNotFoundError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    target = parent / path.name
+    if target.is_symlink():
+        raise HTTPException(status_code=422, detail="取得先がシンボリックリンクです")
+    try:
+        target.mkdir(exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"取得先のフォルダを作れませんでした: {exc.strerror}") from exc
 
 
 @router.post("/maya-s/models/download-jobs", status_code=201)
@@ -646,6 +674,8 @@ async def maya_download(request: Request, body: MayaDownloadBody,
     from app.models_mgmt import maya_s
     if not maya_s.installed():
         raise HTTPException(status_code=422, detail="先にMayaを導入してください")
+    if body.create_folder:
+        await asyncio.to_thread(_make_model_folder, body.folder)
     try:
         item = next((q for q in (await asyncio.to_thread(maya_s.catalog, body.folder))["quants"]
                      if q["setup_id"] == body.setup_id), None)

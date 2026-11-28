@@ -147,7 +147,7 @@ for (const [width, scheme] of [[320, "dark"], [1280, "light"], [320, "light"], [
     await page.screenshot({ path: `test-results/model-add-maya-open-${width}-${scheme}.png` });
     await glm.getByTestId("catalog-primary").click();
     await expect.poll(() => calls.find((c) => c.startsWith("maya:"))).toContain('"setup_id":"glm-maya-xs"');
-    expect(calls.find((c) => c.startsWith("maya:"))).toContain('"folder":"/data2tb/LLM/GLM-5.3-Flash-Maya-GGUF"');
+    expect(calls.find((c) => c.startsWith("maya:"))).toContain('"folder":"/data2tb/LLM/GLM-5.3-Flash-Maya-GGUF","create_folder":true');   // まだ無いフォルダは作る（2026-11-28）
   });
 }
 
