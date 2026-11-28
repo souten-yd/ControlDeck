@@ -377,7 +377,7 @@ flowchart LR
 | id | from | to | channel | 流れるもの | guards | owner | 備考 |
 |---|---|---|---|---|---|---|---|
 | `notify-assistant` | AI アシスタント（チャット） | 通知の入口（notify_event） | notify | 会話の回の終わり・質問待ち・許可待ち・失敗・中断・調査の完了 | `confidential` `no_secrets` | `backend/app/alerts/chat_events.py`<br>`backend/app/workflows/chat_persist.py` | 秘密の会話は題も要約も載せない。本文・パス・鍵を載せない |
-| `notify-team` | backend（FastAPI） | 通知の入口（notify_event） | notify | AI チームのタスク（報告あり・報告なしで止まった・上限）。タイトルだけ | `no_secrets` | `backend/app/commander/team_watch.py` |  |
+| `notify-team` | backend（FastAPI） | 通知の入口（notify_event） | notify | AI チームの出来事（質問・完了と停止・仕事が止まった・報告・引き継ぎ。種類ごとに利用者が選ぶ）。タイトルだけ | `no_secrets` | `backend/app/commander/team_watch.py` |  |
 | `notify-commander` | backend（FastAPI） | 通知の入口（notify_event） | notify | ロックしたコンソールが外から消えた・開き直した・復旧の上限で諦めたとき。タイトルだけ | `no_secrets` | `backend/app/commander/locks.py` |  |
 | `notify-workspace` | OpenCode（serve・実行） | 通知の入口（notify_event） | notify | 作業場の関門・取り込み・マージ・ディスクの空き | `audit` | `backend/app/integrations/opencode/router.py`<br>`backend/app/workflows/chat_persist.py` |  |
 | `notify-project` | Workflow エンジン・Project Lab | 通知の入口（notify_event） | notify | Project Lab の実行の終わり（起動した人へ） | `auth` | `backend/app/project_lab/runs.py` |  |
@@ -495,7 +495,11 @@ flowchart LR
 | `code_interrupted` | `notify-assistant` |
 | `research_done` | `notify-assistant` |
 | `chat_done` | `notify-assistant` |
-| `team_task` | `notify-team` |
+| `team_question` | `notify-team` |
+| `team_finish` | `notify-team` |
+| `team_blocked` | `notify-team` |
+| `team_report` | `notify-team` |
+| `team_handoff` | `notify-team` |
 | `console_vanish` | `notify-commander` |
 | `workspace_gate` | `notify-workspace` |
 | `workspace_adopted` | `notify-workspace` |

@@ -318,6 +318,6 @@ def _finish(team_id: str, task_id: int, result: dict) -> None:
         _pending_rerun[(team_id, task_id)] = True
     if blocked_event:
         try:
-            asyncio.run(team_watch.send(blocked_event["title"], blocked_event["message"]))
+            asyncio.run(team_watch.send(blocked_event["title"], blocked_event["message"], "team_blocked"))
         except Exception:  # noqa: BLE001
             logger.exception("blocked の通知を送れませんでした")

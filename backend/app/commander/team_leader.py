@@ -155,7 +155,7 @@ def _set_status(team_id: str, status: str, reason: str = "", notify: str = "") -
     except leader_mcp.ToolError:
         return
     if notify_text:
-        team_runner._notify([{"title": "Nexarch", "message": notify_text}])  # noqa: SLF001
+        team_runner._notify([{"title": "Nexarch", "message": notify_text, "notify_kind": "team_finish"}])  # noqa: SLF001
 
 
 def _attempt(team_id: str, ep: dict, text: str, cwd, token: str, allow_no_sandbox: bool) -> dict:
@@ -205,7 +205,7 @@ def _finalize(team_id: str) -> None:
 
     leader_mcp._mutate(team_id, save)  # noqa: SLF001
     if notify:
-        team_runner._notify([{"title": "Nexarch", "message": notify}])  # noqa: SLF001
+        team_runner._notify([{"title": "Nexarch", "message": notify, "notify_kind": "team_finish"}])  # noqa: SLF001
 
 
 def _worker(team_id: str, goal: str, follow_up: bool) -> None:
@@ -500,7 +500,7 @@ def recover_interrupted() -> dict:
                 leader_mcp.add_timeline(team, "stop", f"再起動からの自動再開が続いたので止めました（30 分で {AUTO_RESUME_MAX} 回）")
                 out["capped"] += 1
                 if team.get("notify", True) is not False:
-                    notify_capped.append({"title": "Nexarch",
+                    notify_capped.append({"title": "Nexarch", "notify_kind": "team_finish",
                                           "message": f"Nexarch: チーム『{team['name'][:40]}』のチームリーダーが再起動後に続けて止まるので、自動の再開をやめました（結果を見てください）"})
                 continue
             log.append({"at": now})

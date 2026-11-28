@@ -184,7 +184,7 @@ def env(tmp_path, monkeypatch):
 def sent(monkeypatch):
     out: list[tuple[str, str]] = []
 
-    async def fake_send(title, message):
+    async def fake_send(title, message, kind="team_blocked"):
         out.append((title, message))
 
     monkeypatch.setattr(team_watch, "send", fake_send)

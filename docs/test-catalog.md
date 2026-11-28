@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 290 ファイル、3062 テスト（目的の未記入 93 ファイル）
+- backend: 291 ファイル、3065 テスト（目的の未記入 93 ファイル）
 - E2E: 156 spec、370 テスト
 
 ## backend（backend/tests）
@@ -4088,6 +4088,14 @@
 - `test_relative_exec_rejected`
 - `test_invalid_restart_policy_rejected`
 - `test_description_sanitized`
+
+### backend/tests/test_team_notify_kinds.py
+
+目的: 目的: AI チーム（Nexarch）の通知を種類に分け、利用者が設定の「通知」で入り切りできること。 根拠: 2026-11-28 利用者「AI チームで何かあった時に通知が来てほしい。どういう通知が来てもいいかを設定で変更できるようにしたい」。 それまでチームの通知は全部 1 つの種類（team_task）で、種類ごとに選べなかった。
+
+- `test_team_kinds_are_listed_in_their_own_group`
+- `test_watch_events_map_to_notify_kinds`
+- `test_send_passes_the_kind_to_the_channel`
 
 ### backend/tests/test_terminal_attachments.py
 

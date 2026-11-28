@@ -38,6 +38,7 @@ class Kind:
 
 GROUPS = (
     ("assistant", "AI アシスタント"),
+    ("team", "AI チーム（Nexarch）"),
     ("workspace", "作業場・Project"),
     ("media", "生成"),
     ("news", "ニュース"),
@@ -51,7 +52,13 @@ KINDS: tuple[Kind, ...] = (
     Kind("code_permission", "assistant", "権限の確認待ち", "OpenCode が許可を求めて止まったとき"),
     Kind("code_failed", "assistant", "コード開発の失敗", "OpenCode の回が失敗して止まったとき"),
     Kind("code_interrupted", "assistant", "中断", "停電・再起動で実行が中断されたとき"),
-    Kind("team_task", "assistant", "AI チームのタスク", "Nexarch の AI チームのタスクで、報告が来た・報告なしで止まった・上限で止まったとき（チームごとに入り切り）"),
+    # AI チーム（Nexarch）。2026-11-28 利用者「AI チームで何かあった時に通知が来てほしい。どういう通知が来てもいいかを
+    # 設定で変更できるようにしたい」。チームごとの入り切り（チームの画面）とこの種類の両方が入のときだけ送る。
+    Kind("team_question", "team", "チームリーダーの質問", "チームリーダーが利用者に質問して、答えを待っているとき"),
+    Kind("team_finish", "team", "チームの完了・停止", "チームが完了した・止まった・失敗した・自動の再開の上限で止まったとき"),
+    Kind("team_blocked", "team", "仕事が止まった", "担い手の仕事が自動で直せずに止まった・報告なしで止まった・上限で止まって引き継ぎ先が無いとき"),
+    Kind("team_report", "team", "担い手の報告", "担い手の仕事の報告が来たとき（数が多いので既定は無効）", False),
+    Kind("team_handoff", "team", "担い手の引き継ぎ", "担い手が上限に当たり、次のモデルへ引き継いだとき（既定は無効）", False),
     Kind("console_vanish", "assistant", "Nexarch のコンソールの消失・復旧", "ロックしたコンソールが外から閉じられた・開き直した・復旧の上限で諦めたとき（タイトルだけ）"),
     Kind("research_done", "assistant", "調査の完了", "Web・学術・Deep・複合の調査の回答ができたとき（失敗も）"),
     Kind("chat_done", "assistant", "ふつうの会話の答え", "60 秒以上かかった長い生成が終わったとき（数が多いので既定は無効）", False),

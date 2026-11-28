@@ -944,7 +944,8 @@ def tool_ask_user(team_id: str, args: dict) -> dict:
 
     qid = _mutate(team_id, add)
     if team.get("notify", True) is not False:
-        team_runner._notify([{"title": "Nexarch", "message": f"Nexarch: チーム『{team['name'][:40]}』のチームリーダーが質問しています"}])  # noqa: SLF001
+        team_runner._notify([{"title": "Nexarch", "notify_kind": "team_question",  # noqa: SLF001
+                              "message": f"Nexarch: チーム『{team['name'][:40]}』のチームリーダーが質問しています"}])
     return {"asked": True, "question_id": qid, "note": "wait_answer で答えを待てます"}
 
 

@@ -7,6 +7,7 @@
  * T3b: 目標からチームを作る・役割（自動の振り分け）・チームリーダーの任命・引き継ぎ先を選ぶ。
  * 「エキスパート」が切（既定）のときは、毎回使うもの（目標・板・引き継ぎ先を選ぶ・通知）と、危険・要対応（止まった・上限・
  * 引き継ぎ先なし）だけを出す。細かい札・設定・履歴・使用量は入にしたときだけ。 */
+import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -179,6 +180,7 @@ export function TeamView({
     }
     setDeletingTeam(false);
   };
+  const navigate = useNavigate();
   const toggleNotify = async () => {
     const next = team.notify === false;
     try {
@@ -258,6 +260,8 @@ export function TeamView({
               label: team.notify === false ? "通知: オフ（オンにする）" : "通知: オン（オフにする）",
               onSelect: () => void toggleNotify(),
             },
+            // どの出来事を通知するか（質問・完了・止まった・報告・引き継ぎ）は設定の「通知」で選ぶ（2026-11-28）
+            { label: "通知する出来事を選ぶ（設定）", onSelect: () => navigate("/settings/notifications") },
             { label: "チームの前提", onSelect: () => setBriefSheet(true) },
             ...(expert ? [
               {

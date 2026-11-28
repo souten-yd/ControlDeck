@@ -513,5 +513,5 @@ def tick(now: float | None = None) -> list[dict]:  # noqa: ARG001
 async def run_once() -> list[dict]:
     events = await asyncio.to_thread(tick)
     for event in events:
-        await team_watch.send(event["title"], event["message"])
+        await team_watch.send(event["title"], event["message"], team_watch.notify_kind(event))
     return events
