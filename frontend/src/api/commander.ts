@@ -290,6 +290,8 @@ export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected" | "bl
 /** チームのメンバー。console は Nexarch のコンソール（session_id）、headless は CLI と接続だけ（画面なし。id）。
  * key は担当（assignee）に入れる識別子（サーバーが付ける）。 */
 export interface TeamMember {
+  /** わかりやすいモデル名（例 GLM-5.3・Codex・ローカル LLM） */
+  model_label?: string;
   session_id?: string;
   id?: string;
   key?: string;
@@ -371,6 +373,8 @@ export interface ChecksResult {
 }
 
 export interface TeamTask {
+  /** 担当した（担当している）モデルのわかりやすい名前（最後の実行の担い手） */
+  model_label?: string;
   id: number;
   title: string;
   goal: string;
@@ -475,6 +479,7 @@ export interface Team {
     status: "running" | "done" | "failed" | "blocked" | "stopped"; started_at?: number; endpoint?: string; tasks?: number; reason?: string;
     dropped?: string[]; goal?: string; resumes?: number; n?: number;
     finish?: { summary: string; outcome: "done" | "blocked"; at?: number } | null;
+    model_label?: string;
   };
   created_by?: string;
   /** T3c */

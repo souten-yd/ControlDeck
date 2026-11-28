@@ -672,6 +672,42 @@ def runs_close(task: dict, result: str, **extra: object) -> None:
         last.update({k: v for k, v in extra.items() if v is not None})
 
 
+# わかりやすいモデル名（画面に出す。利用者 2026-11-28「どのモデルが作業を担当しているか、担当したかが分かるように」）
+_ZEN_NAMES = {"opencode-go/glm-5.3": "GLM-5.3", "opencode/hy4-flash-free": "HY4 Flash（無料）",
+              "opencode/deepseek-v4.1-flash-free": "DeepSeek Flash（無料）"}
+
+
+def model_label(cli: str, account: str = "", model: str = "") -> str:
+    """CLI・接続・モデルから、短いわかりやすいモデル名を作る（例: GLM-5.3・Codex・Claude sonnet・Sly-Radiance（ローカル）・
+    Nemotron Super（OpenRouter 無料））。OpenCode の接続（api-…）のモデルは接続から引く。分からなければ CLI の名前。"""
+    cli = str(cli or "")
+    model = str(model or "")
+    if cli == "codex":
+        return f"Codex（{model}）" if model else "Codex"
+    if cli == "claude":
+        return f"Claude {model}" if model else "Claude"
+    if cli != "opencode":
+        return cli or "?"
+    if not model:
+        try:
+            from app.commander import accounts
+
+            model = str(accounts.opencode_connection(account or accounts.DEFAULT_ACCOUNT)["model"] or "")
+        except Exception:  # noqa: BLE001 - 接続が消えた等
+            model = ""
+    if model in _ZEN_NAMES:
+        return _ZEN_NAMES[model]
+    if model.startswith("cloud:"):
+        name = model.split("/")[-1]
+        free = name.endswith(":free")
+        name = name.removesuffix(":free").replace("-", " ")
+        provider = model.split(":", 1)[1].split("/", 1)[0]
+        return f"{name}（{'OpenRouter' if provider == 'openrouter' else provider}{' 無料' if free else ''}）"
+    if model in ("", "auto"):
+        return "ローカル LLM（既定）"
+    return f"{model}（ローカル）"
+
+
 def runs_open(task: dict, member: dict, *, kind: str, cli: str = "", account: str = "", label: str = "",
               model: str = "") -> dict:
     """担い手を 1 回分記録する（何回目・誰・結果・時間・使用量）。前の開いたままの記録は「入れ替え」で閉じる。"""
@@ -680,10 +716,11 @@ def runs_open(task: dict, member: dict, *, kind: str, cli: str = "", account: st
     entry = {
         "n": int(task.get("runs_total") or 0) + 1, "kind": kind, "member": member_key(member),
         "cli": cli or str(member.get("cli") or ""), "account": account or str(member.get("account") or ""),
-        "label": label or str(member.get("label") or ""), "model": model,
+        "label": label or str(member.get("label") or ""), "model": model or str(member.get("model") or ""),
         "started_at": _now(), "ended_at": None, "seconds": None, "result": "running" if kind == "headless" else "sent",
         "usage": None,
     }
+    entry["model_label"] = model_label(entry["cli"], entry["account"], entry["model"])
     task["runs_total"] = entry["n"]
     runs.append(entry)
     del runs[:-RUNS_MAX]
@@ -1055,6 +1092,10 @@ def list_teams() -> list[dict]:
         for task in team.get("tasks", []):
             sid = task.get("assignee") or ""
             view = _task_view(team, task)
+            last_run = (task.get("runs") or [None])[-1]
+            if isinstance(last_run, dict):
+                view["model_label"] = last_run.get("model_label") or model_label(
+                    str(last_run.get("cli") or ""), str(last_run.get("account") or ""), str(last_run.get("model") or ""))
             if sid in headless_keys:
                 view["assignee_state"] = _headless_state(task)
                 view["report_ready"] = False
@@ -1074,7 +1115,8 @@ def list_teams() -> list[dict]:
             tasks.append(view)
         members = []
         for m in team.get("members", []):
-            row = {**m, "kind": "headless" if is_headless(m) else "console", "key": member_key(m)}
+            row = {**m, "kind": "headless" if is_headless(m) else "console", "key": member_key(m),
+                   "model_label": model_label(str(m.get("cli") or ""), str(m.get("account") or ""), str(m.get("model") or ""))}
             if is_headless(m) and m.get("cli") == "codex":
                 from app.commander import team_runner
                 row["no_sandbox"] = team_runner.member_sandbox_free(m)  # この機械では codex のサンドボックスが使えない

@@ -116,7 +116,7 @@ def _begin(team_id: str, goal: str, *, resume: bool, ep: dict, carry: dict | Non
         team = teams._find_team(all_teams, team_id)  # noqa: SLF001
         run = team.get("leader_run") if isinstance(team.get("leader_run"), dict) else {}
         n = int(run.get("n") or 0) + 1
-        team["leader_run"] = {**run, "status": "running", "n": n, "goal": goal[:GOAL_MAX], "endpoint": team_roles.endpoint_label(ep),
+        team["leader_run"] = {**run, "status": "running", "n": n, "goal": goal[:GOAL_MAX], "endpoint": team_roles.endpoint_label(ep), "model_label": teams.model_label(ep.get("cli", ""), ep.get("account", ""), ep.get("model", "")),
                               "started_at": run.get("started_at") if resume and run.get("started_at") else teams._now(),  # noqa: SLF001
                               "attempt_started_at": teams._now(), "resumes": int((carry or run).get("resumes") or 0),  # noqa: SLF001
                               "crashes": int((carry or run).get("crashes") or 0), "finish": None if not resume else run.get("finish")}
@@ -128,7 +128,7 @@ def _record(team_id: str, status: str, ep: dict, seconds: float, usage: dict | N
     def save(team: dict) -> None:
         runs = team.setdefault("leader_runs", [])
         runs.append({"status": status, "started_at": (team.get("leader_run") or {}).get("attempt_started_at"), "ended_at": teams._now(),  # noqa: SLF001
-                     "endpoint": team_roles.endpoint_label(ep), "seconds": seconds, "usage": usage, "reason": reason[:200]})
+                     "endpoint": team_roles.endpoint_label(ep), "model_label": teams.model_label(ep.get("cli", ""), ep.get("account", ""), ep.get("model", "")), "seconds": seconds, "usage": usage, "reason": reason[:200]})
         del runs[:-RUNS_KEPT]
 
     try:
@@ -360,7 +360,7 @@ def start(team_id: str, goal: object, *, resume: bool = False, input_paths: obje
         if rows:
             team["inputs"] = rows
         team["leader_run"] = {"status": "running", "n": int((run or {}).get("n") or 0), "goal": goal_text,  # noqa: SLF001
-                              "started_at": teams._now(), "endpoint": team_roles.endpoint_label(ep),
+                              "started_at": teams._now(), "endpoint": team_roles.endpoint_label(ep), "model_label": teams.model_label(ep.get("cli", ""), ep.get("account", ""), ep.get("model", "")),
                               "resumes": 0, "crashes": 0, "finish": None}
         team.pop("result", None)
         leader_mcp.add_timeline(team, "request", "依頼: " + text[:200])
