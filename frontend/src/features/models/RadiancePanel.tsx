@@ -2,8 +2,8 @@
  *
  *  目録・ファイルからの登録・設定は共通部品（RuntimeCatalog / RuntimeRegisterFromFile /
  *  RuntimeSettings）に任せる。並び・エキスパートの扱いは Sly-Radiance と同じ（①〜⑥）。
- *  .rad の候補は知られているが backend の catalog は `acquire=none` なので、
- *  この画面では取得ボタンを出さず案内だけにする（ファイル選択で登録する）。
+ *  .rad の候補は共通目録（backend の catalog は `acquire=hf`）から取得できる。
+ *  取得したフォルダは下の設定へ入れ、ファイル選択で手元の .rad も登録できる。
  *  登録済みの .rad のパスはそのまま維持する。
  */
 import { DisplayNameField } from "./DisplayNameField";
@@ -63,7 +63,7 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
 
   // 目録・ファイル選択で決まった値は共通設定のフォームへ渡す（登録自体は下の保存で行う）。
   const catalogSlot = initial ? null : <div className="space-y-3">
-    <SettingsGroup title="目録から探す" description=".rad の候補は公式の README や HF の StillDeadcode リポジトリで確認できます。ControlDeck からは取得しません（acquire=none）"
+    <SettingsGroup title="目録から取得" description="HF の .rad 候補を ControlDeck から取得します（停止・再開できます）。取得したフォルダは下の設定へ入ります"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="radiance" expert={expert}
         onRegister={(path) => apply({ model_path: path, port })} />
@@ -90,12 +90,12 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
 
   return <div className="space-y-3">
     {!initial && <p className="text-xs text-zinc-500">手元の .rad ファイルを選びます。取得・登録は別々で、登録だけでは起動もしません。</p>}
-    <RuntimeSettings runtime="radiance" expert={expert}
+    <RuntimeSettings runtime="radiance" expert={expert} disabled={running}
       initial={initial ? { ...initial } : undefined}
       values={values} onValuesChange={setValues}
       modelSlot={modelSlot} save={save} onDone={onDone}
       note={running
-        ? <p className="text-[11px] text-amber-700 dark:text-amber-300">稼働中は「起動」の設定だけ変更できます。ほかはモデルを停止してから変更してください。</p>
+        ? <p className="text-[11px] text-amber-700 dark:text-amber-300">稼働中は設定を変更できません。モデルを停止してから変更してください。</p>
         : initial ? <p className="text-[11px] text-zinc-500">ゲートウェイ名（alias）は変えません。一覧に出る名前は上の「表示名」から変更できます。</p> : undefined}
     />
   </div>;
@@ -113,7 +113,7 @@ export function RadianceDetailSheet({ alias, onClose }: { alias: string; onClose
     {item ? <div className="space-y-3">
       <DisplayNameField runtime="radiance" alias={alias} />
       <ModelStatusSummary running={!!item.loaded}
-        lockedNote={item.loaded ? "稼働中は「起動」の設定だけ変更できます。ほかはアンロードしてから変更してください。" : undefined}
+        lockedNote={item.loaded ? "稼働中は設定を変更できません。アンロードしてから変更してください。" : undefined}
         rows={[
           ["ランタイム", `Radiance ${data?.runtime.version ?? ""}`],
           ["モデル", <FileName path={item.model_path} />],

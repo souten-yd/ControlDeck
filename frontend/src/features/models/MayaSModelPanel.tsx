@@ -176,7 +176,7 @@ function MayaSettingsForm({ status, onDone }: {
       </div>
       {modelPath && <p className="min-w-0 truncate font-mono text-[11px] text-zinc-500" title={modelPath}>{modelPath}</p>}
     </SettingsGroup>
-    <SettingsGroup title="目録から取る" description="Maya の候補は共通目録と Maya 本体の目録で確認できます（取得した GGUF は上のパスへ入ります）"
+    <SettingsGroup title="目録から取得" description="Maya の候補は共通目録と Maya 本体の目録で確認できます（取得した GGUF は上のパスへ入ります）"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path) => apply({ model_path: path })} />
     </SettingsGroup>
