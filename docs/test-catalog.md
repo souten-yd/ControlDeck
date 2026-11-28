@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2878 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2914 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -735,6 +735,47 @@
 - `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
 - `test_account_labels_including_the_default_account` — アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
 - `test_login_name_from_claude_metadata_and_codex_status` — 既定のアカウントの見せ方を、ログインしている名前にする（Claude はメール、Codex はログインの方法）。
+
+### backend/tests/test_commander_console_lock.py
+
+目的: Nexarch のコンソールのロック（中央の保護・保存・検知・自動復旧）の試験。 目的: ロックをかけたコンソールが誰にも勝手に閉じられないことを守る。 - 中央の保護: manager.kill_session はロックの印（@cd-commander-locked=1）のあるセッションを 断る（Terminal の DELETE・Nexarch の DELETE・一括で閉じる・コードの他の呼び出し元のどれでも）。 強制解除の抜け道は無い。外すのは画面（terminal.use）の操作だけ。 - 保存: ロックしたコンソールの情報（cli・account・cwd・label・model・effort・owner）を data/ai-commander の小さな JSON（0600・置き換え）へ残す。tmux が消えた後も分かる。 - 検知: ロックしたセッションが ControlDeck を通さずに消えたら監査（commander.console.vanished） と通知（タイトルだけ）。tmux の確認に失敗しただけでは消失と扱わない。dead pane は消失ではない。 - 自動復旧: 同じ cli・account・作業フォルダ・label で開き直し、続きから再開する （Claude --continue・Codex resume --last・OpenCode は既存の再開）。1 つのコンソールで 10 分 3 回まで（失敗も数える・ID が変わっても記録は引き継ぐ）。設定で切れる（既定は入）。 根拠: 2026-11-28 利用者「開いているコンソールごとに、ロックをかけるようにしてほしい。 勝手に tmux とかを停止させられないようにしてほしい。ロックをかけたものは落とさないように」 （.nexarch/brief-console-lock.md）。ControlDeck の中からの kill は元々監査に残っていたが、 外のプロセスが tmux kill-session / kill-server を直接打つと記録に残らず消えるので、 印による保護・保存による検知・復旧の歯止めを仕組みで守る。API の契約（PUT …/lock の body={locked:boolean}・応答={ok:true,locked:boolean}・settings の auto_restore）は frontend の別担当と固定しているので、ここで契約どおりであることを機械的に確かめる。 2026-11-28 Nexarch #5 の根拠: show-options の timeout / OSError / 非0終了で kill に進む、has-session の permission denied を消失と誤認、解除後の JSON 書込失敗を 成功にする不具合を実測。失敗注入・Event で順序を固定した競合・復旧途中の再起動を 同じファイルで守る。実 tmux は全 backend 共通の PATH wrapper により明示 -L へ隔離する。 既存の試験に同じ観点は無い（./deck.sh test-catalog で確認。test_terminals は engine・PTY の 既存の振る舞い、test_commander_consoles は印と env、test_commander_resume は上限からの再開）。
+
+- `test_manager_refuses_to_kill_locked_session_without_bypass` — ロックしたセッションは manager.kill_session でも殺せない（中央の保護・抜け道無し）。
+- `test_manager_lock_survives_on_fallback_pty_and_kill_refuses` — tmux の無い環境（フォールバック PTY）でも同じ保護が効くこと。
+- `test_locked_mark_roundtrip_and_kill_refusal_with_real_tmux` — 実 tmux（試験専用のソケット）で: 印が一覧で読み返せ、ロック中は殺せず、外せば殺せる。
+- `test_lock_api_roundtrip_persists_console_info` — PUT /consoles/{id}/lock: {locked:boolean} → {ok:true,locked:boolean}。情報の保存は 0600。
+- `test_lock_api_missing_console_and_idempotent_toggle` — 無いコンソールは 404。既にロック済み・解除済みのままの要求はそのまま通す。
+- `test_unlock_accepts_vanished_console` — 消えた（tmux に無い）ロックのコンソールでも、解除で保存の記録を消せる。
+- `test_lock_adopts_stale_vanished_record_for_same_session` — 同じセッションを指す「消えたまま」の記録へ改めて鍵をかけたら、その記録を採用して戻す。
+- `test_lock_does_not_mark_when_store_write_fails` — 保存に書けなかったら印を変更せず失敗を返す。
+- `test_delete_console_locked_returns_409_before_closing_streams` — Nexarch の DELETE は、ロック中なら streams.close_session より前に 409 で断る。
+- `test_terminal_delete_locked_returns_409` — Terminal の DELETE も、ロック中なら 409 で断る（コンソールは Terminal のセッション）。
+- `test_bulk_close_skips_locked_and_returns_counts` — DELETE /consoles（一括で閉じる）: ロックは飛ばして数を返す。
+- `test_settings_auto_restore_default_on_and_keeps_resume_message` — settings の auto_restore: 既定は true。resume_message を省略してもリセットしない。
+- `test_create_consoles_resume_wiring_reaches_the_command` — create_consoles(resume=True) から _command_for まで resume が届き、コマンドへ --continue が付く。
+- `test_restore_command_for_each_cli` — 開き直しは続きから: Claude --continue・Codex resume --last・OpenCode は既存の再開（--continue）。
+- `test_vanished_detection_audits_and_notifies_then_restores` — 外から消えたら検知（監査・通知はタイトルだけ）し、同じ情報で開き直してまた鍵を付ける。
+- `test_detection_does_not_mistake_failure_or_dead_pane_for_vanished` — tmux の確認に失敗しても消失と扱わない。dead pane（セッションは在る）も消失ではない。
+- `test_restore_attempts_are_capped_at_three_per_ten_minutes` — 復旧は 1 つの論理コンソールで 10 分 3 回まで（失敗も数える・上限で諦めたことを残す）。
+- `test_auto_restore_off_means_detection_only` — 設定で自動で戻すを切ったら、検知（監査・通知）だけにする。
+- `test_restore_failure_is_audited_and_counted` — 復旧の失敗（開けない・作業フォルダが消えた等）も監査に残し、回数に数える。
+- `test_resume_tick_runs_the_lock_watch` — 既存の resume の見回り（60 秒ごとの thread）から検知が動く（監視を増やしすぎない）。
+- `test_diagnostics_report_shows_lock_state_and_events` — 診断レポートで外部消失・復旧失敗・上限が分かる（locks の今の状態＋監査の履歴）。
+- `test_unknown_lock_state_never_reaches_kill`
+- `test_has_session_distinguishes_missing_from_unknown`
+- `test_tmux_mutation_failure_is_not_success`
+- `test_unlock_store_failure_relocks_and_returns_failure`
+- `test_unlock_clear_failure_keeps_record_and_returns_failure`
+- `test_unlock_origin_resolves_current_and_pending_marks`
+- `test_lock_unlock_and_kill_share_one_guard`
+- `test_late_delete_refusal_preserves_streams`
+- `test_stream_close_from_worker_runs_on_owner_loop`
+- `test_restore_partial_failure_is_tracked_across_restart`
+- `test_restore_budget_survives_failures_id_changes_and_restart`
+- `test_two_watchers_and_unlock_do_not_duplicate`
+- `test_corrupt_store_stops_watch_and_kill_and_is_diagnostic`
+- `test_unreadable_store_is_not_empty`
+- `test_all_raw_tmux_calls_use_explicit_private_socket`
 
 ### backend/tests/test_commander_consoles.py
 

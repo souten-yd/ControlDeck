@@ -1,5 +1,7 @@
 import os
 import tempfile
+import shutil
+import shlex
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,34 @@ commander:
 os.environ["CONTROL_DECK_CONFIG"] = str(_config)
 os.environ["CONTROL_DECK_NEWS_AUTO"] = "0"  # ニュースの定期取得は外へ通信するので試験では動かさない
 os.environ["CONTROL_DECK_DB_URL"] = f"sqlite:///{_tmp}/test.db"
+# 2026-11-28: 全 backend の生 tmux 呼出しを明示的な -L へ通す。
+# TMUX_TMPDIR だけでは親 TMUX のソケットを引き継ぐため足りない。
+# argv を mock する試験は変更せず、実行時だけ PATH の wrapper が隔離する。
+_tmux_dir = Path(_tmp) / "tmux-sock"
+_tmux_dir.mkdir()
+os.environ["TMUX_TMPDIR"] = str(_tmux_dir)
+os.environ.pop("TMUX", None)
+os.environ.pop("TMUX_PANE", None)
+_tmux_real = shutil.which("tmux")
+if _tmux_real:
+    _bin = Path(_tmp) / "bin"
+    _bin.mkdir()
+    _wrapper = _bin / "tmux"
+    _socket = "nexarch-test-" + str(os.getpid())
+    os.environ["CONTROL_DECK_TEST_TMUX_SOCKET"] = _socket
+    # 呼出し側から別ソケットへ抜けたり全サーバーを停止する命令は許さない。
+    _wrapper.write_text(
+        "#!/bin/sh\n"
+        "unset TMUX TMUX_PANE\n"
+        'for arg do\n case "$arg" in -L*|-S*|kill-server) exit 97;; esac\ndone\n'
+        + "export TMUX_TMPDIR=" + shlex.quote(str(_tmux_dir)) + "\n"
+        + "exec " + shlex.quote(_tmux_real) + " -L " + shlex.quote(_socket) + ' "$@"\n',
+        encoding="utf-8",
+    )
+    _wrapper.chmod(0o700)
+    os.environ["PATH"] = str(_bin) + os.pathsep + os.environ.get("PATH", "")
+# 添付の置き場も本番（/dev/shm/control-deck-terminal-<uid>）と分ける（attachments._default_root）。
+os.environ["CONTROL_DECK_ATTACHMENTS_DIR"] = str(Path(_tmp) / "attachments")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
