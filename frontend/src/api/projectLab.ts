@@ -112,7 +112,26 @@ export interface ProjectLabSettings {
   project_root?: string;
 }
 
+/** Nexarch の AI チームの成果（プロジェクトがチームの作業場所のとき）。2026-11-28 */
+export interface ProjectLabTeam {
+  id: string;
+  name: string;
+  leader_status: string;
+  goal: string;
+  summary: string;
+  landed: boolean;
+  base_branch: string;
+  team_branch: string;
+  tasks: Array<{ id: number; title: string; status: string; tier: string; model: string; branch: string }>;
+  files: Array<{ path: string; added: number | null; removed: number | null }>;
+  added: number;
+  removed: number;
+}
+
 export const projectLabApi = {
+  team: (id: string) => api<{ team: ProjectLabTeam | null }>(`/project-lab/projects/${encodeURIComponent(id)}/team`),
+  teamDiff: (id: string, path: string) => api<{ path: string; diff: string; truncated: boolean }>(
+    `/project-lab/projects/${encodeURIComponent(id)}/team/diff?path=${encodeURIComponent(path)}`),
   settings: () => api<ProjectLabSettings>("/project-lab/settings"),
   saveSettings: (patch: Partial<ProjectLabSettings>) =>
     api<ProjectLabSettings>("/project-lab/settings", { method: "PUT", json: patch }),
