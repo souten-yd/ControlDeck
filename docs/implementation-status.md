@@ -1,5 +1,9 @@
 # 実装状況
 
+## 2026-11-28 本体の更新の再起動は、AI チームの自動の再開の上限に数えない
+- Claude の Release が続き、更新の再起動が 30 分に 2 回を超えて、NewsHub のチームの自動の再開が上限で止まった（手で再開した）。
+- 上限は「落ちて再起動を繰り返す」のを止めるためのもの。更新は適用の前に `data/updates/backup-<時刻>` を作るので、直前 15 分に控えがあれば計画どおりの再起動として数えない（`team_leader._planned_update_restart`）。時系列に「本体の更新で再起動したので、自動で再開します」と残す。
+- 試験: `test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap`。
 ## 2026-11-28 Project Lab の一覧を 1 つに・作業場は ControlDeck 本体の改修だけ
 - 利用者「プロジェクトと作業場を分ける必要あるんだったっけ？ControlDeck のミラーを作るとき以外は、全然違う場所で作る必要がない。チームも同じところに」（提案。価値があれば採用）。
 - 調べた結果: 本番の作業場（箱）は 2 つで、どちらも ControlDeck 本体の開発用。利用者のプロジェクトは全部 CodeDEV。CodeDEV のプロジェクトでも OpenCode はプロジェクトの箱で動き、ローカル LLM もブランチも使える。箱へ写す価値は、ControlDeck 本体（ミラーと PR）のときだけ。→ 採用。
