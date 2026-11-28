@@ -1,5 +1,17 @@
 # 実装状況
 
+## 2026-11-28 Nexarch のコンソールのロック（勝手に閉じられないように）— 統合検証
+- 利用者要望（原本 `../.nexarch/brief-console-lock.md`）: コンソールごとにロックを選べ、ロックしたものを `tmux` から勝手に落とされないようにする。計画・要望の詳細は `docs/PLAN-ai-commander.md` の 2026-11-28 の節。
+- 実装（ブランチ `nexarch/tab13eba8-6`、5 コミット）: (1) ロックの切り替え（既定オフ・`terminals/manager.py` の `kill_session` 中央ガードで全経路 409。解除は画面だけ・監査 `lock` / `unlock`）、(2) 外から消えた検知（既存 resume の 60 秒の見回りに乗せ、監査 `vanished` と通知）、(3) 自動で開き直す（同じ cli・account・cwd・label で再開。10 分 3 回まで・設定で切れる・監査 `restored` / `restore_failed` / `restore_gave_up`）。情報は `commander/locks.py` が `console-locks.json`（0600）へ残す（鍵の値は入れない）。地図は 5 ルート追加済み・`./deck.sh route-map` 再生成済み。目録は `./deck.sh test-catalog` で再生成（E2E のロック 3 件を反映）。
+
+### 検証（隔離のみ。本番は禁止）
+- **評価は隔離のみ**: 本番 `/data1tb/ControlDeck/app-strata`・本番 data・既定 tmux ソケット（`/tmp/tmux-<uid>/default`）には触れていない。作業は worktree とテスト用の一時 config だけ。tmux は conftest の PATH wrapper が全呼出しへ `-L nexarch-test-<pid>` を付け、`kill-server` と大域の `-L` / `-S` を終了コード 97 で拒否（`test_all_raw_tmux_calls_use_explicit_private_socket` が保証）。
+- 試験: `backend/tests/test_commander_console_lock.py` **67 件 pass**（2.49 s）、関係する回帰（commander / terminals / route_map / auto_projects）**65 件 pass**（2.38 s）。完了条件の `env -u CONTROL_DECK_CONFIG ./deck.sh dev-check --base origin/main --skip-visual` の最終行は **`合格`**（31 ファイルのテスト合格・依存と秘密値・shell 実行・目録・目的根拠も合格）。frontend build と画面の見た目は `--skip-visual` と node_modules 不在で未実施（不合格にはしていない）。
+- 効果: 閉じる 4 経路すべてで 409 を試験で確認（Terminal DELETE・Nexarch・一括・チーム後片付け）。消失検知・再開のコマンド（CLI 別）・10 分 3 回の上限・監査・壊れた保存での安全側停止も確認。
+- 処理時間（同じ入力の前後で計測）: `locks.check()` 1 回あたり**ロック 0 件 0.011 ms / 1 件 0.017 ms / 5 件 0.028 ms / 20 件 0.060 ms**（偽 manager・Python 処理のみ・200 回平均）。実 tmux の `has-session` は 100 回 0.09 s ≈ **0.9 ms/回**。20 件でも 1 見回り（60 秒ごと）あたり約 18 ms（間隔の約 0.03%）。**呼出数**はロック 1 件につき `has-session` 1 回/60 秒で、通常状態で `capture-pane` を読まない（既存の「変化が無ければ読み直さない」を維持）。新しい thread・loop・常駐計測は追加していない。
+- 実装量あたりの改善: 中核 `locks.py` **451 行**（新規）。本体の変更は `manager.py` +151/-19・`router.py` +131/-12 ほか、差分全体 **23 ファイル +2795/-83**（うち試験 1379 行・E2E +170 行）。見回りを既存 thread に載せたため、新しい常駐処理なしで全閉じ経路を守れる。
+- 未検証: 本番 tmux を外から消す試験（禁止）・実 CLI での「続きから」再開の往復・frontend build / E2E の実行と 320/1280 の実画面（node_modules が無く npm install 禁止）・Zen のチーム起動・子レポートの `Unknown tool`。これらは実機で確認してから取り込む（取り込み・PR は統括の Claude が行う）。このブランチは push / PR / マージをしていない。
+
 ## 2026-11-28 AI チームの実行が CLI の記録ファイルで落ちる（SIGXFSZ）・依頼の上限
 - 本番で AI チームに ControlDeck の開発を頼んだら、チームリーダーの Codex が 1 秒で落ちた（終了コード -25）。子のプロセスに `RLIMIT_FSIZE`（50MB）を掛けていて、Codex が自分の記録（`~/.codex/logs_2.sqlite` 66MB・`thread_history_1.sqlite` 1GB）を書いた瞬間に SIGXFSZ で止まった。Claude の会話記録・試験の DB・ビルドの成果物でも同じことが起きる。
 - **直し**: 子に上限を掛けない。実行（`team_runner._execute`）と確認のコマンド（`team_checks._run_one`）の両方で、出力のファイルだけを見張り、上限を超えたら止めて「出力が 50MB を超えたので止めました」と出す。シグナルで落ちたときは理由にシグナルの名前を添える（`failure_reason`）。
