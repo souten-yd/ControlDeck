@@ -16,7 +16,7 @@ import { CopyText, FileName, ModelStatusSummary, SettingsGroup } from "./formCon
 import { RuntimeCatalog } from "./RuntimeCatalog";
 import { RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
 import { RuntimeSettings } from "./RuntimeSettings";
-import type { SettingValues } from "./runtimeSettings";
+import { applyInspectValues, nextPort, type SettingValues } from "./runtimeSettings";
 
 export type RadianceKv = "bf16" | "i8" | "fp8";
 export interface RadianceSettings {
@@ -55,21 +55,24 @@ export function RadianceRegisterPanel({ onDone, initial, running = false }: {
   onDone: () => void; initial?: RadianceSettings; running?: boolean;
 }) {
   const expert = useExpert();
+  const { data: state } = useRadianceState();
   const [values, setValues] = useState<SettingValues>({});
   const apply = (patch: SettingValues) => setValues((current) => ({ ...current, ...patch }));
   const modelPath = String(values.model_path ?? initial?.model_path ?? "");
+  const port = nextPort(8100, (state?.instances ?? []).map((item) => item.port));
 
   // 目録・ファイル選択で決まった値は共通設定のフォームへ渡す（登録自体は下の保存で行う）。
   const catalogSlot = initial ? null : <div className="space-y-3">
     <SettingsGroup title="目録から探す" description=".rad の候補は公式の README や HF の StillDeadcode リポジトリで確認できます。ControlDeck からは取得しません（acquire=none）"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="radiance" expert={expert}
-        onRegister={(path) => apply({ model_path: path })} />
+        onRegister={(path) => apply({ model_path: path, port })} />
     </SettingsGroup>
     <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から .rad を選びます。名前はファイル名から自動で入り、下の設定へ入ります（保存は最後のボタン）"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="radiance" mode="file" disabled={running} expert={expert}
-        onRegistered={(info, alias) => apply({ model_path: info.path, alias })} />
+        onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "radiance"))}
+        onRegistered={(info, alias) => apply({ model_path: info.path, alias, port })} />
     </SettingsGroup>
   </div>;
 

@@ -73,20 +73,43 @@ export function mergeSettingValues(
   return merged;
 }
 
-/** 保存 API へ渡す本体。capability に無い欄・ref・常時オンの欄は入れない（extra="forbid" のbackend に合わせる）。 */
-export function buildSaveBody(cap: RuntimeCapabilities, values: SettingValues): SettingValues {
+/** 保存 API へ渡す本体。常時オンの欄・保存 API に無い ref は入れない。
+ *
+ *  capability に無い既存値も `save_keys`（保存 API の引数一覧）にあれば残す。旧フォームの
+ *  引数を共通 UI へ移す途中で値が消えるのを防ぐため（extra="forbid" の backend に
+ *  合わせ、それ以外のキーは絶対に送らない）。`initial` は編集中の値より優先しない。
+ */
+export function buildSaveBody(
+  cap: RuntimeCapabilities, values: SettingValues, initial?: SettingValues | null,
+): SettingValues {
+  const allowed = cap.save_keys ?? [];
   const body: SettingValues = {};
+  const fieldIds = new Set(cap.sections.flatMap((section) => section.fields.map((field) => field.id)));
+  // capability に欄が無い既存値（温度など）は、initial より編集中の values を優先する。
+  // そうしないと親が値を書き換えても initial の古い値が土台として残ってしまう。
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && allowed.includes(key) && !fieldIds.has(key)
+      && !ALWAYS_ON_FIELD_IDS.has(key)) body[key] = value;
+  }
+  for (const [key, value] of Object.entries(initial ?? {})) {
+    if (value !== undefined && allowed.includes(key) && body[key] === undefined
+      && !ALWAYS_ON_FIELD_IDS.has(key)) body[key] = value;
+  }
   for (const section of cap.sections) {
     for (const field of section.fields) {
-      if (ALWAYS_ON_FIELD_IDS.has(field.id) || field.type === "ref") continue;
-      const value = values[field.id];
-      if (value !== undefined) body[field.id] = coerceField(field, value);
+      if (ALWAYS_ON_FIELD_IDS.has(field.id)) continue;
+      const raw = values[field.id] !== undefined ? values[field.id] : initial?.[field.id];
+      if (raw === undefined) continue;
+      // ref は別画面・slot への導線。保存 API が同じ名前を受け付けるときだけ送る
+      // （Maya の setup_id/folder など）。
+      if (field.type === "ref" && !allowed.includes(field.id)) continue;
+      body[field.id] = coerceField(field, raw, contextLimit(values));
     }
   }
   return body;
 }
 
-export function coerceField(field: CapabilityField, raw: unknown): unknown {
+export function coerceField(field: CapabilityField, raw: unknown, limit?: number | null): unknown {
   if (field.type === "bool") return Boolean(raw);
   if (field.type === "int" || field.type === "float") {
     // null は「自動」「既定」を表す保存 API の値（speculative_tokens・kv_resident など）。
@@ -95,30 +118,83 @@ export function coerceField(field: CapabilityField, raw: unknown): unknown {
     const num = typeof raw === "number" ? raw : Number(raw);
     if (!Number.isFinite(num)) return field.default;
     const low = field.min ?? -Infinity;
-    const high = field.max ?? Infinity;
+    // ファイルから読んだモデルの上限で頭を締める（API の上限は 1M でも GGUF は 32K など）。
+    const high = Math.min(field.max ?? Infinity, contextField(limit, field));
     const clamped = Math.min(high, Math.max(low, num));
     return field.type === "int" ? Math.round(clamped) : clamped;
   }
   return raw;
 }
 
+function contextField(limit: number | null | undefined, field: CapabilityField): number {
+  if (limit === null || limit === undefined || !Number.isFinite(limit)) return Infinity;
+  return field.id === "ctx_size" || field.id === "context" ? limit : Infinity;
+}
+
+/** ファイルのメタデータから読んだコンテキスト上限（保存 API には渡さない補助値）。 */
+export function contextLimit(values: SettingValues | undefined | null): number | null {
+  const raw = values?.context_limit;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
 /** 選択肢（select）か、コンテキスト長のよく使う値（int）を返す。無ければスライダー/+expert の数値入力。 */
-export function fieldPresets(field: CapabilityField): Array<{ v: string | number; label: string }> | null {
+export function fieldPresets(
+  field: CapabilityField, limit?: number | null,
+): Array<{ v: string | number; label: string }> | null {
   if (field.type === "select" && field.choices?.length) {
+    if (field.id === "context" && typeof field.choices[0] === "string") {
+      // Strata は "<N>k"。モデルの上限が分かっていればそれより長い選択肢を出さない。
+      const ceiling = limit ?? Infinity;
+      const choices = field.choices.filter((choice) => {
+        const k = /^([0-9]+)k$/.exec(String(choice));
+        return !k || Number(k[1]) * 1024 <= ceiling;
+      });
+      if (choices.length) return choices.map((choice) => ({ v: choice, label: `${choice}` }));
+    }
     return field.choices.map((choice) => ({
       v: choice,
       label: choice === "" ? "モデルの既定" : `${choice}`,
     }));
   }
   if (field.type === "int" && (field.id === "ctx_size" || field.id === "context")) {
-    const presets = [8192, 16384, 32768, 65536, 131072, 262144]
-      .filter((v) => v >= (field.min ?? 0) && v <= (field.max ?? Infinity))
+    const high = Math.min(field.max ?? Infinity, contextField(limit, field));
+    const presets = [8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
+      .filter((v) => v >= (field.min ?? 0) && v <= high)
       .map((v) => ({ v, label: v.toLocaleString() }));
     // llama.cpp の 0 は「GGUF のメタデータに合わせる」。数値の自由入力は expert だけ。
     if ((field.min ?? 0) === 0) presets.unshift({ v: 0, label: "モデルの上限に合わせる" });
     return presets.length ? presets : null;
   }
   return null;
+}
+
+/** ファイルの inspect 結果から、モデル上限とコンテキストの初期値を作る。
+ *  上限そのものは保存しない補助値（context_limit）として渡し、共通設定側で選択肢を締める。 */
+export function applyInspectValues(
+  values: SettingValues, metadata: Record<string, unknown>, runtime: string,
+): SettingValues {
+  const raw = metadata.context_length ?? metadata.max_position_embeddings ?? metadata.n_ctx;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(num) || num < 4096) return values;
+  const out: SettingValues = { ...values, context_limit: num };
+  if (runtime === "strata") {
+    const k = Math.floor(num / 1024);
+    if (k >= 4 && k <= 1024) out.context = `${k}k`;
+  } else {
+    const ctx = Math.max(4096, Math.min(num, 1_048_576));
+    out.context = ctx;
+    out.ctx_size = ctx;
+  }
+  return out;
+}
+
+/** 既存インスタンスと被らないポートを選ぶ（追加の取得・起動はしない）。 */
+export function nextPort(base: number, used: number[]): number {
+  const taken = new Set(used.filter((v) => Number.isFinite(v)));
+  let port = Math.max(base, ...taken);
+  while (taken.has(port)) port += 1;
+  return port;
 }
 
 export function displayValue(field: CapabilityField, value: unknown): string {

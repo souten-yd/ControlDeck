@@ -19,7 +19,7 @@ import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryB
 import { RuntimeCatalog } from "./RuntimeCatalog";
 import { MODEL_FILE_PICKER_SOURCE, RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
 import { RuntimeSettings } from "./RuntimeSettings";
-import type { SettingValues } from "./runtimeSettings";
+import { applyInspectValues, type SettingValues } from "./runtimeSettings";
 
 export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string; sha256?: string }
 export interface MayaQuant {
@@ -114,20 +114,27 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 
   const canDownload = Boolean(pick && !pick.ready && !pick.registered && pick.can_download && (pick.download_files ?? []).length
     && !pick.blockers.length);
+  // 数値入力を空にしたとき Number(null) === 0 を登録 API へ送らない（下限は 1024）。
+  const asContext = (raw: unknown): number => {
+    const num = Number(raw);
+    return Number.isFinite(num) && num >= 1024 && num <= 1_048_576 ? Math.round(num) : 65536;
+  };
 
   // 既存の Job API はそのまま使う。共通設定の保存ボタンから呼ぶため、ここでは
   // トーストと onDone は出さない（共通部品が出す）。
-  const download = async (context: number) => {
-    if (!pick) return;
+  const download = async (context: number, setupId: string, targetFolder: string, gpuIndex: number) => {
     await api<{ job_id: string; alias: string }>("/features/maya-s/models/download-jobs", {
-      method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0 },
+      method: "POST", json: {
+        setup_id: setupId, folder: data?.folder || targetFolder, context, gpu_index: gpuIndex,
+      },
     });
     await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
   };
-  const register = async (start: boolean, context: number) => {
-    if (!pick) return;
+  const register = async (start: boolean, context: number, setupId: string, targetFolder: string, gpuIndex: number) => {
     await api<{ job_id: string; alias: string }>("/features/maya-s/models/register-jobs", {
-      method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0, start },
+      method: "POST", json: {
+        setup_id: setupId, folder: data?.folder || targetFolder, context, gpu_index: gpuIndex, start,
+      },
     });
     await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
   };
@@ -137,7 +144,8 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     if (!pick) return;
     setSaving(true);
     try {
-      await register(true, Number(values.context ?? 65536));
+      await register(true, asContext(values.context), pick.setup_id, data?.folder || folder,
+        Number(values.gpu_index ?? 0));
       show(`${mayaModelName(pick.model, pick.tier)} の登録と起動を始めました。ジョブ一覧で進捗を確認できます`);
       onDone();
     } catch (e) {
@@ -146,10 +154,17 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
   };
 
   const save = async (body: SettingValues) => {
-    if (!pick) throw new Error("Maya の目録からモデルを選んでください");
-    const context = Number(body.context ?? 65536);
-    if (pick.ready && !pick.registered) await register(false, context);
-    else if (canDownload) await download(context);
+    // 共通設定の保存本体をそのまま登録 API へ渡す（親の closure に逃がさない）。
+    const setupId = String(body.setup_id ?? values.setup_id ?? selected ?? "");
+    const folderPath = String(body.folder ?? values.folder ?? folder ?? "");
+    const target = quants.find((q) => q.setup_id === setupId);
+    if (!setupId || !folderPath || !target) {
+      throw new Error("ファイルを選び、Maya の目録からモデルを選んでください");
+    }
+    const context = asContext(body.context ?? values.context);
+    const gpuIndex = Number(body.gpu_index ?? 0);
+    if (target.ready && !target.registered) await register(false, context, setupId, folderPath, gpuIndex);
+    else if (canDownload && target.setup_id === setupId) await download(context, setupId, folderPath, gpuIndex);
     else throw new Error("ファイルが揃っていません。別のフォルダを選んでください");
   };
 
@@ -162,13 +177,17 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
       <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path, entry) => {
         const dir = path.replace(/\/[^/]*$/, "");
         setTyped(dir); setFolder(dir); apply({ folder: dir });
+        // 目録 id と probe の setup_id が一致するときだけ選ぶ。一致しなければ
+        // プローブの結果から選び直してもらう（存在しない id を入れて保存を壊さない）。
         const match = quants.find((q) => q.setup_id === entry.id);
-        choose(match?.setup_id ?? entry.id);
+        if (match) choose(match.setup_id);
+        else { setSelected(""); apply({ setup_id: "" }); }
       }} />
     </SettingsGroup>
     <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます。選んだフォルダを Maya の目録で確認します"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="maya" mode="file" expert={expert}
+        onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "maya"))}
         onRegistered={(info) => {
           const dir = info.kind === "folder" ? info.path : info.path.replace(/\/[^/]*$/, "");
           setTyped(dir); setFolder(dir); apply({ folder: dir });
@@ -176,8 +195,14 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     </SettingsGroup>
     <SettingsGroup title="Maya の目録" description="保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければダウンロードして登録します">
       <div className="flex gap-2">
-        <input aria-label="Mayaモデルのフォルダ" value={typed} onChange={(e) => setTyped(e.target.value)}
-          placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya" className={`${field} min-w-0 flex-1 font-mono text-xs`} />
+        {expert ? (
+          <input aria-label="Mayaモデルのフォルダ" value={typed} onChange={(e) => setTyped(e.target.value)}
+            placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya" className={`${field} min-w-0 flex-1 font-mono text-xs`} />
+        ) : (
+          <p className={`${field} min-w-0 flex-1 truncate font-mono text-xs`} title={folder || undefined}>
+            {folder || "フォルダを選んでください（/data1tb・/data2tb）"}
+          </p>
+        )}
         <button type="button" onClick={() => setPicker(true)} aria-label="フォルダを選ぶ"
           className="mt-1 grid min-h-11 min-w-11 place-items-center rounded-xl border border-zinc-300 dark:border-zinc-700"><IconFolder className="h-4 w-4" /></button>
       </div>

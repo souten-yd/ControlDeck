@@ -27,8 +27,10 @@ export interface RuntimeRegisterFromFileProps {
   runtime: string;
   mode?: "file" | "dir";
   initialPath?: string;
-  /** 追加で保存 API に渡す欄（Strata の family/model、Maya の setup_id など）。 */
+  /** 追加で保存 API に渡す欄（Strata の family/model、port など）。 */
   extra?: Record<string, unknown>;
+  /** inspect が読めた値（ファイル名・メタデータ）を親の設定フォームへ渡す。 */
+  onInspect?: (info: RegisterInspect) => void;
   /** 独自の保存処理。省略時は inspect が返した register_endpoint へ POST する。 */
   onRegistered?: (info: RegisterInspect, alias: string) => void | Promise<void>;
   disabled?: boolean;
@@ -40,7 +42,8 @@ const gb = (bytes: number) => bytes >= 1e9
 const viewName = (runtime: string) => runtime === "llama" ? "llama.cpp" : runtime;
 
 export function RuntimeRegisterFromFile({
-  runtime, mode = "file", initialPath, extra, onRegistered, disabled = false, expert: expertProp,
+  runtime, mode = "file", initialPath, extra, onInspect, onRegistered,
+  disabled = false, expert: expertProp,
 }: RuntimeRegisterFromFileProps) {
   const storedExpert = useExpert();
   const expert = expertProp ?? storedExpert;
@@ -61,7 +64,10 @@ export function RuntimeRegisterFromFile({
 
   useEffect(() => {
     if (data?.alias_suggestion && !aliasEdited) setAlias(data.alias_suggestion);
-  }, [data?.alias_suggestion, aliasEdited]);
+    if (data) onInspect?.(data);
+    // onInspect は親が毎レンダーで作り直すことがあるので、値が変わったときだけ知らせる。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   const view = data?.runtimes.find((item) => item.runtime === viewName(runtime) || item.runtime === runtime);
   const meta = data?.metadata ?? {};
