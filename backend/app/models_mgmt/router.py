@@ -1991,6 +1991,26 @@ def models_catalog(user: User = Depends(require_permission("workflows.run"))):
     return runtime_catalog.api_payload()
 
 
+@router.get("/catalog/{runtime}/details")
+async def models_catalog_details(
+    runtime: str, model: str = Query(min_length=1, max_length=300),
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """目録の 1 モデル（カード）を開いたときの、量子化ごとの大きさ・載るか・取得済みか。
+
+    利用者がカードを開いたときだけ HF の tree を読む（24 時間覚える・外部の許可と出口の検査を通る）。
+    2026-11-28 利用者「目録が変。追加する機能のところ全てやり直して」（大きさと載るかが大半で空だった）。
+    """
+    from app.models_mgmt import catalog_details
+
+    try:
+        return await catalog_details.model_details(runtime, model)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="目録にないモデルです") from exc
+    except ExternalResearchBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @router.get("/catalog/{runtime}/entries/{entry_id}/files")
 async def models_catalog_entry_files(
     runtime: str, entry_id: str,

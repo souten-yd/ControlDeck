@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 286 ファイル、3039 テスト（目的の未記入 93 ファイル）
-- E2E: 154 spec、363 テスト
+- backend: 287 ファイル、3047 テスト（目的の未記入 93 ファイル）
+- E2E: 155 spec、366 テスト
 
 ## backend（backend/tests）
 
@@ -2536,6 +2536,19 @@
 - `test_runtime_chat_request_streams_via_upstream_with_confidential_mark` — 内部の AI 機能（RuntimeChatRequest, local_only）が上流へ送り、機密の印・呼び出し元が付く。
 - `test_mirror_gateway_relays_models_and_chat_stream`
 - `test_relay_forwards_confidential_header`
+
+### backend/tests/test_model_catalog_models.py
+
+目的: 目的: Models の目録をモデルごとにまとめた形（/models/catalog の models）と、カードを開いたときの詳細 （量子化ごとの大きさ・載るか・取得済み）を確かめる。 根拠: 2026-11-28 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能の ところ全てやり直して」。本番の目録では Strata が二重（Strata が取る行と HF から取る行）、開発者向けのメモ （「Qwen 用の引数は渡さない」「RADIANCE_NVFP4_MXFP4=1」）が画面に出て、大半の行で大きさが空だった。
+
+- `test_strata_has_no_duplicate_model_and_quantization` — Strata 自身の目録にある系列×量子化は 1 つだけ（HF から取る同じ行を捨てる）。第三者の無検閲版は残す。
+- `test_developer_notes_are_kept_out_of_user_text` — 引数・環境変数・内部の経路のメモは note_expert へ。利用者向けの文（名前・説明・量子化の名前と説明）に出さない。
+- `test_same_weights_from_several_repos_are_one_card_with_per_variant_marks` — Sly の Qwen3.8-27B の 4 つの量子化（別々の repo）は 1 枚。無検閲は heretic の行だけなのでカードには付けない。
+- `test_catalog_payload_keeps_entries_and_adds_models` — 取得・登録の API は今までの行の id を使うので entries は残し、models の variant の id は entries の id と同じ。
+- `test_details_reads_sizes_once_and_marks_missing_quantizations` — 開いたときだけ HF の一覧から量子化ごとの大きさと載るかを読み、24 時間覚える。HF に無い量子化は選べない印。
+- `test_details_reports_downloaded_when_all_files_are_complete` — 取得先に HF と同じ大きさのファイルが全部あれば「取得済み」と登録の入口（先頭の片）を返す。途中なら返さない。
+- `test_details_does_not_touch_network_for_rows_strata_fetches_itself` — Strata が初回の起動で取る行は、Strata の目録の値を使い HF を読まない。
+- `test_fit_by_size` — 大きさから載るかの目安。llama.cpp は VRAM に収まれば載る、RAM と合わせてならぎりぎり（遅い）。
 
 ### backend/tests/test_model_choice.py
 
@@ -5088,6 +5101,14 @@
 目的: **未記入**
 
 - reload and text focus keep the ${viewport.width}px viewport contained
+
+### frontend/e2e/model-add.spec.ts
+
+目的: 目的: Models の「モデル登録」の目録を、本番と同じ目録のデータ（fixtures/model-catalog-20261128.json。 作り直した backend の api_payload を本番の PC の RAM・VRAM で組み立てたもの）で確かめる。 1 モデル 1 枚のカード・Strata の重複が無い・開くと量子化を選べて主のボタンが 1 つ・開発者のメモや 内部の項目名が出ない・320px で崩れない、を見る。 根拠: 2026-11-28 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能の ところ全てやり直して」。前回は模擬の 1 行だけで画面を確かめていて、本番の目録の崩れを見逃した。
+
+- Strata: 重複の無いモデルのカード → 開いて量子化を選ぶ → 登録（${width}px ${scheme}）
+- llama.cpp: 開いたときだけ大きさを読み、取得のボタンに大きさが出る（${width}px ${scheme}）
+- 全ランタイム: 開発者のメモ・内部の項目名が通常の画面に出ず、エキスパートの欄も出ない
 
 ### frontend/e2e/model-display-name.spec.ts
 

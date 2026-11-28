@@ -192,7 +192,8 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 
   // 目録・ファイル選択・既存の probe はすべて ①モデルの中へ。②以降は共通部品が出す。
   const modelSlot = <div className="space-y-3">
-    <SettingsGroup title="目録から取得" description="HF の候補を取得します（停止・再開できます）。取得したフォルダは Maya の目録で確認します"
+    {/* Maya は下の「Maya の量子化を選ぶ」（フォルダを確かめて登録）が主。目録まで開くと同じモデルが 2 つの一覧に並ぶので畳んでおく */}
+    <SettingsGroup title="目録から取得" description="HF から取得します。止めても続きから再開できます"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path, entry) => {
         const dir = path.replace(/\/[^/]*$/, "");
@@ -204,7 +205,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
         else { setSelected(""); apply({ setup_id: "" }); }
       }} />
     </SettingsGroup>
-    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます。選んだフォルダを Maya の目録で確認します"
+    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="maya" mode="file" expert={expert}
         onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "maya"))}

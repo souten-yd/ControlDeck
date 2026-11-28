@@ -11,6 +11,7 @@
  *        常時オンの決まり（切る選択肢を出さない）を画面と保存本文の両方で明示的に確かめる。 */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
+import { openCardAndAct, withModels } from "./support/catalog";
 
 const RUNTIME_IDS = ["llama", "strata", "radiance", "sly-radiance", "maya"] as const;
 
@@ -45,7 +46,7 @@ for (const width of [320, 1280]) {
       });
     }
     // #10 以降の共通目録（runtimes / entries 形状）。旧 /sly-radiance/catalog は存在しない。
-    await page.route("**/api/v1/models/catalog", (route) => route.fulfill({ json: { runtimes: [
+    await page.route("**/api/v1/models/catalog", (route) => route.fulfill({ json: withModels({ runtimes: [
       ...RUNTIME_IDS.filter((id) => id !== "sly-radiance").map((id) => ({
         id, name: id, installed: true, formats: [], acquire: "hf", entries: [],
       })),
@@ -55,7 +56,7 @@ for (const width of [320, 1280]) {
         entry({ id: "dflash2", repo: "syvai/Qwen3.8-27B-DFlash2-W4A16", name: "先読み DFlash2", kind: "drafter" }),
         entry({ id: "minicpm-v", repo: "", name: "MiniCPM-V 4.7", supported: false }),
       ] },
-    ] } }));
+    ] }) }));
     await page.route("**/api/v1/models/catalog/sly-radiance/entries/*/files", (route) => route.fulfill({ json: {
       repo: "a/b", files: [{ path: "config.json", size: 10 }, { path: "model.safetensors", size: 100 }], total_bytes: 110,
       libraries: [{ id: "lib1", label: "SSD", mounted: true }] } }));
@@ -100,29 +101,22 @@ for (const width of [320, 1280]) {
     await expect(sheet.getByText(/prefix cache は常にオンです/)).toBeVisible();
     await expect(sheet.getByRole("checkbox", { name: /prefix cache/i })).toHaveCount(0);
     await expect(sheet.getByLabel(/prefix cache/i)).toHaveCount(0);
-    // 目録・ファイル登録は閉じた <details> の <summary> なので、開いてから中身を見る。
-    await sheet.locator("summary").filter({ hasText: /^目録から取得/ }).click();
+    // 目録は最初から開いている（2026-11-28 に作り直し。1 モデル 1 枚のカード）。
     const catalog = sheet.locator('[data-runtime-catalog="sly-radiance"]');
-    await expect(catalog.locator('[data-catalog-entry="swift-heretic"]')).toContainText("無検閲寄り");
-    await expect(catalog.locator('[data-catalog-entry="minicpm-v"]')).toContainText("未対応");
-    await expect(catalog.locator('[data-catalog-entry="minicpm-v"]').getByRole("button", { name: "取得する" })).toHaveCount(0);
+    await expect(catalog.locator('[data-catalog-model="m-swift-heretic"]')).toContainText("無検閲");
+    const minicpm = catalog.locator('[data-catalog-model="m-minicpm-v"]');
+    await minicpm.locator("> button").click();
+    await expect(minicpm.getByTestId("catalog-primary")).toBeDisabled();   // 使えない量子化は取得できない（理由をボタンに出す）
 
-    // 目録の行 → 確認パネルの「取得する」→ ジョブ完了 → 行の「登録する」で共通設定の欄へ入る。
+    // カードを開いて主のボタン「取得する」→ ジョブ完了 → そのまま共通設定の欄へ入る（登録へ進む）。
     const acquire = async (entryId: string) => {
-      const row = catalog.locator(`[data-catalog-entry="${entryId}"]`);
-      await row.getByRole("button", { name: "取得する", exact: true }).click();
-      // 確認パネルの「取得する」は行の同名ボタンと区別するため、「やめる」の兄弟として取る。
-      await catalog.getByRole("button", { name: "やめる" }).locator("..")
-        .getByRole("button", { name: "取得する", exact: true }).click();
-      // ジョブ完了後に目録の行へ「登録する」が出る（ジョブカードは完了直後に消えるので待ち条件にはしない）。
-      await expect(row.getByRole("button", { name: "登録する", exact: true })).toBeVisible();
-      await row.getByRole("button", { name: "登録する", exact: true }).click();
+      await openCardAndAct(catalog.locator(`[data-catalog-model="m-${entryId}"]`));
     };
     await acquire("swift-heretic");
     await acquire("dflash2");
     expect(downloads).toHaveLength(2);
-    expect(downloads[0]).toMatchObject({ runtime: "sly-radiance", entry_id: "swift-heretic",
-      files: ["config.json", "model.safetensors"] });
+    // files は送らない（backend が HF の一覧から決める。2026-11-28 に取得前の確認の枠を無くした）
+    expect(downloads[0]).toMatchObject({ runtime: "sly-radiance", entry_id: "swift-heretic", files: [] });
     expect(downloads[1]).toMatchObject({ runtime: "sly-radiance", entry_id: "dflash2" });
     await expect(sheet.getByLabel("モデルのフォルダ", { exact: true })).toHaveValue("/data1tb/LLM/slybase--Swift");
     await expect(sheet.getByLabel("先読みモデルのフォルダ", { exact: true })).toHaveValue("/data1tb/LLM/syvai--drafter");
@@ -130,7 +124,7 @@ for (const width of [320, 1280]) {
     await sheet.getByRole("button", { name: /量子化を「quark」にする/ }).click();
     await expect(sheet.getByLabel("量子化の切り替え")).toHaveValue("quark");
     // ゲートウェイ名は自動推測（slybase--swift）になる。目的の別名を明示して保存する。
-    await sheet.getByLabel("モデル名").fill("qwen3.8-27b-sly");
+    await sheet.getByLabel("モデル名", { exact: true }).fill("qwen3.8-27b-sly");   // 目録の「モデル名で探す」と区別
     await sheet.getByRole("slider", { name: "同時に処理する数" }).press("End");
     await expect(sheet.getByRole("slider", { name: "同時に処理する数" })).toHaveValue("8");   // 上限 8 に丸める
     await sheet.getByLabel("環境変数（RADIANCE_*・R4D_*）").fill("RADIANCE_KV_GROUP_SIZE=8");
