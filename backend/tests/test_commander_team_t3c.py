@@ -732,7 +732,7 @@ def test_startup_auto_resume_of_interrupted_leader(env, sent, monkeypatch):
     """目的: ControlDeck の再起動で中断されたチームリーダーを、自動で続きから再開すること（brief D）。
 
     - チームの設定 auto_resume（既定入）。
-    - 30 分に 2 回まで（永続・teams.json に覚える）。超えたら failed にして通知（連続失敗で止める）。
+    - 1 時間に 6 回まで（永続・teams.json に覚える。2026-11-28 に 30 分 2 回から上げた）。超えたら failed にして通知（連続失敗で止める）。
     - 利用者が止めたもの（stop_requested）は再開しない。
     根拠: 2026-11-28 の依頼（brief D・利用者「PC の再起動や更新のときに、事前の状況を記録しておき、
     途中から再開できるように」）。再開は team_status から続きを読ませる（resume と同じ道）。"""
@@ -743,22 +743,23 @@ def test_startup_auto_resume_of_interrupted_leader(env, sent, monkeypatch):
     assert out == {"leaders": 1, "resumed": 1, "capped": 0, "stopped": 0}
     run = get_team(team["id"])["leader_run"]
     assert run["status"] == "running" and any("自動で再開" in r["text"] for r in get_team(team["id"])["timeline"])
-    # 2 回目までは再開する（30 分に 2 回）
-    team_leader.recover_interrupted()
-    assert get_team(team["id"])["leader_run"]["status"] == "running"
-    # 3 回目は上限を超える → failed ＋通知
+    # 上限（2026-11-28 に 1 時間 6 回へ上げた）までは再開する
+    for _ in range(team_leader.AUTO_RESUME_MAX - 1):
+        team_leader.recover_interrupted()
+        assert get_team(team["id"])["leader_run"]["status"] == "running"
+    # 上限を超える → failed ＋通知
     out = team_leader.recover_interrupted()
     assert out["resumed"] == 0 and out["capped"] == 1
     run = get_team(team["id"])["leader_run"]
     assert run["status"] == "failed" and "上限" in str(run.get("reason") or "")
     assert any("再開" in m for _t, m in sent)
-    # 30 分が経てばまた再開できる（永続の上限は「30 分に 2 回」）
+    # 時間が経てばまた再開できる（永続の上限は「1 時間に 6 回」）
     with teams._lock:  # noqa: SLF001
         all_teams = teams._load()  # noqa: SLF001
         target = teams._find_team(all_teams, team["id"])  # noqa: SLF001
         log = target.setdefault("auto_resume_log", [])
         for row in log:
-            row["at"] -= 1801
+            row["at"] -= team_leader.AUTO_RESUME_WINDOW + 1
         target["leader_run"]["status"] = "running"  # また中断されたとして
         teams._save(all_teams)  # noqa: SLF001
     out = team_leader.recover_interrupted()
@@ -967,7 +968,7 @@ def test_assistant_tools_create_team_in_conversation_workdir(env, monkeypatch):
 
 
 def test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap(env, sent, monkeypatch):
-    """目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（30 分に 2 回）に数えない。
+    """目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（当時 30 分に 2 回・今は 1 時間に 6 回）に数えない。
     根拠: 2026-11-28、Claude の Release が続いて更新の再起動が 30 分に 2 回を超え、NewsHub のチームの自動の再開が
     上限で止まった。上限は落ちて再起動を繰り返すのを止めるためのもの。更新は適用の前に data/updates/backup-<時刻> を作る。"""
     import time

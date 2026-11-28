@@ -36,9 +36,11 @@ MAX_RESUMES = 3
 MAX_CRASH_RETRIES = 1
 REQUESTS_KEPT = 20
 SHELL_OPERATORS = {"|", "||", "&&", "&", ";", ">", ">>", "<", "<<", "2>", "2>&1"}
-# 再起動からの自動再開の上限（brief D・2026-11-28）: 30 分に 2 回まで（teams.json へ永続）。
-AUTO_RESUME_WINDOW = 30 * 60
-AUTO_RESUME_MAX = 2
+# 再起動からの自動再開の上限（brief D・2026-11-28）: 1 時間に 6 回まで（teams.json へ永続）。
+# 目的: チームリーダーを再開すると ControlDeck が落ちる、を繰り返して使用量（費用）を空回りさせない。本体の更新の
+# 再起動は数えない（_planned_update_restart）。2026-11-28 利用者「安全のためなら上限を上げて」で 30 分 2 回から上げた。
+AUTO_RESUME_WINDOW = 60 * 60
+AUTO_RESUME_MAX = 6
 
 
 def mcp_url() -> str:
@@ -489,7 +491,7 @@ def recover_interrupted() -> dict:
     """ControlDeck の起動時: 再起動で中断されたチームリーダーを記録し、自動で続きから再開する（brief D・2026-11-28）。
 
     - running のままプロセスが無いものを interrupted にする（画面の「再開」でも続けられる）。
-    - チームの設定 auto_resume（既定入）なら resume と同じ道で続きから。30 分に 2 回まで（teams.json へ永続）。
+    - チームの設定 auto_resume（既定入）なら resume と同じ道で続きから。1 時間に 6 回まで（teams.json へ永続）。
       超えたら failed にして通知（連続失敗で止める）。利用者が止めたもの（stop_requested）は再開しない。
     - 返り値: {"leaders", "resumed", "capped", "stopped"}（集計。見張りの loop のログ・試験で使う）。
     """
@@ -519,8 +521,8 @@ def recover_interrupted() -> dict:
             planned = planned_update if planned_update is not None else False
             recent = sum(1 for row in log if now - float(row.get("at") or 0) < AUTO_RESUME_WINDOW and not row.get("planned"))
             if recent >= AUTO_RESUME_MAX:
-                run.update({"status": "failed", "reason": f"自動で再開できる回数の上限（30 分で {AUTO_RESUME_MAX} 回）に達しました"})  # noqa: SLF001
-                leader_mcp.add_timeline(team, "stop", f"再起動からの自動再開が続いたので止めました（30 分で {AUTO_RESUME_MAX} 回）")
+                run.update({"status": "failed", "reason": f"自動で再開できる回数の上限（{AUTO_RESUME_WINDOW // 60} 分で {AUTO_RESUME_MAX} 回）に達しました"})  # noqa: SLF001
+                leader_mcp.add_timeline(team, "stop", f"再起動からの自動再開が続いたので止めました（{AUTO_RESUME_WINDOW // 60} 分で {AUTO_RESUME_MAX} 回）")
                 out["capped"] += 1
                 if team.get("notify", True) is not False:
                     notify_capped.append({"title": "Nexarch", "notify_kind": "team_finish",
@@ -531,7 +533,7 @@ def recover_interrupted() -> dict:
             team["auto_resume_log"] = log
             run["startup_pending"] = True  # 排他の外で resume する（下）
             leader_mcp.add_timeline(team, "resume", "本体の更新で再起動したので、自動で再開します" if planned
-                                    else f"再起動があったので自動で再開します（30 分で {AUTO_RESUME_MAX} 回のうち {recent + 1} 回目）")
+                                    else f"再起動があったので自動で再開します（{AUTO_RESUME_WINDOW // 60} 分で {AUTO_RESUME_MAX} 回のうち {recent + 1} 回目）")
             out["resumed"] += 1
         if out["leaders"]:
             teams._save(all_teams)  # noqa: SLF001
