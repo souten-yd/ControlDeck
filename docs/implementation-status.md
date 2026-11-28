@@ -1,5 +1,8 @@
 # 実装状況
 
+## 2026-11-29 CLI の上限からの自動再開が効いていなかった
+- `commander/resume.parse_reset`: 時刻だけの文言（Claude「resets 2:50am」）は 12 時間より前なら翌日、それより近い過去は戻った時刻のまま（送る時刻に読み直して翌日へ延び、一度も送れていなかった）。
+- 普通のターミナルで動く AI の CLI も見回る（`resume._terminal_rows`・`_cli_of`）。Nexarch のコンソールの一覧には出さない（`manager._apply_commander_marks` は印の無いセッションでも再開の印だけ読む）。
 ## 2026-11-29 チームリーダーへ伝える・チームの画面が落ちる不具合
 - 走っているチームリーダーへ伝える口（`POST /commander/teams/{id}/leader/note`・画面の「チームリーダーに伝える」）。`team_status`・`wait` の `new_notes` で届き、`wait` は伝言が来たら早く戻る。読むまで `finish` は 409。
 - #731 で `TeamView` の早い return の後に置いた `useNavigate()` を前へ（React #310 でチームの画面が落ちていた）。`docs/ISSUES.md` に記録。

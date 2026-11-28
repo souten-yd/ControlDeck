@@ -12,6 +12,7 @@
   止まっていなければ記録を消す（次の停止で数え直す）。
 - 記録は tmux の user option（@cd-commander-resume_*）。ControlDeck を再起動しても残る。
 - コンソールごとに止められる（@cd-commander-autoresume=off）。送ったら監査ログに残す。
+- 普通のターミナル（Nexarch のコンソールでない）で動く AI の CLI も見回る（2026-11-29・_terminal_rows）。
 根拠: docs/PLAN-ai-commander.md C3。上限の文言は C0 の実機の記録（c1-spec.md）。
 """
 from __future__ import annotations
@@ -21,6 +22,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.commander import status
@@ -71,7 +73,10 @@ def parse_reset(text: str, now: datetime | None = None) -> datetime | None:
         tz = _tz(m[4])
         local_now = now.astimezone(tz)
         when = local_now.replace(hour=_hour24(int(m[1]), m[3]), minute=int(m[2] or 0), second=0, microsecond=0)
-        if when <= local_now - timedelta(minutes=1):
+        # 時刻だけの文言は、表示した時点で先の時刻（5 時間の枠なら 5 時間以内）。12 時間より前なら翌日の時刻、
+        # それより近い過去なら「もう戻った」と読む。2026-11-29 まで「1 分前より前なら翌日」にしていたため、
+        # 送る時刻（戻る時刻＋猶予 1 分）に読み直すと翌日へ延び、Claude は一度も自動で再開できていなかった。
+        if when < local_now - timedelta(hours=12):
             when += timedelta(days=1)
         return when
     # Codex: try again at Nov 28th, 2026 3:05 AM
@@ -118,6 +123,71 @@ def plan(row: dict, now: float) -> dict:
     return {"action": "send" if now >= due else "wait", "due": due}
 
 
+_CLI_NAMES = {"claude": "claude", "claude.exe": "claude", "codex": "codex", "codex.js": "codex",
+              "gemini": "gemini", "opencode": "opencode", "opencode.exe": "opencode", "opencode2": "opencode"}
+
+
+def _children(pid: int) -> list[int]:
+    out: list[int] = []
+    try:
+        for task in (Path("/proc") / str(pid) / "task").iterdir():
+            text = (task / "children").read_text()
+            out += [int(x) for x in text.split()]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _cli_of(session: dict) -> str:
+    """普通のターミナルで動いている AI の CLI（claude・codex・gemini・opencode）。無ければ空。
+
+    tmux の pane_current_command は Codex のように node で動くと「node」になるので、シェルの子を
+    /proc で 3 段まで辿り、実行ファイルの名前（cmdline の最初の 2 つ）で見分ける。"""
+    program = str(session.get("program") or "")
+    if program in _CLI_NAMES:
+        return _CLI_NAMES[program]
+    try:
+        pids = _children(int(session.get("pid") or 0))
+    except (TypeError, ValueError):
+        return ""
+    for _depth in range(3):
+        nxt: list[int] = []
+        for pid in pids:
+            try:
+                args = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")[:2]
+            except OSError:
+                continue
+            for arg in args:
+                name = Path(arg.decode("utf-8", "replace")).name
+                if name in _CLI_NAMES:
+                    return _CLI_NAMES[name]
+            nxt += _children(pid)
+        pids = nxt
+    return ""
+
+
+def _terminal_rows() -> list[dict]:
+    """Nexarch のコンソールでない、普通のターミナルで動く AI の CLI（2026-11-29）。
+
+    利用者「CLI で起動している Codex などの 5 時間の上限が戻ったら自動で再開する機能が効いていなかった」。
+    見回りが Nexarch のコンソールだけを見ていた。止めるときは、そのセッションに @cd-commander-autoresume=off。
+    """
+    from app.terminals.manager import manager
+
+    rows = []
+    for session in manager.list_sessions():
+        if session.get("commander_cli") or not session.get("alive", True):
+            continue
+        cli = _cli_of(session)
+        if not cli:
+            continue
+        text = manager.capture_text(str(session["id"]), status.CAPTURE_LINES)
+        judged = status.classify(cli, text, alive=True, program=str(session.get("program") or ""))
+        rows.append({**session, "commander_cli": cli, "commander_account": "", "commander_terminal": True,
+                     "commander_state": judged["state"], "commander_detail": judged["detail"]})
+    return rows
+
+
 def tick(now: float | None = None) -> list[str]:
     """1 回分の見回り。送ったセッションの id を返す（同期・tmux を呼ぶので thread で動かす）。
 
@@ -129,7 +199,12 @@ def tick(now: float | None = None) -> list[str]:
 
     now = now or time.time()
     sent: list[str] = []
-    for row in consoles.list_consoles():
+    rows = consoles.list_consoles()
+    try:
+        rows += _terminal_rows()
+    except Exception:  # noqa: BLE001 - 普通のターミナルの見回りの失敗で、コンソールの再開を止めない
+        logger.exception("AI Commander: 普通のターミナルの CLI を見回れませんでした")
+    for row in rows:
         sid = str(row["id"])
         decision = plan(row, now)
         try:
