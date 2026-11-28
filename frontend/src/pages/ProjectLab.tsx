@@ -151,6 +151,11 @@ export default function ProjectLabPage() {
     enabled: projectId !== null,
   });
   const detail = detailQuery.data;
+  // チームの作業場所なら見出しに「AI チーム」の札（押すと情報の枠の「AI チームの成果」）
+  const teamQuery = useQuery({
+    queryKey: ["project-lab-team", detail?.id], queryFn: () => projectLabApi.team(detail?.id ?? ""),
+    enabled: !!detail?.id, refetchInterval: 15_000,
+  });
   const settingsQuery = useQuery({ queryKey: ["project-lab-settings"], queryFn: projectLabApi.settings });
   const allowExternalAlways = settingsQuery.data?.allow_external_preview === true;
   // 置き場は設定で変わるので、案内文はサーバーが返す実際のパスを出す。
@@ -307,6 +312,12 @@ export default function ProjectLabPage() {
             <IconPlay />
             {activeRun && <span className="absolute right-2 top-2 h-2 w-2 animate-pulse rounded-full bg-emerald-500" />}
           </button>
+          {teamQuery.data?.team && (
+            <button type="button" onClick={() => setSheet("info")} data-team-chip
+              className="min-h-9 shrink-0 rounded-full bg-accent-100 px-3 text-[11px] font-semibold text-accent-700 dark:bg-accent-900/40 dark:text-accent-200">
+              AI チーム
+            </button>
+          )}
           <div className="relative">
             <button
               type="button"
@@ -1198,6 +1209,7 @@ function InfoPanel({
           </span>
         </span>
       </label>
+      <TeamSection projectId={detail.id} />
       {canExport && <ExportSection projectId={detail.id} />}
       {canPublish && <PublishSection projectId={detail.id} />}
       <p className="mt-3 text-[11px] leading-relaxed text-zinc-400">
@@ -1228,6 +1240,87 @@ function InfoPanel({
  * 何が落ちたかを先に見せる。秘密情報は自動で落とすが、落とした事実が見えないと
  * 「入っているはずの file が無い」としか分からず、逆に落とし漏れにも気づけない。
  */
+const TEAM_STATUS: Record<string, string> = {
+  running: "進行中", done: "完了", stopped: "止まっている", failed: "失敗", limited: "上限で止まっている", blocked: "止まっている",
+};
+const TASK_STATUS: Record<string, string> = {
+  todo: "待ち", doing: "作業中", review: "確認待ち", done: "完了", rejected: "差し戻し", blocked: "止まっている",
+};
+
+/** プロジェクトが Nexarch の AI チームの作業場所なら、チームの状態・仕事・チームのブランチの変更ファイルと差分を出す。
+ *  チームの成果は作業場所の中の別のブランチ（nexarch/<チーム>）にあり、プロジェクトのファイル（元のブランチ）には出ない。
+ *  2026-11-28 利用者「プロジェクトラボでチームの成果物を見れるようにしてほしい」。読むだけ。 */
+export function TeamSection({ projectId }: { projectId: string }) {
+  const [file, setFile] = useState<string | null>(null);
+  const { data } = useQuery({ queryKey: ["project-lab-team", projectId], queryFn: () => projectLabApi.team(projectId),
+    refetchInterval: 15_000 });
+  const diff = useQuery({
+    queryKey: ["project-lab-team-diff", projectId, file], queryFn: () => projectLabApi.teamDiff(projectId, file ?? ""),
+    enabled: file !== null,
+  });
+  const team = data?.team;
+  if (!team) return null;
+  return (
+    <div className="mt-4 rounded-xl border border-accent-200 p-3 dark:border-accent-900" data-project-team={team.id}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 text-xs font-semibold">AI チームの成果: {team.name}</span>
+        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] dark:bg-zinc-800">
+          {team.landed ? "取り込み済み" : TEAM_STATUS[team.leader_status] ?? (team.leader_status || "未開始")}
+        </span>
+        <a href={`/commander?team=${encodeURIComponent(team.id)}`} className="text-[11px] font-medium text-accent-600 underline dark:text-accent-400">
+          Nexarch で開く
+        </a>
+      </div>
+      {team.summary && <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500">{team.summary}</p>}
+      {team.team_branch && (
+        <p className="mt-1.5 text-[11px] text-zinc-500">
+          成果はブランチ <span className="font-mono">{team.team_branch}</span> にあります（元の <span className="font-mono">{team.base_branch}</span> から
+          <span className="num"> +{team.added} −{team.removed}</span>・{team.files.length} ファイル）
+        </p>
+      )}
+      {team.files.length > 0 && (
+        <ul className="mt-2 max-h-56 space-y-0.5 overflow-auto">
+          {team.files.map((f) => (
+            <li key={f.path}>
+              <button type="button" onClick={() => setFile(file === f.path ? null : f.path)} aria-expanded={file === f.path}
+                className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px] hover:bg-zinc-50 dark:hover:bg-zinc-800 ${file === f.path ? "bg-zinc-100 dark:bg-zinc-800" : ""}`}>
+                <span className="min-w-0 flex-1 truncate font-mono">{f.path}</span>
+                <span className="num shrink-0 text-emerald-600">+{f.added ?? "?"}</span>
+                <span className="num shrink-0 text-red-500">−{f.removed ?? "?"}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {file && (
+        <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-zinc-950 p-2 text-[10px] leading-relaxed text-zinc-100" data-team-diff>
+          {diff.isLoading ? "読んでいます…" : (diff.data?.diff ?? "").split("\n").map((line, i) => (
+            <span key={i} className={line.startsWith("+") && !line.startsWith("+++") ? "text-emerald-300"
+              : line.startsWith("-") && !line.startsWith("---") ? "text-red-300" : line.startsWith("@@") ? "text-sky-300" : ""}>
+              {line}{"\n"}
+            </span>
+          ))}
+          {diff.data?.truncated && "…（長いので途中まで）"}
+        </pre>
+      )}
+      {team.tasks.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[11px] text-zinc-500">仕事 {team.tasks.length} 件</summary>
+          <ul className="mt-1 space-y-0.5">
+            {team.tasks.map((t) => (
+              <li key={t.id} className="flex gap-2 text-[11px]">
+                <span className="num shrink-0 text-zinc-400">#{t.id}</span>
+                <span className="min-w-0 flex-1">{t.title}</span>
+                <span className="shrink-0 text-zinc-500">{TASK_STATUS[t.status] ?? t.status}{t.model && `・${t.model}`}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ExportSection({ projectId }: { projectId: string }) {
   const [open, setOpen] = useState(false);
   const [showExcluded, setShowExcluded] = useState(false);

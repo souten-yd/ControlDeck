@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 289 ファイル、3060 テスト（目的の未記入 93 ファイル）
-- E2E: 155 spec、369 テスト
+- backend: 290 ファイル、3062 テスト（目的の未記入 93 ファイル）
+- E2E: 156 spec、370 テスト
 
 ## backend（backend/tests）
 
@@ -3450,6 +3450,13 @@
 - `test_republish_refuses_when_nothing_is_published`
 - `test_republish_refuses_an_unreadable_record` — 記録が壊れていたら黙って既定へ倒さない。public で出す事故を作らない。
 
+### backend/tests/test_project_lab_team_view.py
+
+目的: 目的: Project Lab から、プロジェクト（CodeDEV の中のフォルダ）が Nexarch の AI チームの作業場所なら、チームの状態・ 仕事・チームのブランチの変更ファイルと差分を読めること。差分は変更ファイルの一覧にあるものだけ。 根拠: 2026-11-28 利用者「チームの作業場所を設定したと思うんだけど、プロジェクトラボでその成果物とか見れないんでしょうか。 見れるようにしてほしい」。チームの成果は作業場所の中の別のブランチ（nexarch/<チーム>）にあり、Project Lab の ファイルの一覧（元のブランチ）には出ていなかった。
+
+- `test_summary_lists_changed_files_and_tasks`
+- `test_file_diff_only_for_changed_files`
+
 ### backend/tests/test_project_view_websocket.py
 
 目的: Project Lab の preview の鍵の入口と、WebSocket（HMR）の中継。 目的: - preview は sandbox の iframe（生まれが null）で開くので Cookie を送れない。URL の run ごとの鍵で通し、 鍵が違う・終わった run は通さない。ControlDeck の Cookie・Origin は上流へ渡さない。 - WebSocket は上流と双方向に中継し、サブプロトコル（Vite の vite-hmr）・文字・binary・close code を通す。 - command に {base} を渡した run は、接頭辞を付けたまま上流へ送る（Vite の --base で HMR が同じ接頭辞へ来る）。 根拠: 2026-11-21 実測。前の preview では、sandbox の中の Vite は module script が CORS で 1 本も読めず、 HMR はサイトの根元 ws://host/ へ繋ぎに来て 403 だった。
@@ -5315,6 +5322,12 @@
 目的: 目的: Project Lab のプロジェクト情報で、表示名をその場で書き換えられる（✏️ 名前を変える）。 自動で作られた作業場所には「どこから作られたか」の小さな印（Nexarch・チーム・AI アシスタント）が出る。 根拠: 2026-11-27 利用者「作業場所は既定の作業場所に自動で名前を振ってもらって、後で書き換えられるようにし、 そこを Project Lab からも見られればよくないか？」。API は模擬する。320・1280 で横にはみ出さない。
 
 - project lab: 表示名を書き換えられ、作成元の印が出る（${width}px）
+
+### frontend/e2e/project-lab-team.spec.ts
+
+目的: 目的: Project Lab で、プロジェクトが Nexarch の AI チームの作業場所なら、見出しに「AI チーム」の札が出て、情報の枠に チームの状態・変更ファイル（＋−の行数）・ファイルごとの差分・仕事の一覧が出ること。 根拠: 2026-11-28 利用者「チームの作業場所を設定したと思うんだけど、プロジェクトラボでその成果物とか見れないんでしょうか。 今後チームを使うことがあると思うので見れるようにしてほしい」。API は模擬する。320・1280 で横にはみ出さない。
+
+- project lab: AI チームの成果（変更ファイル・差分・仕事）を見る（${width}px）
 
 ### frontend/e2e/project-lab-web.spec.ts
 

@@ -147,6 +147,34 @@ def project(project_id: str, user: User = Depends(require_permission("project_la
         raise _not_found(exc) from exc
 
 
+@router.get("/projects/{project_id}/team")
+def project_team(project_id: str, user: User = Depends(require_permission("project_lab.view"))):
+    """このプロジェクトが Nexarch の AI チームの作業場所なら、チームの状態・仕事・変更ファイル（読むだけ）。
+    違えば {"team": null}。2026-11-28 利用者「プロジェクトラボでチームの成果物を見れるように」。"""
+    from app.project_lab import team_view
+
+    try:
+        path = service.resolve_project(project_id)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    return {"team": team_view.team_summary(path)}
+
+
+@router.get("/projects/{project_id}/team/diff")
+def project_team_diff(project_id: str, path: str = Query(min_length=1, max_length=1024),
+                      user: User = Depends(require_permission("project_lab.view"))):
+    """チームのブランチの 1 ファイルの差分（変更ファイルの一覧にあるものだけ）。"""
+    from app.project_lab import team_view
+
+    try:
+        root = service.resolve_project(project_id)
+        return team_view.team_file_diff(root, path)
+    except service.ProjectLabError as exc:
+        raise _not_found(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else "見つかりません")) from exc
+
+
 class _RenameBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=80)
