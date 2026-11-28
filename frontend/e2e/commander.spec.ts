@@ -459,7 +459,9 @@ test.describe("AI Commander", () => {
     await sheet.getByRole("radio", { name: /Codex CLI/ }).click();
     await expect(sheet.getByRole("radio", { name: /ChatGPT でログイン/ })).toBeVisible();
     await sheet.getByRole("radio", { name: "＋ 新しいアカウント" }).click();
-    await sheet.getByLabel("新しいアカウント名").fill("sub2");
+    // 名前は入れない（内部の名前は自動・表示はログインしたメールアドレス。2026-11-28 利用者）
+    await expect(sheet.getByLabel("新しいアカウント名")).toHaveCount(0);
+    await expect(sheet.getByText("ログインしたメールアドレスが、アカウントの名前として出ます")).toBeVisible();
 
     // 作業フォルダは FilePicker（files API の許可ルート内）
     // 既定は「新しい作業場所（自動の名前）」。既存のフォルダは下の選択肢
@@ -492,9 +494,9 @@ test.describe("AI Commander", () => {
     await sheet.getByRole("button", { name: "開く", exact: true }).click();
     await expect(sheet).toHaveCount(0);
     // アカウントを作ってからコンソールを開いている
-    expect(state.accountPosts).toEqual([{ cli: "codex", name: "sub2" }]);
+    expect(state.accountPosts).toEqual([{ cli: "codex", name: "account-2" }]);
     expect(state.consolePosts).toEqual([{
-      cli: "codex", account: "sub2", cwd: `${ROOT}/night-batch`, count: 2, label: "夜間バッチ",
+      cli: "codex", account: "account-2", cwd: `${ROOT}/night-batch`, count: 2, label: "夜間バッチ",
     }]);
     await expect(page.locator("[data-commander-row]")).toHaveCount(4);
     await expect(page.getByText("2 個のコンソールを開きました")).toBeVisible();
@@ -570,10 +572,11 @@ test.describe("AI Commander", () => {
     await expect(sheet.getByRole("region", { name: "Gemini CLIのアカウント" })).toHaveCount(0);
 
     // 作る
-    await claudeSection.getByLabel("Claude Codeの新しいアカウント名").fill("sub");
-    await claudeSection.getByRole("button", { name: "追加" }).click();
-    await expect(claudeSection.getByText("sub")).toBeVisible();
-    expect(state.accountPosts).toEqual([{ cli: "claude", name: "sub" }]);
+    // 名前は入れずに足す（2026-11-28 利用者「メールアドレスを勝手にアカウント名にできるなら入力欄は不要」）
+    await expect(claudeSection.getByLabel("Claude Codeの新しいアカウント名")).toHaveCount(0);
+    await claudeSection.getByRole("button", { name: "＋ アカウントを足す" }).click();
+    await expect(claudeSection.getByText("account-2")).toBeVisible();
+    expect(state.accountPosts).toEqual([{ cli: "claude", name: "account-2" }]);
 
     // 消す（破壊的なので確認ダイアログ）
     await claudeSection.getByRole("button", { name: "アカウント work を削除" }).click();

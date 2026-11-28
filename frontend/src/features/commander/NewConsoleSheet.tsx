@@ -5,7 +5,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  accountTitle, createAccount, fetchAccounts, openConsoles,
+  accountTitle, createAccount, fetchAccounts, nextAccountName, openConsoles,
   type CommanderCli, type OpenConsolesBody,
 } from "../../api/commander";
 import { FilePicker } from "../../components/FilePicker";
@@ -35,7 +35,6 @@ export function NewConsoleSheet({
   const cli = clis.find((c) => c.id === cliId);
   const multi = cli?.multi_account ?? false;
   const [account, setAccount] = useState("default");
-  const [newAccountName, setNewAccountName] = useState("");
   const [cwd, setCwd] = useState("");
   // 既定は「新しい作業場所（自動の名前）」。既存のフォルダを使うときだけ cwd を選ぶ
   const [workMode, setWorkMode] = useState<"new" | "existing">("new");
@@ -54,10 +53,13 @@ export function NewConsoleSheet({
   const chooseCli = (id: string) => {
     setCliId(id);
     setAccount("default");
-    setNewAccountName("");
   };
 
-  const canOpen = Boolean(cli && cli.installed && (workMode === "new" || cwd)) && (account !== "__new__" || /^[a-z0-9][a-z0-9_-]{0,31}$/.test(newAccountName));
+  // 新しいアカウントの内部の名前（フォルダ名）は自動で決める。表示はログインしたメールアドレス（login_name）。
+  // 2026-11-28 利用者「新しいアカウントを追加できない。メールアドレスを勝手にアカウント名にできるなら入力欄は不要」
+  // （メールアドレスを入れると内部の名前の形に合わず「開く」が押せなかった）
+  const autoAccountName = nextAccountName((accounts ?? []).map((a) => a.name));
+  const canOpen = Boolean(cli && cli.installed && (workMode === "new" || cwd));
 
   const open = async () => {
     if (!cli || !canOpen || busy) return;
@@ -65,8 +67,8 @@ export function NewConsoleSheet({
     try {
       let accountName = account;
       if (account === "__new__") {
-        await createAccount(cliId, newAccountName);
-        accountName = newAccountName;
+        await createAccount(cliId, autoAccountName);
+        accountName = autoAccountName;
       }
       const body: OpenConsolesBody = workMode === "new"
         ? { cli: cliId, account: accountName, cwd: "", count, label: label.trim(), new_workspace: { name: workspaceName.trim() } }
@@ -170,14 +172,9 @@ export function NewConsoleSheet({
               </li>}
               {multi && account === "__new__" && (
                 <li className="pl-1">
-                  <input
-                    value={newAccountName}
-                    onChange={(e) => setNewAccountName(e.target.value)}
-                    placeholder="アカウント名（英小数字・_・-）"
-                    aria-label="新しいアカウント名"
-                    className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-                  />
-                  <p className="mt-1 text-[11px] text-zinc-400">ログインはこのコンソールを開き、CLI の中で行います。</p>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    開いたコンソールの中でログインしてください。ログインしたメールアドレスが、アカウントの名前として出ます。
+                  </p>
                 </li>
               )}
             </ul>

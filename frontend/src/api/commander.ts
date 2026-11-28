@@ -35,6 +35,17 @@ export interface CommanderAccount {
 }
 
 /** アカウントの見せ方: 画面の名前 → ログインの名前（メール）→ 接続の見せ方 → 既定／フォルダの名前。 */
+/** 新しいアカウントの内部の名前（フォルダ名。英小文字・数字・-）。使われていない account-2, account-3… を返す。
+ *  表示はログインしたメールアドレス（login_name）なので、利用者は名前を入れない（2026-11-28）。 */
+export function nextAccountName(existing: string[]): string {
+  const used = new Set(existing);
+  for (let n = 2; n < 1000; n += 1) {
+    const name = `account-${n}`;
+    if (!used.has(name)) return name;
+  }
+  return `account-${Date.now() % 100000}`;
+}
+
 export function accountTitle(name: string, label?: string, long = false, title?: string, login?: string): string {
   if (label) return label;
   if (login) return login;
