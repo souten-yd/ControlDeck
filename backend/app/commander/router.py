@@ -725,6 +725,7 @@ def run_team_leader(
 
 class _CloseTeam(BaseModel):
     summary: str = Field(default="", max_length=4000)
+    landed: bool = False   # 外（GitHub の PR など）で元のブランチへ取り込み済み
 
 
 @router.post("/teams/{team_id}/close")
@@ -735,7 +736,7 @@ def close_team(
     """チームを「完了」にして閉じる（残った待ち・止まった仕事は取り下げ）。"""
     from app.commander import team_leader
 
-    team = _team_call(team_leader.close, team_id, body.summary)
+    team = _team_call(team_leader.close, team_id, body.summary, landed=body.landed)
     _team_audit(db, user, request, "close", team_id)
     return team
 

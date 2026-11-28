@@ -198,7 +198,6 @@ function stageOf(team: Team): Array<{ id: StageId; label: string; state: StageSt
   };
   const result = team.result;
   const checks = result?.checks?.status;
-  const integrateDone = Boolean(result?.landed);
   const integrateReady = Boolean(result && result.can_land && !result.landed);
   return STAGES.map(({ id, label, Icon }) => {
     let state: StageState = "waiting";
@@ -217,9 +216,12 @@ function stageOf(team: Team): Array<{ id: StageId; label: string; state: StageSt
       ({ total, done } = s);
       state = s.attention ? "attention" : s.active ? "active" : s.total > 0 && s.done >= s.total ? "done" : "waiting";
     } else if (id === "integrate") {
-      total = result ? 1 : 0;
-      done = integrateDone ? 1 : 0;
-      state = integrateDone ? "done" : result?.outcome === "blocked" ? "attention" : integrateReady ? "active" : "waiting";
+      // 担い手の実装をチームのブランチへまとめた数（実装の「済み」は統合済み）。元のブランチへの取り込みは要約で言う。
+      // 2026-11-28 利用者「統合は 0/1 だけど、なんで終わってるの？」: 取り込みのボタンを押したかだけを数えていた
+      const s = byTier.implement;
+      total = s.total;
+      done = s.done;
+      state = result?.outcome === "blocked" ? "attention" : total > 0 && done >= total ? "done" : done > 0 || integrateReady ? "active" : "waiting";
     } else {
       total = checks ? 1 : 0;
       done = checks === "passed" ? 1 : 0;
@@ -242,7 +244,7 @@ export function missionSummary(team: Team): { text: string; attention: number } 
   // チームリーダーが完了したら、残りの段の数に引っぱられず「完了」と言う（2026-11-28 利用者「開発が終わっているのに…」）
   // 担い手がまだ走っていれば完了とは言わない（finish の still_running）
   if ((team.leader_run?.status === "done" || team.leader_run?.finish?.outcome === "done") && running === 0) {
-    return { text: team.result?.landed ? "完了しました（ブランチを取り込み済み）" : "完了しました", attention };
+    return { text: team.result?.landed ? "完了しました（取り込み済み）" : "完了しました（取り込み待ち）", attention };
   }
   if (attention > 0) return { text: `${attention} 件が要対応です（止まった・引き継ぎ先なし）`, attention };
   if (active) return { text: `${active.label}を${running > 0 ? ` ${running} 人が` : ""}進めています${left > 0 ? `（残り ${left} 件）` : ""}`, attention };

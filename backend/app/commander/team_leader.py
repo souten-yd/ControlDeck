@@ -399,7 +399,7 @@ def create_for_assistant(goal: object, work_path: str, *, owner_user_id: int = 0
     return start(team["id"], goal_text)
 
 
-def close(team_id: str, summary: str) -> dict:
+def close(team_id: str, summary: str, *, landed: bool = False) -> dict:
     """チームを「完了」にして閉じる（外で引き取って仕上げたチームなど）。走っているチームリーダーは先に止める。
     残った待ち・止まった仕事は取り下げる。2026-11-28: Claude が引き取って仕上げたチームが「止まった」のまま残っていた。"""
     text = teams.clean_text(summary, "まとめ", teams.TEXT_MAX) or "完了にしました"
@@ -413,6 +413,9 @@ def close(team_id: str, summary: str) -> dict:
         run.update({"status": "done", "ended_at": teams._now(), "reason": ""})  # noqa: SLF001
         run["finish"] = {"summary": text, "outcome": "done", "at": teams._now()}  # noqa: SLF001
         left = leader_mcp.drop_tasks(team, None, "チームを完了にしたとき残っていた", "利用者")
+        if landed:   # 外（GitHub の PR など）で元のブランチへ取り込み済み。画面は「取り込み済み」と言う
+            result = team.setdefault("result", {})
+            result.update({"landed": True, "can_land": False, "landed_outside": True})
         leader_mcp.add_timeline(team, "finish", "完了: " + text[:150] + (f"（残りの仕事 {len(left)} 件を取り下げ）" if left else ""))
 
     leader_mcp._mutate(team_id, save)  # noqa: SLF001

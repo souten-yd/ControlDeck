@@ -3,7 +3,7 @@
  * 普段（エキスパート切）はこれだけ: 依頼文 → 計画（題の一覧。開くと本文）→ 進み具合（仕事ごとに 1 行）→ 質問（その場で答える）→
  * 結果（何をしたか・確認の結果・変更ファイル数・残り・「取り込む」）。要対応（質問・止まった・上限で動けない）は一番上。
  * エキスパートでは、段の割り当て・チームリーダーの実行の記録・MCP の呼び出しの履歴・使用量を足す。 */
-import { useState, type ReactNode } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import {
   answerLeaderQuestion, askLeader, createAutoTeam, landTeam, resumeLeader, stopLeader,
   type PlanItem, type Team, type TeamTask,
@@ -11,6 +11,8 @@ import {
 import { primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
 import { MaterialAttach } from "./TeamMaterials";
+
+const MarkdownMessage = lazy(() => import("../workflows/MarkdownMessage"));
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const TIER_LABEL = { explore: "調べる", implement: "実装", review: "評価", hard: "難所" } as const;
@@ -129,7 +131,7 @@ function PlanSection({ team, expert }: { team: Team; expert: boolean }) {
       {plan.markdown && (
         <details className="mt-2 text-xs">
           <summary className="cursor-pointer text-zinc-500">計画の本文</summary>
-          <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 text-xs dark:bg-zinc-900">{plan.markdown}</pre>
+          <div className="mt-1 max-h-72 overflow-auto rounded-lg bg-zinc-50 p-2 dark:bg-zinc-900"><Suspense fallback={<pre className="whitespace-pre-wrap text-xs">{plan.markdown}</pre>}><MarkdownMessage text={plan.markdown} /></Suspense></div>
         </details>
       )}
     </section>
@@ -156,7 +158,8 @@ function ResultSection({ team, expert, onChanged }: { team: Team; expert: boolea
   return (
     <section data-team-result={result.outcome} className={`${SECTION} ${result.outcome === "done" ? "border-emerald-300 dark:border-emerald-800" : "border-red-300 dark:border-red-800"}`}>
       <h3 className={SECTION_TITLE}>結果（{result.outcome === "done" ? "完了" : "止まりました"}）</h3>
-      <p className="whitespace-pre-wrap break-words text-sm">{result.summary}</p>
+      {/* チームリーダーの報告は Markdown で書かれる（## や ** がそのまま見えていた） */}
+      <Suspense fallback={<p className="whitespace-pre-wrap break-words text-sm">{result.summary}</p>}><MarkdownMessage text={result.summary} /></Suspense>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         <dt className="text-zinc-500">確認の結果</dt><dd data-team-result-checks>{checks}</dd>
         <dt className="text-zinc-500">変更ファイル</dt>
