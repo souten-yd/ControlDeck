@@ -1065,7 +1065,10 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     const attention = page.locator("[data-team-attention]");
     await expect(attention.locator("[data-team-question]")).toContainText("パスワードの強度の規則はどうしますか");
     expect((await attention.boundingBox())!.y).toBeGreaterThan(top!.y);
-    // 時系列: 依頼 → 計画（題の一覧。開くと本文）→ 進み具合 → 結果
+    // 時系列: 依頼 → 計画（題の一覧。開くと本文）→ 進み具合 → 結果。切では「詳しく」に畳まれている（質問・結果は畳まれない）
+    await expect(page.locator("[data-team-more]")).toHaveJSProperty("open", false);
+    await expect(page.locator("[data-team-plan]")).toBeHidden();
+    await page.locator("[data-team-more-toggle]").click();
     await expect(page.locator("[data-team-request]")).toContainText("ログイン機能を作って、試験まで通して");
     const plan = page.locator("[data-team-plan]");
     await expect(plan).toContainText("現状を調べる");
@@ -1133,6 +1136,80 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect.poll(() => state.leaderCalls).toEqual(["resume"]);
     await noOverflow(page);
     await page.screenshot({ path: `test-results/commander-team-${label}-timeline-expert.png`, fullPage: true });
+  });
+
+  test(`AI チーム ${label}px: エキスパート切でも担い手の状態（作業中・待ち・止まった・済み）が色・形・文字で分かる`, async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width, height });
+    await establishSession(page, context);
+    const state = timelineTeam();
+    const team = state.teams[0];
+    const task = (id: number, title: string, status: string, assignee: string, extra: Partial<Task> = {}): Task => ({
+      id, title, goal: "", acceptance: "", files: [], assignee, status, report: null, created_at: 1, updated_at: 1, history: [], warnings: [],
+      assignee_state: "", leader_managed: true, tier: "implement", ...extra,
+    });
+    team.members = [
+      { kind: "headless", id: "h0000bbbb", role: "developer", cli: "codex", model: "gpt-a", label: "実装の係" },
+      { kind: "headless", id: "h0000cccc", role: "reviewer", cli: "claude", model: "opus", label: "評価の係" },
+      { kind: "headless", id: "h0000dddd", role: "researcher", cli: "claude", model: "sonnet", label: "調査の係" },
+      { kind: "headless", id: "h0000eeee", role: "developer", cli: "codex", model: "gpt-b", label: "難しい係" },
+    ];
+    team.tasks = [
+      task(1, "現状を調べる", "done", "h0000dddd", { tier: "explore", report: { summary: "調査を終えました", changed_files: [], tests: "", remaining: "" } }),
+      task(3, "API を作る", "doing", "h0000bbbb", { run: { run_id: "r1", status: "running", member: "h0000bbbb", cli: "codex", started_at: 1, last_line: "pytest -q を実行中", progress: [], usage: { input_tokens: 1200, output_tokens: 300, cost_usd: 0.05 }, tail: "", exit_code: null } }),
+      task(4, "全体を評価する", "doing", "h0000cccc", { tier: "review", limited_at: 1764000000 }),
+      task(5, "移行を直す", "blocked", "h0000eeee"),
+    ];
+    await mockTeams(page, state);
+    await page.goto("/commander?view=team");
+    const mission = page.locator("[data-team-mission]");
+    const expectStatus = async (id: string, kind: string, tag: string, ring: string) => {
+      const m = mission.locator(`[data-mission-member="${id}"]`);
+      await expect(m).toHaveAttribute("data-mission-status", kind);
+      await expect(m.locator("[data-status-tag]")).toHaveText(tag);          // 文字
+      await expect(m.locator("[data-avatar-ring]")).toHaveAttribute("data-avatar-ring", ring);  // 形・動き
+      return m;
+    };
+    // 動いている: 青の破線の輪がゆっくり回る（印は付かない）
+    const working = await expectStatus("h0000bbbb", "working", "作業中", "working");
+    expect(await working.locator("[data-avatar-ring] > span").first().evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe("dashed");
+    await expect(working.locator("svg")).toHaveCount(0);
+    // 待っている: 琥珀・砂時計・輪は回らない
+    const waiting = await expectStatus("h0000cccc", "waiting", "待ち", "waiting");
+    expect(await waiting.locator("[data-avatar-ring] > span").first().evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+    expect(await waiting.locator("[data-avatar-ring] > span").first().evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe("solid");
+    await expect(waiting.locator("svg")).toHaveCount(1);
+    // 止まった: 赤の実線の輪・斜線と ×（エキスパート切でも常に出る）
+    const stopped = await expectStatus("h0000eeee", "stopped", "止まった", "stopped");
+    expect(await stopped.locator("[data-avatar-ring] > span").first().evaluate((el) => getComputedStyle(el).borderTopColor)).toMatch(/^(rgb|oklch|color)/);
+    await expect(stopped.locator("svg")).toHaveCount(2);  // 斜線 + ×の印
+    // 終わった: 緑・チェックの印
+    const done = await expectStatus("h0000dddd", "done", "済み", "done");
+    await expect(done.locator("svg")).toHaveCount(1);
+    // 色だけに頼らない: 4 つの札の文字・輪の形・印の数がすべて違う
+    // エキスパート切では CLI・モデルは出ない。押すと詳細の中に出る
+    await expect(working).not.toContainText("gpt-a");
+    await working.click();
+    const details = mission.locator('[data-mission-member-details="h0000bbbb"]');
+    await expect(details).toContainText("API を作る");
+    await expect(details.locator("[data-mission-member-last]")).toContainText("pytest -q を実行中");
+    await expect(details.locator("[data-mission-member-cli]")).toContainText("gpt-a");
+    await expect(details.locator("[data-mission-member-usage]")).toContainText("1,200 入力");
+    await working.click();
+    // 止まった仕事の要対応は切のままでも出ている
+    await expect(page.locator("[data-team-stuck]")).toBeVisible();
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-mission-${label}-off-light.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-mission-${label}-off-dark.png`, fullPage: true });
+    // エキスパート入: モデルが札の下に出る
+    await page.getByRole("switch", EXPERT_SWITCH).click();
+    await expect(mission.locator('[data-mission-member="h0000bbbb"]')).toContainText("gpt-a");
+    await noOverflow(page);
+    await page.screenshot({ path: `test-results/commander-team-mission-${label}-on-dark.png`, fullPage: true });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.screenshot({ path: `test-results/commander-team-mission-${label}-on-light.png`, fullPage: true });
   });
 
   test(`AI チーム ${label}px: 資料を添えてこのチームへ頼む・メンバーの状態を開く・チームの前提を切り替える`, async ({ page, context }) => {

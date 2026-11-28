@@ -305,6 +305,24 @@ export function TeamView({
         {expert && <IconButton variant="primary" label="＋ タスク" onClick={() => setTaskSheet(true)}><IconPlus /></IconButton>}
       </div>
       <TeamMission team={team} expert={expert} consoles={consoles} consoleName={consoleName} onOpenConsole={onOpenConsole} />
+      <div className="mb-3 grid min-w-0 gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+        {team.workdir && (
+          <p data-team-workdir className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <span className="font-semibold">作業場所</span>
+            <span className="min-w-0 truncate" title={team.workdir}>{team.workdir_name || team.workdir_folder}</span>
+            {team.workdir_folder && (
+              <Link to={`/project-lab?project=${encodeURIComponent(team.workdir_folder)}`} className="font-semibold text-accent-600 underline dark:text-accent-400">Project Lab で開く</Link>
+            )}
+          </p>
+        )}
+        {Boolean(team.inputs?.length) && (
+          <p data-team-inputs className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <span className="font-semibold">資料</span>
+            <span className="num">{team.inputs!.length} 件</span>
+            {expert && <span className="min-w-0 break-all font-mono text-[11px] text-zinc-500">{team.inputs!.map((i) => i.path).join(" / ")}</span>}
+          </p>
+        )}
+      </div>
       <LeaderTimeline team={team} expert={expert} onChanged={refresh} onHandoff={setHandoffTask} />
       {showBoard && <>
       {expert && (
@@ -390,22 +408,6 @@ export function TeamView({
           {team.auto_run === false && <span className="ml-2 text-amber-700 dark:text-amber-400">自動の割り当て: オフ</span>}
           <span className="ml-2 text-zinc-500">{team.on_limit === "wait" ? "上限: 回復を待つ" : "上限: 別の担い手へ引き継ぐ"}</span>
         </p>}
-        {team.workdir && (
-          <p data-team-workdir className="flex min-w-0 flex-wrap items-center gap-x-2">
-            <span className="font-semibold">作業場所</span>
-            <span className="min-w-0 truncate" title={team.workdir}>{team.workdir_name || team.workdir_folder}</span>
-            {team.workdir_folder && (
-              <Link to={`/project-lab?project=${encodeURIComponent(team.workdir_folder)}`} className="font-semibold text-accent-600 underline dark:text-accent-400">Project Lab で開く</Link>
-            )}
-          </p>
-        )}
-        {Boolean(team.inputs?.length) && (
-          <p data-team-inputs className="flex min-w-0 flex-wrap items-center gap-x-2">
-            <span className="font-semibold">資料</span>
-            <span className="num">{team.inputs!.length} 件</span>
-            {expert && <span className="min-w-0 break-all font-mono text-[11px] text-zinc-500">{team.inputs!.map((i) => i.path).join(" / ")}</span>}
-          </p>
-        )}
       </div>
 
       <div className="grid min-w-0 gap-3 md:grid-cols-4">
