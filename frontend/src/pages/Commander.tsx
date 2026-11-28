@@ -8,15 +8,16 @@
 import { lazy, Suspense, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { closeConsole, fetchClis, fetchConsoles, fetchTeams, type CommanderConsole } from "../api/commander";
+import { closeAllConsoles, closeConsole, commanderErrorText, fetchClis, fetchConsoles, fetchTeams, type CommanderConsole } from "../api/commander";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skeleton, DropdownMenu } from "../components/ui";
+import { ConfirmDialog, EmptyState, IconButton, SegmentedTabs, Skeleton, DropdownMenu, type MenuItem } from "../components/ui";
 import { IconDots, IconListRows, IconPlus, IconTilesPreview } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ConsoleRow, ConsoleTile } from "../features/commander/ConsoleTile";
 import { TeamView } from "../features/commander/TeamView";
 import { NewConsoleSheet } from "../features/commander/NewConsoleSheet";
 import { AccountsSheet } from "../features/commander/AccountsSheet";
+import { AutoRestoreSheet } from "../features/commander/AutoRestoreSheet";
 import { GlobalResumeMessageSheet } from "../features/commander/ResumeMessageSheet";
 import { ExpertSwitch, HandoffSheet, TeamDefaultsSheet, useExpert } from "../features/commander/TeamRoles";
 import { useToasts } from "../stores";
@@ -68,6 +69,9 @@ export default function CommanderPage() {
   const [newSheet, setNewSheet] = useState(false);
   const [accountsSheet, setAccountsSheet] = useState(false);
   const [resumeSheet, setResumeSheet] = useState(false);
+  const [restoreSheet, setRestoreSheet] = useState(false);
+  const [bulkClosing, setBulkClosing] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [defaultsSheet, setDefaultsSheet] = useState(false);
   const [handoffFor, setHandoffFor] = useState<{ teamId: string; taskId: number } | null>(null);
   const expert = useExpert();
@@ -110,15 +114,37 @@ export default function CommanderPage() {
   const invalidate = () => qc.invalidateQueries({ queryKey: ["commander-consoles"] });
 
   const kill = async (item: CommanderConsole) => {
+    if (item.commander_locked) {
+      show("ロック中です。先にロックを外してください", "info");
+      setClosing(null);
+      return;
+    }
     try {
       await closeConsole(item.id);
       invalidate();
       if (expanded === item.id) setExpanded(null);
       show("コンソールを閉じました");
     } catch (e) {
-      show(e instanceof Error ? e.message : "閉じられませんでした", "error");
+      show(commanderErrorText(e, "閉じられませんでした"), "error");
     }
     setClosing(null);
+  };
+
+  const closeAll = async () => {
+    setBulkBusy(true);
+    try {
+      const result = await closeAllConsoles();
+      invalidate();
+      const skipped = result.skipped_locked > 0
+        ? `（ロック中の ${result.skipped_locked} 個は閉じていません。ロックを外してからもう一度閉じてください）`
+        : "";
+      show(`${result.closed} 個のコンソールを閉じました${skipped}`, result.skipped_locked > 0 ? "info" : "success");
+      setBulkClosing(false);
+    } catch (e) {
+      show(commanderErrorText(e, "閉じられませんでした"), "error");
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   // 全画面表示（タイルを大きく開く・モバイルで 1 つ選ぶ）
@@ -140,17 +166,25 @@ export default function CommanderPage() {
   }
 
   const items = consoles ?? [];
+  const lockedCount = items.filter((item) => item.commander_locked).length;
+  const menuItems: MenuItem[] = [
+    { label: "アカウントの管理", onSelect: () => setAccountsSheet(true) },
+    { label: "自動再開の文言（全体）", onSelect: () => setResumeSheet(true) },
+    { label: "チームの既定（チームリーダー・保存先）", onSelect: () => setDefaultsSheet(true) },
+  ];
+  // 細かい全体設定はエキスパートのときだけ出す（既定は隠す）。
+  if (expert) menuItems.push({ label: "自動で戻す（全体）", onSelect: () => setRestoreSheet(true) });
+  // 一括で閉じる。ロック中は飛ばし、その数を確認と結果に出す。
+  if (section === "consoles" && items.length > 0) {
+    menuItems.push({ label: "すべてのコンソールを閉じる", danger: true, separated: true, onSelect: () => setBulkClosing(true) });
+  }
   return (
     <div className="mx-auto max-w-7xl p-4 md:p-6">
       <PageHeader title="Nexarch" actions={<>
         <DropdownMenu
           ariaLabel="その他の操作"
           trigger={<IconDots />}
-          items={[
-            { label: "アカウントの管理", onSelect: () => setAccountsSheet(true) },
-            { label: "自動再開の文言（全体）", onSelect: () => setResumeSheet(true) },
-            { label: "チームの既定（チームリーダー・保存先）", onSelect: () => setDefaultsSheet(true) },
-          ]}
+          items={menuItems}
         />
         {section === "consoles" && (
           <IconButton variant="primary" label="＋ コンソール" onClick={() => setNewSheet(true)}>
@@ -230,9 +264,25 @@ export default function CommanderPage() {
           onClose={() => setClosing(null)}
         />
       )}
+      {bulkClosing && (
+        <ConfirmDialog
+          title="すべてのコンソールを閉じますか？"
+          message={items.length - lockedCount === 0
+            ? `すべてのコンソール（${lockedCount} 個）がロック中です。閉じるには、先にロックを外してください。`
+            : lockedCount > 0
+              ? `ロック中の ${lockedCount} 個は閉じずに残します。残りの ${items.length - lockedCount} 個を閉じます。ロック中のものは、ロックを外してから閉じてください。`
+              : `${items.length} 個のコンソールを閉じます。実行中の CLI は終了します。この操作は取り消せません。`}
+          confirmLabel="閉じる"
+          busy={bulkBusy}
+          disabled={lockedCount > 0 && items.length - lockedCount === 0}
+          onConfirm={() => void closeAll()}
+          onClose={() => setBulkClosing(false)}
+        />
+      )}
       {newSheet && <NewConsoleSheet clis={clis} onClose={() => setNewSheet(false)} />}
       {accountsSheet && <AccountsSheet clis={clis} onClose={() => setAccountsSheet(false)} />}
       {resumeSheet && <GlobalResumeMessageSheet onClose={() => setResumeSheet(false)} />}
+      {restoreSheet && <AutoRestoreSheet onClose={() => setRestoreSheet(false)} />}
       {defaultsSheet && <TeamDefaultsSheet expert={expert} onClose={() => setDefaultsSheet(false)} />}
       {handoffFor && handoffTeam && handoffTask && (
         <HandoffSheet

@@ -3,12 +3,16 @@
  * 頭に CLI の名前・アカウント・表示名・生きているか・最終活動を出し、
  * 中身は既存の XtermView を埋め込み表示（embedded）で収める。
  * 頭を押すと全画面で大きく開く。 */
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useState, type MouseEvent } from "react";
 import { ConsoleResumeMessageSheet } from "./ResumeMessageSheet";
 import { UsageLine } from "./UsageLine";
 import { useQueryClient } from "@tanstack/react-query";
-import { accountTitle, setConsoleAutoResume, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
+import {
+  accountTitle, commanderErrorText, setConsoleAutoResume, setConsoleLock, STATE_LABEL,
+  type CommanderConsole, type CommanderState,
+} from "../../api/commander";
 import { useToasts } from "../../stores";
+import { IconLock, IconLockOpen } from "../../components/icons";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -87,6 +91,66 @@ function AutoResume({ item, cliName }: { item: CommanderConsole; cliName: string
       </button>
       {editing && <ConsoleResumeMessageSheet item={item} cliName={cliName} onClose={() => setEditing(false)} />}
     </span>
+  );
+}
+
+/** ロックの切り替え。既定はロックなし。押すたびに切り替え、ロック中は閉じるを止める。
+ * 状態は aria-pressed と鍵の絵（閉・開）で示す。 */
+function LockButton({ item, cliName }: { item: CommanderConsole; cliName: string }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const [busy, setBusy] = useState(false);
+  const locked = item.commander_locked === true;
+  const toggle = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await setConsoleLock(item.id, !locked);
+      qc.invalidateQueries({ queryKey: ["commander-consoles"] });
+      show(result.locked
+        ? "ロックしました。ロック中のコンソールは閉じられません"
+        : "ロックを外しました");
+    } catch (error) {
+      show(commanderErrorText(error, "ロックを切り替えられませんでした"), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      data-commander-lock={locked ? "on" : "off"}
+      aria-pressed={locked}
+      aria-label={locked ? `${cliName}のロック中（押すとロックを外す）` : `${cliName}のロックなし（押すとロックする）`}
+      title={locked ? "ロック中。閉じるには先にロックを外してください" : "ロックすると、勝手に閉じられないようにします"}
+      disabled={busy}
+      onClick={(event) => void toggle(event)}
+      className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-base disabled:opacity-40 ${
+        locked
+          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+          : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+      }`}
+    >
+      {locked ? <IconLock className="h-4 w-4" /> : <IconLockOpen className="h-4 w-4" />}
+    </button>
+  );
+}
+
+/** 閉じるのボタン。ロック中は押せない（理由を読み上げ名と説明に出す）。 */
+function CloseButton({ item, cliName, onClose }: { item: CommanderConsole; cliName: string; onClose: () => void }) {
+  const locked = item.commander_locked === true;
+  return (
+    <button
+      type="button"
+      onClick={onClose}
+      disabled={locked}
+      aria-label={locked ? `${cliName}のコンソールはロック中で閉じられません` : `${cliName}のコンソールを閉じる`}
+      title={locked ? "ロック中は閉じられません。先にロックを外してください" : "コンソールを閉じる"}
+      className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent dark:text-red-400 dark:hover:bg-red-950/40"
+    >
+      🗑️
+    </button>
   );
 }
 
@@ -171,15 +235,8 @@ export function ConsoleTile({
         >
           ⤢
         </button>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={`${cliName}のコンソールを閉じる`}
-          title="コンソールを閉じる"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-        >
-          🗑️
-        </button>
+        <LockButton item={item} cliName={cliName} />
+        <CloseButton item={item} cliName={cliName} onClose={onClose} />
       </div>
       <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800">
         <AutoResume item={item} cliName={cliName} />
@@ -245,15 +302,8 @@ export function ConsoleRow({
       >
         開く
       </button>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label={`${cliName}のコンソールを閉じる`}
-        title="コンソールを閉じる"
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-      >
-        🗑️
-      </button>
+      <LockButton item={item} cliName={cliName} />
+      <CloseButton item={item} cliName={cliName} onClose={onClose} />
       </div>
       <div className="pl-4">
         <AutoResume item={item} cliName={cliName} />
