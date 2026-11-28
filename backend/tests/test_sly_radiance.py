@@ -213,3 +213,29 @@ def test_stop_removes_a_container_left_in_removing(monkeypatch):
     monkeypatch.setattr(cr.subprocess, "run", lambda argv, **kw: calls.append(argv) or Done(1 if argv[1:3] == ["container", "exists"] else 0))
     cr.stop_unit("u.service", "cd-sly-radiance-x", "Sly-Radiance")
     assert not any(a[1:2] == ["rm"] for a in calls)
+
+
+def test_prefix_cache_is_always_on_in_both_layers(managed):
+    """目的: Sly の prefix cache を切る値を保存 API の型（router）と save_instance の両層で断り、
+    古い設定に false が残っていても起動 argv（serve_args）には必ず付けること。
+
+    根拠: 利用者の決まり（2026-11-28）「Sly の prefix cache は常時オン。切る選択肢・false 値を
+    受け付けない」。片方だけの守りだと、API を迂回した保存や古い記録で切れてしまう。
+    """
+    from pydantic import ValidationError
+
+    from app.models_mgmt import router as models_router
+
+    model, _ = managed
+    with pytest.raises(sly.SlyRadianceError):
+        sly.save_instance("noprefix", model_path=str(model), port=8100, prefix_cache=False)
+    with pytest.raises(ValidationError):
+        models_router.SlyRadianceModelBody(
+            alias="noprefix2", model_path=str(model), port=8101, prefix_cache=False)
+
+    sly.save_instance("q", model_path=str(model), port=8102)
+    cfg = dict(sly._read()["q"])
+    cfg["prefix_cache"] = False                 # 古い記録に残った false
+    args = sly.serve_args("q", cfg)
+    assert args.count("--enable-prefix-caching") == 1
+    assert "--disable-prefix-caching" not in args

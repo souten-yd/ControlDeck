@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 278 ファイル、2872 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2897 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -1756,6 +1756,10 @@
 - `test_download_saves_under_repo_directory_and_can_register`
 - `test_download_skips_files_already_present`
 - `test_presets_find_files_across_libraries` — 既定ライブラリが変わっても、別の場所にある既存GGUFを再取得しない。
+- `test_empty_files_takes_every_top_level_file_and_reads_its_size_at_start` — 目的: 目録の行から始まる files=[] の取得が、repo の最上位ファイル全部を落とし、
+- `test_part_is_kept_on_stop_and_removed_on_cancel` — 目的: 途中のファイル（.part）を、停止・サーバー停止では残し、取り消しでは消すこと。
+- `test_redirect_keeps_token_only_on_the_first_host` — 目的: 取得の redirect で、gated repo のトークン（Authorization）を CDN など別ホストへ
+- `test_download_rejects_bad_repo_revision_and_escaping_paths` — 目的: 取得の repo・revision・ファイル名の不正値（パスの逃げ出し・URL への細工）を、
 
 ### backend/tests/test_hf_search.py
 
@@ -1832,6 +1836,9 @@
 - `test_resumable_job_saves_only_resume_params_privately` — 目的: 再開できる Job の作成で、再開に要る引数だけを 0600 の JSON に残すこと。
 - `test_finished_resumable_job_forgets_record` — 目的: 成功・失敗で終わった Job の再開用の記録を消すこと。
 - `test_canceled_resumable_job_is_not_resumed` — 目的: 利用者が止めた Job の記録は消し、再起動の後に勝手に再開しないこと。
+- `test_stop_keeps_the_record_and_resume_starts_a_new_job` — 目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
+- `test_resume_stopped_refuses_a_concurrent_second_request` — 目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
+- `test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record` — 目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
 - `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
 - `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
 - `test_startup_stops_after_three_resume_attempts` — 目的: 自動の再開を 3 回試したら、それ以上作り直さず理由を Job に残すこと。
@@ -3554,6 +3561,28 @@
 - `test_every_tmux_injection_file_is_a_tmux_owner`
 - `test_route_map_doc_matches_the_data`
 
+### backend/tests/test_runtime_catalog.py
+
+目的: ランタイム共通の目録・設定の形・ファイルからの登録の読み取り（run3 共通バックエンド API）。 目的: Models 画面の共通部品（RuntimeCatalog・RuntimeSettings・RuntimeRegisterFromFile）が 読む 3 つの API を守る。 - 目録は全ランタイムを並べ、載せる repo は確認済みのものだけにする。大きさの分からない行は size_gib を null にし、推測値（URL・大きさ・sha）を書かない（取得の開始時に HF の API から読む）。 - 設定の形は 6 つの並びを全ランタイムで揃え、欄の id・選択肢・上限を実際の保存 API （LlamaInstanceBody・RadianceModelBody・SlyRadianceModelBody・StrataModelBody・ MayaInstanceSettingsBody / MayaRegisterBody）と一致させる。 ランタイムに無い欄（Sly の prefix cache など）は出さず、always_on に理由を書く。 - ファイルからの登録は新規選択を /data1tb と /data2tb の中だけにし、realpath で symlink の 外抜けを断る。GGUF ヘッダ・config.json は読む量と件数を制限して読む。 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。
+
+- `test_catalog_has_every_runtime_and_no_guessed_sizes` — 目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
+- `test_catalog_entries_are_looked_up_by_runtime` — 目的: 取得の API が目録の行をランタイム＋id で引けること（別ランタイムの id を混ぜない）。
+- `test_capabilities_share_the_same_section_order` — 目的: 全ランタイムの設定画面が同じ 6 つの並びで出ること（バラバラにしない）。
+- `test_capability_fields_match_the_save_api` — 目的: 設定の欄の id・選択肢・上限を、実際の保存 API の検証と同じにすること。
+- `test_capability_ids_are_unique_and_defaults_fit_the_choices` — 目的: 同じ設定を 2 つの節に出さないこと。数値の既定が範囲内・選択の既定が選択肢内に
+- `test_acquire_register_rejects_what_the_sly_save_api_rejects` — 目的: 取得ジョブの登録引数（AcquireRegister）が、Sly-Radiance の保存 API と同じ値を
+- `test_maya_capabilities_survive_a_broken_settings_file` — 目的: Maya の settings.json が壊れていても、既定へ戻して共通の設定 API を返すこと。
+- `test_sly_prefix_cache_is_always_on_and_has_no_field` — 目的: Sly の prefix cache を切る欄を設定の形に出さず、常時オンとだけ注記すること。
+- `test_radiance_speculative_tokens_defaults_to_auto` — 目的: Radiance の先読みの既定を保存 API と同じ「自動（null）」にすること。
+- `test_inspect_reads_gguf_header_and_says_which_runtimes_can_use_it` — 目的: GGUF を選んだとき、ヘッダから量子化・文脈長・系列を読み、使えるランタイムを返すこと。
+- `test_inspect_reads_a_safetensors_folder_config` — 目的: config.json のあるフォルダを Sly 用（safetensors）と判定し、量子化の方式を読むこと。
+- `test_new_selection_is_refused_outside_the_allowed_roots` — 目的: 新規の選択・登録を /data1tb と /data2tb の中だけにし、symlink で外へ抜けさせないこと。
+- `test_broken_gguf_does_not_stop_the_register_screen` — 目的: 壊れたファイル・GGUF でないファイルでも例外にせず、形式 unknown として返すこと。
+- `test_common_models_api_is_exposed` — 目的: 目録・設定の形・ファイルの読み取りが認証つきの API から見えること。
+- `test_acquire_rejects_rows_without_a_hf_repo_and_maya_register` — 目的: HF から取れない行（Strata など）と Maya の取得後登録を共通 API で断ること。
+- `test_acquire_job_reads_sizes_at_start_and_keeps_the_runtime` — 目的: 目録の行から作る取得 Job が、大きさを推測せず開始時に読み、登録先のランタイムを残すこと。
+- `test_rad_file_is_offered_to_radiance_only` — 目的: Radiance の .rad を Sly-Radiance（safetensors フォルダ）へ、Sly のフォルダを
+
 ### backend/tests/test_runtime_policy.py
 
 目的: **未記入**
@@ -3713,6 +3742,7 @@
 - `test_shared_with_radiance_runtime_groups`
 - `test_a_loaded_sly_model_is_freed_for_another_runtime`
 - `test_stop_removes_a_container_left_in_removing` — 停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
+- `test_prefix_cache_is_always_on_in_both_layers` — 目的: Sly の prefix cache を切る値を保存 API の型（router）と save_instance の両層で断り、
 
 ### backend/tests/test_speech_engines.py
 
