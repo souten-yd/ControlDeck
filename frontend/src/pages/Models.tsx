@@ -13,6 +13,7 @@ import { FilePicker } from "../components/FilePicker";
 import { IconDots, IconFolder, IconPlay, IconPlus, IconSearch, IconSettings, IconStop, IconTrash } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import { ModelLibraryPanel } from "../features/models/ModelLibraryPanel";
+import { DOWNLOAD_KINDS, DownloadsPanel } from "../features/models/DownloadsPanel";
 import { ThinkingControl } from "../features/models/ThinkingControl";
 import { HuggingFaceDownload } from "../features/models/HuggingFaceDownload";
 import { CapacityWidget } from "../features/models/CapacityWidget";
@@ -310,7 +311,9 @@ function ActiveModelJobs({ tab }: { tab: string }) {
     queryFn: () => api<JobInfo[]>("/jobs?kind=model."),
   });
   // 埋め込み・reranker の導入（model.preset）は「Embed / Reranker」に、それ以外は LLM の画面に出す
+  // モデルの取得（HF・Maya・pull）は上の「ダウンロード中」（DownloadsPanel）にまとめるので、ここには出さない
   const running = (data ?? []).filter((j) => (j.status === "queued" || j.status === "running")
+    && !DOWNLOAD_KINDS.includes(j.kind)
     && (tab === "embed") === (j.kind === "model.preset"));
   if (running.length === 0) return null;
   return (
@@ -550,6 +553,8 @@ export default function ModelsPage() {
               onClick={() => isLocal ? setRegisterOpen(true) : setPulling(true)}><IconPlus /></IconButton>
           )}
         </>} />
+      {/* 走っているモデルの取得（今の量・速度・何個目のファイルか）。無ければ出さない（2026-11-28） */}
+      <DownloadsPanel />
       {/* タブ: ローカル（LLM/VLM・Embed/Reranker）と、外部のフロンティアモデル。
           外部は送信先が違うので、ローカルのモデルとは混ぜずに別のタブにする。 */}
       <SegmentedTabs

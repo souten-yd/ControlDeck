@@ -258,7 +258,17 @@ def test_download_fetches_only_the_manifest_files_at_the_pinned_revision(engine,
                 p.write_bytes(b"x" * 10)
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(maya_s.subprocess, "run", fake_run)
+    class FakePopen:
+        """取得は Popen で走らせ、終わるまでの間に進み具合を数える（2026-11-28）。ここではすぐ終わる。"""
+
+        def __init__(self, argv, **kwargs):
+            fake_run(argv)
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(maya_s.subprocess, "Popen", FakePopen)
     item, got = maya_s._download("deepseek-maya-xs", str(base))
     argv = seen[0]
     assert got == root and argv[:3] == ["/usr/bin/hf", "download", "peasantsmith/ds"]

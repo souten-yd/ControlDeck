@@ -391,6 +391,10 @@ export interface CapabilityField {
   default: unknown;
   expert: boolean;
   choices?: Array<string | number>;
+  /** 別の欄の値ごとの選択肢（Strata の量子化は系列ごと） */
+  choices_by?: { field: string; map: Record<string, Array<string | number>> };
+  /** 選択肢の表示名（無ければ値そのもの） */
+  choice_labels?: Record<string, string>;
   min?: number;
   max?: number;
   step?: number;

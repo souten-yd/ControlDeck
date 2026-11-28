@@ -86,3 +86,30 @@ jobs.register_resumable(
     cleanup=_hf_cleanup,
 )
 jobs.register_resumable("model.strata.start", strata_start_runner, title=strata_start_title)
+
+
+# ---------------------------------------------------------------- Maya の「ダウンロードして登録」
+# 2026-11-28: 本体の自動更新（5 分ごと・強制）の再起動で、走っていた Maya の取得（hf download）が止められ、
+# 続きが取られなかった（利用者「自動再開機能は有効なのに効いていない」）。hf download は途中のファイル
+# （.incomplete）から続きを取れるので、同じ引数で作り直す。
+
+
+def maya_download_runner(params: dict[str, Any]) -> Callable[[jobs.Job], Awaitable[Any]]:
+    async def run(job: jobs.Job) -> dict:
+        from app.models_mgmt import maya_s
+
+        state = await maya_s.download_and_register_stream(
+            job, setup_id=str(params["setup_id"]), folder=str(params["folder"]),
+            context=int(params.get("context") or 65536), gpu_index=int(params.get("gpu_index") or 0),
+            replace=str(params.get("replace") or ""))
+        job.set_progress("ダウンロードして登録しました", 3, 3)
+        return state
+
+    return run
+
+
+def maya_download_title(params: dict[str, Any]) -> str:
+    return f"Mayaダウンロード {params.get('setup_id', '')}"
+
+
+jobs.register_resumable("model.maya-s.download", maya_download_runner, title=maya_download_title)

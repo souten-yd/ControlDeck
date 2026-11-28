@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 288 ファイル、3057 テスト（目的の未記入 93 ファイル）
-- E2E: 155 spec、367 テスト
+- backend: 289 ファイル、3060 テスト（目的の未記入 93 ファイル）
+- E2E: 155 spec、369 テスト
 
 ## backend（backend/tests）
 
@@ -2582,6 +2582,14 @@
 - `test_names_are_saved_per_runtime_and_alias_and_blank_restores_default`
 - `test_strata_lists_file_names_and_custom_names`
 
+### backend/tests/test_model_download_progress.py
+
+目的: 目的: モデルの取得が、再起動の後も続き（Maya）、進み具合（今の量・全体・何個目のファイルか）を画面に渡せること。 Strata の量子化の選択肢が系列ごとであること。 根拠: 2026-11-28 利用者「インクリングの SQ20 って Q2 なの？」「ダウンロードが進んでいるのか分からない。今の量・最大・ 速度・何分の何かを分かるように」「自動再開機能は有効なのに効いていない」（本体の自動更新の再起動で Maya の取得の hf download が止められ、続きが取られなかった）。
+
+- `test_maya_download_is_resumable_after_a_restart` — Maya の「ダウンロードして登録」は再開の種類に登録されている（再起動の後、同じ引数で作り直す）。
+- `test_maya_folder_bytes_counts_partial_files_and_skips_symlinks` — 取得中の量は途中のファイル（.incomplete）も数え、symlink は辿らない。
+- `test_strata_quantization_choices_follow_the_family` — 量子化の選択肢は系列ごと（Inkling の SQ-20 を選ぶと、画面が qwen の一覧の先頭「q2_0」を出していた）。
+
 ### backend/tests/test_model_download_root.py
 
 目的: 目的: 目録の「取得して登録」（Maya）が、まだ無い取得先のフォルダを安全に作れること。モデルの置き場（ライブラリ）は /data1tb・/data2tb の中だけにすること。 根拠: 2026-11-28 利用者（スマホの写真）「ダウンロードしようとしたら存在しないと出る」（存在しません: /data1tb/LLM/GLM-5.3-Flash-Maya-GGUF）。Maya の取得は既にあるフォルダが前提だった。同日「LLM のダウンロードフォルダの ルートは data1tb と data2tb のフォルダにしてください」。
@@ -5125,6 +5133,8 @@
 - Maya: GLM・DeepSeek・MiniMax・Hy4 を取得して登録（${width}px ${scheme}）
 - llama.cpp は目録を出さず、手元のファイルを選んで登録する
 - Radiance: 作者の文章の LLM を系列ごとに・無検閲の切り替え・開発者のメモが出ない
+- Models のメイン画面: ダウンロード中の取得をまとめて出す（320px）
+- Strata の設定: 量子化の選択肢は系列ごと
 
 ### frontend/e2e/model-display-name.spec.ts
 

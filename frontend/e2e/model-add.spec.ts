@@ -59,7 +59,7 @@ async function mock(page: Page, calls: string[]) {
   await page.route("**/api/v1/models/register/inspect*", (r) => r.fulfill({ json: {
     path: new URL(r.request().url()).searchParams.get("path"), kind: "file", format: "gguf", alias_suggestion: "qwen3.8-27b",
     size_bytes: 17_600_000_000, metadata: { quantization: "UD-Q4_K_XL" },
-    runtimes: [{ runtime: "llama", eligible: true, reason: "", register_endpoint: "/api/v1/models/llama/instances" }] } }));
+    runtimes: ["llama", "strata"].map((runtime) => ({ runtime, eligible: true, reason: "", register_endpoint: `/api/v1/models/${runtime}/instances` })) } }));
   await page.route("**/api/v1/models/acquire-jobs", (r) => {
     calls.push(`acquire:${r.request().postDataJSON().entry_id}`);
     return r.fulfill({ status: 201, json: { job_id: "job-e2e", repo: "x/y" } });
@@ -179,4 +179,59 @@ test("Radiance: 作者の文章の LLM を系列ごとに・無検閲の切り�
   await expect(q27.getByRole("radio")).toHaveCount(2);
   await noForbidden(sheet);
   await page.screenshot({ path: "test-results/model-add-radiance-390.png" });
+});
+
+// 目的: Models のメイン画面に「ダウンロード中」をまとめて出し、今の量・全体・何個目のファイルかが分かること。
+// 根拠: 2026-11-28 利用者「ダウンロードが進んでいるのか分からない。メインのところにダウンロード中と、速度・容量の最大と
+//       今・何分の何かが分かるように」。
+test("Models のメイン画面: ダウンロード中の取得をまとめて出す（320px）", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E 資格情報がありません");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await establishSession(page, context);
+  await mock(page, []);
+  const job = {
+    id: "dl-1", kind: "model.maya-s.download", title: "Mayaダウンロード Hy4-Flash · Maya-L", status: "running",
+    progress: { status: "Hy4-Flash · Maya-L をダウンロード中（2/5 ファイル・/data2tb/LLM/Hy4-Flash-Maya-GGUF）",
+      completed: 41_000_000_000, total: 152_900_000_000 }, error: "", can_resume: false,
+  };
+  await page.route("**/api/v1/jobs?kind=model.*", (r) => r.fulfill({ json: [job] }));
+  await page.route("**/api/v1/jobs/dl-1", (r) => r.fulfill({ json: job }));
+  await page.goto("/models");
+  const panel = page.locator("[data-model-downloads]");
+  await expect(panel).toContainText("ダウンロード中");
+  await expect(panel).toContainText("2/5 ファイル");
+  await expect(panel).toContainText("41.0 GB / 152.9 GB");
+  await expect(panel).toContainText("27%");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+  await page.screenshot({ path: "test-results/model-downloads-320.png" });
+});
+
+// 目的: Strata の量子化の選択肢が系列ごと（Inkling を選ぶと SQ-20 などが出て、qwen の「q2_0」を出さない）。
+// 根拠: 2026-11-28 利用者（写真）「インクリングの SQ20 って Q2 なの？ちゃんと取れてるのかが分からない」。
+test("Strata の設定: 量子化の選択肢は系列ごと", async ({ page, context }) => {
+  test.skip(!hasSession(), "E2E 資格情報がありません");
+  await page.setViewportSize({ width: 390, height: 900 });
+  const sheet = await openSheet(page, context, []);
+  // 設定の形は、シートを開いた後に足す（後から足した route が先に効く）
+  await page.route("**/api/v1/models/settings/capabilities", (r) => r.fulfill({ json: { runtimes: { strata: { sections: [
+    { id: "model", label: "モデル", fields: [
+      { id: "alias", label: "モデル名", type: "text", default: "", expert: false },
+      { id: "family", label: "系列", type: "select", default: "qwen", expert: false, choices: ["qwen", "inkling-2-mini"],
+        choice_labels: { qwen: "Qwen3.8-Flash-Next", "inkling-2-mini": "Inkling-2-Mini" } },
+      { id: "model", label: "量子化", type: "select", default: "iq2_xs", expert: false, choices: ["q2_0", "iq2_xs"],
+        choices_by: { field: "family", map: { qwen: ["q2_0", "iq2_xs"], "inkling-2-mini": ["sq-20", "sq-15"] } },
+        choice_labels: { q2_0: "Q2_0", iq2_xs: "IQ2_XS", "sq-20": "SQ-20", "sq-15": "SQ-15" } },
+    ] }], always_on: [], endpoints: {} } } } }));
+  await sheet.getByRole("button", { name: "Strata", exact: true }).click();
+  await sheet.getByRole("button", { name: "ファイルから登録", exact: true }).click();
+  await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
+  const picker = page.getByRole("dialog", { name: /モデルのファイルを選択/ });
+  await picker.getByRole("button", { name: "/data2tb", exact: true }).click();
+  await picker.getByRole("button", { name: "Qwen3.8-27B-UD-Q4_K_XL.gguf" }).click();
+  await sheet.locator('[data-runtime-register-file="strata"]').getByRole("button", { name: "登録する" }).click();
+  const settings = sheet.locator('[data-runtime-settings="strata"]');
+  await settings.getByLabel("系列").selectOption("inkling-2-mini");
+  await expect(settings.getByLabel("量子化")).toHaveValue("sq-20");
+  await expect(settings.getByLabel("量子化").locator("option")).toHaveText(["SQ-20", "SQ-15"]);
+  await expect(settings.getByLabel("系列").locator("option:checked")).toHaveText("Inkling-2-Mini");
 });

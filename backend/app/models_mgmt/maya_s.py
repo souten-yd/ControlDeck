@@ -14,11 +14,13 @@ from functools import wraps
 import json
 import logging
 import os
+import stat
 import platform
 import re
 import socket
 import shutil
 import subprocess
+import time
 import sys
 import tempfile
 import urllib.request
@@ -1416,6 +1418,20 @@ def _wanted(item: dict) -> list[dict]:
     return [f for f in item.get("files") or [] if f.get("required") or f.get("what") == "drafter"]
 
 
+def _folder_bytes(root: Path) -> int:
+    """取得先の中のファイルの合計（途中のファイル .incomplete を含む。symlink は辿らない）。"""
+    total = 0
+    for dirpath, _dirs, names in os.walk(root, followlinks=False):
+        for name in names:
+            try:
+                st = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            if not stat.S_ISLNK(st.st_mode):
+                total += st.st_size
+    return total
+
+
 def _download_plan(item: dict, folder: Path) -> dict:
     """Size, destination and free space for 「ダウンロードして登録」 (shown before the owner agrees)."""
     root = _download_root(item, folder)
@@ -1478,15 +1494,30 @@ def _download(setup_id: str, folder: str, job=None) -> tuple[dict, Path]:
         if job:
             job.set_progress(f"{display_name(item)} をダウンロード中（約{plan['download_gb']}GB → {root}）", 0, 3)
         log = root.parent / f".maya-download-{setup_id}.log" if os.access(root.parent, os.W_OK) else root / ".maya-download.log"
+        wanted = _wanted(item)
+        start_bytes = _folder_bytes(root)
+        total_bytes = start_bytes + int(float(plan["download_gb"]) * 1e9)
         try:
             with log.open("w", encoding="utf-8") as stream:
-                result = subprocess.run(argv, cwd=str(root), stdin=subprocess.DEVNULL, stdout=stream,
-                                        stderr=subprocess.STDOUT, timeout=48 * 3600, check=False,
-                                        env={**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"})
-        except (OSError, subprocess.TimeoutExpired) as exc:
+                proc = subprocess.Popen(argv, cwd=str(root), stdin=subprocess.DEVNULL, stdout=stream,
+                                        stderr=subprocess.STDOUT, env={**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"})
+                deadline = time.monotonic() + 48 * 3600
+                # 取得中はフォルダの中の量を数えて、今の量・全体・ファイルの何個目かを進み具合に出す
+                # （2026-11-28 利用者「ダウンロードが進んでいるのか分からない」）。hf download は進み具合を返さない。
+                while proc.poll() is None:
+                    if time.monotonic() > deadline:
+                        proc.kill()
+                        raise MayaError("ダウンロードが 48 時間で終わりませんでした。もう一度実行すると続きから取ります")
+                    time.sleep(3)
+                    if job:
+                        present = sum(1 for f in wanted if Path(str(f.get("path") or "")).is_file())
+                        job.set_progress(f"{display_name(item)} をダウンロード中（{present}/{len(wanted)} ファイル・{root}）",
+                                         min(_folder_bytes(root), total_bytes), total_bytes)
+                returncode = proc.returncode
+        except OSError as exc:
             raise MayaError("ダウンロードを実行できませんでした") from exc
-        if result.returncode:
-            raise MayaError(f"ダウンロードに失敗しました（exit {result.returncode}）。もう一度実行すると続きから取ります。{log}")
+        if returncode:
+            raise MayaError(f"ダウンロードに失敗しました（exit {returncode}）。もう一度実行すると続きから取ります。{log}")
     item = next(q for q in catalog(str(root))["quants"] if q["setup_id"] == setup_id)
     missing = [f["name"] for f in _wanted(item) if not f.get("present")]
     if missing:

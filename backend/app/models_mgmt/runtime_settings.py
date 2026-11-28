@@ -355,16 +355,22 @@ def _strata() -> dict:
     default_model = "iq2_xs" if "iq2_xs" in quants else (quants[0] if quants else "")
     contexts = [f"{value}k" for value in (4, 8, 16, 32, 64, 128, 256, 512, 1024)
                 if strata_gateway.valid_context(f"{value}k")]
+    # 量子化の選択肢は系列ごと（choices_by）。全部を qwen の一覧にしていたため、Inkling の SQ-20 を選ぶと
+    # 画面が一覧の先頭の「q2_0」を出していた（2026-11-28 利用者「インクリングの SQ20 って Q2 なの？」）。
+    family_field = _api_field(body, "family", "系列", "select", default=default_family, choices=family_ids)
+    family_field["choice_labels"] = {f.id: f.short_name for f in families}
+    model_field = _api_field(body, "model", "量子化", "select", default=default_model, choices=quants)
+    model_field["choices_by"] = {"field": "family", "map": {
+        f.id: [q.id for q in strata_catalog.quantizations(f.id)] for f in families}}
+    model_field["choice_labels"] = {q.id: q.label for f in families for q in strata_catalog.quantizations(f.id)}
     return {
         "sections": [
             _section("model", [
                 _api_field(body, "alias", "モデル名", "text", default=""),
-                _api_field(body, "family", "系列", "select", default=default_family,
-                           choices=family_ids, note="GET /api/v1/models/strata/catalog（既存の目録）"),
-                _api_field(body, "model", "量子化", "select", default=default_model,
-                           choices=quants, note="系列ごとの一覧は目録（strata_catalog）から"),
-                _api_field(body, "model_path", "既存の GGUF（任意）", "path", default="",
-                           note="指定すれば初回起動の取得を飛ばす"),
+                family_field,
+                model_field,
+                _api_field(body, "model_path", "手元のファイル（任意）", "path", default="",
+                           note="指定すると、最初の起動での取得をしません"),
             ]),
             _section("context", [
                 # 保存 API は "<N>k" の文字列。選択肢で表し、数値の上限は混ぜない。
