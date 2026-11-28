@@ -723,6 +723,23 @@ def run_team_leader(
     return team
 
 
+class _CloseTeam(BaseModel):
+    summary: str = Field(default="", max_length=4000)
+
+
+@router.post("/teams/{team_id}/close")
+def close_team(
+    team_id: str, body: _CloseTeam, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """チームを「完了」にして閉じる（残った待ち・止まった仕事は取り下げ）。"""
+    from app.commander import team_leader
+
+    team = _team_call(team_leader.close, team_id, body.summary)
+    _team_audit(db, user, request, "close", team_id)
+    return team
+
+
 @router.post("/teams/{team_id}/leader/stop")
 def stop_team_leader(
     team_id: str, request: Request,

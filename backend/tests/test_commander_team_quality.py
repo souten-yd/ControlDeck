@@ -101,3 +101,34 @@ def test_report_text_returns_the_head_of_a_long_answer():
     finally:
         mp.undo()
     assert out["head"].startswith("P1") and out["tail"].endswith("なし") and out["report"]["summary"] == "s"
+
+
+def test_drop_and_finish_and_close_clear_stale_tasks(monkeypatch):
+    """取り下げ（dropped）: 別の仕事でやり直した・使わなかった仕事を、警告と段の数から外す。finish(done) と「閉じる」は
+    残った待ち・止まった仕事を取り下げる。2026-11-28 利用者「止まっているか・抜けているか・開発が終わっているのに 0」。"""
+    from app.commander import team_leader, teams
+
+    def fresh():
+        return {"id": "tq", "name": "t", "timeline": [], "leader_run": {"status": "running"}, "tasks": [
+            {"id": 1, "status": "blocked", "leader_managed": True, "events": []},
+            {"id": 2, "status": "done", "leader_managed": True, "events": []},
+            {"id": 3, "status": "doing", "leader_managed": True, "events": []},
+            {"id": 4, "status": "todo", "leader_managed": True, "events": []}]}
+
+    team = fresh()
+    monkeypatch.setattr(leader_mcp, "_mutate", lambda team_id, fn: fn(team))
+    monkeypatch.setattr(leader_mcp, "_read", lambda team_id: team)
+    assert leader_mcp.tool_drop_task("tq", {"run_ids": ["1"], "reason": "#5 でやり直した"})["dropped"] == [1]
+    assert team["tasks"][0]["status"] == "dropped" and team["tasks"][0]["dropped_reason"] == "#5 でやり直した"
+    import pytest
+
+    with pytest.raises(leader_mcp.ToolError):
+        leader_mcp.tool_drop_task("tq", {"run_ids": ["3"], "reason": "x"})   # 走っている仕事は取り下げない
+    leader_mcp.tool_finish("tq", {"summary": "済み", "outcome": "done"})
+    assert [t["status"] for t in team["tasks"]] == ["dropped", "done", "doing", "dropped"]
+    team = fresh()
+    team["leader_run"] = {"status": "stopped"}
+    monkeypatch.setattr(teams, "_load", lambda: [team])
+    out = team_leader.close("tq", "Claude が引き取って仕上げた（#714）")
+    assert out["leader_run"]["status"] == "done" and out["leader_run"]["finish"]["outcome"] == "done"
+    assert [t["status"] for t in team["tasks"]] == ["dropped", "done", "doing", "dropped"]

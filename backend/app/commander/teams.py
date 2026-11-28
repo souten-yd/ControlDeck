@@ -29,7 +29,7 @@ from app.terminals.manager import manager
 logger = logging.getLogger(__name__)
 
 ROLES = ("leader", "developer", "reviewer", "researcher", "member")
-STATUSES = ("todo", "doing", "review", "done", "rejected", "blocked")
+STATUSES = ("todo", "doing", "review", "done", "rejected", "blocked", "dropped")  # dropped: 取り下げ（別の仕事でやり直した・不要になった）
 NAME_MAX = 40
 TITLE_MAX = 120
 TEXT_MAX = 4000

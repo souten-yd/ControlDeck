@@ -173,16 +173,18 @@ function roleTone(team: Team, m: TeamMember): string {
 
 /** 段ごとの数（計画の項目とタスクを合わせて数える。二重に数えない）。 */
 function stageCounts(team: Team, tier: "explore" | "implement" | "review") {
-  const items = (team.plan?.items ?? []).filter((i) => i.tier === tier && !i.removed);
+  // 取り下げ（別の仕事でやり直した・不要になった）は数えない（2026-11-28 利用者「開発が終わっているのに 0 になっている」）
+  const dropped = new Set(team.tasks.filter((t) => t.status === "dropped").map((t) => t.id));
+  const items = (team.plan?.items ?? []).filter((i) => i.tier === tier && !i.removed && !(i.task_id != null && dropped.has(i.task_id)));
   const taskIds = new Set(items.map((i) => i.task_id).filter((id): id is number => id != null));
-  const tasks = team.tasks.filter((t) => t.tier === tier && !taskIds.has(t.id));
+  const tasks = team.tasks.filter((t) => t.tier === tier && !taskIds.has(t.id) && t.status !== "dropped");
   const done = items.filter((i) => i.status === "done" || i.status === "integrated").length
     + tasks.filter((t) => t.status === "done").length;
   // 進んでいるか・止まっているかは、計画の項目に紐づくタスクも含めて見る（数からは除いても状態は拾う）。
   const tierTasks = team.tasks.filter((t) => t.tier === tier);
   const active = tierTasks.some((t) => t.status === "doing" || t.run?.status === "running")
     || items.some((i) => i.status === "delegated" && team.leader_run?.status === "running");
-  const attention = team.tasks.some((t) => t.tier === tier && (t.status === "blocked" || t.blocked_reason === "no_handoff"));
+  const attention = team.tasks.some((t) => t.tier === tier && t.status !== "dropped" && (t.status === "blocked" || t.blocked_reason === "no_handoff"));
   return { total: items.length + tasks.length, done, active, attention };
 }
 
@@ -230,13 +232,18 @@ function stageOf(team: Team): Array<{ id: StageId; label: string; state: StageSt
 /** 一文のまとめ（いま何が起きているか）。 */
 export function missionSummary(team: Team): { text: string; attention: number } {
   const tasks = team.tasks;
-  const attention = tasks.filter((t) => t.status === "blocked" || t.blocked_reason === "no_handoff").length;
+  const attention = tasks.filter((t) => t.status !== "dropped" && (t.status === "blocked" || t.blocked_reason === "no_handoff")).length;
   const running = tasks.filter((t) => t.status === "doing" || t.run?.status === "running").length;
   const left = tasks.filter((t) => t.status === "todo" || t.status === "rejected").length;
   const stages = stageOf(team);
   const active = stages.find((s) => s.state === "active");
   const done = tasks.filter((t) => t.status === "done").length;
   if (team.leader_run?.status === "running") return { text: team.plan ? "チームリーダーが仕事を割り振っています" : "チームリーダーが調べて計画しています", attention };
+  // チームリーダーが完了したら、残りの段の数に引っぱられず「完了」と言う（2026-11-28 利用者「開発が終わっているのに…」）
+  // 担い手がまだ走っていれば完了とは言わない（finish の still_running）
+  if ((team.leader_run?.status === "done" || team.leader_run?.finish?.outcome === "done") && running === 0) {
+    return { text: team.result?.landed ? "完了しました（ブランチを取り込み済み）" : "完了しました", attention };
+  }
   if (attention > 0) return { text: `${attention} 件が要対応です（止まった・引き継ぎ先なし）`, attention };
   if (active) return { text: `${active.label}を${running > 0 ? ` ${running} 人が` : ""}進めています${left > 0 ? `（残り ${left} 件）` : ""}`, attention };
   if (team.result) {

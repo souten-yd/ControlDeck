@@ -36,7 +36,7 @@ const COLUMNS: ReadonlyArray<{ id: "todo" | "doing" | "review" | "done"; label: 
   { id: "todo", label: "待ち" }, { id: "doing", label: "作業中" }, { id: "review", label: "レビュー待ち" }, { id: "done", label: "完了" },
 ];
 const STATUS_LABEL: Record<TaskStatus, string> = {
-  todo: "待ち", doing: "作業中", review: "レビュー待ち", done: "完了", rejected: "差し戻し", blocked: "自動で直せず",
+  todo: "待ち", doing: "作業中", review: "レビュー待ち", done: "完了", rejected: "差し戻し", blocked: "自動で直せず", dropped: "取り下げ",
 };
 const CHECK_LABEL = { running: "実行中", passed: "合格", failed: "不合格", error: "実行できず" } as const;
 const CHECK_CLASS = {
@@ -60,6 +60,7 @@ const STATE_DOT: Record<CommanderState, string> = {
 
 /** エキスパートが切のときの、タスクの札 1 つ（危険・要対応を優先して 1 つにまとめる）。 */
 function simpleBadge(task: TeamTask): { text: string; tone: "red" | "amber" | "blue" } | null {
+  if (task.status === "dropped") return null;   // 取り下げは札を出さない（板にも出ない）
   if (task.blocked_reason === "no_handoff") return { text: "引き継ぎ先なし", tone: "red" };
   if (task.status === "blocked") return { text: "止まった", tone: "red" };
   if (task.status === "doing" && (task.limited_at || task.run?.status === "limited" || task.wait_until)) return { text: "上限で停止", tone: "amber" };

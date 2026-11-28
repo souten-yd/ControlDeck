@@ -280,10 +280,52 @@ def task_state(task: dict) -> str:
         return "running"
     if status == "review":
         return "checking" if (task.get("checks_result") or {}).get("status") == "running" else "finished"
-    return {"done": "integrated", "blocked": "blocked", "rejected": "rejected"}.get(str(status), "running")
+    return {"done": "integrated", "blocked": "blocked", "rejected": "rejected", "dropped": "dropped"}.get(str(status), "running")
 
 
-FINISHED = {"finished", "integrated", "blocked", "rejected"}
+FINISHED = {"finished", "integrated", "blocked", "rejected", "dropped"}
+# 取り下げできる状態（走っている仕事は先に止める）
+DROPPABLE = ("todo", "blocked", "rejected", "review")
+
+
+def drop_tasks(team: dict, task_ids: list[int] | None, reason: str, by: str) -> list[int]:
+    """チームリーダーの仕事を取り下げる（status=dropped・理由つき）。task_ids が None なら、取り下げできる全部。
+    2026-11-28 利用者「止まっているか・抜けているか・開発が終わっているのに 0 になっている」: 別の仕事でやり直した仕事や
+    使わなかった仕事が、赤い警告と段の数に残り続けていた。取り下げは警告にも段の数にも入れない（画面）。"""
+    dropped: list[int] = []
+    for task in team.get("tasks", []):
+        if not task.get("leader_managed") or task.get("status") not in DROPPABLE:
+            continue
+        if task_ids is not None and int(task["id"]) not in task_ids:
+            continue
+        task["status"] = "dropped"
+        task["dropped_reason"] = reason[:200]
+        task.pop("queued_note", None)
+        teams._event(task, "取り下げ: " + reason[:100], by)  # noqa: SLF001
+        dropped.append(int(task["id"]))
+    return dropped
+
+
+def tool_drop_task(team_id: str, args: dict) -> dict:
+    """仕事を取り下げる（別の仕事でやり直した・不要になった）。走っている仕事は取り下げられない（先に終わりを待つ）。"""
+    _strict(args, {"run_ids", "reason"}, {"run_ids", "reason"})
+    ids = args["run_ids"]
+    if not isinstance(ids, list) or not 1 <= len(ids) <= RUN_IDS_MAX:
+        raise ToolError(f"run_ids は 1〜{RUN_IDS_MAX} 件のリストです")
+    reason = _str(args, "reason", 200)
+
+    def save(team: dict) -> dict:
+        wanted = []
+        for rid in ids:
+            task = _find(team, rid)
+            if task.get("status") not in DROPPABLE:
+                raise ToolError(f"#{task['id']} は取り下げられません（状態: {task.get('status')}。走っている仕事は終わりを待つ）", 409)
+            wanted.append(int(task["id"]))
+        done = drop_tasks(team, wanted, reason, "チームリーダー")
+        add_timeline(team, "drop", f"仕事 {', '.join('#' + str(i) for i in done)} を取り下げました: {reason[:80]}")
+        return {"dropped": done}
+
+    return _mutate(team_id, save)
 
 
 def _assignee(team: dict, task: dict) -> str:
@@ -957,6 +999,11 @@ def tool_finish(team_id: str, args: dict) -> dict:
     def save(team: dict) -> dict:
         busy = [str(t["id"]) for t in team.get("tasks", []) if t.get("leader_managed") and t.get("status") in ("todo", "doing")]
         team.setdefault("leader_run", {})["finish"] = {"summary": summary, "outcome": args["outcome"], "at": teams._now()}  # noqa: SLF001
+        if args["outcome"] == "done":
+            # 完了したら、残った待ち・止まった仕事は取り下げ（使わなかった・別の仕事でやり直した）
+            left = drop_tasks(team, None, "チームの完了のとき残っていた（使わなかった）", "Nexarch")
+            if left:
+                add_timeline(team, "drop", f"完了のとき残っていた仕事 {', '.join('#' + str(i) for i in left)} を取り下げました")
         add_timeline(team, "finish", ("完了: " if args["outcome"] == "done" else "止まりました: ") + summary[:150])
         checks = team.get("last_team_checks") if isinstance(team.get("last_team_checks"), dict) else {}
         out = {"ok": True, "still_running": busy, "team_checks": checks.get("status") or "not_run"}
@@ -973,6 +1020,7 @@ TOOLS = {
     "team_status": tool_team_status, "write_plan": tool_write_plan, "research": tool_research, "delegate": tool_delegate,
     "wait": tool_wait, "read_result": tool_read_result, "run_checks": tool_run_checks, "integrate": tool_integrate,
     "ask_user": tool_ask_user, "wait_answer": tool_wait_answer, "report": tool_report, "finish": tool_finish,
+    "drop_task": tool_drop_task,
 }
 
 _OBJ = {"type": "object", "additionalProperties": False}
@@ -1030,6 +1078,9 @@ def tool_defs() -> list[dict]:
         tool("wait_answer", "質問の答えを待つ（timeout_s の既定は 120 秒・最大 600 秒）。答えがあれば answered=true と answer、まだなら answered=false"
                             "（別の作業を進めてから、もう一度呼ぶ）。", {"question_id": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}},
              ["question_id"]),
+        tool("drop_task", "仕事を取り下げる（別の仕事でやり直した・不要になった）。待ち・止まった・差し戻し・確認待ちの仕事だけ"
+                          "（走っている仕事は終わりを待つ）。取り下げた仕事は画面の警告と段の数に入らない。finish(done) は残りを自動で取り下げる。",
+             {"run_ids": _RUN_IDS, "reason": {"type": "string", "maxLength": 200}}, ["run_ids", "reason"]),
         tool("report", "進み具合を 1 行、画面の時系列へ出す。", {"progress_text": {"type": "string", "maxLength": 300}}, ["progress_text"]),
         tool("finish", "終わり。summary は何をしたか・確認の結果・残り。outcome は done か blocked。まだ走っている仕事があれば still_running に"
                        "その id を返す（止めはしない。待つか、残りとして summary に書く）。", {
