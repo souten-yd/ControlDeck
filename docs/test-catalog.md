@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 280 ファイル、2884 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2887 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -527,6 +527,9 @@
 - `test_an_approved_release_skips_the_idle_wait`
 - `test_an_approved_release_still_waits_while_busy`
 - `test_a_prompt_for_another_release_is_ignored`
+- `test_force_updates_even_while_busy` — 強制（既定は入）: 使われていても、待たずにすぐ適用する。利用者 2026-11-28「使われている時でも更新する。既定 On」。
+- `test_force_still_skips_a_running_update`
+- `test_defaults_check_every_5_minutes_and_force` — 既定は 5 分ごと・強制は入。強制の項目が無い古い保存（30 分ごと）は 5 分ごとへ移す。
 
 ### backend/tests/test_bootstrap_retired_app.py
 

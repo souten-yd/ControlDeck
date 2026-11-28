@@ -11,6 +11,10 @@
 - Add-on が持っている GPU の lease
 
 検証用インスタンス（CONTROL_DECK_ISOLATED）では動かない。
+
+強制（force・既定は入。利用者 2026-11-28「本体の更新は 5 分ごとにチェックして、強制的に更新する機能を入れて。
+使われている時でも更新する。既定 On」）: 上の「使われている」を待たず、新しい Release を見つけたらすぐ適用する。
+走っている AI チーム・Job は再起動で中断される（AI チームは起動のときに再開する）。切れば従来どおり待つ。
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ from app.config import data_dir
 
 logger = logging.getLogger("control_deck.auto_update")
 
-DEFAULTS = {"enabled": True, "idle_minutes": 10, "check_interval_minutes": 30}
+DEFAULTS = {"enabled": True, "idle_minutes": 10, "check_interval_minutes": 5, "force": True}
 OPENCODE_COMMANDS = {"opencode", "opencode2", "podman"}
 
 
@@ -39,9 +43,13 @@ def get_settings() -> dict:
         raw = json.loads(_settings_path().read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             values.update({key: raw[key] for key in DEFAULTS if key in raw})
+            if "force" not in raw:
+                # 強制の項目が無い古い保存（確認は 30 分ごとが既定だった）は、新しい既定（5 分ごと）へ移す
+                values["check_interval_minutes"] = min(int(values["check_interval_minutes"]), DEFAULTS["check_interval_minutes"])
     except (OSError, ValueError):
         pass
     values["enabled"] = bool(values["enabled"])
+    values["force"] = bool(values["force"])
     values["idle_minutes"] = max(1, min(240, int(values["idle_minutes"])))
     values["check_interval_minutes"] = max(5, min(1440, int(values["check_interval_minutes"])))
     return values
@@ -171,6 +179,13 @@ async def tick(idle_since: float | None, now: float) -> float | None:
     if current.get("error") or not current.get("update_available"):
         return None
     if str((current.get("job") or {}).get("phase")) in ("scheduled", "running"):
+        return None
+    if settings["force"]:
+        target = str(current["remote_sha"])
+        _prompt_path().unlink(missing_ok=True)
+        await asyncio.to_thread(self_update.start, target, automatic=True, release_tag=str(current.get("release_tag") or ""))
+        await notify("ControlDeck を自動更新します",
+                     f"{current.get('release_tag')} を適用します（使用中でも更新する設定）。数分で再起動し、異常があれば自動で前の版へ戻します。")
         return None
     reasons = await asyncio.to_thread(busy_reasons)
     if reasons:
