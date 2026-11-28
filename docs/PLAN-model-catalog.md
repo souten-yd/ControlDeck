@@ -66,11 +66,11 @@
 |---|---|---|
 | M0 | Strata を 0.2.22 へ更新・起動の確認 | 更新済み（起動の確認は `HANDOFF` の作業記録） |
 | M1 | Strata の目録を 1 か所にして全系列・全量子化を出す（無検閲は「手作業の変換が要る」印で案内） | 実装済み（実機の確認待ち） |
-| M2 | Maya の目録に GLM-5.3・DeepSeek の ds4-quant を足す。Maya の取得（setup で取る）を画面から | 未着手 |
-| M3 | 取得の Job の自動再開（再起動の後も）。Strata・Maya・HF・Radiance で実測 | 実装済み（実機の再起動での確認待ち） |
-| M4 | 3 つとも「フォルダを選ぶ → 候補のファイルの一覧 → 選ぶ」 | 未着手 |
-| M5 | 設定の形を揃える（上の方針） | 未着手 |
-| M6 | 無検閲: Strata の OrcaRouter の変換を Job で（取得 → `iq_pack.py` → run config）。Maya の Maya-M-Derisked・abliterated を目録に | 未着手 |
+| M2 | Maya の目録に GLM-5.3・DeepSeek の ds4-quant を足す。Maya の取得（setup で取る）を画面から | 目録・画面ともに実装済み（#19・#24。実機の実重みは未確認） |
+| M3 | 取得の Job の自動再開（再起動の後も）。Strata・Maya・HF・Radiance で実測 | 実装済み（#19・#27。実機の再起動での確認待ち） |
+| M4 | 3 つとも「フォルダを選ぶ → 候補のファイルの一覧 → 選ぶ」 | 実装済み（#24 の共通部品 `RuntimeRegisterFromFile`。Models E2E は #29 で追随） |
+| M5 | 設定の形を揃える（上の方針） | 実装済み（#24 の共通部品 `RuntimeSettings`。Models E2E は #29 で追随） |
+| M6 | 無検閲: Strata の OrcaRouter の変換を Job で（取得 → `iq_pack.py` → run config）。Maya の Maya-M-Derisked・abliterated を目録に | 目録行は追加済み（#19）。OrcaRouter の手作業変換の Job 化は未実装（既存の手作業フローを維持） |
 
 効果と処理時間（`AGENTS.md`「機能を取り込む条件」）: 目録の読み込みは画面を開いた時だけで、計算は RAM・VRAM の比べだけ。自動再開は起動時に 1 回 Job の表を読むだけ。どちらも測って PR に書く。
 
@@ -106,7 +106,7 @@ UI 担当（共通部品・各パネル）はこの節の契約を使う。実�
    - `runtimes`: 各ランタイム `{id, name, installed, formats, acquire, entries[], catalog_ref?}`。`acquire` は `"hf"`（ControlDeck が HF から取得）/`"runtime"`（ランタイム自身が取得: Strata は登録＋初回起動の Job）/`"none"`。`catalog_ref` は probe など動的な全一覧への既存 API（Maya）。
    - `entries[]`: `{id, name, kind("model"|"drafter"), format("gguf"|"safetensors"|"rad"|"strata-quant"|"maya-quant"), repo, quantization, size_gib(null=未確認), memory_gib, uncensored, supported, note, fit("fits"|"tight"|"no"|"unknown"), source("catalog"|"hf")}`。
    - **`size_gib` が null の行は大きさを推測しない**。取得の開始時に HF の API から読む（下の 2・3）。
-   - 載せる行は既存データだけ: Sly 5 件＋MiniCPM（未対応表示）、Strata は `strata_catalog` の系列×量子化（GSQ-RCO・Unsloth UD-*・Q8_0 を含む公式目録）、Maya は Derisked（`peasmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF`、repo id のみ・大きさ未確認）。llama.cpp は検索で選ぶ既存フローがあるので推奨行を置かない（確定した repo ができてから足す）。
+   - 載せる行は既存データだけ: Sly 5 件＋MiniCPM（未対応表示）、Strata は `strata_catalog` の系列×量子化（GSQ-RCO・Unsloth UD-*・Q8_0 を含む公式目録）、Maya は Derisked（`peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF`、repo id のみ・大きさ未確認）。llama.cpp は検索で選ぶ既存フローがあるので推奨行を置かない（確定した repo ができてから足す）。
 2. **`GET /api/v1/models/catalog/{runtime}/entries/{entry_id}/files`** — repo のある行の、取得直前のファイル一覧（既存の Sly と同じ形: `{repo, files[{path,size}], total_bytes, libraries}`）。HF への metadata 問い合わせで、外部許可（`ensure_external_allowed`）と出口の検査（guarded transport）を通る。
 3. **`POST /api/v1/models/acquire-jobs`** — 共通の取得開始。`{runtime, entry_id, library_id, files[]?, register?}`。
    - `files` 省略時は repo の最上位ファイル全部。**大きさ（expected_bytes）はクライアントから受け取らず Job の開始時に HF の API から読む**（repo に無いファイルは 422 相当の失敗にする）。試験は偽の HF。
@@ -239,76 +239,79 @@ ControlDeck の ①〜⑥ の並び（下記）はこの並べ方と同じ方向
 `gated` は HF API の `gated` フラグをそのまま転記した。**Web の閲覧だけ**で、重みの取得・実機での起動はしていない。
 各ランタイムで動く形式だけを載せる（Strata は GSQ-RCO・Unsloth UD-*・Q8_0、llama.cpp は GGUF、
 Sly は `sly_radiance_catalog.py` と同じ形式、Maya は Maya 量子化、Radiance は `.rad`）。
+各表の「出典 URL」は記載済みの repo id から `https://huggingface.co/<repo id>` の形で機械的に導いたもの、
+「確認日」はこの目録を Web で調べた日（2026-11-28）。外部取得は禁止したので新たな問い合わせはしていない。
+公開 API の読み取りで分かったことだけを転記し、大きさ・sha・ダウンロード URL の値は推測して書かない。
 
 ### Sly-Radiance（safetensors: MXFP4 GPTQ / Quark AWQ / NVFP4 / ParoQuant ＋ W4A16 ドラフター）
 
-| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ |
-|---|---|---|---|---|---|
-| `slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ` | `model-00001-of-00009.safetensors` 〜 `model-00009-of-00009.safetensors`、`model_mtp.safetensors` | MXFP4 GPTQ（compressed-tensors） | あり（heretic） | false | null |
-| `amd/Qwen3.8-27B-Quark-AWQ-MXFP4` | `model.safetensors` | Quark AWQ MXFP4 | — | false | null |
-| `unsloth/Qwen3.8-27B-NVFP4` | `model.safetensors`、`model_mtp.safetensors` | NVFP4（`RADIANCE_NVFP4_MXFP4=1` で MXFP4 経路） | — | false | null |
-| `z-lab/Qwen3.8-27B-PARO` | `model.safetensors` | ParoQuant | — | false | null |
-| `syvai/Qwen3.8-27B-DFlash2-W4A16` | `model.safetensors` | W4A16（drafter。上のモデルと併用） | — | false | null |
-| `akumaburn/Swift-1.5-Qwen3.8-27b-heretic` | `model-00001-of-00012.safetensors` 〜 `model-00012-of-00012.safetensors`、`model-mtp.safetensors` | 無検閲の元モデル（Sly の heretic 量子化の base_model） | あり（heretic） | false | null（このまま Sly で動くかは**未実測**） |
+| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ | 出典 URL | 確認日 |
+|---|---|---|---|---|---|---|---|
+| `slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ` | `model-00001-of-00009.safetensors` 〜 `model-00009-of-00009.safetensors`、`model_mtp.safetensors` | MXFP4 GPTQ（compressed-tensors） | あり（heretic） | false | null | https://huggingface.co/slybase/Swift-1.5-Qwen3.8-27B-heretic-MXFP4-GPTQ | 2026-11-28 |
+| `amd/Qwen3.8-27B-Quark-AWQ-MXFP4` | `model.safetensors` | Quark AWQ MXFP4 | — | false | null | https://huggingface.co/amd/Qwen3.8-27B-Quark-AWQ-MXFP4 | 2026-11-28 |
+| `unsloth/Qwen3.8-27B-NVFP4` | `model.safetensors`、`model_mtp.safetensors` | NVFP4（`RADIANCE_NVFP4_MXFP4=1` で MXFP4 経路） | — | false | null | https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4 | 2026-11-28 |
+| `z-lab/Qwen3.8-27B-PARO` | `model.safetensors` | ParoQuant | — | false | null | https://huggingface.co/z-lab/Qwen3.8-27B-PARO | 2026-11-28 |
+| `syvai/Qwen3.8-27B-DFlash2-W4A16` | `model.safetensors` | W4A16（drafter。上のモデルと併用） | — | false | null | https://huggingface.co/syvai/Qwen3.8-27B-DFlash2-W4A16 | 2026-11-28 |
+| `akumaburn/Swift-1.5-Qwen3.8-27b-heretic` | `model-00001-of-00012.safetensors` 〜 `model-00012-of-00012.safetensors`、`model-mtp.safetensors` | 無検閲の元モデル（Sly の heretic 量子化の base_model） | あり（heretic） | false | null（このまま Sly で動くかは**未実測**） | https://huggingface.co/akumaburn/Swift-1.5-Qwen3.8-27b-heretic | 2026-11-28 |
 
 ### Radiance（`.rad` コンテナ）
 
-| repo id | ファイル名 | 無検閲 | gated | 大きさ |
-|---|---|---|---|---|
-| `StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe` | `qwen3.8-next-flash-fp8-iq4r-moe.rad` | — | false | null |
-| `StillDeadcode/qwen3.8-27b-fp8` | `qwen3.8-27b-fp8.rad` | — | false | null |
-| `StillDeadcode/qwen3.6-35b-a3b-fp8` | `qwen3.6-35b-a3b-fp8.rad` | — | false | null |
-| `StillDeadcode/minicpm5-2b-fp8` | `minicpm5-2b-fp8.rad` | — | false | null |
-| `StillDeadcode/minicpm5-2b-bf16` | `minicpm5-2b-bf16.rad` | — | false | null |
+| repo id | ファイル名 | 無検閲 | gated | 大きさ | 出典 URL | 確認日 |
+|---|---|---|---|---|---|---|
+| `StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe` | `qwen3.8-next-flash-fp8-iq4r-moe.rad` | — | false | null | https://huggingface.co/StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe | 2026-11-28 |
+| `StillDeadcode/qwen3.8-27b-fp8` | `qwen3.8-27b-fp8.rad` | — | false | null | https://huggingface.co/StillDeadcode/qwen3.8-27b-fp8 | 2026-11-28 |
+| `StillDeadcode/qwen3.6-35b-a3b-fp8` | `qwen3.6-35b-a3b-fp8.rad` | — | false | null | https://huggingface.co/StillDeadcode/qwen3.6-35b-a3b-fp8 | 2026-11-28 |
+| `StillDeadcode/minicpm5-2b-fp8` | `minicpm5-2b-fp8.rad` | — | false | null | https://huggingface.co/StillDeadcode/minicpm5-2b-fp8 | 2026-11-28 |
+| `StillDeadcode/minicpm5-2b-bf16` | `minicpm5-2b-bf16.rad` | — | false | null | https://huggingface.co/StillDeadcode/minicpm5-2b-bf16 | 2026-11-28 |
 
 無検閲の `.rad` は公式 README に記載が無く、**未確認**（候補なし）。`rad-convert` で作る必要があるなら既存の手作業フロー扱い。
 
 ### Strata（GSQ-RCO / Unsloth UD-* / Q8_0）
 
-| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ |
-|---|---|---|---|---|---|
-| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | — | false | null |
-| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF` | `IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Coder） | — | false | null |
-| `ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Swift 1.5） | — | false | null |
-| `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF` | `Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf`（公式 README の例は revision 固定） | Gyro | — | false | null |
-| `unsloth/Qwen3.8-Flash-Next-GGUF` | `UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` 〜 `00004`、`Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf` 〜 `00006` | Unsloth UD-* / Q8_0 | — | false | null |
-| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-UD-Q4_K_XL.gguf`、`Qwen3.8-27B-Q8_0.gguf` | Unsloth UD-* / Q8_0 | — | false | null |
-| `unsloth/Qwen3.6-35B-A3B-GGUF` | `Qwen3.6-35B-A3B-Q8_0.gguf`、`Qwen3.6-35B-A3B-UD-IQ2_M.gguf` | Q8_0 / Unsloth UD-* | — | false | null |
-| `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` | `UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf` 〜 `00009` | Unsloth UD-* | — | false | null |
-| `OrcaRouter/Qwen3.8-Flash-Next-Uncensored-GGUF` | `Qwen3.8-Flash-Next-Uncensored-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Qwen3.8-Flash-Next-Uncensored-IQ2_M-00001-of-00002.gguf`（`00002` も） | 汎用 GGUF（**既存の手作業変換 `iq_pack.py --compat-bf16` が要る＝既存 PLAN の印を維持**） | あり（Uncensored） | **true** | null |
-| `SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF` | `IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | あり（abliterated） | false | null |
-| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS.gguf`、`Huihui-Qwen3.8-27B-abliterated-Swift-1.5-GSQ-RCO-IQ3_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null |
-| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Strata-deepseek-v4.1-flash-IST-DAS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null |
+| repo id | ファイル名 | 形式 | 無検閲 | gated | 大きさ | 出典 URL | 確認日 |
+|---|---|---|---|---|---|---|---|
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | — | false | null | https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF | 2026-11-28 |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF` | `IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Coder） | — | false | null | https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF | 2026-11-28 |
+| `ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF` | `Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`（`00002` も） | GSQ-RCO（Swift 1.5） | — | false | null | https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF | 2026-11-28 |
+| `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF` | `Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf`（公式 README の例は revision 固定） | Gyro | — | false | null | https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF | 2026-11-28 |
+| `unsloth/Qwen3.8-Flash-Next-GGUF` | `UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` 〜 `00004`、`Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf` 〜 `00006` | Unsloth UD-* / Q8_0 | — | false | null | https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF | 2026-11-28 |
+| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-UD-Q4_K_XL.gguf`、`Qwen3.8-27B-Q8_0.gguf` | Unsloth UD-* / Q8_0 | — | false | null | https://huggingface.co/unsloth/Qwen3.8-27B-GGUF | 2026-11-28 |
+| `unsloth/Qwen3.6-35B-A3B-GGUF` | `Qwen3.6-35B-A3B-Q8_0.gguf`、`Qwen3.6-35B-A3B-UD-IQ2_M.gguf` | Q8_0 / Unsloth UD-* | — | false | null | https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF | 2026-11-28 |
+| `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` | `UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf` 〜 `00009` | Unsloth UD-* | — | false | null | https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF | 2026-11-28 |
+| `OrcaRouter/Qwen3.8-Flash-Next-Uncensored-GGUF` | `Qwen3.8-Flash-Next-Uncensored-IQ3_XXS-00001-of-00002.gguf`（`00002` も）、`Qwen3.8-Flash-Next-Uncensored-IQ2_M-00001-of-00002.gguf`（`00002` も） | 汎用 GGUF（**既存の手作業変換 `iq_pack.py --compat-bf16` が要る＝既存 PLAN の印を維持**） | あり（Uncensored） | **true** | null | https://huggingface.co/OrcaRouter/Qwen3.8-Flash-Next-Uncensored-GGUF | 2026-11-28 |
+| `SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF` | `IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf`（`00002` も） | GSQ-RCO | あり（abliterated） | false | null | https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF | 2026-11-28 |
+| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS.gguf`、`Huihui-Qwen3.8-27B-abliterated-Swift-1.5-GSQ-RCO-IQ3_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null | https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF | 2026-11-28 |
+| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Strata-deepseek-v4.1-flash-IST-DAS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS.gguf` | GSQ-RCO | あり（abliterated） | false | null | https://huggingface.co/huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF | 2026-11-28 |
 
 ### Maya（Maya 量子化）
 
-| repo id | ファイル名 | Maya tier | 無検閲 | gated | 大きさ |
-|---|---|---|---|---|---|
-| `peasantsmith/GLM-5.3-Flash-Maya-GGUF` | `Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf` 〜 `00003`、`Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00001-of-00003.gguf` 〜 `00003`、`Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00001-of-00003.gguf` 〜 `00003`、`Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00001-of-00004.gguf` 〜 `00004` | S / S24 / XS / M / L | — | false | null |
-| `peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF` | `GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-00001-of-00003.gguf` 〜 `00003` | Maya-M | あり（Derisked＝拒否を減らす重み編集・実験的） | false | null |
-| `peasantsmith/GLM-5.3-Maya-GGUF` | `Maya-XS/GLM-5.3-Maya-XS-00001-of-00004.gguf` 〜 `00004` | Maya-XS（744B） | — | false | null |
-| `peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF` | `Maya-S/DeepSeek-V4.1-Flash-1017-Maya-S-IQ2_XXS-00001-of-00006.gguf` 〜 `00006`、`Maya-XS/DeepSeek-V4.1-Flash-1017-Maya-XS-v2-IQ1_S-00001-of-00003.gguf` 〜 `00003` | Maya-S / Maya-XS v2 | — | false | null |
-| `peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF` | `Maya-XS/MiniMax-M3.1-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-S/MiniMax-M3.1-Flash-Maya-S-IQ2_XXS-00001-of-00003.gguf` 〜 `00003` | Maya-XS / S | — | false | null |
-| `peasantsmith/Hy4-Flash-Maya-GGUF` | `Maya-XS/Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf` 〜 `00002`、`Maya-S/Hy4-Flash-Maya-S-IQ2_S-00001-of-00002.gguf` 〜 `00002` | Maya-XS / S | — | false | null |
-| `peasantsmith/Ling-3.2-air-Maya-GGUF` | `Ling-3.2-air-Maya-S-IQ2_XXS.gguf`、`Ling-3.2-air-Maya-M-IQ2_S.gguf` | Maya-S / M | — | false | null |
-| `peasantsmith/Inkling-2-Mini-Maya-GGUF` | `Maya-L/Inkling-2-Mini-Maya-L-NVFP4.gguf` | Maya-L | — | false | null |
-| `orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Mix-128G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-128G-00001-of-00005.gguf` 〜 `00005`、`Mix-256G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-256G-00001-of-00007.gguf` 〜 `00007` | abliterated（Maya 公式 README が載せる） | あり（abliterated） | **true**（HF 規約の承諾とトークンが要る／AMD は**未検証**） | null |
+| repo id | ファイル名 | Maya tier | 無検閲 | gated | 大きさ | 出典 URL | 確認日 |
+|---|---|---|---|---|---|---|---|
+| `peasantsmith/GLM-5.3-Flash-Maya-GGUF` | `Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf` 〜 `00003`、`Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00001-of-00003.gguf` 〜 `00003`、`Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00001-of-00003.gguf` 〜 `00003`、`Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00001-of-00004.gguf` 〜 `00004` | S / S24 / XS / M / L | — | false | null | https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF` | `GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-00001-of-00003.gguf` 〜 `00003` | Maya-M | あり（Derisked＝拒否を減らす重み編集・実験的） | false | null | https://huggingface.co/peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF | 2026-11-28 |
+| `peasantsmith/GLM-5.3-Maya-GGUF` | `Maya-XS/GLM-5.3-Maya-XS-00001-of-00004.gguf` 〜 `00004` | Maya-XS（744B） | — | false | null | https://huggingface.co/peasantsmith/GLM-5.3-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF` | `Maya-S/DeepSeek-V4.1-Flash-1017-Maya-S-IQ2_XXS-00001-of-00006.gguf` 〜 `00006`、`Maya-XS/DeepSeek-V4.1-Flash-1017-Maya-XS-v2-IQ1_S-00001-of-00003.gguf` 〜 `00003` | Maya-S / Maya-XS v2 | — | false | null | https://huggingface.co/peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF` | `Maya-XS/MiniMax-M3.1-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf` 〜 `00002`、`Maya-S/MiniMax-M3.1-Flash-Maya-S-IQ2_XXS-00001-of-00003.gguf` 〜 `00003` | Maya-XS / S | — | false | null | https://huggingface.co/peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/Hy4-Flash-Maya-GGUF` | `Maya-XS/Hy4-Flash-Maya-XS-IQ2_XXS-00001-of-00002.gguf` 〜 `00002`、`Maya-S/Hy4-Flash-Maya-S-IQ2_S-00001-of-00002.gguf` 〜 `00002` | Maya-XS / S | — | false | null | https://huggingface.co/peasantsmith/Hy4-Flash-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/Ling-3.2-air-Maya-GGUF` | `Ling-3.2-air-Maya-S-IQ2_XXS.gguf`、`Ling-3.2-air-Maya-M-IQ2_S.gguf` | Maya-S / M | — | false | null | https://huggingface.co/peasantsmith/Ling-3.2-air-Maya-GGUF | 2026-11-28 |
+| `peasantsmith/Inkling-2-Mini-Maya-GGUF` | `Maya-L/Inkling-2-Mini-Maya-L-NVFP4.gguf` | Maya-L | — | false | null | https://huggingface.co/peasantsmith/Inkling-2-Mini-Maya-GGUF | 2026-11-28 |
+| `orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `Mix-128G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-128G-00001-of-00005.gguf` 〜 `00005`、`Mix-256G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-256G-00001-of-00007.gguf` 〜 `00007` | abliterated（Maya 公式 README が載せる） | あり（abliterated） | **true**（HF 規約の承諾とトークンが要る／AMD は**未検証**） | null | https://huggingface.co/orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF | 2026-11-28 |
 
 ### llama.cpp（GGUF）
 
-| repo id | ファイル名 | 無検閲 | gated | 大きさ |
-|---|---|---|---|---|
-| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-Q8_0.gguf`、`Qwen3.8-27B-UD-Q4_K_XL.gguf` | — | false | null |
-| `ggml-org/GLM-4.7-Flash-GGUF` | `GLM-4.7-Flash-Q4_K.gguf`、`GLM-4.7-Flash-Q8_0.gguf` | — | false | null |
-| `ggml-org/gemma-4-E4B-it-GGUF` | `gemma-4-E4B-it-Q8_0.gguf`、`gemma-4-E4B-it-Q4_0.gguf` | — | false | null |
-| `google/gemma-4-12B-it-qat-q4_0-gguf` | `gemma-4-12b-it-qat-q4_0.gguf` | — | false | null |
-| `unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF` | `IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf`（`00002` も） | — | false | null |
-| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` | あり（abliterated） | false | null |
-| `0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF` | `Qwen3.8-27B-Heretic-Q4_K_M.gguf`、`RVN-Q8_0.gguf` | あり（heretic / abliterated / uncensored） | false | null |
-| `huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF` | `UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf` 〜 `00003` | あり（abliterated） | false | null |
-| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf` 〜 `00005` | あり（abliterated） | false | null |
-| `llmfan46/gemma-4-E4B-it-ultra-uncensored-heretic-GGUF` | `gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M.gguf` | あり（ultra uncensored / heretic） | false | null |
-| `AtomicChat/Inkling-2-Mini-Uncensored-GGUF` | `Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf` | あり（Uncensored） | false | null |
+| repo id | ファイル名 | 無検閲 | gated | 大きさ | 出典 URL | 確認日 |
+|---|---|---|---|---|---|---|
+| `unsloth/Qwen3.8-27B-GGUF` | `Qwen3.8-27B-Q8_0.gguf`、`Qwen3.8-27B-UD-Q4_K_XL.gguf` | — | false | null | https://huggingface.co/unsloth/Qwen3.8-27B-GGUF | 2026-11-28 |
+| `ggml-org/GLM-4.7-Flash-GGUF` | `GLM-4.7-Flash-Q4_K.gguf`、`GLM-4.7-Flash-Q8_0.gguf` | — | false | null | https://huggingface.co/ggml-org/GLM-4.7-Flash-GGUF | 2026-11-28 |
+| `ggml-org/gemma-4-E4B-it-GGUF` | `gemma-4-E4B-it-Q8_0.gguf`、`gemma-4-E4B-it-Q4_0.gguf` | — | false | null | https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF | 2026-11-28 |
+| `google/gemma-4-12B-it-qat-q4_0-gguf` | `gemma-4-12b-it-qat-q4_0.gguf` | — | false | null | https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf | 2026-11-28 |
+| `unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF` | `IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf`（`00002` も） | — | false | null | https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF | 2026-11-28 |
+| `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF` | `Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf` | あり（abliterated） | false | null | https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF | 2026-11-28 |
+| `0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF` | `Qwen3.8-27B-Heretic-Q4_K_M.gguf`、`RVN-Q8_0.gguf` | あり（heretic / abliterated / uncensored） | false | null | https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF | 2026-11-28 |
+| `huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF` | `UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf` 〜 `00003` | あり（abliterated） | false | null | https://huggingface.co/huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF | 2026-11-28 |
+| `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF` | `UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf` 〜 `00005` | あり（abliterated） | false | null | https://huggingface.co/huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF | 2026-11-28 |
+| `llmfan46/gemma-4-E4B-it-ultra-uncensored-heretic-GGUF` | `gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M.gguf` | あり（ultra uncensored / heretic） | false | null | https://huggingface.co/llmfan46/gemma-4-E4B-it-ultra-uncensored-heretic-GGUF | 2026-11-28 |
+| `AtomicChat/Inkling-2-Mini-Uncensored-GGUF` | `Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf` | あり（Uncensored） | false | null | https://huggingface.co/AtomicChat/Inkling-2-Mini-Uncensored-GGUF | 2026-11-28 |
 
 ## 設定の統一: 共通の並び（2026-11-28 確定）
 
