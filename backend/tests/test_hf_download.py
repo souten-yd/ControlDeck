@@ -334,6 +334,9 @@ def test_part_is_kept_on_stop_and_removed_on_cancel(tmp_path, monkeypatch):
     from app.models_mgmt import libraries
 
     monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
+    # 「サーバー停止中」は .part を残す側に倒れる。ほかの試験が残した印に左右されないよう外す（全体実行でだけ落ちた）
+    from app.jobs import service as jobs_service
+    monkeypatch.setattr(jobs_service, "is_shutting_down", lambda: False)
     monkeypatch.setattr(hf, "_ensure_free_space", lambda *args: None)
 
     def client():
