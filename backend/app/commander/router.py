@@ -741,6 +741,27 @@ def close_team(
     return team
 
 
+class _LeaderNote(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/teams/{team_id}/leader/note")
+def leader_note(
+    team_id: str, body: _LeaderNote, request: Request,
+    user: User = Depends(require_permission("terminal.use")), db: Session = Depends(get_db),
+):
+    """走っているチームリーダーへ伝える（指示・レビューの指摘）。チームリーダーは team_status・wait の new_notes で受け取る。
+    2026-11-29: それまで伝える口が無く、途中のレビューの指摘を「チームの前提」に書くしかなかった。"""
+    from app.commander import leader_mcp
+
+    try:
+        note = leader_mcp.add_note(team_id, body.text, user.username or "利用者")
+    except leader_mcp.ToolError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    _team_audit(db, user, request, "leader.note", team_id, length=len(body.text))
+    return note
+
+
 @router.post("/teams/{team_id}/leader/stop")
 def stop_team_leader(
     team_id: str, request: Request,

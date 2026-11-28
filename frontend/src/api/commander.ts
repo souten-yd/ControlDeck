@@ -542,6 +542,10 @@ export async function answerLeaderQuestion(id: string, questionId: string, answe
 export async function resumeLeader(id: string): Promise<Team> {
   return api<Team>(`${teamUrl(id)}/leader/resume`, { method: "POST" });
 }
+/** 走っているチームリーダーへ伝える（指示・レビューの指摘）。team_status・wait の new_notes で届く。 */
+export async function noteLeader(id: string, text: string): Promise<void> {
+  await api(`${teamUrl(id)}/leader/note`, { method: "POST", body: JSON.stringify({ text }) });
+}
 export async function stopLeader(id: string): Promise<void> {
   await api(`${teamUrl(id)}/leader/stop`, { method: "POST" });
 }

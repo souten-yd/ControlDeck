@@ -56,6 +56,7 @@ interface TeamState {
   askPosts?: Record<string, unknown>[];
   answers?: Record<string, unknown>[];
   leaderCalls?: string[];
+  notes?: string[];
   rolesPuts?: Record<string, unknown>[][];
   handoffPosts?: Record<string, unknown>[];
   defaultsPuts?: Record<string, unknown>[];
@@ -170,6 +171,11 @@ async function mockTeams(page: Page, state: TeamState) {
       const q = (team.questions ?? []).find((x) => x.id === m![2])!;
       q.answer = String(body().answer);
       return route.fulfill({ json: { ok: true } });
+    }
+    m = path.match(/^teams\/(\w+)\/leader\/note$/);
+    if (m && method === "POST") {
+      (state.notes ??= []).push(String(body().text));
+      return route.fulfill({ json: { id: 1, text: body().text } });
     }
     m = path.match(/^teams\/(\w+)\/leader\/(land|resume|stop)$/);
     if (m && method === "POST") {
@@ -782,6 +788,13 @@ for (const [label, width, height] of [["320", 320, 800], ["1280", 1280, 900]] as
     await expect(page.locator("[data-team-inputs]")).toContainText("1 件");
     await expect(page.locator('[data-team-leader-run="running"]')).toContainText("チームリーダーが進めています");
     await noOverflow(page);
+    // 走っているチームリーダーへ伝える（2026-11-29。途中のレビューの指摘を送る口）
+    await page.locator("[data-team-note-open]").click();
+    await page.getByLabel("チームリーダーに伝える（指示・直してほしい点）").fill("旧行は主張と 1:1 にして");
+    await noOverflow(page);
+    await page.locator("[data-team-note-send]").click();
+    await expect.poll(() => state.notes).toEqual(["旧行は主張と 1:1 にして"]);
+    await expect(page.locator("[data-team-note]")).toHaveCount(0);
 
     // チームリーダーが計画して仕事を振った想定（板に待ち・作業中・上限の 3 件）
     const team = state.teams[0];

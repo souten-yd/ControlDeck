@@ -152,6 +152,8 @@ export function TeamView({
   };
   const roleOf = (t: Team, sid: string) => t.members.find((m) => memberKey(m) === sid)?.role;
 
+  // フックは早い return より前に（#731 で後ろに置き、チームの画面が React #310 で落ちた・2026-11-29）
+  const navigate = useNavigate();
   if (isLoading) return <Skeleton className="h-24" />;
 
   if (!team) {
@@ -180,7 +182,6 @@ export function TeamView({
     }
     setDeletingTeam(false);
   };
-  const navigate = useNavigate();
   const toggleNotify = async () => {
     const next = team.notify === false;
     try {

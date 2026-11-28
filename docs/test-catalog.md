@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 291 ファイル、3066 テスト（目的の未記入 93 ファイル）
+- backend: 292 ファイル、3068 テスト（目的の未記入 93 ファイル）
 - E2E: 156 spec、370 テスト
 
 ## backend（backend/tests）
@@ -806,6 +806,13 @@
 - `test_opencode_accounts_are_the_registered_api_connections` — OpenCode のアカウント = OpenCode 画面に登録した接続（設定のモデル＋送信を許した外部モデル）。
 - `test_cli_found_outside_the_service_path_is_opened_by_absolute_path` — service の PATH に無い利用者の bin（~/.local/npm-global/bin など）の CLI も見つけ、絶対パスで開く。
 
+### backend/tests/test_commander_leader_notes.py
+
+目的: 目的: 走っているチームリーダーへ、利用者・Claude から伝言（指示・レビューの指摘）を送れること。チームリーダーは team_status・wait の new_notes で受け取り、読むまでは finish できない。 根拠: 2026-11-29、NewsHub のチームの途中のレビューで要修正を見つけたが、走っているチームリーダーへ伝える口が無く、 「チームの前提」に書くしかなかった（利用者「AI チームの開発の課題を解決しながら改修して」）。
+
+- `test_note_is_delivered_once_and_blocks_finish_until_read`
+- `test_empty_note_is_refused`
+
 ### backend/tests/test_commander_no_api_key.py
 
 目的: Nexarch の Claude・Codex は API キーを使わない（定額のログインだけ）の試験。 目的: 利用者の決定（2026-11-28「クロードとコーデックスは API キーを消してください。基本的にはもう定額でしか 使えません」）を仕組みで守る。コンソール（tmux）とチーム（画面のない実行）の両方で、 - API キーの環境変数（ANTHROPIC_API_KEY・OPENAI_API_KEY など）を CLI へ渡さないこと、 - Claude は --settings で apiKeyHelper を空・forceLoginMethod=claudeai にすること、 - Codex は forced_login_method="chatgpt" を付けること、 を確かめる。 根拠: 2026-11-28 の実機。Claude は forceLoginMethod を付けても ANTHROPIC_API_KEY を使う （"Invalid API key"）ので、環境変数を消すことが要。apiKeyHelper は --settings で空にすると使われない。 Codex は forced_login_method で API キーのログイン・環境変数の鍵を断る。 既存の試験（test_commander_consoles / team_t3a）は argv の形を見るだけで、鍵の除外は見ていない （docs/test-catalog.md で確認）。
@@ -1050,7 +1057,7 @@
 - `test_through_fake_leader_runs_whole_flow`
 - `test_api_leader_land_answer_resume_and_settings`
 - `test_assistant_tools_create_team_in_conversation_workdir`
-- `test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap` — 目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（30 分に 2 回）に数えない。
+- `test_planned_update_restarts_do_not_count_toward_the_auto_resume_cap` — 目的: 本体の更新（計画どおり）の再起動は、自動の再開の上限（当時 30 分に 2 回・今は 1 時間に 6 回）に数えない。
 
 ### backend/tests/test_commander_team_watch.py
 

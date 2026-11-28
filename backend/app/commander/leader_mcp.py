@@ -403,6 +403,45 @@ def usage_total(team: dict) -> dict:
 
 # ---------------------------------------------------------------- 道具
 
+NOTE_MAX = 4000
+
+
+def add_note(team_id: str, text: str, by: str) -> dict:
+    """利用者・Claude から走っているチームリーダーへ伝える（2026-11-29。それまで伝える口が無く、Claude の途中のレビューの
+    指摘を「チームの前提」に書くしかなかった）。チームリーダーは team_status・wait の new_notes で受け取る。"""
+    text = str(text or "").strip()
+    if not text:
+        raise ToolError("伝える内容が空です")
+    text = text[:NOTE_MAX]
+
+    def save(team: dict) -> dict:
+        notes = team.setdefault("leader_notes", [])
+        note = {"id": len(notes) + 1, "text": text, "by": by[:40], "at": teams._now(), "read": False}  # noqa: SLF001
+        notes.append(note)
+        del notes[:-50]
+        add_timeline(team, "note", f"{by[:40]}からチームリーダーへ: {text[:200]}")
+        return note
+
+    return _mutate(team_id, save)
+
+
+def _take_notes(team_id: str) -> list[dict]:
+    """まだ読んでいない伝言を返し、読んだ印を付ける。"""
+    def save(team: dict) -> list[dict]:
+        out = []
+        for note in team.get("leader_notes", []):
+            if not note.get("read"):
+                note["read"] = True
+                out.append({"from": note.get("by") or "", "text": note.get("text") or "", "at": note.get("at")})
+        return out
+
+    return _mutate(team_id, save)
+
+
+def _has_unread(team: dict) -> bool:
+    return any(not n.get("read") for n in team.get("leader_notes", []))
+
+
 def tool_team_status(team_id: str, args: dict) -> dict:
     _strict(args, set())
     team = _read(team_id)
@@ -424,6 +463,8 @@ def tool_team_status(team_id: str, args: dict) -> dict:
                      if q.get("answer") is not None][-10:],
         "timeline": [{"kind": r["kind"], "text": r["text"]} for r in team.get("timeline", [])[-15:]],
         "tier_assignments": roles, "usage": usage_total(team),
+        # 利用者・Claude からの新しい伝言（読んだら印を付ける）。指示に従って計画・仕事を直す
+        "new_notes": _take_notes(team_id),
     }
 
 
@@ -782,7 +823,7 @@ def tool_wait(team_id: str, args: dict) -> dict:
         tasks = [_find(team, rid) for rid in ids]
         done = [task_state(t) in FINISHED for t in tasks]
         stopped = (team.get("leader_run") or {}).get("status") != "running"
-        if stopped or (all(done) if mode == "all" else any(done)) or time.monotonic() >= deadline:
+        if stopped or (all(done) if mode == "all" else any(done)) or time.monotonic() >= deadline or _has_unread(team):
             break
         if any(task_state(t) == "queued" for t in tasks):
             team_dispatch.kick(team_id)  # 空きができたのに配り手の見回りを待たない
@@ -790,7 +831,11 @@ def tool_wait(team_id: str, args: dict) -> dict:
     info = team.get("git") or {}
     _mark_collected(team_id, [str(t["id"]) for t, d in zip(tasks, done) if d])
     team = _read(team_id)
-    return {"results": [_result(team, _find(team, rid), info) for rid in ids], "all_finished": all(done), "timed_out": not all(done)}
+    out = {"results": [_result(team, _find(team, rid), info) for rid in ids], "all_finished": all(done), "timed_out": not all(done)}
+    notes = _take_notes(team_id)
+    if notes:
+        out["new_notes"] = notes
+    return out
 
 
 def tool_read_result(team_id: str, args: dict) -> dict:
@@ -996,8 +1041,9 @@ def tool_finish(team_id: str, args: dict) -> dict:
     summary = _str(args, "summary", teams.TEXT_MAX)
     if args["outcome"] not in ("done", "blocked"):
         raise ToolError("outcome は done か blocked です")
-
     def save(team: dict) -> dict:
+        if _has_unread(team):
+            raise ToolError("読んでいない伝言があります。team_status で new_notes を読み、指示に従ってから終えてください", 409)
         busy = [str(t["id"]) for t in team.get("tasks", []) if t.get("leader_managed") and t.get("status") in ("todo", "doing")]
         team.setdefault("leader_run", {})["finish"] = {"summary": summary, "outcome": args["outcome"], "at": teams._now()}  # noqa: SLF001
         if args["outcome"] == "done":
@@ -1041,7 +1087,8 @@ def tool_defs() -> list[dict]:
                 "inputSchema": {**_OBJ, "properties": properties, **({"required": required} if required else {})}}
 
     return [
-        tool("team_status", "目標・計画・仕事の一覧と状態・待っている質問・段ごとの担い手を返す。再開したら最初に呼ぶ。", {}),
+        tool("team_status", "目標・計画・仕事の一覧と状態・待っている質問・段ごとの担い手を返す。再開したら最初に呼ぶ。"
+                            "new_notes は利用者・Claude からの新しい伝言（指示・レビューの指摘）。あれば計画と仕事をそれに合わせて直す。", {}),
         tool("write_plan", "計画を保存する（利用者の画面に出る。何度でも更新できる）。items は仕事の項目（tier は explore・implement・review・hard）。",
              {"plan_markdown": {"type": "string", "maxLength": PLAN_MAX}, "items": {"type": "array", "items": _ITEM, "maxItems": ITEMS_MAX}},
              ["plan_markdown", "items"]),
@@ -1060,6 +1107,7 @@ def tool_defs() -> list[dict]:
               "files": {"type": "array", "items": {"type": "string"}}, "checks": {"type": "array", "items": {"type": "string"}},
               "wait": {"type": "boolean"}, "note": {"type": "string", "maxLength": INSTR_MAX}}),
         tool("wait", "仕事の終わりを待つ（timeout_s の既定は 120 秒・最大 600 秒）。mode=all は全部、any はどれか 1 つが終わるまで。"
+             "利用者・Claude から伝言が来たら早めに戻り、new_notes に載せる（指示に従って計画・仕事を直す）。"
              "終わったものは 5 行の報告・確認の合否・変更ファイルと行数・使用量・担い手を返す。時間切れでも全部の状態を返し、timed_out=true にする（止めはしない）。",
              {"run_ids": _RUN_IDS, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}, "mode": {"type": "string", "enum": ["all", "any"]}},
              ["run_ids"]),

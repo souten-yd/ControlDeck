@@ -5,7 +5,7 @@
  * エキスパートでは、段の割り当て・チームリーダーの実行の記録・MCP の呼び出しの履歴・使用量を足す。 */
 import { lazy, Suspense, useState, type ReactNode } from "react";
 import {
-  answerLeaderQuestion, askLeader, createAutoTeam, landTeam, resumeLeader, stopLeader,
+  answerLeaderQuestion, askLeader, createAutoTeam, landTeam, noteLeader, resumeLeader, stopLeader,
   type PlanItem, type Team, type TeamTask,
 } from "../../api/commander";
 import { primaryButtonClass, secondaryButtonClass } from "../../components/ui";
@@ -197,6 +197,37 @@ function Fold({ expert, children }: { expert: boolean; children: ReactNode }) {
   );
 }
 
+/** 走っているチームリーダーへ伝える欄（2026-11-29）。チームリーダーは次の確認（team_status・wait）で受け取る。 */
+function LeaderNote({ onSend }: { onSend: (text: string) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (!open) {
+    return (
+      <button type="button" data-team-note-open onClick={() => setOpen(true)} className="mb-3 text-xs font-semibold text-accent-700 underline dark:text-accent-300">
+        チームリーダーに伝える
+      </button>
+    );
+  }
+  const send = async () => {
+    if (!text.trim()) return;
+    setBusy(true);
+    try { await onSend(text.trim()); setText(""); setOpen(false); } finally { setBusy(false); }
+  };
+  return (
+    <div data-team-note className="mb-3 grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+      <label className="text-xs font-semibold text-slate-600 dark:text-slate-300" htmlFor="team-note">チームリーダーに伝える（指示・直してほしい点）</label>
+      <textarea id="team-note" value={text} onChange={(e) => setText(e.target.value)} maxLength={4000} rows={3}
+        className="w-full rounded-lg border border-slate-300 bg-white p-2 text-sm dark:border-slate-600 dark:bg-slate-900" />
+      <p className="text-xs text-slate-500 dark:text-slate-400">次に進み具合を確かめるときに読みます。読むまでは完了にしません。</p>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={() => { setOpen(false); setText(""); }} className={secondaryButtonClass}>やめる</button>
+        <button type="button" data-team-note-send disabled={busy || !text.trim()} onClick={() => void send()} className={primaryButtonClass}>伝える</button>
+      </div>
+    </div>
+  );
+}
+
 export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: Team; expert: boolean; onChanged: () => void; onHandoff: (taskId: number) => void }) {
   const show = useToasts((s) => s.show);
   const run = team.leader_run;
@@ -244,6 +275,7 @@ export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: T
           <button type="button" onClick={() => void act(() => stopLeader(team.id), "止めました")} className="shrink-0 text-xs font-semibold text-red-600 underline dark:text-red-400">止める</button>
         </p>
       )}
+      {run?.status === "running" && <LeaderNote onSend={(text) => act(() => noteLeader(team.id, text), "チームリーダーへ伝えました")} />}
       <Fold expert={expert}>
         {request && (
           <section data-team-request className={SECTION}>
