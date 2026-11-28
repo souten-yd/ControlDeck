@@ -480,6 +480,39 @@ def _use_tmp_resume_dir(monkeypatch, tmp_path):
     return root
 
 
+def _fake_hf_cleanup(tmp_path):
+    """偽 HF の途中ファイルの cleanup（hf.py 側が登録する契約を模す）。
+
+    params の repo/files だけから所有する .part を求め、完成済みのファイル・別 Job の
+    part・symlink は触らない（Nexarch #20 の「対象 Job が所有する part だけを消す」）。
+    """
+    from app.security.paths import is_within, normalize
+
+    root = tmp_path / "models"
+    root.mkdir(exist_ok=True)
+
+    def cleanup(params):
+        repo = str(params.get("repo") or "")
+        if not repo:
+            return
+        raw = root / repo.replace("/", "--")
+        if raw.is_symlink():
+            return                         # 保存先が symlink なら何も触らない
+        destination = normalize(str(raw))
+        if not is_within(destination, normalize(str(root))):
+            return
+        for name in params.get("files") or []:
+            target = destination / str(name).rsplit("/", 1)[-1]
+            part = target.with_suffix(target.suffix + ".part")
+            if part.is_symlink() or not part.is_file():
+                continue                   # symlink・FIFO・無いものは辿らない/消さない
+            if not is_within(normalize(str(part)), normalize(str(root))):
+                continue
+            part.unlink(missing_ok=True)
+
+    return cleanup, root
+
+
 def _admin_id() -> int:
     from app.database import SessionLocal
     from app.models import User
@@ -700,6 +733,125 @@ def test_paused_resume_record_is_dropped_after_the_retention(client, monkeypatch
     assert jobs._collect_resume_candidates() == []
     assert not (root / f"{old}.json").exists()
     assert (root / f"{fresh}.json").exists()
+
+
+def test_stopped_job_can_be_canceled_and_cannot_be_resumed(client, monkeypatch, tmp_path):
+    """目的: 停止した Job を取り消せること。取り消しは再開の記録（paused の印つき）を
+    消して、再開できない終端（canceled）にすること。
+
+    根拠: Nexarch #20 のレビュー（P1）「停止済みジョブを取消できるか」。停止の後に
+    取り消す道が無いと、再開の記録と途中のファイル（.part）が 30 日の期限まで残り
+    続けるだけになる。docs/PLAN-model-catalog.md「決めた意味」（2026-11-28）:
+    停止は記録を残す。取り消しは記録を消して終端にする。取り消したのに再開できる
+    （paused の記録が残る）のは契約の不整合。停止済みの runner はもう走っていないので、
+    取り消しが所有する .part を消さないと 30 日の期限まで残る（リーダーの差分確認）。
+    別 Job の part・完成ファイル・symlink を守ることも偽 HF の cleanup で確かめる。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_shutdown_started", False)
+    started = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await asyncio.sleep(30)
+
+        return run
+
+    cleanup, models = _fake_hf_cleanup(tmp_path)
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "続き", cleanup=cleanup))
+
+    # 偽 HF の保存先: 自分の part・別 Job の part・完成済みファイル・symlink の part。
+    dest = models / "org--model"
+    dest.mkdir()
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    params = {"repo": "org/model", "files": ["own.gguf"]}
+
+    async def scenario():
+        job = jobs.create("test.resume", "止めてから取消", factory({}), resume=params)
+        await asyncio.wait_for(started.wait(), 5)
+        assert await jobs.stop(job.id) == "interrupted"
+        assert (root / f"{job.id}.json").exists()        # 停止は記録を残す
+        assert own_part.is_file()                       # 停止では part を残す
+
+        assert await jobs.cancel_and_wait(job.id) is True
+        assert job.status == "canceled"
+        assert not (root / f"{job.id}.json").exists()   # 取り消しは記録を消す
+        assert not own_part.exists()                    # 取り消しは所有する part を消す
+        assert other_part.is_file()                     # 別 Job の part は残す
+        assert done.is_file()                           # 完成済みファイルは残す
+        assert linked.is_symlink()                      # symlink は辿らない
+        with pytest.raises(ValueError):
+            await jobs.resume_stopped(job.id)           # 再開はもうできない
+        return job.id
+
+    job_id = _run(scenario())
+    row = _job_row(job_id)
+    assert row.status == "canceled"
+    assert _run(jobs.resume_after_startup()) == []      # 起動時の自動再開にも出ない
+
+
+def test_stopped_job_left_in_db_after_restart_can_be_canceled_by_api(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 再起動でメモリから消えた停止中の Job も、API の取り消しで行と再開の記録を
+    消せること。
+
+    根拠: 停止 → 再起動 → 取り消しの流れ。メモリが消えても行（interrupted）と paused の
+    記録が残るのが再開の契約（resume_stopped は DB の行から作り直す）。取り消しだけ
+    409 では、記録を消す方法が 30 日の期限まで無い（#20 のレビュー）。再起動後は
+    runner が居ないので、API の取り消しが所有する .part を消すまでが契約（同じく
+    リーダーの差分確認）。別 Job の part・完成ファイル・symlink は守る。
+    """
+    from tests.conftest import CSRF_HEADERS
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    cleanup, models = _fake_hf_cleanup(tmp_path)
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(lambda params: None, lambda params: "続き",
+                                            cleanup=cleanup))
+    dest = models / "org--model"
+    dest.mkdir()
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    job_id = _seed_interrupted(root, tmp_path, kind="test.resume",
+                               params={"repo": "org/model", "files": ["own.gguf"]},
+                               owner_user_id=None, paused=True)
+
+    body = admin_client.get(f"/api/v1/jobs/{job_id}").json()
+    assert body["status"] == "interrupted" and body["can_resume"] is True
+    assert own_part.is_file()                       # 再起動後も停止の part は残る
+
+    response = admin_client.post(f"/api/v1/jobs/{job_id}/cancel", headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert not (root / f"{job_id}.json").exists()
+    assert not own_part.exists()                    # 取り消しで所有する part を消す
+    assert other_part.is_file()                     # 別 Job の part は残す
+    assert done.is_file()                           # 完成済みファイルは残す
+    assert linked.is_symlink()                      # symlink は辿らない
+
+    body = admin_client.get(f"/api/v1/jobs/{job_id}").json()
+    assert body["status"] == "canceled"
+    assert body["can_resume"] is False
 
 
 def test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record(
