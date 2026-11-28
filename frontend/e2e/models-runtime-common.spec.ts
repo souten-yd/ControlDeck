@@ -3,28 +3,41 @@ import { establishSession, hasSession } from "./support/session";
 
 /** Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。
  *
- *  目的（Nexarch #14 / 2026-11-28）:
+ *  目的（Nexarch #14 / 2026-11-28、同日補強）:
  *   - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで
  *     同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。
- *   - 設定の节が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、
- *     ⑥エキスパートはエキスパート入のときだけ出ること。
- *   - 取得ジョブの「停止」→「再開」が API のモックで動くこと（.part を残す/再開の意味は
- *     docs/PLAN-model-catalog.md「決めた意味」を照合）。
+ *     目録の見出しは「目録から取得」へ統一する要求なのでその文言に期待を固定する
+ *     （docs/PLAN-model-catalog.md「共通の並び」）。実装にはいまだに「目録から取る／探す」と
+ *     Maya の二重目録（「Maya の目録」）が残る。要求を緩めず、不一致は #21 へ報告する。
+ *   - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、
+ *     ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。
+ *   - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと
+ *     （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。
+ *     確認パネルの「取得する」は目録の行と同名なので、確認パネル固有の「やめる」を待ってから
+ *     押す（既知の競合: 行のボタンを誤クリックしてジョブが始まらない）。
  *   - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること
  *     （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。
- *   - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を残すこと。
+ *   - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。
  *
  *  根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。
- *  API は page.route で差し替え、本物の設定・外部への取得は一切行わない。
+ *  API は page.route で差し替え、本物の設定・外部への取得は一切行わない。目録モックの
+ *  Radiance も acquire="hf"（supported かつ repo ありという実 API 契約どおり。#19 で実装も hf 化）。
  *
- *  ※ この環境では frontend/node_modules が無く実行不能。spec と実行コマンドのみを残し、
+ *  ※ この環境では frontend/node_modules のリンク先（ホストの共有 node_modules）が箱から見えず
+ *    実行不能（箱内で見えないので自分では導入しない）。spec と実行コマンドのみを残し、
  *    結果は「未検証」とする。実行コマンド:
  *      env -u CONTROL_DECK_CONFIG \
  *        PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \
  *        ./deck.sh e2e models-runtime-common.spec.ts
  */
 const RUNTIME_BUTTONS = ["llama.cpp", "Strata", "Radiance", "Maya"] as const;
+const CATALOG_HEADING = "目録から取得";
+const FILE_HEADING = "ファイルから登録";
 const SECTION_LABELS = ["モデル", "コンテキストの長さ", "同時に処理する数", "速さの調整", "起動"] as const;
+/** 全ランタイムで揃えるべき見出し。summary には説明文が続くので先頭だけを厳しく照合する。 */
+const headingStart = (label: string) => new RegExp(`^${label}`);
+const COMMON_HEADINGS = [CATALOG_HEADING, FILE_HEADING, ...SECTION_LABELS] as const;
+const HEADING_PATTERNS = COMMON_HEADINGS.map(headingStart);
 const RUNTIME_IDS = ["llama", "strata", "sly-radiance", "radiance", "maya"] as const;
 const FILE_PICKER_TITLE = "モデルのファイルを選択（/data1tb・/data2tb）";
 
@@ -51,8 +64,9 @@ const catalog = {
     name: id,
     installed: true,
     formats: [],
-    acquire: id === "radiance" ? "none" : "hf",
-    entries: [catalogEntry(`e2e-${id}`, id === "radiance" ? "none" : "hf")],
+    // supported かつ repo ありの行は acquire="hf"（実 API 契約どおり。#19 で Radiance も hf 化）。
+    acquire: "hf",
+    entries: [catalogEntry(`e2e-${id}`, "hf")],
     catalog_ref: `/api/v1/models/catalog/${id}`,
   })),
 };
@@ -106,7 +120,8 @@ async function mockRuntimeCommon(page: Page): Promise<JobMocks> {
   await page.route("**/api/v1/models/catalog", (route) => route.fulfill({ json: catalog }));
   await page.route("**/api/v1/models/settings/capabilities", (route) => route.fulfill({ json: capabilities }));
   await page.route("**/api/v1/commander/workdir/roots", (route) => route.fulfill({ json: ["/data1tb", "/data2tb"] }));
-  await page.route("**/api/v1/files/list", (route) => {
+  // FilePicker は /files/list?path=... を叩く。glob は末尾まで一致するので * を付ける。
+  await page.route("**/api/v1/files/list*", (route) => {
     const path = new URL(route.request().url()).searchParams.get("path") ?? "/data1tb";
     return route.fulfill({ json: { path, entries: [
       { name: "model.gguf", path: `${path}/model.gguf`, is_dir: false, hidden: false },
@@ -122,8 +137,10 @@ async function mockRuntimeCommon(page: Page): Promise<JobMocks> {
   } }));
 
   // 取得ジョブ: job-1 を停止すると interrupted（can_resume=true）になり、再開で job-2 が走る。
+  // 取り消しは canceled（終端・再開不可）になり、途中のファイルを消してカードも片付けられる。
   const calls: string[] = [];
   let running = true;
+  let canceled = false;
   await page.route("**/api/v1/models/catalog/llama/entries/e2e-llama/files", (route) => route.fulfill({ json: {
     repo: "e2e/e2e-llama",
     files: [{ path: "e2e-llama-Q4_K_M.gguf", size: 1_500_000_000 }],
@@ -135,9 +152,9 @@ async function mockRuntimeCommon(page: Page): Promise<JobMocks> {
   });
   await page.route("**/api/v1/jobs/job-1", (route) => route.fulfill({ json: {
     id: "job-1", kind: "model.hf_download", title: "E2E e2e-llama",
-    status: running ? "running" : "interrupted",
-    progress: { status: running ? "取得中" : "停止中（続きから再開できます）", completed: 4, total: 10 },
-    error: "", can_resume: !running,
+    status: canceled ? "canceled" : running ? "running" : "interrupted",
+    progress: { status: canceled ? "取り消しました" : running ? "取得中" : "停止中（続きから再開できます）", completed: 4, total: 10 },
+    error: "", can_resume: !running && !canceled,
   } }));
   await page.route("**/api/v1/jobs/job-1/stop", (route) => {
     calls.push("stop"); running = false;
@@ -151,6 +168,11 @@ async function mockRuntimeCommon(page: Page): Promise<JobMocks> {
     id: "job-2", kind: "model.hf_download", title: "E2E e2e-llama", status: "running",
     progress: { status: "取得中", completed: 1, total: 10 }, error: "", can_resume: false,
   } }));
+  // 取り消しは既存の POST /jobs/{id}/cancel のまま（再開の記録と .part を消す）。
+  await page.route("**/api/v1/jobs/job-1/cancel", (route) => {
+    calls.push("cancel"); canceled = true;
+    return route.fulfill({ json: { ok: true } });
+  });
   return { calls };
 }
 
@@ -165,7 +187,18 @@ async function openRegisterSheet(page: Page, context: BrowserContext): Promise<{
   return { sheet, jobs };
 }
 
-test("モデル登録: 4 ランタイムが同じ順番・同じ見出しで目録 → ファイル登録 → 設定を出す", async ({ page, context }) => {
+/** 目録の行の「取得する」を押した後に出る確認パネルの「取得する」を押す。
+ *  行にも同名ボタンが残るので `.first()` で拾うと確認パネルが出る前に誤クリックし、
+ *  取得ジョブが始まらない（既知の競合）。パネル固有の「やめる」をアンカーに表示を待つ。 */
+async function confirmAcquire(page: Page, runtime = "llama") {
+  const panel = page.locator(`[data-runtime-catalog="${runtime}"] > div`).filter({
+    has: page.getByRole("button", { name: "やめる", exact: true }),
+  });
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "取得する", exact: true }).click();
+}
+
+test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す", async ({ page, context }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const { sheet } = await openRegisterSheet(page, context);
 
@@ -173,73 +206,92 @@ test("モデル登録: 4 ランタイムが同じ順番・同じ見出しで目�
   await expect(buttons).toHaveText([...RUNTIME_BUTTONS]);
 
   // llama.cpp / Strata は共通部品を SegmentedTabs で切り替える。目録 → ファイルの順。
-  await expect(sheet.getByRole("button", { name: "目録から取得" })).toHaveAttribute("aria-pressed", "true");
+  await expect(sheet.getByRole("button", { name: CATALOG_HEADING })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
   await expect(sheet.locator('[data-catalog-entry="e2e-llama"]')).toContainText("E2E e2e-llama");
   await expect(sheet.locator('[data-runtime-catalog="llama"]')).toHaveAttribute("data-expert", "off");
-  await sheet.getByRole("button", { name: "ファイルから登録", exact: true }).click();
+  await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
   await expect(sheet.locator('[data-runtime-register-file="llama"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-register-file="llama"]')).toHaveAttribute("data-expert", "off");
   await expect(sheet.locator('[data-runtime-register-file="llama"]').getByRole("button", { name: "モデルのファイルを選ぶ" })).toBeVisible();
 
   // ランタイムを切り替えてもタブの状態が残ることがあるので、毎回 目録 を選び直す。
   await sheet.getByRole("button", { name: "Strata", exact: true }).click();
-  await sheet.getByRole("button", { name: "目録から取得" }).click();
+  await sheet.getByRole("button", { name: CATALOG_HEADING }).click();
   await expect(sheet.locator('[data-runtime-catalog="strata"]')).toBeVisible();
   await expect(sheet.locator('[data-catalog-entry="e2e-strata"]')).toContainText("E2E e2e-strata");
-  await sheet.getByRole("button", { name: "ファイルから登録", exact: true }).click();
+  await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
   await expect(sheet.locator('[data-runtime-register-file="strata"]')).toBeVisible();
 
-  // Radiance は Sly 派生が既定。目録 → ファイル → 設定がこの順で並ぶ。
-  // 目録・ファイルの見出しは閉じた <details> の <summary> なので、開いてから中身を見る。
+  // Radiance は Sly 派生が既定。目録・ファイルの見出しは閉じた <details> の <summary> なので、
+  // 厳しい見出し列を確認してから開いて中身を見る。
   await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
-  await expect(sheet.locator("h3, summary")).toHaveText([
-    /目録から取る/, /ファイルから登録/, /モデル/, /コンテキストの長さ/, /同時に処理する数/, /速さの調整/, /起動/,
-  ]);
-  await sheet.locator("summary").filter({ hasText: /^目録から取る/ }).click();
+  await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
+  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="sly-radiance"]')).toBeVisible();
   await expect(sheet.locator('[data-catalog-entry="e2e-sly-radiance"]')).toContainText("E2E e2e-sly-radiance");
-  await sheet.locator("summary").filter({ hasText: /^ファイルから登録/ }).click();
+  await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="sly-radiance"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-settings="sly-radiance"]')).toBeVisible();
-  // スイッチを切ると元の Radiance の見出しになる（共通部品はそのまま）。
+  // スイッチを切ると元の Radiance になるが、共通部品の見出し・並びは変わらない。
   await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();
-  await expect(sheet.locator("h3, summary")).toHaveText([
-    /目録から探す/, /ファイルから登録/, /モデル/, /コンテキストの長さ/, /同時に処理する数/, /速さの調整/, /起動/,
-  ]);
-  await sheet.locator("summary").filter({ hasText: /^目録から探す/ }).click();
+  await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
+  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="radiance"]')).toBeVisible();
-  await sheet.locator("summary").filter({ hasText: /^ファイルから登録/ }).click();
+  await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="radiance"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-settings="radiance"]')).toBeVisible();
 
-  // Maya は目録 → ファイル → Maya の目録 → 設定。
+  // Maya も同じ見出し・並び（「Maya の目録」のような二重目録は要求違反として許容しない）。
   await sheet.getByRole("button", { name: "Maya", exact: true }).click();
-  await expect(sheet.locator("h3, summary")).toHaveText([
-    /目録から取る/, /ファイルから登録/, /Maya の目録/,
-    /モデル/, /コンテキストの長さ/, /同時に処理する数/, /速さの調整/, /起動/,
-  ]);
-  await sheet.locator("summary").filter({ hasText: /^目録から取る/ }).click();
+  await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
+  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-catalog="maya"]')).toBeVisible();
-  await sheet.locator("summary").filter({ hasText: /^ファイルから登録/ }).click();
+  await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="maya"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-settings="maya"]')).toBeVisible();
 });
 
+type Sheet = ReturnType<Page["getByRole"]>;
+
+/** 登録シートを目的のランタイムの共通設定まで進める。
+ *  llama.cpp / Strata は共通の登録パネルなのでファイル登録 → 設定の順に進み、
+ *  Radiance 系・Maya はランタイムボタン（Sly はスイッチ）で直接設定が出る。 */
+async function reachCommonSettings(page: Page, sheet: Sheet, runtime: (typeof RUNTIME_IDS)[number]) {
+  if (runtime === "llama" || runtime === "strata") {
+    if (runtime === "strata") await sheet.getByRole("button", { name: "Strata", exact: true }).click();
+    await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
+    await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
+    const picker = page.getByRole("dialog", { name: FILE_PICKER_TITLE });
+    // initialPath が残るとルート一覧ではなくフォルダ内が開く。どちらでもモデルを選べるようにする。
+    const rootButton = picker.getByRole("button", { name: "/data1tb", exact: true });
+    if (await rootButton.count()) await rootButton.click();
+    await picker.getByRole("button", { name: "model.gguf" }).click();
+    await expect(picker).toBeHidden();
+    await sheet.locator(`[data-runtime-register-file="${runtime}"]`).getByRole("button", { name: "登録する" }).click();
+  } else if (runtime === "sly-radiance" || runtime === "radiance") {
+    await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
+    if (runtime === "radiance") await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();
+  } else {
+    await sheet.getByRole("button", { name: "Maya", exact: true }).click();
+  }
+  const settings = sheet.locator(`[data-runtime-settings="${runtime}"]`);
+  await expect(settings).toBeVisible();
+  return settings;
+}
+
 for (const expert of [false, true]) {
-  test(`共通設定: 見出しの並びがランタイム間で同じで、エキスパートは${expert ? "入" : "切"}のときだけ出る`, async ({ page, context }) => {
+  test(`共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ? "入" : "切"}のときだけ出る`, async ({ page, context }) => {
     await page.addInitScript((on) => {
       try { localStorage.setItem("control-deck:commander-expert", on ? "1" : "0"); } catch { /* 無視 */ }
     }, expert);
     await page.setViewportSize({ width: 1280, height: 900 });
     const { sheet } = await openRegisterSheet(page, context);
 
-    // シートは llama.cpp で開くので、Sly-Radiance（Radiance ボタン中のスイッチ）と
-    // Maya は対応するランタイムボタンを押してから共通設定を見る。
-    for (const runtime of ["sly-radiance", "maya"] as const) {
-      if (runtime === "sly-radiance") await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
-      else await sheet.getByRole("button", { name: "Maya", exact: true }).click();
-      const settings = sheet.locator(`[data-runtime-settings="${runtime}"]`);
+    // llama → Strata → Sly → Radiance → Maya の順に切り替え、毎回同じ ①〜⑥ を確かめる。
+    // ランタイムボタンはシート上部に常にあるので、設定から戻らずに次へ移れる。
+    for (const runtime of RUNTIME_IDS) {
+      const settings = await reachCommonSettings(page, sheet, runtime);
       await expect(settings).toHaveAttribute("data-expert", expert ? "on" : "off");
       // modelSlot の中にある SettingsGroup を混ぜないよう、共通設定の直下だけを見る。
       await expect(settings.locator(":scope > section > h3")).toHaveText([...SECTION_LABELS]);
@@ -256,8 +308,7 @@ test("取得ジョブ: 停止 → 再開のボタンがモックの API で動�
 
   const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
   await entry.getByRole("button", { name: "取得する" }).click();
-  // 確認パネルは目録の <ul> より前に描かれる。先に出る「取得する」が確認パネルのボタン。
-  await sheet.getByRole("button", { name: "取得する" }).first().click();
+  await confirmAcquire(page);
 
   const running = sheet.locator('[data-acquire-job="job-1"]');
   await expect(running).toContainText("取得中");
@@ -281,10 +332,34 @@ test("取得ジョブ: 停止 → 再開のボタンがモックの API で動�
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });
 
+test("取得ジョブ: 取り消しの API モックと实际操作（320px）", async ({ page, context }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  const { sheet, jobs } = await openRegisterSheet(page, context);
+
+  const entry = sheet.locator('[data-catalog-entry="e2e-llama"]');
+  await entry.getByRole("button", { name: "取得する" }).click();
+  await confirmAcquire(page);
+
+  const running = sheet.locator('[data-acquire-job="job-1"]');
+  await expect(running).toContainText("取得中");
+  // 実行中は「停止」（記録と .part を残す）と「取り消し」（消して終端）の両方が出る。
+  await expect(running.getByRole("button", { name: "停止", exact: true })).toBeEnabled();
+  await expect(running.getByRole("button", { name: "取り消し", exact: true })).toBeEnabled();
+
+  await running.getByRole("button", { name: "取り消し", exact: true }).click();
+  await expect(page.getByText("取り消しました（途中のファイルは削除されます）")).toBeVisible();
+  expect(jobs.calls).toContain("cancel");
+  // 取り消しは終端: 再開の記録が残らず、ジョブカードも片付けられる（停止とは別の道）。
+  await expect(sheet.locator('[data-acquire-job="job-1"]')).toHaveCount(0);
+  expect(jobs.calls).not.toContain("stop");
+  expect(jobs.calls).not.toContain("resume");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
 test("ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ", async ({ page, context }) => {
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet } = await openRegisterSheet(page, context);
-  await sheet.getByRole("button", { name: "ファイルから登録", exact: true }).click();
+  await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
   await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
 
   const picker = page.getByRole("dialog", { name: FILE_PICKER_TITLE });
@@ -304,6 +379,8 @@ test("ファイル登録の FilePicker: ルートは /data1tb と /data2tb だ�
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });
 
+// 5 ランタイム × 320/1280px × 明暗 × エキスパート切/入。
+// 共通 2 ランタイムは目録の初期表示、Radiance 系・Maya は共通設定の表示を撮る。
 for (const width of [320, 1280]) {
   for (const scheme of ["light", "dark"] as const) {
     for (const expert of [false, true]) {
@@ -323,9 +400,21 @@ for (const width of [320, 1280]) {
         await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
         await page.screenshot({ path: `test-results/models-runtime-common-llama-${suffix}.png` });
 
+        await sheet.getByRole("button", { name: "Strata", exact: true }).click();
+        await expect(sheet.locator('[data-runtime-catalog="strata"]')).toBeVisible();
+        await page.screenshot({ path: `test-results/models-runtime-common-strata-${suffix}.png` });
+
         await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
         await expect(sheet.locator('[data-runtime-settings="sly-radiance"]')).toBeVisible();
         await page.screenshot({ path: `test-results/models-runtime-common-radiance-${suffix}.png` });
+
+        await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();
+        await expect(sheet.locator('[data-runtime-settings="radiance"]')).toBeVisible();
+        await page.screenshot({ path: `test-results/models-runtime-common-radiance-plain-${suffix}.png` });
+
+        await sheet.getByRole("button", { name: "Maya", exact: true }).click();
+        await expect(sheet.locator('[data-runtime-settings="maya"]')).toBeVisible();
+        await page.screenshot({ path: `test-results/models-runtime-common-maya-${suffix}.png` });
 
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       });
