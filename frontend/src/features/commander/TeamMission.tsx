@@ -17,7 +17,7 @@ import {
   type TeamTask,
 } from "../../api/commander";
 import {
-  IconBranch, IconCheck, IconChevronRight, IconClipboardList, IconHammer, IconSearch, IconTest, IconX,
+  IconBranch, IconChat, IconCheck, IconChevronRight, IconClipboardList, IconHammer, IconSearch, IconTest, IconX,
 } from "../../components/icons";
 import { UsageLine } from "./UsageLine";
 
@@ -28,7 +28,7 @@ const STAGES: ReadonlyArray<{ id: StageId; label: string; Icon: typeof IconSearc
   { id: "explore", label: "調査", Icon: IconSearch },
   { id: "plan", label: "計画", Icon: IconClipboardList },
   { id: "implement", label: "実装", Icon: IconHammer },
-  { id: "review", label: "評価", Icon: IconCheck },
+  { id: "review", label: "評価", Icon: IconChat },  // 「済み」のチェックと区別する（2026-11-28 Claude のデザインの見直し）
   { id: "integrate", label: "統合", Icon: IconBranch },
   { id: "verify", label: "試験", Icon: IconTest },
 ];
@@ -329,7 +329,7 @@ export function TeamMission({
       )}
 
       {members.length > 0 && (
-        <div data-mission-members className="mt-3 flex min-w-0 flex-wrap gap-1 pb-1">
+        <div data-mission-members className="mt-3 grid min-w-0 grid-cols-4 gap-1 pb-1 sm:flex sm:flex-wrap">
           {members.map((m) => {
             const key = memberKey(m);
             const title = nameOf(m);
