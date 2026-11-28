@@ -2567,16 +2567,25 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
       <RuntimeSettings
         runtime="strata"
         initial={strataSettingsInitial(item)}
+        save={async (values) => {
+          // 共通設定は別名を編集できるが、Strata の PUT は別名変更を 422 で断る。元の別名で保存する。
+          await api(`/models/strata/instances/${encodeURIComponent(item.alias)}`, {
+            method: "PUT", json: { ...values, alias: item.alias },
+          });
+        }}
         onDone={onClose}
-        note={expert ? (
-          <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
-            <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
-            {/* key is the alias only: a load finishing mid-edit must not wipe the form. */}
-            <div className="mt-3">
-              <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
-            </div>
-          </details>
-        ) : undefined}
+        note={<div className="space-y-2">
+          <p className="text-[11px] text-zinc-500">Strata のモデル別名は変更できません（変更しても元の名前で保存されます）。</p>
+          {expert && (
+            <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+              <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
+              {/* key is the alias only: a load finishing mid-edit must not wipe the form. */}
+              <div className="mt-3">
+                <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
+              </div>
+            </details>
+          )}
+        </div>}
       />
     </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
   </BottomSheet>;
