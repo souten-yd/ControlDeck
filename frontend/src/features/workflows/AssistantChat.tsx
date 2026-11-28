@@ -1834,10 +1834,8 @@ export default function AssistantChat() {
   const runWorkspace = selectedWorkspace(codeProject, workspaces);
   const runPlaceValue = runWorkspace?.repo_path ?? null;
   const runPlaceLabel = runWorkspace ? `作業場 ${runWorkspace.name}` : "ホーム";
-  const ranInTerminal = (sessionId: string, text: string) => {
-    try {
-      sessionStorage.setItem("control-deck:terminal-autorun", JSON.stringify({ sessionId, text }));
-    } catch { /* 受け渡せなくても Terminal は開く（手で貼ればよい） */ }
+  // 「ターミナルで開く」: 画面内で走らせたセッションの続きを手で行う（同じセッションの Terminal へ移る）
+  const openRunInTerminal = (sessionId: string) => {
     setRunRequest(null);
     navigate(`/terminal?session=${encodeURIComponent(sessionId)}`);
   };
@@ -1881,7 +1879,7 @@ export default function AssistantChat() {
       )}
       {runRequest && (
         <RunCommandSheet request={runRequest} placeLabel={runPlaceLabel} placeValue={runPlaceValue}
-          onClose={() => setRunRequest(null)} onRan={ranInTerminal} />
+          onClose={() => setRunRequest(null)} onOpenTerminal={openRunInTerminal} />
       )}
       {deletingConversation && (
         <ConfirmDialog

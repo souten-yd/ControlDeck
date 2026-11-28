@@ -46,6 +46,22 @@ class TerminalCreateBody(BaseModel):
     cwd: str = Field(default="", max_length=4096)
 
 
+def resolve_session_cwd(raw: str) -> str | None:
+    """セッションの cwd の検証（POST /terminals と POST /terminals/run で共通）。空なら None（ホーム）。"""
+    if not (raw or "").strip():
+        return None
+    from app.terminals.automation import resolve_working_directory
+
+    try:
+        return str(resolve_working_directory(raw))
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        # files.resolve は FileNotFoundError（実在しない）・FileAccessError（許可の外）を出す。
+        # そのまま返すと 500 になるので 422 にまとめる
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("", status_code=201)
 def create_terminal(
     request: Request,
@@ -58,18 +74,7 @@ def create_terminal(
     実行するため・2026-11-27 依頼）。検証は terminal automation の resolve_working_directory と同じ
     （存在するディレクトリだけ。terminal.use の利用者は端末で cd でも同じ所へ行けるので、ここでの範囲は
     「実在するディレクトリ」まで）。"""
-    cwd = None
-    if body is not None and (body.cwd or "").strip():
-        from app.terminals.automation import resolve_working_directory
-
-        try:
-            cwd = str(resolve_working_directory(body.cwd))
-        except HTTPException:
-            raise
-        except (OSError, ValueError) as exc:
-            # files.resolve は FileNotFoundError（実在しない）・FileAccessError（許可の外）を出す。
-            # そのまま返すと 500 になるので 422 にまとめる
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    cwd = resolve_session_cwd(body.cwd if body is not None else "")
     try:
         session = manager.create_session(cwd=cwd, engine=engine)
     except ValueError as e:
