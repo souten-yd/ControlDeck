@@ -2004,8 +2004,7 @@ async def models_acquire(
         raise HTTPException(status_code=422, detail="この行は HF からの取得に対応していません")
     register = None
     if body.register_model is not None:
-        if body.runtime == "maya":
-            raise HTTPException(status_code=422, detail="Maya の登録は Maya 本体の目録から行ってください")
+        # Maya・ランタイムに無い欄は AcquireBody の検査で先に 422 になっている。
         register = dict(body.register_model.model_dump())
         register["runtime"] = body.runtime
         # alias の軽い検証だけここで（詳細は登録のとき各ランタイムが検証する）。

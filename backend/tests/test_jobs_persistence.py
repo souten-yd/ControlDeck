@@ -491,7 +491,7 @@ def _admin_id() -> int:
 def _seed_interrupted(
     root, tmp_path, *, kind: str, params: dict, owner_user_id: int | None,
     attempts: int = 0, created_at: float | None = None, title: str = "続きの試験",
-    status: str = "interrupted", job_id: str | None = None,
+    status: str = "interrupted", job_id: str | None = None, paused: bool = False,
 ) -> str:
     """再起動で中断された Job の行と、再開用の記録を用意する（再起動の直前の状態）。"""
     import json
@@ -510,7 +510,7 @@ def _seed_interrupted(
     (root / f"{job_id}.json").write_text(json.dumps({
         "kind": kind, "params": params, "owner_user_id": owner_user_id,
         "title": title, "created_at": time.time() if created_at is None else created_at,
-        "attempts": attempts,
+        "attempts": attempts, "paused": paused,
     }, ensure_ascii=False), encoding="utf-8")
     return job_id
 
@@ -681,6 +681,25 @@ def test_resume_stopped_refuses_a_concurrent_second_request(client, monkeypatch)
         assert "job-concurrent" not in jobs._resuming
 
     _run(scenario())
+
+
+def test_paused_resume_record_is_dropped_after_the_retention(client, monkeypatch, tmp_path):
+    """目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+
+    根拠: run4 の再レビュー（minor）「paused の記録を自動再開から外すだけで削除しないため、
+    停止したまま放置すると /jobs の走査（resume_record_ids）の費用が増え続ける」。
+    新しい記録（再開できる）は残す。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    old = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None,
+        created_at=time.time() - jobs.PAUSED_RESUME_MAX_AGE_SECONDS - 60, paused=True)
+    fresh = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None, paused=True)
+
+    assert jobs._collect_resume_candidates() == []
+    assert not (root / f"{old}.json").exists()
+    assert (root / f"{fresh}.json").exists()
 
 
 def test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record(

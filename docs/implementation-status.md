@@ -7,8 +7,8 @@
 - **設定**: `GET /api/v1/models/settings/capabilities`（欄 id は実際の保存 API の引数名、選択肢・上限は既存の検証定数から）。Sly の prefix cache は欄を出さず常時オン（`save_instance` と argv の両層で false を拒否）。run4 で Maya（`setup_id`・context 8192〜・parallel 1〜4・欄 id の重複解消）と Strata（量子化の選択肢を系列に合わせる）を保存 API と一致させた。
 - **登録の読み取り**: `GET /api/v1/models/register/inspect` は新規選択を `/data1tb`・`/data2tb` の中だけにし（realpath・symlink 検証）、GGUF/config は読む量と件数を制限。既存の他ルートの登録は既存 API で維持。
 - 既存の各ランタイム API は削除していない。画面（共通 UI・各パネル）は別担当で未着手。
-- 差分レビューの指摘も直した: 取得後の登録引数を Sly の保存範囲へ揃え（数 GB 取得後の登録失敗を防ぐ）、Maya の壊れた `settings.json` は既定へ戻して設定 API を 500 にしない、`kv_resident` の刻み、Sly 登録ポートの空き探索、`list_model_files` の二重呼び出し、再開の二重実行の印（`_resuming`）、`stop` の `can_resume` の実在確認、Maya/Strata の既定値、取得ファイル名の `?` `#` `%` 拒否。
-- 試験: `backend/tests/test_runtime_catalog.py` 21 件・`test_jobs_persistence.py` 28 件。関連 17 ファイル（strata_catalog・sly_radiance・hf_download・maya_register・radiance_runtime・maya_probe・strata_memory・route_map・features ほか）274 件合格。実重みの取得・実機の起動、Frontend・E2E は未確認（偽 HF・隔離）。
+- 差分レビューの指摘も直した: 取得後の登録引数を Sly の保存範囲へ揃え（数 GB 取得後の登録失敗を防ぐ）、Maya の壊れた `settings.json` は既定へ戻して設定 API を 500 にしない、`kv_resident` の刻み、Sly 登録ポートの空き探索、`list_model_files` の二重呼び出し、再開の二重実行の印（`_resuming`）、`stop` の `can_resume` の実在確認、Maya/Strata の既定値、取得ファイル名の `?` `#` `%` 拒否。再レビューで、登録の欄をランタイムごとに検査（他ランタイムの欄は 422）、ポート衝突は例外の印で判定、停止したまま 30 日を過ぎた再開の記録を起動時に整理、も足した。
+- 試験: `backend/tests/test_runtime_catalog.py` 22 件・`test_jobs_persistence.py` 29 件。関連 17 ファイル（strata_catalog・sly_radiance・hf_download・maya_register・radiance_runtime・maya_probe・strata_memory・route_map・features ほか）278 件合格。実重みの取得・実機の起動、Frontend・E2E は未確認（偽 HF・隔離）。
 ## 2026-11-28 AI チームの担い手に OpenCode（Zen・Go）の GLM などを使える
 - 本番の Nexarch で ControlDeck の開発を AI チームに回そうとしたところ（`docs/ROADMAP.md` 方針 3）、実装の担い手に OpenCode の GLM（opencode-go/glm-5.3）を当てられなかった。選択肢に出ず、起動も常に `controldeck/<モデル>`（ゲートウェイ）だった。利用者「ローカル LLM と OpenCode の GLM と OpenRouter の DS を使って良い」。
 - **一覧**: Zen の鍵があるときだけ、OpenCode のモデルに `model_choice.ZEN_MODELS`（GLM-5.3・HY4 Flash・DeepSeek V4.1 Flash）を足す（`commander/models.py`）。

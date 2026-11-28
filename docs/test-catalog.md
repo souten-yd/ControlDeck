@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2897 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2901 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -1754,6 +1754,7 @@
 - `test_gated_repo_reports_token_requirement`
 - `test_free_space_is_checked_before_downloading` — 入らないものを落とし始めない（途中で詰まると中途半端に残る）。
 - `test_download_saves_under_repo_directory_and_can_register`
+- `test_sly_register_avoids_used_ports_and_retries_only_on_conflict` — 目的: 取得後の Sly 登録が使用中のポートを避けて空きを選び、再試行は衝突の印だけで行うこと。
 - `test_download_skips_files_already_present`
 - `test_presets_find_files_across_libraries` — 既定ライブラリが変わっても、別の場所にある既存GGUFを再取得しない。
 - `test_empty_files_takes_every_top_level_file_and_reads_its_size_at_start` — 目的: 目録の行から始まる files=[] の取得が、repo の最上位ファイル全部を落とし、
@@ -1838,6 +1839,7 @@
 - `test_canceled_resumable_job_is_not_resumed` — 目的: 利用者が止めた Job の記録は消し、再起動の後に勝手に再開しないこと。
 - `test_stop_keeps_the_record_and_resume_starts_a_new_job` — 目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
 - `test_resume_stopped_refuses_a_concurrent_second_request` — 目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
+- `test_paused_resume_record_is_dropped_after_the_retention` — 目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
 - `test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record` — 目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
 - `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
 - `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
@@ -3571,6 +3573,7 @@
 - `test_capability_fields_match_the_save_api` — 目的: 設定の欄の id・選択肢・上限を、実際の保存 API の検証と同じにすること。
 - `test_capability_ids_are_unique_and_defaults_fit_the_choices` — 目的: 同じ設定を 2 つの節に出さないこと。数値の既定が範囲内・選択の既定が選択肢内に
 - `test_acquire_register_rejects_what_the_sly_save_api_rejects` — 目的: 取得ジョブの登録引数（AcquireRegister）が、Sly-Radiance の保存 API と同じ値を
+- `test_acquire_register_rejects_fields_the_runtime_would_ignore` — 目的: 取得後の登録で、そのランタイムが使わない欄を 422 にすること。
 - `test_maya_capabilities_survive_a_broken_settings_file` — 目的: Maya の settings.json が壊れていても、既定へ戻して共通の設定 API を返すこと。
 - `test_sly_prefix_cache_is_always_on_and_has_no_field` — 目的: Sly の prefix cache を切る欄を設定の形に出さず、常時オンとだけ注記すること。
 - `test_radiance_speculative_tokens_defaults_to_auto` — 目的: Radiance の先読みの既定を保存 API と同じ「自動（null）」にすること。
@@ -3743,6 +3746,7 @@
 - `test_a_loaded_sly_model_is_freed_for_another_runtime`
 - `test_stop_removes_a_container_left_in_removing` — 停止で unit が止まっても container が残っていれば強制で外す（Radiance と共通の部品）。
 - `test_prefix_cache_is_always_on_in_both_layers` — 目的: Sly の prefix cache を切る値を保存 API の型（router）と save_instance の両層で断り、
+- `test_port_conflict_is_marked_for_the_acquire_retry` — 目的: ポート衝突の例外に印（port_conflict）が付き、取得後の登録が文言に頼らず再試行できること。
 
 ### backend/tests/test_speech_engines.py
 

@@ -163,7 +163,9 @@ run3 の実装を差分で読み、依頼の「事前レビュー run4 の必須
 | 差分レビュー: `AcquireRegister` を Sly の保存範囲へ（取得後の登録失敗を防ぐ） | 済（試験追加） |
 | 差分レビュー: Maya の壊れた `settings.json` で設定 API を 500 にしない | 済（試験追加） |
 | 差分レビュー: `kv_resident` の刻み・Sly 登録ポートの空き探索・`list_model_files` の二重呼び出し・再開の二重実行の印・`can_resume` の実在確認・既定値・ファイル名の `?` `#` `%` | 済 |
-| 確認: 関連 17 ファイル 274 件合格 | 済（下記） |
+| 再レビュー: 登録の欄をランタイムごとに検査（他ランタイムの欄は 422） | 済（試験追加） |
+| 再レビュー: ポート衝突は例外の印で判定・停止したままの記録は 30 日で整理 | 済（試験追加） |
+| 確認: 関連 17 ファイル 278 件合格 | 済（下記） |
 
 run4 で確認したこと（コードを読んだ結果。実機・実重みは未確認）:
 
@@ -174,9 +176,9 @@ run4 で確認したこと（コードを読んだ結果。実機・実重みは
 
 試験（隔離: `env -u CONTROL_DECK_CONFIG`、`/data1tb/ControlDeck/app-strata/.venv`）:
 
-- `test_runtime_catalog.py` 21 passed（maya の契約・id 重複・既定値・取得引数の範囲・壊れた Maya 設定の検査を追加）。
-- `test_jobs_persistence.py` 28 passed（再開の同時実行を拒む試験を追加）。
-- 関連 17 ファイル（runtime_catalog・hf_download・jobs_persistence・sly_radiance・strata_catalog・strata_gateway・strata_optional・strata_memory・local_llm_gateway・radiance_runtime・models_local_register・maya_register・maya_probe・maya_s_addon・llama_runtime・route_map・features）: 274 passed。
+- `test_runtime_catalog.py` 22 passed（maya の契約・id 重複・既定値・取得引数の範囲・壊れた Maya 設定・欄の適用範囲の検査を追加）。
+- `test_jobs_persistence.py` 29 passed（再開の同時実行・停止の記録の期限の検査を追加）。
+- 関連 17 ファイル（runtime_catalog・hf_download・jobs_persistence・sly_radiance・strata_catalog・strata_gateway・strata_optional・strata_memory・local_llm_gateway・radiance_runtime・models_local_register・maya_register・maya_probe・maya_s_addon・llama_runtime・route_map・features）: 278 passed。
 - 全件試験は禁止のため未実行。実重みの HF 取得・実機の登録/起動・Frontend/E2E は未確認（偽 HF・隔離）。
 
 実装後にこの表と `docs/HANDOFF-model-catalog.md` の作業記録を更新する。

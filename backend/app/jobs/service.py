@@ -43,6 +43,9 @@ RESOURCE_PHASES = {
 # 再起動のたびに取得をやり直し続けないための歯止め（m3-spec.md）。
 RESUME_MAX_ATTEMPTS = 3
 RESUME_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+# 利用者が「停止」したまま放置された記録を消すまでの期限。自動再開はしないが、記録は
+# 「再開」のために残す。無期限に残すと /jobs の走査（resume_record_ids）が増え続ける。
+PAUSED_RESUME_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 _RESUME_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # 再開の処理中の Job（同時に押されても Job を二重に作らない）。event loop は 1 本なので、
 # await をまたがない「見て入れる」は原子。錠をモジュールに置くと試験ごとの loop に縛られる。
@@ -422,6 +425,14 @@ def _collect_resume_candidates() -> list[dict[str, Any]]:
                 continue
             if doc.get("paused"):
                 # 利用者が「停止」した Job。自動では再開しない（記録は「再開」のために残す）。
+                # ただし 30 日を過ぎた記録は消す（放置された記録が /jobs の走査を増やし続けない）。
+                try:
+                    stopped_for = now - float(doc["created_at"])
+                except (KeyError, TypeError, ValueError):
+                    stopped_for = 0.0
+                if stopped_for > PAUSED_RESUME_MAX_AGE_SECONDS:
+                    _unlink_quietly(path)
+                    logger.info("停止したまま期限（30日）を過ぎた Job の記録を消しました: %s", job_id)
                 continue
             row = db.get(JobRow, job_id)
             if row is None or row.status != "interrupted":

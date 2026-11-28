@@ -239,3 +239,16 @@ def test_prefix_cache_is_always_on_in_both_layers(managed):
     args = sly.serve_args("q", cfg)
     assert args.count("--enable-prefix-caching") == 1
     assert "--disable-prefix-caching" not in args
+
+
+def test_port_conflict_is_marked_for_the_acquire_retry(managed):
+    """目的: ポート衝突の例外に印（port_conflict）が付き、取得後の登録が文言に頼らず再試行できること。
+
+    根拠: run4 の再レビュー（minor）「ポート衝突の再試行を "ポート" の部分一致で判定していた」。
+    container_runtime の文言を変えても、共通の取得の登録が壊れないようにする。
+    """
+    model, _ = managed
+    sly.save_instance("first", model_path=str(model), port=8100)
+    with pytest.raises(sly.SlyRadianceError) as info:
+        sly.save_instance("second", model_path=str(model), port=8100)
+    assert getattr(info.value, "port_conflict", False) is True

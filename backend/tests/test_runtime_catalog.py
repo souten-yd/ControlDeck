@@ -228,6 +228,35 @@ def test_acquire_register_rejects_what_the_sly_save_api_rejects():
     assert ok.max_num_seqs == 8
 
 
+def test_acquire_register_rejects_fields_the_runtime_would_ignore():
+    """目的: 取得後の登録で、そのランタイムが使わない欄を 422 にすること。
+
+    根拠: run4 の再レビュー（minor）「AcquireRegister は runtime をまたぐ欄を全部受け、
+    adapter が黙って捨てる（例: sly-radiance に ctx_size）」。画面が欄を出したのに効かない
+    状態を作らない（PLAN の「欄の id は保存 API と同じ」）。
+    """
+    from pydantic import ValidationError
+
+    from app.schemas.models import AcquireBody
+
+    with pytest.raises(ValidationError, match="ctx_size"):
+        AcquireBody(runtime="sly-radiance", entry_id="swift-heretic",
+                    register={"alias": "s", "ctx_size": 8192})
+    with pytest.raises(ValidationError, match="kv_cache"):
+        AcquireBody(runtime="llama", entry_id="some-entry",
+                    register={"alias": "l", "kv_cache": "fp8"})
+    with pytest.raises(ValidationError, match="Maya"):
+        AcquireBody(runtime="maya", entry_id="glm-m-derisked",
+                    register={"alias": "m"})
+    # そのランタイムの欄だけなら通る。
+    ok = AcquireBody(runtime="sly-radiance", entry_id="swift-heretic",
+                     register={"alias": "s", "context": 8192})
+    assert ok.register_model.context == 8192
+    ok_llama = AcquireBody(runtime="llama", entry_id="some-entry",
+                           register={"alias": "l", "ctx_size": 8192})
+    assert ok_llama.register_model.ctx_size == 8192
+
+
 def test_maya_capabilities_survive_a_broken_settings_file(tmp_path, monkeypatch):
     """目的: Maya の settings.json が壊れていても、既定へ戻して共通の設定 API を返すこと。
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # 共通取得に対応するランタイム（HF から ControlDeck が取って登録まで行うもの）。
 # Strata（ランタイム自身が取得）・Radiance（.rad は手で置く）はここに入れない。
@@ -81,6 +81,18 @@ class AcquireRegister(BaseModel):
         return value
 
 
+# 登録の adapter が実際に読む欄（hf._register_llama・hf._register_sly_radiance）。
+# ここに無い欄は黙って捨てずに 422 にする（UI が欄を出したのに効かない、を防ぐ）。
+_REGISTER_FIELDS: dict[str, frozenset[str]] = {
+    "llama": frozenset({"alias", "role", "endpoint_id", "port", "ctx_size", "n_parallel"}),
+    "sly-radiance": frozenset({
+        "alias", "port", "context", "kv_cache", "max_num_seqs", "quantization",
+        "gpu_memory_utilization", "prefill_chunk", "reasoning_effort",
+    }),
+    "maya": frozenset(),  # 登録は Maya 本体の目録から（登録の欄は受け付けない）
+}
+
+
 class AcquireBody(BaseModel):
     """POST /api/v1/models/acquire-jobs の本体。
 
@@ -98,3 +110,20 @@ class AcquireBody(BaseModel):
     # 省略時は repo の最上位ファイル全部（Sly・Maya のフォルダ形式のモデル）。
     files: list[str] = Field(default_factory=list, max_length=64)
     register_model: AcquireRegister | None = Field(default=None, alias="register")
+
+    @model_validator(mode="after")
+    def _register_fields_fit_runtime(self) -> "AcquireBody":
+        if self.register_model is None:
+            return self
+        if self.runtime == "maya":
+            raise ValueError("Maya の登録は Maya 本体の目録から行ってください（register を省略）")
+        allowed = _REGISTER_FIELDS[self.runtime]
+        used = {key for key, value in self.register_model.model_dump().items()
+                if value is not None}
+        extra = sorted(used - allowed)
+        if extra:
+            raise ValueError(
+                f"{self.runtime} の登録では使えない欄です: {', '.join(extra)}"
+                f"（使える欄: {', '.join(sorted(allowed))}）"
+            )
+        return self

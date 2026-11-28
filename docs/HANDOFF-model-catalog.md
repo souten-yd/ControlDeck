@@ -121,6 +121,23 @@ run4 の差分レビュー（別担当）で出た指摘への対応:
   `family`/量子化の既定は目録の先頭系列から（info）。
 - 取得ファイル名の検証に `?` `#` `%` を追加（URL への補間で要求先・保存名が変わる。info）。
 
+再レビュー（第 2 輪。critical 0 / major 0、minor 3、info 3）で直した点:
+
+- **登録の欄の適用範囲**（minor）: `AcquireBody` がランタイムごとに使える欄を検査し、
+  他ランタイムの欄（例: sly-radiance の `ctx_size`）を黙って捨てず 422 にする。Maya の
+  登録もここで断る（`router.py` の同じ検査は実行されなくなったので消した）。
+- **ポート衝突の判定**（minor）: `container_runtime` が衝突の例外に印（`port_conflict`）を
+  付け、`hf._register_sly_radiance` は文言の部分一致ではなく印で再試行する。空きポートは
+  全ランタイムの使用中のポートを 1 度だけ読んで選ぶ。
+- **停止したままの記録の期限**（minor）: `paused` の記録は自動再開から外すだけで残していた
+  ため、放置すると `/jobs` の走査が増え続けた。30 日を過ぎた記録は起動時の整理で消す
+  （自動再開が有効なとき）。
+- 残した info: `llama` の目録行が空（`/acquire-jobs?runtime=llama` は常に 404。UI は目録の
+  行からしか取らないため実害なし）、`models_acquire` が同期の DB 書き込みを行う（既存の
+  `hf_download` と同じ形で、この段の回帰ではない。`jobs.create` が `asyncio` の通知を使う
+  ため endpoint を `def` へ移すのは別の改修）、dev-check の失敗は `/dev/shm` が読み取り
+  専用の環境要因。
+
 run4 で確認したこと（コードを読んだ結果。実機・実重みは未確認）:
 
 - redirect で HF のトークンを別ホスト（CDN）へ送らない・https 以外を断る（試験追加）。
@@ -132,15 +149,20 @@ run4 で確認したこと（コードを読んだ結果。実機・実重みは
 
 試験（隔離: `env -u CONTROL_DECK_CONFIG`、`/data1tb/ControlDeck/app-strata/.venv`）:
 
-- `test_runtime_catalog.py` 21 passed（レビュー対応の 2 件を追加）。
-- `test_jobs_persistence.py` 28 passed（再開の同時実行を拒む試験を 1 件追加）。
+- `test_runtime_catalog.py` 22 passed（レビュー対応の 2 件 + 欄の適用範囲の 1 件）。
+- `test_jobs_persistence.py` 29 passed（再開の同時実行を拒む試験・停止の記録の期限の試験を追加）。
 - 関連 17 ファイル（runtime_catalog・hf_download・jobs_persistence・sly_radiance・
   strata_catalog・strata_gateway・strata_optional・strata_memory・local_llm_gateway・
   radiance_runtime・models_local_register・maya_register・maya_probe・maya_s_addon・
-  llama_runtime・route_map・features）: 274 passed。
+  llama_runtime・route_map・features）: 278 passed。
 - 全件試験は禁止のため未実行。実重みの HF 取得・実機の登録/起動・Frontend/E2E は未確認。
 
 残り（run4 の外）:
+
+- 第 2 輪の修正（13 ファイル）は作業ツリーに残る。`547cd5ed`（Nexarch のコミット）のあとに
+  当てた分で、この環境からは `.git/objects` が読み取り専用のためコミットできない
+  （`git add` が `Read-only file system`）。差分は `/tmp/opencode/nexarch-3/` の
+  `run4-files.tar.gz`・`tracked.patch` に取ってある。
 
 - 共通 UI と各パネル（別担当）。Maya/Strata の欄の契約は変わったので、UI は `docs/PLAN-model-catalog.md` の「共通 API の契約」の Maya・Strata の項を読む。
 - 実機で 5 ランタイムの取得→登録→起動を確認（実重みの取得は許可が要る）。

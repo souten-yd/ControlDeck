@@ -336,7 +336,7 @@ def _register_sly_radiance(register: dict, saved: list[str]) -> str:
     """
     from pathlib import Path as _Path
 
-    from app.models_mgmt import sly_radiance
+    from app.models_mgmt import local_llm, sly_radiance
 
     alias = str(register.get("alias") or "").strip()
     if not alias:
@@ -347,22 +347,30 @@ def _register_sly_radiance(register: dict, saved: list[str]) -> str:
                 "gpu_memory_utilization", "prefill_chunk", "reasoning_effort"):
         if register.get(key) is not None:
             fields[key] = register[key]
-    # ポートの既定は既存 API（SlyRadianceModelBody）と同じ 8100。指定が無いときに
-    # 8100 が埋まっていると全ファイルを取り終えてから登録で失敗するので、空きを探す
-    # （別のランタイムが使っている場合も container_runtime が「ポート」と答える）。
-    ports = [int(register["port"])] if register.get("port") is not None else range(8100, 8200)
-    last_error: Exception | None = None
+    # ポートの既定は既存 API（SlyRadianceModelBody）と同じ 8100。埋まっていると全ファイルを
+    # 取り終えてから登録で失敗するので、全ランタイムの使用中のポートを 1 度だけ読み、
+    # 空いている候補を順に試す（候補の選定と保存の間に取られた場合だけ、印を見て次へ）。
+    if register.get("port") is not None:
+        ports = [int(register["port"])]
+    else:
+        try:
+            taken = local_llm.endpoint_ports()
+        except Exception:  # noqa: BLE001 - 読めないときは保存時の判定に任せる
+            taken = set()
+        ports = [port for port in range(8100, 8200) if port not in taken]
+        if not ports:
+            raise sly_radiance.SlyRadianceError("空いているポートがありません")
     for port in ports:
         try:
             # prefix cache は常にオン（切る値は受け付けない。sly_radiance が検証する）
             sly_radiance.save_instance(alias, model_path=str(folder), port=port, **fields)
         except sly_radiance.SlyRadianceError as exc:
-            if register.get("port") is not None or "ポート" not in str(exc):
+            # 別名の重複など、ポート以外の理由の失敗はそのまま返す（理由の印で判定）。
+            if register.get("port") is not None or not getattr(exc, "port_conflict", False):
                 raise
-            last_error = exc
             continue
         return alias
-    raise last_error or sly_radiance.SlyRadianceError("空いているポートがありません")
+    raise sly_radiance.SlyRadianceError("空いているポートがありません")
 
 
 def _register_dispatch(register: dict, saved: list[str]) -> str:

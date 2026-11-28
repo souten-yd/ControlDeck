@@ -156,6 +156,33 @@ def test_download_saves_under_repo_directory_and_can_register(tmp_path, monkeypa
     assert not list(target.parent.glob("*.part"))
 
 
+def test_sly_register_avoids_used_ports_and_retries_only_on_conflict(tmp_path, monkeypatch):
+    """目的: 取得後の Sly 登録が使用中のポートを避けて空きを選び、再試行は衝突の印だけで行うこと。
+
+    根拠: run4 の再レビュー（minor）「ポート衝突の再試行を "ポート" の部分一致で判定して
+    いた」。別名の重複など、ポート以外の失敗を空回りさせない。
+    """
+    from app.models_mgmt import local_llm, sly_radiance
+
+    saved = tmp_path / "m" / "model.safetensors"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"x")
+    monkeypatch.setattr(local_llm, "endpoint_ports", lambda: {8100, 8101})
+    used: list[int] = []
+    monkeypatch.setattr(sly_radiance, "save_instance",
+                        lambda alias, *, model_path, port, **fields: used.append(port))
+
+    assert hf._register_sly_radiance({"alias": "sly-x"}, [str(saved)]) == "sly-x"
+    assert used == [8102]
+
+    def raise_alias_duplicate(alias, *, model_path, port, **fields):
+        raise sly_radiance.SlyRadianceError("同じ別名は既に登録されています")
+
+    monkeypatch.setattr(sly_radiance, "save_instance", raise_alias_duplicate)
+    with pytest.raises(sly_radiance.SlyRadianceError, match="同じ別名"):
+        hf._register_sly_radiance({"alias": "sly-x"}, [str(saved)])
+
+
 def test_download_skips_files_already_present(tmp_path, monkeypatch):
     import asyncio
 
