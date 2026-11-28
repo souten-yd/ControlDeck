@@ -129,6 +129,7 @@ def test_drop_and_finish_and_close_clear_stale_tasks(monkeypatch):
     team = fresh()
     team["leader_run"] = {"status": "stopped"}
     monkeypatch.setattr(teams, "_load", lambda: [team])
-    out = team_leader.close("tq", "Claude が引き取って仕上げた（#714）")
+    out = team_leader.close("tq", "Claude が引き取って仕上げた（#714）", landed=True)
     assert out["leader_run"]["status"] == "done" and out["leader_run"]["finish"]["outcome"] == "done"
+    assert out["result"]["landed"] is True and out["result"]["landed_outside"] is True   # PR で取り込み済み
     assert [t["status"] for t in team["tasks"]] == ["dropped", "done", "doing", "dropped"]
