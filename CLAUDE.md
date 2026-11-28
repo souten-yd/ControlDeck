@@ -18,6 +18,8 @@
 
 **AI Commander（2026-11-26〜）**: 複数の AI の CLI（Claude・Codex・OpenCode・Gemini・Grok）を 1 画面で、複数アカウント・監視・自動再開・利用量・チーム。計画は `docs/PLAN-ai-commander.md`。ControlDeck の作業場（OpenCode）で作る。
 
+**Nexarch の開発機能の磨き込み（devx A〜F、2026-11-28〜）**: チームの画面・役割ごとのモデル選び・道具の配分と守り・再起動からの自動再開・資料の受け渡し・チームリーダーの道具の説明。**まず `docs/HANDOFF-nexarch-devx.md` を読む。** 計画と Web 調査の比較表（8 製品・URL つき）は `docs/PLAN-nexarch-team.md` の「2026-11-28 devx」節。現状は計画のみで A〜F は未検証。
+
 ## 読む順
 
 1. `AGENTS.md`
