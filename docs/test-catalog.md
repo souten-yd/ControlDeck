@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 287 ファイル、3052 テスト（目的の未記入 93 ファイル）
+- backend: 288 ファイル、3056 テスト（目的の未記入 93 ファイル）
 - E2E: 155 spec、367 テスト
 
 ## backend（backend/tests）
@@ -2581,6 +2581,15 @@
 
 - `test_names_are_saved_per_runtime_and_alias_and_blank_restores_default`
 - `test_strata_lists_file_names_and_custom_names`
+
+### backend/tests/test_model_download_root.py
+
+目的: 目的: 目録の「取得して登録」（Maya）が、まだ無い取得先のフォルダを安全に作れること。モデルの置き場（ライブラリ）は /data1tb・/data2tb の中だけにすること。 根拠: 2026-11-28 利用者（スマホの写真）「ダウンロードしようとしたら存在しないと出る」（存在しません: /data1tb/LLM/GLM-5.3-Flash-Maya-GGUF）。Maya の取得は既にあるフォルダが前提だった。同日「LLM のダウンロードフォルダの ルートは data1tb と data2tb のフォルダにしてください」。
+
+- `test_makes_the_folder_under_an_existing_parent_inside_the_roots`
+- `test_refuses_outside_the_roots_and_bad_names`
+- `test_refuses_a_symlink_parent_leading_outside`
+- `test_library_paths_must_be_inside_the_two_roots`
 
 ### backend/tests/test_model_libraries.py
 

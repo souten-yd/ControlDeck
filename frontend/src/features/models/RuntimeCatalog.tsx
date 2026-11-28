@@ -322,7 +322,7 @@ function ModelCard({ runtime, model, entries, expert, hardware, jobs, registered
     try {
       const folder = `${downloadRoot.replace(/\/+$/, "")}/${variant.folder_name || variant.repo.split("/").pop()}`;
       const result = await api<{ job_id: string }>("/features/maya-s/models/download-jobs",
-        { method: "POST", json: { setup_id: variant.id, folder } });
+        { method: "POST", json: { setup_id: variant.id, folder, create_folder: true } });
       onStartJob({ id: result.job_id, entry });
       show("取得と登録を始めました（画面を閉じても続きます）");
     } catch (e) {
@@ -564,6 +564,11 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
       {block && !block.installed && (
         <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
           このランタイムはまだ導入されていません。導入してから登録してください。
+        </p>
+      )}
+      {models.length > 0 && block?.download_root && (
+        <p className="text-[11px] text-zinc-500" data-download-root>
+          取得先 <span className="break-all font-mono">{block.download_root}</span>（LLM 共通設定の「モデルの保存場所」の既定。そこで変えられます）
         </p>
       )}
       {models.length > 0 && (

@@ -273,6 +273,15 @@ def validate_entries(entries: list[dict]) -> list[dict]:
         if not mounted or not resolved:
             # 未接続ドライブの登録自体は許す（後で挿せば使える）。パス検証は接続時に行う。
             continue
+        # モデルの置き場は /data1tb・/data2tb の中だけ（2026-11-28 利用者「LLM のダウンロードフォルダのルートは
+        # data1tb と data2tb のフォルダに」）。内蔵（Embed・Reranker の従来の置き場）は除く。
+        if library_id != BUILTIN_LIBRARY_ID:
+            from app.models_mgmt import model_paths
+            from app.security.paths import is_within, normalize
+
+            real = normalize(resolved)
+            if not any(is_within(real, root) or real == root for root in model_paths.selection_roots()):
+                raise LibraryError(f"モデルの置き場は {' と '.join(model_paths.SELECTION_ROOTS)} の中だけです: {real}")
         try:
             files.resolve(resolved, must_exist=Path(resolved).exists())
         except (PermissionError, FileNotFoundError) as exc:
