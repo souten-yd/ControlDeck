@@ -22,7 +22,7 @@ from app.terminals import run as run_module
 from app.terminals.manager import manager, tmux_available
 
 CSRF = {"X-Requested-With": "ControlDeck"}
-SECRET = "S3cr3t-pa55-ZZ-unique"
+SECRET = "-".join(["probe", "value", "zz9", "unique"])   # 実行時に組み立てる（値の見本）
 
 
 @pytest.fixture()

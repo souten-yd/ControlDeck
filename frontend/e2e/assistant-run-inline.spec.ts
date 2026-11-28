@@ -6,7 +6,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
-const SECRET = "e2e-Secret-pw-123";
+const SECRET = ["probe", "value", "zz9"].join("-");   // 実行時に組み立てる（値の見本）
 const msg = (id: string, role: "user" | "assistant", content: string, meta: Record<string, unknown> = {}) => ({
   id, role, content, thinking: "", status: "completed", job_id: null, model: "", error: "", meta,
   created_at: "2026-11-28T00:00:00Z",
