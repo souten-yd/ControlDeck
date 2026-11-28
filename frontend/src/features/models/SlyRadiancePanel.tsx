@@ -96,7 +96,7 @@ export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
 
   // 目録からの取得・ファイル選択で決まった値を共通設定のフォームへ渡す（登録自体は下の保存で行う）。
   const catalogSlot = initial ? null : <div className="space-y-3">
-    <SettingsGroup title="目録から取る" description="HF から取得します（停止・再開できます）。取得したフォルダは下の設定へ入ります"
+    <SettingsGroup title="目録から取得" description="HF から取得します（停止・再開できます）。取得したフォルダは下の設定へ入ります"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="sly-radiance" expert={expert} onRegister={(path, entry) => {
         // 先読みは model_path を上書きしない（続けてモデルを取ったときに消えないように）。
@@ -133,12 +133,12 @@ export function SlyRadianceRegisterPanel({ onDone, initial, running = false }: {
 
   return <div className="space-y-3">
     {!initial && <p className="text-xs text-zinc-500">手元のモデルのフォルダを選ぶか、目録から取得します。登録だけでは起動もしません。</p>}
-    <RuntimeSettings runtime="sly-radiance" expert={expert}
+    <RuntimeSettings runtime="sly-radiance" expert={expert} disabled={running}
       initial={initial ? { ...initial } : undefined}
       values={values} onValuesChange={setValues}
       modelSlot={modelSlot} save={save} onDone={onDone}
       note={running
-        ? <p className="text-[11px] text-amber-700 dark:text-amber-300">稼働中は「起動」の設定だけ変更できます。ほかはモデルを停止してから変更してください。</p>
+        ? <p className="text-[11px] text-amber-700 dark:text-amber-300">稼働中は設定を変更できません。モデルを停止してから変更してください。</p>
         : initial ? <p className="text-[11px] text-zinc-500">ゲートウェイ名（alias）は変えません。一覧に出る名前は上の「表示名」から変更できます。</p> : undefined}
     />
     {drafterPicker && <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode="dir"
@@ -160,7 +160,7 @@ export function SlyRadianceDetailSheet({ alias, onClose }: { alias: string; onCl
     {item ? <div className="space-y-3">
       <DisplayNameField runtime="sly-radiance" alias={alias} />
       <ModelStatusSummary running={!!item.loaded}
-        lockedNote={item.loaded ? "稼働中は「起動」の設定だけ変更できます。ほかはアンロードしてから変更してください。" : undefined}
+        lockedNote={item.loaded ? "稼働中は設定を変更できません。アンロードしてから変更してください。" : undefined}
         rows={[
           ["ランタイム", `Sly-Radiance ${data?.runtime.version ?? ""}`],
           ["モデル", <FileName path={item.model_path} />],

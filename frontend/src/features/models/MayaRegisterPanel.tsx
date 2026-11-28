@@ -7,7 +7,7 @@
  *  従来どおり MayaSDetailSheet で扱う。
  */
 import { DisplayNameField } from "./DisplayNameField";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useToasts } from "../../stores";
@@ -85,6 +85,8 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState("");
   const [saving, setSaving] = useState(false);
+  const downloadApprovalRef = useRef<((approved: boolean) => void) | null>(null);
+  const [confirmDownload, setConfirmDownload] = useState<MayaQuant | null>(null);
   const apply = (patch: SettingValues) => setValues((current) => ({ ...current, ...patch }));
   const choose = (setupId: string) => { setSelected(setupId); apply({ setup_id: setupId }); };
   const chooseFolder = (path: string) => {
@@ -139,6 +141,24 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
   };
 
+  // 約 93 GB の取得は高負荷なので、共通保存ボタンからでも確認ダイアログを挟む。
+  // 却下したときは保存も成功通知も出さない（エラー扱いにしない）。
+  const approveDownloadForSave = (body: SettingValues): Promise<boolean> => {
+    const setupId = String(body.setup_id ?? values.setup_id ?? selected ?? "");
+    const target = quants.find((q) => q.setup_id === setupId);
+    if (!target || !(canDownload && target.setup_id === setupId)) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      downloadApprovalRef.current = resolve;
+      setConfirmDownload(target);
+    });
+  };
+  const settleDownloadApproval = (approved: boolean) => {
+    const resolve = downloadApprovalRef.current;
+    downloadApprovalRef.current = null;
+    setConfirmDownload(null);
+    resolve?.(approved);
+  };
+
   // 「登録して起動」は主操作の代替（共通の保存ボタンは登録だけ）。
   const startNow = async () => {
     if (!pick) return;
@@ -172,7 +192,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 
   // 目録・ファイル選択・既存の probe はすべて ①モデルの中へ。②以降は共通部品が出す。
   const modelSlot = <div className="space-y-3">
-    <SettingsGroup title="目録から取る" description="HF の候補を取得します（停止・再開できます）。取得したフォルダは Maya の目録で確認します"
+    <SettingsGroup title="目録から取得" description="HF の候補を取得します（停止・再開できます）。取得したフォルダは Maya の目録で確認します"
       collapsible defaultOpen={false}>
       <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path, entry) => {
         const dir = path.replace(/\/[^/]*$/, "");
@@ -193,8 +213,11 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
           setTyped(dir); setFolder(dir); apply({ folder: dir });
         }} />
     </SettingsGroup>
-    <SettingsGroup title="Maya の目録" description="保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければダウンロードして登録します">
-      <div className="flex gap-2">
+    {/* 目録の見出しは 1 つだけ（共通ルール）。Maya 本体の量子化選択は見出しを持たない block にする。 */}
+    <section className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700" aria-label="Maya の量子化を選ぶ">
+      <p className="text-sm font-semibold">Maya の量子化を選ぶ</p>
+      <p className="mt-0.5 text-[11px] text-zinc-500">保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければダウンロードして登録します</p>
+      <div className="mt-3 flex gap-2">
         {expert ? (
           <input aria-label="Mayaモデルのフォルダ" value={typed} onChange={(e) => setTyped(e.target.value)}
             placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya" className={`${field} min-w-0 flex-1 font-mono text-xs`} />
@@ -236,7 +259,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
           </ul>
         </div>)}
       </div>
-    </SettingsGroup>
+    </section>
 
     {pick && <SettingsGroup title={mayaModelName(pick.model, pick.tier)} description={`ゲートウェイでの名前: ${pick.alias}`}>
       {pick.family === "hy4" && <p className="text-[11px] text-zinc-500">Tencent Hy License。{pick.ngram_gb
@@ -272,13 +295,24 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
   return <div className="space-y-3">
     <RuntimeSettings runtime="maya" expert={expert}
       values={values} onValuesChange={setValues}
-      modelSlot={modelSlot} save={save} onDone={onDone}
+      modelSlot={modelSlot} save={save} beforeSave={approveDownloadForSave} onDone={onDone}
       note={<p className="text-[11px] text-zinc-500">
         {!pick ? "フォルダを選び、Maya の目録からモデルを選んでください（フォルダを変えると選択は解けます）"
           : pick.ready && !pick.registered ? "ファイルが揃っています。登録には数分〜十数分かかります（エンジンの準備を含む）"
             : canDownload ? `足りないファイルをダウンロードしてから登録します（約 ${pick.download_gb} GB・空き ${pick.free_gb} GB）`
               : "ファイルが揃うと登録できます"}
       </p>} />
+    {confirmDownload && <ConfirmDialog
+      title={`${mayaModelName(confirmDownload.model, confirmDownload.tier)} をダウンロードして登録`}
+      danger={false}
+      message={`約 ${confirmDownload.download_gb ?? confirmDownload.size_gb} GB のファイルを ${confirmDownload.download_root} にダウンロードし、検証してから登録します（空き ${confirmDownload.free_gb} GB）。数時間かかることがあります。途中で止めても続きから取得できます。`}
+      confirmLabel="ダウンロードを開始"
+      onConfirm={() => settleDownloadApproval(true)} onClose={() => settleDownloadApproval(false)}>
+      <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
+        {(confirmDownload.download_files ?? []).map((name) => <li key={name}
+          className="truncate font-mono text-[11px] text-zinc-500" title={name}>{name}</li>)}
+      </ul>
+    </ConfirmDialog>}
     {picker && <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode="dir" title="Maya のモデルのフォルダを選択（/data1tb・/data2tb）"
       initialPath={folder || "/data1tb/LLM"}
       onSelect={chooseFolder} onClose={() => setPicker(false)} />}

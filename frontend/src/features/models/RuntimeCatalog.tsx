@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Skeleton } from "../../components/ui";
+import { ConfirmDialog, Skeleton } from "../../components/ui";
 import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import {
@@ -96,6 +96,7 @@ function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismi
     refetchInterval: (query) => (query.state.data && terminal(query.state.data.status) ? false : 1200),
   });
   const [rate, setRate] = useState<number | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const sample = useRef<{ at: number; done: number } | null>(null);
   const finished = useRef(false);
 
@@ -154,46 +155,54 @@ function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismi
     : job.status === "failed" ? `失敗: ${job.error}` : job.status === "canceled" ? "取り消しました"
       : job.status === "interrupted" ? "停止中（続きから再開できます）"
         : job.status === "queued" ? "開始待ち" : job.progress?.status || "取得中";
-  return <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700" data-acquire-job={jobId}>
-    <p className="truncate text-xs">{title} · {label}</p>
-    {pct !== null && (
-      <>
-        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-          <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
-        </div>
-        <p className="num mt-1 text-[11px] text-zinc-500">
-          {pct}%{rate !== null && ` · ${rateText(rate)}`}{eta && ` · ${eta}`}
-        </p>
-      </>
-    )}
-    <div className="mt-2 flex flex-wrap gap-1.5">
-      {job.status === "running" && (
-        <button type="button" disabled={stop.isPending} onClick={() => stop.mutate()}
-          className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
-          停止
-        </button>
+  return <>
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700" data-acquire-job={jobId}>
+      <p className="truncate text-xs">{title} · {label}</p>
+      {pct !== null && (
+        <>
+          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+            <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          <p className="num mt-1 text-[11px] text-zinc-500">
+            {pct}%{rate !== null && ` · ${rateText(rate)}`}{eta && ` · ${eta}`}
+          </p>
+        </>
       )}
-      {job.can_resume && (
-        <button type="button" disabled={resume.isPending} onClick={() => resume.mutate()}
-          className="min-h-11 rounded-lg bg-accent-600 px-3 text-xs text-white">
-          再開
-        </button>
-      )}
-      {(job.status === "running" || job.status === "queued") && (
-        <button type="button" disabled={cancel.isPending} onClick={() => cancel.mutate()}
-          className="min-h-11 rounded-lg border border-red-300 px-3 text-xs text-red-600 dark:border-red-800">
-          取り消し
-        </button>
-      )}
-      {terminal(job.status) && (
-        <button type="button" onClick={onDismiss}
-          className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
-          閉じる
-        </button>
-      )}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {job.status === "running" && (
+          <button type="button" disabled={stop.isPending} onClick={() => stop.mutate()}
+            className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
+            停止
+          </button>
+        )}
+        {job.can_resume && (
+          <button type="button" disabled={resume.isPending} onClick={() => resume.mutate()}
+            className="min-h-11 rounded-lg bg-accent-600 px-3 text-xs text-white">
+            再開
+          </button>
+        )}
+        {/* 停止済み（interrupted + can_resume）も取り消せる。再開の記録と .part を消す破壊操作なので確認を挟む。 */}
+        {(job.status === "running" || job.status === "queued" || (job.status === "interrupted" && !!job.can_resume)) && (
+          <button type="button" disabled={cancel.isPending} onClick={() => setConfirmCancel(true)}
+            className="min-h-11 rounded-lg border border-red-300 px-3 text-xs text-red-600 dark:border-red-800">
+            取り消し
+          </button>
+        )}
+        {terminal(job.status) && (
+          <button type="button" onClick={onDismiss}
+            className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
+            閉じる
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — 画面を閉じても継続します</p>
     </div>
-    <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — 画面を閉じても継続します</p>
-  </div>;
+    {confirmCancel && <ConfirmDialog title="取得を取り消す"
+      message={`${title} の取得を取り消します。途中のファイル（.part）は削除され、続きから再開できなくなります。`}
+      confirmLabel="取り消す"
+      onConfirm={() => { setConfirmCancel(false); cancel.mutate(); }}
+      onClose={() => setConfirmCancel(false)} />}
+  </>;
 }
 
 export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: RuntimeCatalogProps) {

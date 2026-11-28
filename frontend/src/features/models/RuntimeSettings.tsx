@@ -37,6 +37,8 @@ export interface RuntimeSettingsProps {
   modelSlot?: ReactNode;
   /** 保存の差し替え。Maya は登録 API が別なので親が渡す。 */
   save?: (values: SettingValues) => Promise<void>;
+  /** 保存の前に親が承認を取る。false を返したら何も保存せず、成功通知も出さない。 */
+  beforeSave?: (values: SettingValues) => Promise<boolean>;
   onDone?: () => void;
   note?: ReactNode;
   disabled?: boolean;
@@ -56,7 +58,7 @@ const REQUIRED_BY_RUNTIME: Record<string, string[]> = {
 };
 
 export function RuntimeSettings({
-  runtime, initial, values, onValuesChange, modelSlot, save, onDone, note,
+  runtime, initial, values, onValuesChange, modelSlot, save, beforeSave, onDone, note,
   disabled = false, expert: expertProp,
 }: RuntimeSettingsProps) {
   const storedExpert = useExpert();
@@ -99,6 +101,8 @@ export function RuntimeSettings({
     setSaving(true);
     try {
       const body = buildSaveBody(cap, form, initial);
+      // 高負荷な取得などを親が確認する。承認されなければ保存も成功通知もしない。
+      if (beforeSave && !(await beforeSave(body))) return;
       if (save) {
         await save(body);
       } else if (runtime === "maya") {
