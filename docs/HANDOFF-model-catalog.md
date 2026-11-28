@@ -1,5 +1,16 @@
 # 引き継ぎ: ランタイムの目録・登録・設定の共通化
 
+## 最終状態（2026-11-28・Nexarch #30）
+- 下の run3/run4 の記録はその時点のもの。最終の実コードに合わせた現在値は次節のとおり。
+- 目録（`models_mgmt/runtime_catalog.py`）: llama.cpp 15 行・Radiance 5 行・Sly-Radiance 6 行・Strata 37 行・Maya 18 行。#19 で調査済みの repo を反映し、llama/Radiance の空目録を解消した（旧「Sly 6・Strata 44・Maya 1」は run3 時点）。
+- HF の cleanup は #19 依頼のままでなく #27 で接続済み（`hf.cleanup_partial_files` → `resume.register_resumable(..., cleanup=_hf_cleanup)`）。
+- 共通 UI・各パネルは #24 で実装済み。Models E2E は #29 で追随・実行済み。レビュー #25 の minor（HF の報告値を超える応答・秘密の会話の 403・停止済み取消の `.part` と同期 DB 書き込み）も修正済み。
+- 試験数: `test_runtime_catalog.py` 23 件・`test_jobs_persistence.py` 35 件（旧 16/19/22・29 件は各時点）。
+- PLAN の Maya Derisked の owner の誤記（`peasmith`）を `peasantsmith` へ直し、目録候補の各 repo に出典 URL（repo id から機械的に導いた `https://huggingface.co/<repo id>`）と確認日（2026-11-28）を付けた。値の推測・外部取得はしていない。
+- `env -u CONTROL_DECK_CONFIG ./deck.sh dev-check --base origin/main --skip-visual` は合格（終了コード 0・最後の行は「合格…」）。backend 34 ファイル・frontend build ほか合格。画面の見た目は `--skip-visual` で未実施、Alembic の head は DB 移行の変更が無いので未実施。
+- この箱では `/dev/shm/control-deck-terminal-1000` が読み取り専用マウントで、素のコマンドでは conftest の import が落ちる。確認は private な user/mount namespace でそのマウントだけ差し替え、Python プロセスにだけ `geteuid()` を 1000 と見せる wrapper（repo の外）を付けて流した。実機では不要。
+- 残るのは実機・実重みでの取得→登録→起動の確認だけ。
+
 ## 目的と利用者の決定（2026-11-28）
 
 依頼全文は作業場所の `.nexarch/brief-runtime-unify.md`。Sly-Radiance を手本に Radiance・Sly-Radiance・Strata・Maya・llama.cpp の目録、停止・再開できる取得、ファイル登録、設定を共通部品にする。設定順はモデル、コンテキスト、同時処理、速さ、起動、エキスパート。Sly の prefix cache は常にオンとし、切る選択肢・値を受けない。
@@ -10,15 +21,15 @@ Strata の新しい目録は GSQ-RCO・Unsloth UD-*・Q8_0 のみにする。既
 
 - Nexarch の計画は10項目。run1 のコード・公式資料調査、run2 の追加公式調査、run3 の共通バックエンド実装が終了。
 - run3 で入れたもの（詳細は `docs/PLAN-model-catalog.md`「run3 の作業一覧」）:
-  - 目録の集約 `backend/app/models_mgmt/runtime_catalog.py`（Sly 6 行・Strata 44 行・Maya 1 行。大きさ未確認は null）。
+  - 目録の集約 `backend/app/models_mgmt/runtime_catalog.py`（run3 時点は Sly 6 行・Strata 44 行・Maya 1 行。最終値は冒頭「最終状態」を参照。大きさ未確認は null）。
   - 共通 API 6 本（catalog・files・acquire-jobs・instances・register/inspect・settings/capabilities）。既存の各ランタイム API は残した。
   - 停止/再開/取消の意味分離（`jobs.stop`・`resume_stopped`・`can_resume`、`.part` の保持と `paused` 印）。
   - HF 取得の guarded transport・redirect 検査・開始時の大きさ取得（`fetch_sizes`）。
   - Sly の prefix cache 常時オン（`save_instance` と `serve_args` の両層で false を拒否）。
   - 新規選択パスの `/data1tb`・`/data2tb` 制限（realpath・symlink 検証）。
 - run3 の試験: 新規 16 件合格。既存 9 ファイル（strata_catalog、sly_radiance、hf_download、maya_register、radiance_runtime、maya_probe、strata_memory、route_map、jobs_persistence）も合格。実機の登録・起動と HF の実重み取得は未試験（偽 HF）。
-- run4（2026-11-28）で run3 の差分を読み、依頼の必須条件と照合して是正した。詳細は下の「run4」の作業記録。関連 10 ファイル 133 件が合格（`test_runtime_catalog.py` は 19 件に増えた）。
-- 共通UIと各パネルの実装、統合後の試験・E2E・レビューは未着手。run3・run4 は backend の実装と単体試験まで。
+- run4（2026-11-28）で run3 の差分を読み、依頼の必須条件と照合して是正した。詳細は下の「run4」の作業記録。関連 10 ファイル 133 件が合格（`test_runtime_catalog.py` は当時 19 件、最終 23 件）。
+- 共通UIと各パネルは #24 で実装済み。統合後の試験・Models E2E（#29）・レビュー（#25 の minor 含む）も実施済み。下の「残り」は各時点の記録で、最終値は冒頭「最終状態」を参照。
 - 初期の explore 報告にある「Sly prefix cache の方針」「Strata の適用単位」は未決事項ではない。上記と依頼全文の決定に従う。
 
 ## 環境の注意
@@ -81,11 +92,11 @@ Strata の新しい目録は GSQ-RCO・Unsloth UD-*・Q8_0 のみにする。既
 - 関連 9 ファイル（strata_catalog・sly_radiance・hf_download・maya_register・radiance_runtime・maya_probe・strata_memory・route_map・jobs_persistence）: 合格。
 - 全件試験は禁止のため未実行。実機の登録・起動、HF の実重み取得、Frontend と E2E は未確認。
 
-残り（run3 の外）:
+残り（run3 の外。完了した項目は後続の #24・#29・#30 で解消済み）:
 
-- 共通 UI と各パネル（別担当）。
-- 実機で Sly/Radiance/Strata/Maya/llama の取得→登録→起動を確認（実重みの取得は許可が要る）。
-- 統合後の `./deck.sh dev-check`・Models E2E・`docs/implementation-status.md` の更新・最終レビュー。
+- 共通 UI と各パネル → #24 で実装済み。
+- 実機で Sly/Radiance/Strata/Maya/llama の取得→登録→起動を確認（実重みの取得は許可が要る）。**未完了**。
+- 統合後の `./deck.sh dev-check`・Models E2E・`docs/implementation-status.md` の更新・最終レビュー → #29 と #30 で実施済み。
 
 ### run4（2026-11-28・検証と契約の是正）
 
@@ -157,13 +168,14 @@ run4 で確認したこと（コードを読んだ結果。実機・実重みは
   llama_runtime・route_map・features）: 278 passed。
 - 全件試験は禁止のため未実行。実重みの HF 取得・実機の登録/起動・Frontend/E2E は未確認。
 
-残り（run4 の外）:
+残り（run4 の外。当時の記録。最終値は冒頭「最終状態」を参照）:
 
-- 第 2 輪の修正（13 ファイル）は作業ツリーに残る。`547cd5ed`（Nexarch のコミット）のあとに
-  当てた分で、この環境からは `.git/objects` が読み取り専用のためコミットできない
+- 第 2 輪の修正（13 ファイル）は当時作業ツリーに残っていた。`547cd5ed`（Nexarch のコミット）の
+  あとに当てた分で、この環境からは `.git/objects` が読み取り専用のためコミットできなかった
   （`git add` が `Read-only file system`）。差分は `/tmp/opencode/nexarch-3/` の
-  `run4-files.tar.gz`・`tracked.patch` に取ってある。
+  `run4-files.tar.gz`・`tracked.patch` に取ってある。その後 Nexarch が #19 として統合済み。
 
-- 共通 UI と各パネル（別担当）。Maya/Strata の欄の契約は変わったので、UI は `docs/PLAN-model-catalog.md` の「共通 API の契約」の Maya・Strata の項を読む。
-- 実機で 5 ランタイムの取得→登録→起動を確認（実重みの取得は許可が要る）。
-- 統合後の `./deck.sh dev-check`・Models E2E・最終レビュー。
+- 共通 UI と各パネル → #24 で実装済み（Maya/Strata の欄は `docs/PLAN-model-catalog.md`
+  「共通 API の契約」の Maya・Strata の項に合わせた）。
+- 実機で 5 ランタイムの取得→登録→起動を確認（実重みの取得は許可が要る）。**未完了**。
+- 統合後の `./deck.sh dev-check`・Models E2E・最終レビュー → #29 と #30 で実施済み。
