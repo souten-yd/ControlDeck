@@ -14,7 +14,7 @@
 - **状況**: 動いているローカル LLM は Strata の `qwen-flash-next`（UD-IQ4_XS・**parallel=1**）。「ローカルは同時に 1 つ」の制限が**チームごと**（`teams.local_parallel`・`team_dispatch.blocker`）なので、3 チームの調べものが 1 枚の GPU の 1 枠に並んで互いに待った。Strata は同時の数を増やしても速くならない（実測の記録あり）。比べると Codex のレビューは 40万〜200万トークンを 1〜3 分。
 - **対処**:
   1. （済み・設定）3 チームと既定の explore の第 1 を OpenRouter の DeepSeek Flash、予備をローカル LLM にした（本番の Nexarch の設定。2026-11-28）。
-  2. （次）ローカル LLM の同時の数を**チームをまたいで**数える（GPU は 1 枚）。
+  2. （済み・#710）ローカル LLM の同時の数を**チームをまたいで**数える（GPU は 1 枚。`team_dispatch._local_running`）。
   3. （次）調べものの依頼に「読むのは必要な範囲だけ（ファイル全体を読み込まない）」を道具の説明に書くか、ControlDeck の検索（research・knowledge）を担い手に渡して全文の読み込みを減らす（`docs/PLAN-nexarch-team.md` の C）。
 - **担当**: Claude
 
@@ -30,10 +30,10 @@
 - **対処**: 起動のときに自動で再開する・担い手の仕事を worktree の続きから再開する・teams.json の 1 世代のバックアップ（AI チーム「Nexarch の開発機能を磨く」の D で作業中）。それまでは Claude が更新の後に API から再開する。
 - **担当**: Claude（AI チームの成果を確かめて取り込む）
 
-## [未対応] 試験 `test_news_catalog.py::test_fetchlog_keeps_200_per_source_and_summarizes` が UTC の朝に落ちる（急ぎ）
+## [解決] 試験 `test_news_catalog.py::test_fetchlog_keeps_200_per_source_and_summarizes` が UTC の朝に落ちる（急ぎ）
 - **経緯**: 2026-11-28 の全体テストで落ちた。main でも同じく落ちる。
 - **状況**: 試験は「今から 300 分前までの記録」を作って「今日の棒」を見るが、UTC の 0〜5 時は記録の大半が前の日に入るので、今日の棒が空になる。日付の境目で落ちる試験で、本体の不具合ではない。全体テストの関門が時間帯で不合格になる。
-- **対処（次）**: 試験の「今」を日の中ほどに固定する。
+- **対処**: #710。試験の「今」を UTC 12 時に固定し、`week_bars(now=)` に渡す。正しくは UTC 0 時 51 分より前に流すと落ちていた（記録は今から 300〜51 分前）。
 - **担当**: Claude
 
 ## [対応中] AI チームのチームリーダーから、担い手の中が見えない（根本）
