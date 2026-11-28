@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2915 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2924 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、354 テスト
 
 ## backend（backend/tests）
@@ -1849,6 +1849,8 @@
 - `test_stop_keeps_the_record_and_resume_starts_a_new_job` — 目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
 - `test_resume_stopped_refuses_a_concurrent_second_request` — 目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
 - `test_paused_resume_record_is_dropped_after_the_retention` — 目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+- `test_stopped_job_can_be_canceled_and_cannot_be_resumed` — 目的: 停止した Job を取り消せること。取り消しは再開の記録（paused の印つき）を
+- `test_stopped_job_left_in_db_after_restart_can_be_canceled_by_api` — 目的: 再起動でメモリから消えた停止中の Job も、API の取り消しで行と再開の記録を
 - `test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record` — 目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
 - `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
 - `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
@@ -2458,6 +2460,18 @@
 - `test_validate_forces_a_default`
 - `test_unconfigured_policy_synthesizes_builtin_library` — 未設定環境では従来の data_dir/models/gguf が既定になる（後方互換）。
 - `test_library_api_routes`
+
+### backend/tests/test_model_paths_bounds.py
+
+目的: 登録前の読み取り（model_paths）が読む量・件数・型・子の symlink を厳密に守ることの試験。 目的: 新規選択の検証と登録前の読み取り（app/models_mgmt/model_paths.py）が、細工した・ 壊れたファイル・フォルダで長く回ったり、選んだフォルダの外を実体として読んだりしないこと。 量・件数・型の上限と、子（フォルダの中のファイル）の symlink の拒否を確かめる。 inspect は同期 endpoint の threadpool で動くので、1 件が長く止まると他の要求まで遅れる。 根拠: Nexarch #20（2026-11-28）のレビュー残件（P1）。 - config.json が子 symlink でもそのまま開いていた（resolve したフォルダの外を読める）。 - フォルダの大きさの走査（glob・stat）に件数の上限が無く、symlink も追いかけていた。 - GGUF の文字列配列は件数（count）だけのループで、総読取の上限が各要素の間に効いて いなかった（大きなファイルで長時間止められた）。 - .rad と config.json は名前だけで形式を認定していた。 同じ観点の既存の試験は test-catalog で探して無いことを確認した（test_runtime_catalog.py は 正しい入力の読み取りと、選択のルートの外・上位の symlink の拒否だけを確かめている）。
+
+- `test_gguf_string_array_with_a_lying_count_stops_quickly` — 目的: 文字列配列の件数（count）を大きく偽った GGUF ヘッダを短い時間で打ち切ること。
+- `test_gguf_keeps_reading_keys_after_a_legitimate_array` — 目的: 上限内の本物の文字列配列（語彙など）の後も、続く鍵を読み続けること。
+- `test_gguf_string_length_over_budget_is_cut_before_reading_or_seeking` — 目的: 文字列の長さが残り予算・実ファイルの範囲を超えたら、読む前・seek する前に
+- `test_config_json_symlink_is_rejected_and_the_folder_is_not_safetensors` — 目的: 選んだフォルダの子（config.json）が symlink なら読まず、safetensors と
+- `test_folder_with_junk_config_json_is_not_safetensors` — 目的: config.json の中身が読める JSON オブジェクトでないなら safetensors と
+- `test_config_json_fifo_does_not_hang_inspect` — 目的: config.json が名前付きパイプ（FIFO）でも inspect が止まらないこと。
+- `test_folder_size_is_bounded_and_ignores_symlinked_children` — 目的: フォルダの大きさの走査が子の symlink を数えず、件数の上限で止まること。
 
 ### backend/tests/test_model_thinking.py
 
@@ -4879,7 +4893,7 @@
 
 ### frontend/e2e/llama-runtime-settings.spec.ts
 
-目的: **未記入**
+目的: 目的: llama.cpp の個別設定で保存すると、読み取り専用の状態項目（model_path・loaded など）を 除外した本文だけが PUT されること。422 の詳細が画面に出ること。 Ollama のロード状態が表示とライフサイクルボタンに反映されること。 根拠: 状態項目を送ると保存 API が extra inputs で 422 になる不具合の回帰確認。 #24: 共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 */
 
 - llama.cpp instance save excludes read-only status fields
 - Ollama running state updates the indicator and lifecycle button
@@ -4892,14 +4906,14 @@
 
 ### frontend/e2e/maya-ds4-vision.spec.ts
 
-目的: 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。 画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」 「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
+目的: 目的: DeepSeek（DS-XS）の画像の読み取りが、モデル一覧の「VISION」の印と、個別設定の入／切に出ること。 画像の部品（vision tower）が無いモデルでは入／切を選べず、案内が出ること。320px と PC 幅で横にはみ出さないこと。 根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」 「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。 更新: Nexarch #24。個別設定には「表示名の保存」（無効）と下端の「保存」が並ぶため、 目的の設定保存は .last() で指定する（曖昧な「保存」単体では strict mode 違反）。 */
 
 - DS-XS shows the vision badge and its read-images switch at ${width}px
 - a DeepSeek model without the vision tower cannot switch images on
 
 ### frontend/e2e/maya-register.spec.ts
 
-目的: **未記入**
+目的: Maya のモデル登録（手元のファイル／ダウンロード）を、共通 UI の導線で確かめる。 目的: 目録の量子化ごとの案内（不足ファイル・フォルダ名の規則・ライセンス）が出て、ファイルが揃った 量子化だけ登録できること。未準備のモデルでは一覧に準備カードを出さないこと。 根拠: 2026-11-18 の Maya 登録画面と、Nexarch #11（共通目録・登録・設定への置換）。 #24 で旧ラベル・旧導線を共通 UI に追随させた。API は page.route で模擬し、実モデルの取得はしない。 共有の注意: 共通 RuntimeSettings の保存／登録ボタンは「登録する」（初期値がある個別設定は「設定を保存」）。 旧「登録」ボタンは存在しない。 */
 
 - Maya のモデルを手元のファイルから登録できる（${width}px）
 - Maya のモデルをダウンロードして登録できる・一覧に準備カードを出さない（${width}px）
@@ -4925,7 +4939,7 @@
 
 ### frontend/e2e/model-provider-common.spec.ts
 
-目的: **未記入**
+目的: 目的: Ollama のモデル取得と個別設定の保存が、共通プロバイダ経由の API だけを呼ぶこと。 320px / PC 幅で横にはみ出さないこと。API は page.route で差し替え、実取得・実保存は行わない。 根拠: 共通プロバイダ整備（Nexarch #5 以降）で旧個別ルートが廃されたことの回帰確認。 #24: 11 spec を調査したが、この spec は共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 */
 
 - uses the common provider routes for pull and model configuration
 
@@ -5142,7 +5156,7 @@
 
 ### frontend/e2e/runtime-preferred-model.spec.ts
 
-目的: **未記入**
+目的: 目的: ランタイムごとの起動モデル（preferred_models）を「LLM 共通設定」から選んで保存でき、 未準備のモデルは選べないこと。320px / 1280px で横にはみ出さないこと。 根拠: ランタイム切替時に起動モデルを固定したいという利用者の要望の回帰確認。 #24: 共通 UI の現在のランタイムカード名・コンボボックス名と一致しており変更不要（回帰のみ）。 */
 
 - runtime startup preferences can be selected and saved at ${width}px
 
@@ -5201,7 +5215,7 @@
 
 ### frontend/e2e/sly-radiance.spec.ts
 
-目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（HF の取得 Job）→ 取得したフォルダがフォームへ入る、 フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、登録の本文が API の形（同時に答える数 1〜8・ 先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。
+目的: 目的: Models の「モデル登録」に Sly-Radiance が出て、目録から取得（共通の取得 Job）→ 取得したフォルダが 共通設定のフォームへ入る、フォルダの中身（safetensors の数・量子化）が見えて量子化の切り替えを提案する、 登録の本文が API の形（同時に答える数 1〜8・先読み・prefill chunk・追加の環境変数）で送られる、ことを守る。 320px と 1280px で横にあふれない。API はすべてモック。 根拠: 2026-11-27 利用者「Sly-Radiance を Radiance と同様のメニュー・導入方法で、目録からの取得・フォルダ選択・並列の設定も」。 AGENTS.md「不具合・診断・テストの決まり」（目的と根拠）。 更新: Nexarch #24。旧「Sly-Radiance目録のモデル／同時実行数／量子化／先読みのフォルダ／詳しい設定」は 共通 UI では「目録から取る」の行と共通フィールド（エキスパート）に置き換わったので、その導線へ追随した。 旧 /models/sly-radiance/catalog は削除済み（#13）。共通 /models/catalog をモックする。 */
 
 - Sly-Radiance の登録: 目録から取得してフォルダを入れ、設定を送る（${width}px）
 - Sly-Radiance は Radiance のカードの中のスイッチ（320px）
@@ -5217,14 +5231,14 @@
 
 ### frontend/e2e/strata-catalog.spec.ts
 
-目的: Strata のモデル登録画面が backend の目録 API（GET /api/v1/models/strata/catalog）から 全系列・全量子化を読み、1280px と 320px の両方で崩れずに選べることを確かめる。 量子化の選択肢には id に加えてダウンロード目安・メモリ目安・「載る／ぎりぎり／載らない／不明」が出る。 手作業が要る orca は選べない案内表示になり、Inkling では 0.2.22 の思考欄が残る。 目録の取得失敗時は alert を出して保存ボタンを無効にする。 根拠: 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。Strata 0.2.22 の 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す） と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。 API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。
+目的: Strata のモデル登録画面が backend の目録 API（GET /api/v1/models/strata/catalog）から 全系列・全量子化を読み、1280px と 320px の両方で崩れずに選べることを確かめる。 量子化の選択肢には id に加えてダウンロード目安・メモリ目安・「載る／ぎりぎり／載らない／不明」が出る。 手作業が要る orca は選べない案内表示になり、Inkling では 0.2.22 の思考欄が残る。 目録の取得失敗時は alert を出して保存ボタンを無効にする。 根拠: 2026-11-26 の指示書 M1（目録を backend の 1 か所に置き、画面は API から読む。Strata 0.2.22 の 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す） と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。 API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。 #24 更新: 共通 UI では詳細な系列・量子化の選択はエキスパートの「従来の登録」に置かれた （不要な表示は隠す決まり）。導線を「モデル登録 → Strata → 従来の登録」へ更新した。
 
 - Strata catalog shows all families and quantizations at ${width}px
 - Strata catalog failure shows an alert and disables save at 1280px
 
 ### frontend/e2e/strata-memory-settings.spec.ts
 
-目的: **未記入**
+目的: 目的: Strata のメモリ計画（KV の常駐トークン／RAM の残し量／同時実行数／コンテキスト）を 個別設定から保存でき、メモリ目安と起動ログの内訳が見えること。320px / 1280px で横にはみ出さないこと。 根拠: Strata の KV 確保量が分かりにくいという利用者の指摘と、Nexarch #12 の共通設定化。 #24 更新: 共通 UI では詳細な Strata 専用欄はエキスパートの「従来の設定画面（すべての引数）」に 移った（UI ルール「不要な表示は隠し、エキスパートで開く」）。その導線へ追随した。 */
 
 - Strata memory planning and settings at ${width}px
 - Strata registration offers Inkling 2 Mini with thinking and without Qwen-only memory settings
