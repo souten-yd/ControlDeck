@@ -1817,27 +1817,6 @@ class SlyRadianceModelBody(BaseModel):
         return value
 
 
-@router.get("/sly-radiance/catalog")
-def sly_radiance_catalog(user: User = Depends(require_permission("workflows.run"))):
-    from app.models_mgmt import sly_radiance_catalog
-    return sly_radiance_catalog.api_payload()
-
-
-@router.get("/sly-radiance/catalog/{entry_id}/files")
-async def sly_radiance_catalog_files(entry_id: str, user: User = Depends(require_permission("workflows.run"))):
-    """目録の 1 行の repo のファイル一覧（取得の前に見せる）。目録にある repo だけ。"""
-    from app.models_mgmt import hf, libraries, sly_radiance_catalog
-    entry = sly_radiance_catalog.get(entry_id)
-    if entry is None or not entry.supported or not entry.repo:
-        raise HTTPException(status_code=404, detail="目録にないか、未対応のモデルです")
-    try:
-        files = await hf.list_model_files(entry.repo)
-    except hf.HfError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
-            "libraries": await asyncio.to_thread(libraries.list_libraries)}
-
-
 @router.get("/sly-radiance/inspect")
 def sly_radiance_inspect(path: str, user: User = Depends(require_permission("workflows.run"))):
     from app.models_mgmt import sly_radiance
