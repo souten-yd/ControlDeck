@@ -73,8 +73,16 @@ def strata_start_title(params: dict[str, Any]) -> str:
     return f"Strata初回起動: {params.get('alias', '')}"
 
 
+def _hf_cleanup(params: dict[str, Any]) -> None:
+    """取り消しのとき HF 取得の途中ファイルを消す（実処理は hf.py。遅延読み込み）。"""
+    from app.models_mgmt import hf
+
+    hf.cleanup_partial_files(params)
+
+
 jobs.register_resumable(
     "model.hf_download",
     huggingface_download_runner, title=huggingface_download_title,
+    cleanup=_hf_cleanup,
 )
 jobs.register_resumable("model.strata.start", strata_start_runner, title=strata_start_title)

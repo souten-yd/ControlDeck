@@ -385,10 +385,20 @@ def _unlink_quietly(path: Path) -> None:
         logger.warning("再開用の記録を消せませんでした: %s", path.name)
 
 
-def _read_resume_doc(path: Path) -> dict[str, Any] | None:
+def _read_resume_doc(path: Path, *, raise_on_oserror: bool = False) -> dict[str, Any] | None:
+    """再開の記録を読む。OSError は起動時の整理では飲むが、停止の印では呼び出し側へ返す。
+
+    停止の印が付けられなかったのに「停止しました」と返すと、記録が無いまま途中の
+    ファイルだけが残る（レビュー #25 の要修正 / 2026-11-28）。
+    """
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
+        if raise_on_oserror:
+            raise
+        logger.warning("再開用の記録を読めないので消します: %s", path.name)
+        return None
+    except ValueError:
         logger.warning("再開用の記録を読めないので消します: %s", path.name)
         return None
     if not (
@@ -1148,27 +1158,28 @@ def cancel_interrupted_row(job_id: str) -> bool:
 
 
 def _mark_resume_paused(job_id: str, paused: bool) -> None:
-    """再開の記録に停止の印を付ける（原子書き込みは _write_resume_file と同じ）。"""
+    """再開の記録に停止の印を付ける（原子書き込みは _write_resume_file と同じ）。
+
+    読み書きの OSError は飲まない（レビュー #25 の要修正 / 2026-11-28）。印を付けた
+    つもりで再開の記録が無いと、停止なのに再開できず途中ファイルだけが残る。
+    """
     path = _resume_dir() / f"{job_id}.json"
-    doc = _read_resume_doc(path)
+    doc = _read_resume_doc(path, raise_on_oserror=True)
     if doc is None:
-        return                      # 記録が無い・読めないなら何もしない（stop は諦めるだけ）
+        return                      # 壊れた記録なら何もしない（stop は諦めるだけ）
     if bool(doc.get("paused")) == paused:
         return
     doc["paused"] = bool(paused)
     text = json.dumps(doc, ensure_ascii=False)
     temp = path.with_name(f".{job_id}.{uuid.uuid4().hex[:8]}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(text)
-            os.replace(temp, path)
-        except BaseException:
-            temp.unlink(missing_ok=True)
-            raise
-    except OSError:
-        logger.exception("再開用の記録に停止の印を付けられませんでした (%s)", job_id)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 async def stop(job_id: str) -> str:
@@ -1181,7 +1192,13 @@ async def stop(job_id: str) -> str:
     if job is None or not job.resumable or job.status not in ("queued", "running"):
         raise ValueError("この Job は停止できません（実行中の再開できる Job ではありません）")
     job.pause_requested = True
-    await asyncio.to_thread(_mark_resume_paused, job_id, True)
+    try:
+        await asyncio.to_thread(_mark_resume_paused, job_id, True)
+    except OSError as exc:
+        # 内部の OSError はユーザー向けの ValueError に変える（jobs の API は 409）。
+        # 印を付けられなかったのに停止を続けると、再開できない Job が出来る。
+        job.pause_requested = False
+        raise ValueError("再開の記録に停止の印を付けられませんでした") from exc
     if job.status == "queued":
         # まだ始まっていない: その場で interrupted にする（_dispatch は queued 以外は拾わない）。
         job.status = "interrupted"
