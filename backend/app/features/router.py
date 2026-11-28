@@ -5,6 +5,7 @@
 （requires_reload で通知し、UI側が既存の /system/platform/reload を実行する）。
 """
 import asyncio
+import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -674,7 +675,9 @@ async def maya_download(request: Request, body: MayaDownloadBody,
     from app.models_mgmt import maya_s
     if not maya_s.installed():
         raise HTTPException(status_code=422, detail="先にMayaを導入してください")
-    if body.create_folder:
+    # 取得先が無ければ作る（画面の指示 create_folder に頼らない。更新前に開いた古い画面は指示を送らず、
+    # 「存在しません」で止まった。2026-11-28 利用者「存在しないからダウンロードしてほしいのに」）。
+    if body.create_folder or not await asyncio.to_thread(os.path.isdir, body.folder):
         await asyncio.to_thread(_make_model_folder, body.folder)
     try:
         item = next((q for q in (await asyncio.to_thread(maya_s.catalog, body.folder))["quants"]

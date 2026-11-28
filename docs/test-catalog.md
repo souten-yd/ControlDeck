@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 288 ファイル、3056 テスト（目的の未記入 93 ファイル）
+- backend: 288 ファイル、3057 テスト（目的の未記入 93 ファイル）
 - E2E: 155 spec、367 テスト
 
 ## backend（backend/tests）
@@ -2590,6 +2590,7 @@
 - `test_refuses_outside_the_roots_and_bad_names`
 - `test_refuses_a_symlink_parent_leading_outside`
 - `test_library_paths_must_be_inside_the_two_roots`
+- `test_download_job_makes_a_missing_folder_without_the_flag` — 更新前に開いた古い画面は create_folder を送らない。それでも取得先が無ければ作る（「存在しません」で止めない）。
 
 ### backend/tests/test_model_libraries.py
 
