@@ -1,7 +1,11 @@
-/** Maya（Project Maya）のモデルを登録する。手元のファイルから、または「ダウンロードして登録」で。
+/** Maya（Project Maya）のモデルを登録する。目録・ファイルからの登録・設定は共通部品へ。
  *
- * ダウンロードは利用者が大きさと保存先を確かめて押したときだけ行う（Maya の一覧の版に固定）。
- * 最初のモデル（GLM-5.3-Flash · Maya-S、alias maya-s）は従来どおり MayaSDetailSheet で扱う。 */
+ *  Maya 本体の目録（probe: GET /features/maya-s/catalog）とダウンロード／登録の Job は
+ *  そのまま使う。共通目録で取得したフォルダや FilePicker の選択を probe へ渡し、
+ *  選んだ setup_id を共通設定のフォームへ入れる。ダウンロードは利用者が
+ *  登録の操作を押したときだけ行う。最初のモデル（GLM-5.3-Flash · Maya-S、alias maya-s）は
+ *  従来どおり MayaSDetailSheet で扱う。
+ */
 import { DisplayNameField } from "./DisplayNameField";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,7 +14,12 @@ import { useToasts } from "../../stores";
 import { BottomSheet, ConfirmDialog } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
+import { useExpert } from "../commander/TeamRoles";
 import { CopyText, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
+import { RuntimeCatalog } from "./RuntimeCatalog";
+import { MODEL_FILE_PICKER_SOURCE, RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
+import { RuntimeSettings } from "./RuntimeSettings";
+import type { SettingValues } from "./runtimeSettings";
 
 export interface MayaQuantFile { name: string; path: string; size: number | null; present: boolean; required: boolean; what: string; sha256?: string }
 export interface MayaQuant {
@@ -42,7 +51,6 @@ export interface MayaQuant {
 export interface MayaCatalog { folder: string; memory: { ram_gb: number; vram_gb: number }; quants: MayaQuant[] }
 
 const FAMILY_ORDER: MayaQuant["family"][] = ["glm", "deepseek", "minimax", "hy4"];
-const CTX = [32768, 65536, 131072, 262144, 524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }));
 
 export function mayaModelName(model: string, tier: string) {
   return `${model} · ${tier}`;
@@ -70,15 +78,25 @@ const TONE = {
 export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
   const qc = useQueryClient();
   const show = useToasts((s) => s.show);
+  const expert = useExpert();
+  const [values, setValues] = useState<SettingValues>({ context: 65536 });
   const [folder, setFolder] = useState("");
   const [typed, setTyped] = useState("");
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState("");
-  const [context, setContext] = useState(65536);
   const [saving, setSaving] = useState(false);
+  const apply = (patch: SettingValues) => setValues((current) => ({ ...current, ...patch }));
+  const choose = (setupId: string) => { setSelected(setupId); apply({ setup_id: setupId }); };
+  const chooseFolder = (path: string) => {
+    setTyped(path); setFolder(path); apply({ folder: path }); setPicker(false);
+  };
   // Typing a path checks it after a short pause; the picker checks at once.
   useEffect(() => {
-    const t = window.setTimeout(() => setFolder(typed.trim()), 600);
+    const t = window.setTimeout(() => {
+      const next = typed.trim();
+      setFolder(next);
+      setValues((current) => ({ ...current, folder: next }));
+    }, 600);
     return () => window.clearTimeout(t);
   }, [typed]);
   const { data, isFetching, error } = useQuery({
@@ -94,44 +112,69 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
     rows: quants.filter((q) => q.family === family),
   })).filter((g) => g.rows.length), [quants]);
 
-  const [confirmDownload, setConfirmDownload] = useState(false);
-  const download = async () => {
-    if (!pick) return;
-    setConfirmDownload(false);
-    setSaving(true);
-    try {
-      const job = await api<{ job_id: string; alias: string }>("/features/maya-s/models/download-jobs", {
-        method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0 },
-      });
-      await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
-      show(`${mayaModelName(pick.model, pick.tier)} のダウンロードと登録を始めました（${job.alias}）。ジョブ一覧で進捗を確認できます`);
-      onDone();
-    } catch (e) {
-      show(e instanceof Error ? e.message : "ダウンロードを始められませんでした", "error");
-    } finally { setSaving(false); }
-  };
   const canDownload = Boolean(pick && !pick.ready && !pick.registered && pick.can_download && (pick.download_files ?? []).length
     && !pick.blockers.length);
 
-  const register = async (start: boolean) => {
+  // 既存の Job API はそのまま使う。共通設定の保存ボタンから呼ぶため、ここでは
+  // トーストと onDone は出さない（共通部品が出す）。
+  const download = async (context: number) => {
+    if (!pick) return;
+    await api<{ job_id: string; alias: string }>("/features/maya-s/models/download-jobs", {
+      method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0 },
+    });
+    await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
+  };
+  const register = async (start: boolean, context: number) => {
+    if (!pick) return;
+    await api<{ job_id: string; alias: string }>("/features/maya-s/models/register-jobs", {
+      method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0, start },
+    });
+    await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
+  };
+
+  // 「登録して起動」は主操作の代替（共通の保存ボタンは登録だけ）。
+  const startNow = async () => {
     if (!pick) return;
     setSaving(true);
     try {
-      const job = await api<{ job_id: string; alias: string }>("/features/maya-s/models/register-jobs", {
-        method: "POST", json: { setup_id: pick.setup_id, folder: data?.folder || folder, context, gpu_index: 0, start },
-      });
-      await qc.invalidateQueries({ queryKey: ["maya-s-jobs"] });
-      show(`${mayaModelName(pick.model, pick.tier)} の登録を始めました（${job.alias}）。ジョブ一覧で進捗を確認できます`);
+      await register(true, Number(values.context ?? 65536));
+      show(`${mayaModelName(pick.model, pick.tier)} の登録と起動を始めました。ジョブ一覧で進捗を確認できます`);
       onDone();
     } catch (e) {
       show(e instanceof Error ? e.message : "登録できませんでした", "error");
     } finally { setSaving(false); }
   };
 
+  const save = async (body: SettingValues) => {
+    if (!pick) throw new Error("Maya の目録からモデルを選んでください");
+    const context = Number(body.context ?? 65536);
+    if (pick.ready && !pick.registered) await register(false, context);
+    else if (canDownload) await download(context);
+    else throw new Error("ファイルが揃っていません。別のフォルダを選んでください");
+  };
+
   const field = "mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-  return <div className="space-y-3">
-    <p className="text-xs text-zinc-500">保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければ「ダウンロードして登録」で取得します。</p>
-    <SettingsGroup title="フォルダ" description="モデルのファイルがある（または保存する）フォルダ">
+
+  // 目録・ファイル選択・既存の probe はすべて ①モデルの中へ。②以降は共通部品が出す。
+  const modelSlot = <div className="space-y-3">
+    <SettingsGroup title="目録から取る" description="HF の候補を取得します（停止・再開できます）。取得したフォルダは Maya の目録で確認します"
+      collapsible defaultOpen={false}>
+      <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path, entry) => {
+        const dir = path.replace(/\/[^/]*$/, "");
+        setTyped(dir); setFolder(dir); apply({ folder: dir });
+        const match = quants.find((q) => q.setup_id === entry.id);
+        choose(match?.setup_id ?? entry.id);
+      }} />
+    </SettingsGroup>
+    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます。選んだフォルダを Maya の目録で確認します"
+      collapsible defaultOpen={false}>
+      <RuntimeRegisterFromFile runtime="maya" mode="file" expert={expert}
+        onRegistered={(info) => {
+          const dir = info.kind === "folder" ? info.path : info.path.replace(/\/[^/]*$/, "");
+          setTyped(dir); setFolder(dir); apply({ folder: dir });
+        }} />
+    </SettingsGroup>
+    <SettingsGroup title="Maya の目録" description="保存先のフォルダを選び、量子化を選びます。ファイルがそろっていればそのまま登録、足りなければダウンロードして登録します">
       <div className="flex gap-2">
         <input aria-label="Mayaモデルのフォルダ" value={typed} onChange={(e) => setTyped(e.target.value)}
           placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya" className={`${field} min-w-0 flex-1 font-mono text-xs`} />
@@ -140,9 +183,6 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
       </div>
       {error && <p role="alert" className="text-xs text-red-600">{error instanceof Error ? error.message : "読めませんでした"}</p>}
       {data && <p className="num text-[11px] text-zinc-500">この PC: RAM {data.memory.ram_gb} GB ＋ VRAM {data.memory.vram_gb} GB ＝ {pool.toFixed(0)} GB</p>}
-    </SettingsGroup>
-
-    <SettingsGroup title="量子化" description="モデル · 段階（XS・S・M・L は専門家の重みのビット数）">
       {isFetching && !data && <p className="text-xs text-zinc-500">読み込み中…</p>}
       <div role="radiogroup" aria-label="Mayaの量子化" className="space-y-3">
         {groups.map((g) => <div key={g.family}>
@@ -154,7 +194,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
               const disabled = Boolean(q.registered) || q.published === false;
               return <li key={q.setup_id}>
                 <button type="button" role="radio" aria-checked={selected === q.setup_id} disabled={disabled}
-                  onClick={() => setSelected(q.setup_id)}
+                  onClick={() => choose(q.setup_id)}
                   className={`flex min-h-11 w-full items-start justify-between gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-50 ${selected === q.setup_id ? "border-accent-500 bg-accent-50/60 dark:bg-accent-950/30" : "border-zinc-200 dark:border-zinc-700"}`}>
                   <span className="min-w-0">
                     <span className="block text-sm font-medium">{q.tier}</span>
@@ -199,31 +239,23 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
         <summary className="min-h-11 cursor-pointer py-2 text-xs text-zinc-500">自分で取得する場合のコマンド</summary>
         <div className="overflow-x-auto rounded-lg bg-zinc-100 p-2 dark:bg-zinc-800"><CopyText text={pick.hf} /></div>
       </details>}
-      <label className="block text-xs">コンテキスト長（トークン）
-        <div className="mt-1"><PresetOrCustom ariaLabel="Mayaコンテキスト" value={context} presets={CTX} placeholder="65536"
-          onChange={(v) => setContext(Math.min(1048576, Math.max(1024, Number(v ?? 65536))))} /></div>
-        <span className="text-[11px] text-zinc-500">KV は RAM へ逃がせます。長いほど RAM を使います。</span>
-      </label>
+      {pick.ready && !pick.registered && <button type="button" disabled={saving} onClick={() => void startNow()} className={secondaryButton}>
+        {saving ? "開始中…" : "登録して起動"}</button>}
     </SettingsGroup>}
+  </div>;
 
-    <SheetActions note={pick && !pick.ready ? (canDownload ? "足りないファイルをダウンロードしてから登録します" : "ファイルがそろうと登録できます")
-      : "登録には数分〜十数分かかります（エンジンの準備を含む）"}>
-      {canDownload ? (
-        <button disabled={saving} onClick={() => setConfirmDownload(true)} className={primaryButton}>ダウンロードして登録</button>
-      ) : <>
-        <button disabled={!pick?.ready || saving} onClick={() => void register(true)} className={secondaryButton}>登録して起動</button>
-        <button disabled={!pick?.ready || saving} onClick={() => void register(false)} className={primaryButton}>{saving ? "開始中…" : "登録"}</button>
-      </>}
-    </SheetActions>
-    {confirmDownload && pick && <ConfirmDialog title={`${mayaModelName(pick.model, pick.tier)} をダウンロード`} danger={false}
-      message={`約 ${pick.download_gb} GB を ${pick.download_root} にダウンロードし、検証してから登録します（空き ${pick.free_gb} GB）。数時間かかることがあります。途中で止まっても、もう一度押すと続きから取ります。`}
-      confirmLabel="ダウンロードを開始" onConfirm={() => void download()} onClose={() => setConfirmDownload(false)}>
-      <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
-        {(pick.download_files ?? []).map((name) => <li key={name} className="truncate font-mono text-[11px] text-zinc-500" title={name}>{name}</li>)}
-      </ul>
-    </ConfirmDialog>}
-    {picker && <FilePicker mode="dir" title="Maya のモデルのフォルダを選択" initialPath={folder || "/data1tb/LLM"}
-      onSelect={(path) => { setTyped(path); setFolder(path); setPicker(false); }} onClose={() => setPicker(false)} />}
+  return <div className="space-y-3">
+    <RuntimeSettings runtime="maya" expert={expert}
+      values={values} onValuesChange={setValues}
+      modelSlot={modelSlot} save={save} onDone={onDone}
+      note={pick ? <p className="text-[11px] text-zinc-500">
+        {pick.ready && !pick.registered ? "ファイルが揃っています。登録には数分〜十数分かかります（エンジンの準備を含む）"
+          : canDownload ? `足りないファイルをダウンロードしてから登録します（約 ${pick.download_gb} GB・空き ${pick.free_gb} GB）`
+            : "ファイルが揃うと登録できます"}
+      </p> : undefined} />
+    {picker && <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode="dir" title="Maya のモデルのフォルダを選択（/data1tb・/data2tb）"
+      initialPath={folder || "/data1tb/LLM"}
+      onSelect={chooseFolder} onClose={() => setPicker(false)} />}
   </div>;
 }
 
