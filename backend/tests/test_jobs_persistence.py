@@ -491,7 +491,7 @@ def _admin_id() -> int:
 def _seed_interrupted(
     root, tmp_path, *, kind: str, params: dict, owner_user_id: int | None,
     attempts: int = 0, created_at: float | None = None, title: str = "続きの試験",
-    status: str = "interrupted", job_id: str | None = None,
+    status: str = "interrupted", job_id: str | None = None, paused: bool = False,
 ) -> str:
     """再起動で中断された Job の行と、再開用の記録を用意する（再起動の直前の状態）。"""
     import json
@@ -510,7 +510,7 @@ def _seed_interrupted(
     (root / f"{job_id}.json").write_text(json.dumps({
         "kind": kind, "params": params, "owner_user_id": owner_user_id,
         "title": title, "created_at": time.time() if created_at is None else created_at,
-        "attempts": attempts,
+        "attempts": attempts, "paused": paused,
     }, ensure_ascii=False), encoding="utf-8")
     return job_id
 
@@ -604,6 +604,126 @@ def test_canceled_resumable_job_is_not_resumed(client, monkeypatch, tmp_path):
     assert jobs.cancel(job.id)
     assert not path.exists()
     assert _run(jobs.resume_after_startup()) == []
+
+
+def test_stop_keeps_the_record_and_resume_starts_a_new_job(client, monkeypatch, tmp_path):
+    """目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
+
+    根拠: 利用者の要望（2026-11-28）で停止と取り消しの意味を分けた。停止で記録を消すと
+    続きから再開できず、取り消しと同じになる（docs/PLAN-model-catalog.md「決めた意味」）。
+    """
+    import json
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs, "_shutdown_started", False)
+    started = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await asyncio.sleep(30)
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.resume",
+                        jobs._ResumableKind(factory, lambda params: "続き"))
+
+    async def scenario():
+        job = jobs.create("test.resume", "止める", factory({}), resume={"alias": "m1"})
+        await asyncio.wait_for(started.wait(), 5)
+        assert await jobs.stop(job.id) == "interrupted"
+        assert job.status == "interrupted"
+        doc = json.loads((root / f"{job.id}.json").read_text(encoding="utf-8"))
+        assert doc["paused"] is True and doc["params"] == {"alias": "m1"}
+        assert job.id in jobs.resume_record_ids()
+
+        # 停止の印が付いた記録は、起動時の自動再開では拾わない（利用者だけが再開する）。
+        assert await jobs.resume_after_startup() == []
+
+        started.clear()
+        new_job = await jobs.resume_stopped(job.id)
+        assert new_job.id != job.id and new_job.title == "続き"
+        await asyncio.wait_for(started.wait(), 5)
+        assert not (root / f"{job.id}.json").exists()      # 元の記録は次の Job へ引き継いだ
+        assert (root / f"{new_job.id}.json").exists()
+        assert await jobs.stop(new_job.id) == "interrupted"
+        return job.id, new_job.id
+
+    old_id, new_id = _run(scenario())
+    row = _job_row(old_id)
+    assert row.status == "interrupted"
+    assert f"Job {new_id} で続きから再開しました" in row.error
+
+
+def test_resume_stopped_refuses_a_concurrent_second_request(client, monkeypatch):
+    """目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
+
+    根拠: run4 のレビュー（minor）「resume の読み取り〜作成〜記録の削除が非原子的で、
+    同時に押すと Job が二重に作られ得る」。再開は数 GB の取り直しを伴うので、二重に走らせない。
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_unlocked(job_id):
+        started.set()
+        await release.wait()
+        return "resumed"
+
+    monkeypatch.setattr(jobs, "_resume_stopped_unlocked", fake_unlocked)
+
+    async def scenario():
+        first = asyncio.create_task(jobs.resume_stopped("job-concurrent"))
+        await asyncio.wait_for(started.wait(), 5)
+        with pytest.raises(ValueError, match="再開の処理中"):
+            await jobs.resume_stopped("job-concurrent")
+        release.set()
+        assert await first == "resumed"
+        assert "job-concurrent" not in jobs._resuming
+
+    _run(scenario())
+
+
+def test_paused_resume_record_is_dropped_after_the_retention(client, monkeypatch, tmp_path):
+    """目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+
+    根拠: run4 の再レビュー（minor）「paused の記録を自動再開から外すだけで削除しないため、
+    停止したまま放置すると /jobs の走査（resume_record_ids）の費用が増え続ける」。
+    新しい記録（再開できる）は残す。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    old = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None,
+        created_at=time.time() - jobs.PAUSED_RESUME_MAX_AGE_SECONDS - 60, paused=True)
+    fresh = _seed_interrupted(
+        root, tmp_path, kind="test.resume", params={"n": 1}, owner_user_id=None, paused=True)
+
+    assert jobs._collect_resume_candidates() == []
+    assert not (root / f"{old}.json").exists()
+    assert (root / f"{fresh}.json").exists()
+
+
+def test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
+
+    根拠: 画面は can_resume で「再開」を出す（docs/PLAN-model-catalog.md）。終わった Job や
+    取り消した Job に出すと、押しても 409 になる。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    stopped = _seed_interrupted(root, tmp_path, kind="test.resume",
+                                params={"n": 1}, owner_user_id=None)
+    finished = _seed_interrupted(root, tmp_path, kind="test.resume",
+                                 params={"n": 1}, owner_user_id=None, status="succeeded")
+
+    rows = {row["id"]: row for row in admin_client.get("/api/v1/jobs?kind=test.resume").json()}
+    assert rows[stopped]["can_resume"] is True
+    assert rows[finished]["can_resume"] is False
+    assert admin_client.get(f"/api/v1/jobs/{stopped}").json()["can_resume"] is True
+    assert admin_client.get(f"/api/v1/jobs/{finished}").json()["can_resume"] is False
+
+    # 取り消す（記録を消す）と、再開の対象から外れる。
+    jobs._remove_resume_file(stopped)
+    assert admin_client.get(f"/api/v1/jobs/{stopped}").json()["can_resume"] is False
 
 
 def test_shutdown_does_not_cancel_resumable_job(client, monkeypatch, tmp_path):
@@ -837,6 +957,8 @@ def test_huggingface_download_runner_forwards_saved_params(monkeypatch):
     """目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
 
     根拠: 再開の道が通常の取得と同じ処理を通る（m3-spec.md 2026-11-26）。通信はしない。
+    2026-11-28: 大きさを Job の開始時に HF の API から読む目録の取得（fetch_sizes=true）が
+    加わった。古い記録（fetch_sizes 無し）は従来どおり渡された値を使う。
     """
     from app.models_mgmt import hf, resume
 
@@ -857,9 +979,14 @@ def test_huggingface_download_runner_forwards_saved_params(monkeypatch):
     assert result == {"ok": True}
     assert calls == {
         "repo": "org/model-GGUF", "files": ["m-Q4_K_M.gguf"], "revision": "main",
-        "library_id": "lib1", "expected_bytes": 123,
+        "library_id": "lib1", "expected_bytes": 123, "fetch_sizes": False,
         "register": params["register"],
     }
+    # 目録からの取得（fetch_sizes=true）: 再開でも「開始時に HF から大きさを読む」を引き継ぐ。
+    calls.clear()
+    runner = resume.huggingface_download_runner({**params, "fetch_sizes": True, "expected_bytes": 0})
+    _run(runner(jobs.Job(id="hf-resume2", kind="model.hf_download", title="t")))
+    assert calls["fetch_sizes"] is True and calls["expected_bytes"] == 0
 
 
 def test_hf_download_endpoint_creates_resumable_job_without_secret(admin_client, monkeypatch, tmp_path):

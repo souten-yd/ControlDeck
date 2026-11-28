@@ -21,7 +21,12 @@ def huggingface_download_runner(params: dict[str, Any]) -> Runner:
 
     repo = str(params.get("repo") or "")
     files = [str(item) for item in params.get("files") or []]
-    if not repo or not files:
+    # 大きさは保存した引数ではなく、作り直した Job の開始時に HF の API から読む
+    # （fetch_sizes の付いた引数だけ。古い記録は従来どおり渡された値を使う）。
+    fetch_sizes = bool(params.get("fetch_sizes"))
+    # files=[] は目録の行から始まった「repo の最上位ファイル全部」。展開は hf.download が
+    # fetch_sizes の分岐で行うので、記録の時点では空でよい（取得時に決まる）。
+    if not repo or not (files or fetch_sizes):
         raise ValueError("HuggingFace取得の repo または files がありません")
     library_id = str(params.get("library_id") or "")
     revision = str(params.get("revision") or "main")
@@ -32,7 +37,8 @@ def huggingface_download_runner(params: dict[str, Any]) -> Runner:
     async def run(job: jobs.Job) -> dict:
         return await hf.download(
             job, repo, files, library_id=library_id, revision=revision,
-            expected_bytes=expected_bytes, register=register,
+            expected_bytes=expected_bytes, fetch_sizes=fetch_sizes,
+            register=register,
         )
 
     return run

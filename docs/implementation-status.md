@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-28 ランタイムの目録・取得・設定の共通化（backend・run3/run4）
+- 利用者「Radiance・Sly-Radiance・Strata・Maya・llama.cpp の目録・取得・登録・設定を共通部品に」。依頼 `.nexarch/brief-runtime-unify.md`、契約 `docs/PLAN-model-catalog.md`、引き継ぎ `docs/HANDOFF-model-catalog.md`。
+- **目録**: `models_mgmt/runtime_catalog.py` に 5 ランタイム（Sly 6 行・Strata 44 行・Maya 1 行）。既存の Sly 目録・`strata_catalog`・Maya の probe から読み、二重に持たない。大きさの未確認は `size_gib=null`（取得の開始時に HF の API から読む）。llama.cpp は確定 repo が無いので推奨行を置かず、既存の検索・ファイル選択へ案内する。Radiance も `.rad` 登録の既存フローを使うため推奨行を置かない（一覧・登録の受け口は共通 API に出している）。
+- **取得**: 共通 `POST /api/v1/models/acquire-jobs`（`files=[]` は repo の最上位ファイル全部、開始時に大きさを HF から読む）。停止は `POST /jobs/{id}/stop`（`interrupted`＋`paused` 印＋`.part` 保持）、再開は `POST /jobs/{id}/resume`（保存引数から新しい Job）、取消は既存 `cancel`（`.part`・記録を削除）。一覧/詳細に `can_resume`。HF の通信は guarded transport・redirect 検査・`ensure_external_allowed` を通し、redirect ではトークンを別ホストへ送らない。
+- **設定**: `GET /api/v1/models/settings/capabilities`（欄 id は実際の保存 API の引数名、選択肢・上限は既存の検証定数から）。Sly の prefix cache は欄を出さず常時オン（`save_instance` と argv の両層で false を拒否）。run4 で Maya（`setup_id`・context 8192〜・parallel 1〜4・欄 id の重複解消）と Strata（量子化の選択肢を系列に合わせる）を保存 API と一致させた。
+- **登録の読み取り**: `GET /api/v1/models/register/inspect` は新規選択を `/data1tb`・`/data2tb` の中だけにし（realpath・symlink 検証）、GGUF/config は読む量と件数を制限。既存の他ルートの登録は既存 API で維持。
+- 既存の各ランタイム API は削除していない。画面（共通 UI・各パネル）は別担当で未着手。
+- 差分レビューの指摘も直した: 取得後の登録引数を Sly の保存範囲へ揃え（数 GB 取得後の登録失敗を防ぐ）、Maya の壊れた `settings.json` は既定へ戻して設定 API を 500 にしない、`kv_resident` の刻み、Sly 登録ポートの空き探索、`list_model_files` の二重呼び出し、再開の二重実行の印（`_resuming`）、`stop` の `can_resume` の実在確認、Maya/Strata の既定値、取得ファイル名の `?` `#` `%` 拒否。再レビューで、登録の欄をランタイムごとに検査（他ランタイムの欄は 422）、ポート衝突は例外の印で判定、停止したまま 30 日を過ぎた再開の記録を起動時に整理、も足した。
+- 試験: `backend/tests/test_runtime_catalog.py` 22 件・`test_jobs_persistence.py` 29 件。関連 17 ファイル（strata_catalog・sly_radiance・hf_download・maya_register・radiance_runtime・maya_probe・strata_memory・route_map・features ほか）278 件合格。実重みの取得・実機の起動、Frontend・E2E は未確認（偽 HF・隔離）。
 ## 2026-11-28 AI チームの担い手に OpenCode（Zen・Go）の GLM などを使える
 - 本番の Nexarch で ControlDeck の開発を AI チームに回そうとしたところ（`docs/ROADMAP.md` 方針 3）、実装の担い手に OpenCode の GLM（opencode-go/glm-5.3）を当てられなかった。選択肢に出ず、起動も常に `controldeck/<モデル>`（ゲートウェイ）だった。利用者「ローカル LLM と OpenCode の GLM と OpenRouter の DS を使って良い」。
 - **一覧**: Zen の鍵があるときだけ、OpenCode のモデルに `model_choice.ZEN_MODELS`（GLM-5.3・HY4 Flash・DeepSeek V4.1 Flash）を足す（`commander/models.py`）。
