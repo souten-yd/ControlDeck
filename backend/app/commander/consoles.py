@@ -58,16 +58,20 @@ def list_consoles() -> list[dict]:
         row["commander_state"] = judged["state"]
         row["commander_last_line"] = judged["last_line"]
         row["commander_detail"] = judged["detail"]
+        # 鍵（ロック）は boolean で出す（frontend との契約。印は "1" の文字列で持つ）。
+        row["commander_locked"] = row.get("commander_locked") == "1"
     return rows
 
 
 def _command_for(cli: CliDef, workdir: str, user_id: int | None,
                  account: str = accounts.DEFAULT_ACCOUNT, model: str = "",
-                 effort: str = "") -> tuple[str, dict[str, str] | None]:
+                 effort: str = "", *, resume: bool = False) -> tuple[str, dict[str, str] | None]:
     """開くコマンドと環境変数。
 
     ControlDeck の OpenCode は OpenCode 画面と同じ tui_command（OpenCode の設定の API・
     job ごとの設定フォルダ・箱）で開く。ほかは CLIS の実行ファイルをアカウントの環境変数で開く。
+    resume=True のとき続きから（鍵をかけたコンソールの開き直し）: Claude は --continue、
+    Codex は resume --last、OpenCode は既存の tui_command(resume="last")。
     """
     if cli.connector == accounts.CONNECTOR_CONTROLDECK_OPENCODE:
         from app.integrations.opencode import model_choice, provider
@@ -83,6 +87,8 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
                 validated_project=Path(workdir),
                 # 接続ごとに設定フォルダを分ける（並べて開いた別の接続の TUI の設定を書き換えない）
                 config_key="" if account == accounts.DEFAULT_ACCOUNT else account,
+                # 続きから: そのプロジェクトの最後の会話（--continue）
+                resume="last" if resume else "",
             )
         except provider.CodeAgentError as exc:
             raise ValueError(str(exc)) from exc
@@ -105,6 +111,12 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
         command += " --effort " + shlex.quote(effort)
     elif effort and cli.id == "codex":
         command += " -c " + shlex.quote(f"model_reasoning_effort={effort}")
+    # 続きから（鍵をかけたコンソールの開き直し）。CLI ごとの公式の再開の形だけを使う。
+    if resume:
+        if cli.id == "claude":
+            command += " --continue"
+        elif cli.id == "codex":
+            command += " resume --last"
     if "/" not in path:
         return command, None
     folder = os.path.dirname(path)
@@ -115,13 +127,15 @@ def _command_for(cli: CliDef, workdir: str, user_id: int | None,
 
 def create_consoles(
     *, cli: CliDef, account: str, cwd: str, count: int, label: str, created_by: str,
-    user_id: int | None = None, model: str = "", effort: str = "",
+    user_id: int | None = None, model: str = "", effort: str = "", resume: bool = False,
+    session_id: str | None = None,
 ) -> dict:
     """コンソールを count 個開く。
 
     Terminal の上限（config.terminal.max_sessions）に当たったら、
     開けた分と開けなかった数と理由を返す（例外にはしない）。
     作業フォルダは workdir.resolve_dir で commander.workdir_roots の中か検証する。
+    resume=True は続きから（鍵をかけたコンソールの開き直し。locks.py から使う）。
     """
     cfg = get_config().terminal
     if not cfg.enabled:
@@ -131,7 +145,7 @@ def create_consoles(
     from app.commander import models as model_list
 
     model, effort = model_list.clean_model(model), model_list.clean_effort(effort)  # 不正なら ValueError
-    command, extra_env = _command_for(cli, str(work), user_id, account, model, effort)
+    command, extra_env = _command_for(cli, str(work), user_id, account, model, effort, resume=resume)
     if extra_env:
         env = {**extra_env, **(env or {})}
 
@@ -144,10 +158,18 @@ def create_consoles(
                 "config/config.yaml の terminal.max_sessions で変えられます"
             )
             break
-        session = manager.create_session(cwd=str(work), command=command, env=env)
+        if session_id is not None and count != 1:
+            raise ValueError("復旧先 ID は 1 件の作成にだけ使えます")
+        session = manager.create_session(cwd=str(work), command=command, env=env,
+                                         **({"session_id": session_id} if session_id else {}))
         marks = {"cli": cli.id, "account": account, "created_by": created_by}
         if label:
             marks["label"] = label
+        # 開いたときのモデル・考えるレベルも印へ（鍵をかけたときの保存・開き直しに使う）
+        if model:
+            marks["model"] = model
+        if effort:
+            marks["effort"] = effort
         try:
             manager.tag_session(session["id"], marks)
         except (RuntimeError, OSError, ValueError):

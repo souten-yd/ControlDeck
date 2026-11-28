@@ -5,7 +5,7 @@
 地図に無いルート（ゲートウェイの呼び出し元・MCP の道具・通知の種類・外部への出口・tmux への送り込み）は `backend/tests/test_route_map.py` が落とす。
 秘密（鍵の値）は書かない。「どこに保存されるか」だけを書く。
 
-- ルート: 117 本、ノード: 43 個
+- ルート: 122 本、ノード: 44 個
 
 ## 守りの印（guards）
 
@@ -190,12 +190,14 @@ flowchart LR
 | `mcp-project-grants` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Project のファイルを Add-on へ渡す・Add-on の出力を受ける（許可の付与） | `auth` `path_check` `approval` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py` |  |
 | `mcp-addon-tools` | ControlDeck の MCP サーバー | Add-on（外部アプリ） | mcp | Add-on が宣言した道具（動的）。名前は Add-on ごと | `auth` `approval` `audit` | `backend/app/addons/agent_mcp.py`<br>`backend/app/addons/execution.py`<br>`backend/app/addons/registry.py` |  |
 
-### Nexarch（AI Commander・チーム）（29 本）
+### Nexarch（AI Commander・チーム）（33 本）
 
 ```mermaid
 flowchart LR
   backend["backend（FastAPI）"]
   console["Nexarch のコンソール（Claude・Codex・OpenCode の CLI）"]
+  frontend["画面（frontend / React）"]
+  nx_locks["ロックの保存（console-locks.json・0600）"]
   workdir["作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中）"]
   secret_store["鍵の保存（暗号化・0600）"]
   opencode["OpenCode（serve・実行）"]
@@ -205,12 +207,15 @@ flowchart LR
   knowledge["ナレッジ・特許・規格"]
   mcp["ControlDeck の MCP サーバー"]
   cli_accounts["CLI アカウントのフォルダ（ログインの鍵が入る）"]
-  frontend["画面（frontend / React）"]
   codedev["CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有）"]
   terminal["Terminal（tmux・PTY）"]
   usage_files["使用率のファイル（usage・Codex の記録）"]
   backend -->|"nx-console-open (tmux)"| console
   console -->|"nx-console-read (tmux)"| backend
+  frontend -->|"nx-console-lock (api)"| backend
+  backend -->|"nx-console-lock-store (file)"| nx_locks
+  console -->|"nx-console-vanish-watch (tmux)"| backend
+  backend -->|"nx-console-restore (tmux)"| console
   backend -->|"nx-resume-inject (tmux)"| console
   backend -->|"nx-team-inject (tmux)"| console
   backend -->|"nx-team-checks (subprocess)"| workdir
@@ -244,6 +249,10 @@ flowchart LR
 |---|---|---|---|---|---|---|---|
 | `nx-console-open` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | コンソールを開く（CLI の実行ファイル名だけ。アカウントの環境変数はフォルダのパスだけ） | `auth` `audit` `path_check` `no_secrets` | `backend/app/commander/consoles.py`<br>`backend/app/commander/accounts.py` | 利用者の入力はコマンドに混ぜない。ログインは利用者がコンソール内で行う |
 | `nx-console-read` | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | backend（FastAPI） | tmux | 画面の読み取り（capture_text）。状態の判定・報告の取り込み | `auth` | `backend/app/commander/status.py`<br>`backend/app/commander/consoles.py`<br>`backend/app/commander/team_watch.py`<br>`backend/app/commander/teams.py`<br>`backend/app/commander/resume.py`<br>`backend/app/terminals/manager.py` | LLM を使わず正規表現で読む |
+| `nx-console-lock` | 画面（frontend / React） | backend（FastAPI） | api | コンソールの鍵（ロック）の付け外し・一括で閉じる。鍵のかかったコンソールは 409 で閉じられない | `auth` `audit` | `backend/app/commander/router.py`<br>`backend/app/commander/locks.py`<br>`backend/app/terminals/router.py` | 外すのは画面（terminal.use）の操作だけ。AI・MCP へは公開しない（道具は足していない）。閉じる経路（Terminal・Nexarch・一括）は streams.close_session より前に断る |
+| `nx-console-lock-store` | backend（FastAPI） | ロックの保存（console-locks.json・0600） | file | ロックしたコンソールの情報（cli・account・cwd・label・model・effort・owner）の保存。tmux が消えた後も残す | `no_secrets` `audit` | `backend/app/commander/locks.py` | 0600・置き換えで書く。鍵の値は 1 つも入らない（label・cli・アカウント名・作業フォルダのパスだけ） |
+| `nx-console-vanish-watch` | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | backend（FastAPI） | tmux | 見回り（既存の resume の 60 秒ごと）: ロックしたコンソールの tmux セッションが外から消えたら検知（監査・通知） | `audit` `no_secrets` | `backend/app/commander/locks.py`<br>`backend/app/commander/resume.py` | tmux の確認（has-session）に失敗しても消失と扱わない。dead pane はセッションが残っているので消失ではない |
+| `nx-console-restore` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 消えたロックのコンソールを同じ cli・account・作業フォルダ・label・model・effort で開き直す（続きから: Claude --continue・Codex resume --last・OpenCode は既存の再開） | `audit` `path_check` `no_secrets` | `backend/app/commander/locks.py`<br>`backend/app/commander/consoles.py` | 作業フォルダは保存した実体のパスを改めて検証。失敗も数えて 10 分 3 回まで・設定で切れる |
 | `nx-resume-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | 上限からの自動再開「続けてください」を送る（inject_input） | `audit` `approval` | `backend/app/commander/resume.py`<br>`backend/app/commander/settings.py` | 送る直前に画面を読み直し、止まったままのときだけ。回数・間隔に歯止め。コンソールごとに止められる |
 | `nx-team-inject` | backend（FastAPI） | Nexarch のコンソール（Claude・Codex・OpenCode の CLI） | tmux | チームのタスクを担当のコンソールへ送る（短い文） | `auth` `audit` | `backend/app/commander/teams.py` |  |
 | `nx-team-checks` | backend（FastAPI） | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） | subprocess | チームのタスクの確認のコマンドを担当の作業フォルダで実行し、合否と出力の最後を板へ（LLM なし） | `audit` `path_check` `no_secrets` | `backend/app/commander/team_checks.py` | shell なし・最小の環境（PATH・HOME・LANG）・600 秒・出力は一時ファイル（上限 50MB）。監査ログはコマンドと終了コードだけ |
@@ -325,7 +334,7 @@ flowchart LR
 | `ext-news-hub-llm` | QNAP ニュースハブ | LLM ゲートウェイ（/api/v1/llm/v1） | gateway | ハブから借りた仕事（要約・抽出）が ControlDeck のゲートウェイ（caller=news）を使う | `approval` `audit` | `backend/app/news/hub_jobs.py` | ローカルのモデルなら GPU を使う。クラウドのモデルのときは外部送信の許可が無ければその種類は借りない |
 | `ext-git-service` | backend（FastAPI） | GitHub | subprocess | git リポジトリの操作（gitrepos） | `auth` `audit` `path_check` | `backend/app/gitrepos/service.py` |  |
 
-### 通知（12 本）
+### 通知（13 本）
 
 ```mermaid
 flowchart LR
@@ -342,6 +351,7 @@ flowchart LR
   chat_channels["Discord・Slack・メール"]
   assistant -->|"notify-assistant (notify)"| notify_core
   backend -->|"notify-team (notify)"| notify_core
+  backend -->|"notify-commander (notify)"| notify_core
   opencode -->|"notify-workspace (notify)"| notify_core
   workflows -->|"notify-project (notify)"| notify_core
   addons -->|"notify-media (notify)"| notify_core
@@ -358,6 +368,7 @@ flowchart LR
 |---|---|---|---|---|---|---|---|
 | `notify-assistant` | AI アシスタント（チャット） | 通知の入口（notify_event） | notify | 会話の回の終わり・質問待ち・許可待ち・失敗・中断・調査の完了 | `confidential` `no_secrets` | `backend/app/alerts/chat_events.py`<br>`backend/app/workflows/chat_persist.py` | 秘密の会話は題も要約も載せない。本文・パス・鍵を載せない |
 | `notify-team` | backend（FastAPI） | 通知の入口（notify_event） | notify | AI チームのタスク（報告あり・報告なしで止まった・上限）。タイトルだけ | `no_secrets` | `backend/app/commander/team_watch.py` |  |
+| `notify-commander` | backend（FastAPI） | 通知の入口（notify_event） | notify | ロックしたコンソールが外から消えた・開き直した・復旧の上限で諦めたとき。タイトルだけ | `no_secrets` | `backend/app/commander/locks.py` |  |
 | `notify-workspace` | OpenCode（serve・実行） | 通知の入口（notify_event） | notify | 作業場の関門・取り込み・マージ・ディスクの空き | `audit` | `backend/app/integrations/opencode/router.py`<br>`backend/app/workflows/chat_persist.py` |  |
 | `notify-project` | Workflow エンジン・Project Lab | 通知の入口（notify_event） | notify | Project Lab の実行の終わり（起動した人へ） | `auth` | `backend/app/project_lab/runs.py` |  |
 | `notify-media` | Add-on（外部アプリ） | 通知の入口（notify_event） | notify | 画像・音楽・3D の生成の完了・失敗 | **なし** | `backend/app/addons/execution.py` |  |
@@ -475,6 +486,7 @@ flowchart LR
 | `research_done` | `notify-assistant` |
 | `chat_done` | `notify-assistant` |
 | `team_task` | `notify-team` |
+| `console_vanish` | `notify-commander` |
 | `workspace_gate` | `notify-workspace` |
 | `workspace_adopted` | `notify-workspace` |
 | `workspace_disk` | `notify-workspace` |
@@ -519,6 +531,7 @@ flowchart LR
 | `workdir` | 作業フォルダ（Nexarch の担当の作業場所。/data1tb・/data2tb の中） |
 | `codedev` | CodeDEV（作業場所の置き場。Project Lab・OpenCode・Nexarch が共有） |
 | `board` | チームの板（teams.json） |
+| `nx_locks` | ロックの保存（console-locks.json・0600） |
 | `usage_files` | 使用率のファイル（usage・Codex の記録） |
 | `cli_accounts` | CLI アカウントのフォルダ（ログインの鍵が入る） |
 | `notify_core` | 通知の入口（notify_event） |
