@@ -287,6 +287,13 @@ ROUTES: tuple[Route, ...] = (
           "道具は team_status・write_plan・research・delegate・wait・read_result・run_checks・integrate・ask_user・wait_answer・report・finish"
           "（別の MCP サーバー nexarch_team の道具で、agent_mcp の control_deck.* ではない）。別のチームは触れない。再開後は古い token が使えない。"
           "呼び出しの履歴は道具の名前と成否だけ。担い手は段（tier）からコードが決める"),
+    Route("nx-team-worker-mcp", "mcp_bridge", "mcp", "mcp",
+          "チームの担い手（opencode・claude・codex）が ControlDeck の MCP の道具（板の読み・ノート・計画の補助）を呼ぶ。"
+          "token は実行ごと・チームと担当に縛る・期限つき・loopback だけ。作った利用者の権限で動き、作成者が分からない旧チームには付けない",
+          ("auth", "loopback", "audit", "no_secrets"),
+          _o("commander/team_runner.py", "addons/agent_mcp.py", "integrations/opencode/addon_mcp_bridge.py"), "nexarch",
+          "調べる・レビューの担当には読み取りの道具だけを渡し、書き込みの道具はサーバー側でも断る。OpenCode が有効なときだけ付け、"
+          "local_only のチームはローカルの担い手だけ。token は argv・ログに出さない（0600 の設定・環境変数だけ）"),
     Route("nx-team-leader-research-web", "mcp_bridge", "web", "egress",
           "チームリーダーの research(web): 既存の調査の道具（検索・ページを読む）。チームの設定 web_research が false なら断る",
           ("auth", "confidential", "ssrf_guard"), _o("commander/leader_mcp.py", "workflows/research_tools.py"), "nexarch",
@@ -303,7 +310,8 @@ ROUTES: tuple[Route, ...] = (
           ("auth", "path_check"), _o("addons/agent_mcp.py", "commander/team_leader.py"), "nexarch",
           "保存先は会話の作業場所そのまま（新しいフォルダを作らない）", tools=("control_deck.nexarch_team_request", "control_deck.nexarch_team_status")),
     Route("nx-team-models", "cli_accounts", "backend", "file",
-          "担い手のモデルと考えるレベルの一覧: codex の models_cache.json（slug と考えるレベルだけ）・ゲートウェイのモデルの一覧・claude は固定の別名。5 分覚える",
+          "担い手のモデルと考えるレベルの一覧: codex の models_cache.json（slug と考えるレベルだけ）・ゲートウェイのモデルの一覧・claude は固定の別名。5 分覚える。"
+          "画面には 1 つの形（ローカル・opencode・openrouter・claude・codex の group と endpoint）で返す（/model-choices・brief B）",
           ("auth", "no_secrets"), _o("commander/models.py", "commander/router.py"), "nexarch",
           "auth.json など鍵のファイルは読まない・返さない。外へは何も取りに行かない"),
     Route("nx-team-role-console", "backend", "console", "tmux",
@@ -317,6 +325,17 @@ ROUTES: tuple[Route, ...] = (
           "チームの保存先（Nexarch の設定の team_root）の下へ `<名前>-日時` の作業場所を作る（git init・manifest）。AI アシスタントから作るときは会話の作業場所をそのまま使う",
           ("auth", "audit", "path_check"), _o("commander/settings.py", "commander/teams.py", "integrations/opencode/projects.py"), "nexarch",
           "保存先は作業フォルダの決まり（/data1tb・/data2tb の中・realpath・data_dir など禁止）で検証。未設定なら CodeDEV の自動の作業場所"),
+    Route("nx-team-inputs", "backend", "workdir", "file",
+          "チームへ渡す資料（ファイル・フォルダ）を作業場所の .nexarch/inputs へ読み取り専用（0444）の写しとして置き、依頼の全文を .nexarch/request.md へ。"
+          "worktree には .nexarch のハードリンクと、あれば frontend/node_modules・.venv の相対リンクを渡す（中身は写さない）",
+          ("auth", "path_check", "no_secrets"),
+          _o("commander/team_inputs.py", "commander/team_leader.py", "commander/team_git.py", "commander/workdir.py", "commander/router.py"), "nexarch",
+          "作業フォルダと同じ決まり（許可ルート・realpath・拒否の場所・リンク逃げ）。シンボリックリンクでの資料の公開はしない・元資料は書かない・件数と大きさに上限"),
+    Route("nx-team-auto-resume", "backend", "board", "file",
+          "ControlDeck の起動時に、実行中のまま残ったチームリーダーを保存済みの依頼から続きで再開する（自動再開は 30 分に 2 回まで・チームごとに永続）。"
+          "続けて失敗したら止めて知らせる。利用者が止めたチームは再開しない",
+          ("audit",), _o("commander/team_watch.py", "commander/team_leader.py", "commander/teams.py"), "nexarch",
+          "teams.json は置き換えで書き、直前の 1 世代を .bak に残す。壊れていたら .bak から戻して診断に出す"),
     Route("ws-auto-project", "backend", "codedev", "file",
           "作業場所の自動作成（nexarch-/team-/chat-日時のフォルダ・git init）と表示名・作成元（.controldeck/project.json）",
           ("auth", "audit", "path_check"), _o("integrations/opencode/projects.py", "commander/consoles.py",

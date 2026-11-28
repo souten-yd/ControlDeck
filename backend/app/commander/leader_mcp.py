@@ -535,6 +535,8 @@ def tool_research(team_id: str, args: dict) -> dict:
     if scope == "web":
         if team.get("web_research", True) is False:
             raise ToolError("このチームでは Web の調査が禁止されています（設定 web_research が false）", 403)
+        if team.get("local_only"):
+            raise ToolError("このチームは閉じたチーム（ローカルだけ）なので、Web の調査はできません", 403)
         return _web_research(query)
     if scope == "knowledge":
         return _knowledge_research(query)
@@ -968,31 +970,42 @@ def tool_defs() -> list[dict]:
         tool("write_plan", "計画を保存する（利用者の画面に出る。何度でも更新できる）。items は仕事の項目（tier は explore・implement・review・hard）。",
              {"plan_markdown": {"type": "string", "maxLength": PLAN_MAX}, "items": {"type": "array", "items": _ITEM, "maxItems": ITEMS_MAX}},
              ["plan_markdown", "items"]),
-        tool("research", "調べる。scope=web（Web の検索・URL を読む）・knowledge（登録資料の検索）・code（作業場所の grep。`files:*.py` でファイル一覧）。",
+        tool("research", "調べる。scope=web は query が URL ならそのページを読み、それ以外は Web を検索して上位 8 件の題・URL・抜粋を返す"
+                         "（チームの設定で Web の調査を切っていると 403）。knowledge は登録資料の検索（機密・AI 利用不可の資料は返らない）。"
+                         "code は作業場所の grep（`files:*.py` でファイルの一覧）。",
              {"query": {"type": "string", "maxLength": 500}, "scope": {"type": "string", "enum": ["web", "knowledge", "code"]}},
              ["query", "scope"]),
         tool("delegate", "仕事を担い手へ振る（担い手は段から Nexarch が決める。implement・hard は worktree で書く）。item_id（計画の項目）か "
-                         "title+instructions+tier のどちらか。振り済みの項目に note を付けるともう一度やらせる。返り値の run_id を wait へ。",
+                         "title+instructions+tier のどちらか（item_id と一緒に他の欄は渡せない。depends_on が終わっていない項目は 409）。"
+                         "振り済みの項目に note（指摘・指示）を付けるともう一度やらせる。files は担当ファイル（同じファイルの仕事は同時に走らない）、"
+                         "checks は確認のコマンド（1 行・パイプや && なし。合わないものは捨てる）。wait=true なら終わるまで（最大 600 秒）待って wait と同じ結果を返す。"
+                         "それ以外は返り値の run_id を wait へ。",
              {"item_id": {"type": "string"}, "title": {"type": "string", "maxLength": 120},
               "instructions": {"type": "string", "maxLength": INSTR_MAX}, "tier": {"type": "string", "enum": list(TIERS)},
               "files": {"type": "array", "items": {"type": "string"}}, "checks": {"type": "array", "items": {"type": "string"}},
               "wait": {"type": "boolean"}, "note": {"type": "string", "maxLength": INSTR_MAX}}),
-        tool("wait", "仕事の終わりを待つ（最大 600 秒）。終わったものは 5 行の報告・確認の合否・変更ファイルと行数・使用量・担い手を返す。",
+        tool("wait", "仕事の終わりを待つ（timeout_s の既定は 120 秒・最大 600 秒）。mode=all は全部、any はどれか 1 つが終わるまで。"
+             "終わったものは 5 行の報告・確認の合否・変更ファイルと行数・使用量・担い手を返す。時間切れでも全部の状態を返し、timed_out=true にする（止めはしない）。",
              {"run_ids": _RUN_IDS, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}, "mode": {"type": "string", "enum": ["all", "any"]}},
              ["run_ids"]),
         tool("read_result", "仕事の結果を読む。what=diff（差分・大きさの上限つき）・output_tail（出力の末尾）・files（変更ファイルと行数）。",
              {"run_id": {"type": "string"}, "what": {"type": "string", "enum": ["diff", "output_tail", "files"]}}, ["run_id", "what"]),
-        tool("run_checks", "確認のコマンドを流す。where=run_id（その仕事の worktree）か \"team\"（チームのブランチ全体）。commands を省くと仕事・計画の checks。",
+        tool("run_checks", "確認のコマンドを流す。where=run_id（その仕事の worktree）か \"team\"（チームのブランチ全体）。commands を省くと、run_id なら仕事の checks、"
+             "team なら計画の全項目の checks。1 行・パイプや && なしの形だけ流し、捨てたものは dropped に返す。返り値は status（passed・failed・error）と"
+             "コマンドごとの終了コード・秒数・出力の末尾。",
              {"where": {"type": "string"}, "commands": {"type": "array", "items": {"type": "string"}}}, ["where"]),
         tool("integrate", "終わった implement・hard の仕事をチームのブランチへ merge する。競合したら競合のファイルを返す（delegate の note で implement へ戻せる）。",
              {"run_ids": _RUN_IDS}, ["run_ids"]),
-        tool("ask_user", "利用者へ質問する（画面に出て通知される）。聞かずに進める設定のチームでは聞かず、判断を記録する（required=true は必ず聞く）。",
+        tool("ask_user", "利用者へ質問する（画面に出て通知される）。聞いたら question_id を返すので wait_answer で待つ。聞かずに進める設定のチームでは聞かずに"
+             "asked=false を返す（最善の判断で進め、理由を report に残す）。required=true（外部からの取得・本番データの変更・秘密）はその設定でも聞く。",
              {"question": {"type": "string", "maxLength": QUESTION_MAX}, "options": {"type": "array", "items": {"type": "string"}, "maxItems": OPTIONS_MAX},
               "required": {"type": "boolean"}}, ["question"]),
-        tool("wait_answer", "質問の答えを待つ（最大 600 秒）。", {"question_id": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}},
+        tool("wait_answer", "質問の答えを待つ（timeout_s の既定は 120 秒・最大 600 秒）。答えがあれば answered=true と answer、まだなら answered=false"
+                            "（別の作業を進めてから、もう一度呼ぶ）。", {"question_id": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 1, "maximum": WAIT_MAX}},
              ["question_id"]),
         tool("report", "進み具合を 1 行、画面の時系列へ出す。", {"progress_text": {"type": "string", "maxLength": 300}}, ["progress_text"]),
-        tool("finish", "終わり。summary は何をしたか・確認の結果・残り。outcome は done か blocked。", {
+        tool("finish", "終わり。summary は何をしたか・確認の結果・残り。outcome は done か blocked。まだ走っている仕事があれば still_running に"
+                       "その id を返す（止めはしない。待つか、残りとして summary に書く）。", {
             "summary": {"type": "string", "maxLength": teams.TEXT_MAX}, "outcome": {"type": "string", "enum": ["done", "blocked"]}},
              ["summary", "outcome"]),
     ]

@@ -5,6 +5,15 @@
 - **状態: 計画のみ。コード・試験・画面・実機は未着手で、A〜F はすべて未検証**。この節は実装が入った時点で書き換える（実装完了・試験成功を先取りしない）。
 - 検索（research）の評価: まとめ検索はノイズが多く個別 URL が有効、本文は約 6000 文字で途切れる、`[R番号]` の出典に対応する番号が検索の返り値に無い。小改善（番号・URL と取得日・続きの案内）は backend 担当への提案として PLAN に記録した（未実装）。
 - 引き継ぎ: `docs/HANDOFF-nexarch-devx.md`（目的・決定・現状・ファイル地図・制約・手順・作業一覧・未決・外部の状態・記録）。
+## 2026-11-28 Nexarch のチームを実運用に耐える形へ（モデルの一覧・担い手の道具・自動再開・資料の受け渡し）
+- 依頼（ `docs/PLAN-nexarch-team.md` の B〜F・2026-11-28 利用者）: チームの担い手を選ぶ一覧を 1 つの形に、担い手にも ControlDeck の道具を、再起動で止まったチームを自動で続きから、資料は中身ではなく場所を渡す、確認のコマンドに作業フォルダを持たせる、チームリーダーの説明を実際の道具に合わせる。
+- **B モデルの一覧**: `GET /api/v1/commander/model-choices` が `{choices:[{id,label,group,endpoint:{kind:'headless',cli,account,model,effort},efforts}],note}` を返す（`commander/models.py` の `role_choices`）。group は local・opencode・openrouter・claude・codex。**外へは何も取りに行かない**（codex の models_cache・ゲートウェイの一覧・固定の別名だけ）。
+- **C 担い手の道具（MCP）**: チームを作った利用者を `owner_user_id` に覚え（0 は作成者不明＝旧チームで、道具は付けない）、opencode・claude・codex の担い手に `control_deck.*` の MCP を渡す。token は実行ごと・チームと担当に縛る短命（`addons/agent_mcp.py`）。調べる・レビューの担当は読み取りの道具だけを渡し、**書き込みの道具はサーバー側でも断る**。`web_research=false` は担い手の Web の道具にも当たる。`local_only`（既定 false）はローカルの担い手・ローカルのモデルだけを許し、起動・引き継ぎ・モデルの解決・Web の出口で止める。sandbox と `--auto` の扱いは変えない。
+- **D 自動再開**: `auto_resume`（既定 true）。ControlDeck の起動時に、実行中のまま残ったチームリーダーを保存済みの依頼から続きで再開する（`team_watch`・`team_leader.recover_interrupted`）。**30 分に 2 回まで**を teams.json に永続し、続けて失敗したら止めて知らせる。利用者が止めたチームは止まったまま。teams.json は置き換えで書き、直前の 1 世代を `.bak` に残し、壊れていたら戻して診断に出す（`docs/diagnostics.md`）。
+- **E 資料の受け渡し**: `input_paths`（run・auto）と `team.inputs:[{path,source,label}]`。選んだファイル・フォルダは作業場所の `.nexarch/inputs/` へ**読み取り専用（0444）の写し**として置き、チームリーダーにはパスの一覧だけを渡す（中身はプロンプトへ展開しない）。検証は作業フォルダと同じ決まり（realpath・許可ルート・拒否の場所・リンク逃げ）で、シンボリックリンクでの公開はせず、元資料は書かない。件数・1 件・合計・ファイル数に上限。worktree には `.nexarch`（依頼の全文と資料のハードリンク）と、あれば `frontend/node_modules`・`.venv` の相対リンクを渡す（大きいものは写さない）。
+- **F チームリーダーの説明**: `leader_mcp` の research・delegate・wait・run_checks・ask_user・finish と `team_leader` の PROMPT を、実際の道具の引数・動きに合わせた（`.nexarch/prompt-audit.diff` の当該の hunk だけ。AGENTS.md の hunk は当てない）。
+- **確認のコマンドの作業フォルダ**: `checks` は従来の文字列に加えて `{command,cwd}` を受ける。cwd は作業場所からの相対で realpath 検証し、`env -C backend …` の回避を要らなくする。
+- 試験: `backend/tests/test_commander_team_inputs.py`（新規）・`test_commander_team_t2b.py`・`test_commander_teams.py`・`test_commander_team_t3a/t3b/t3c.py`・`test_commander_team_watch.py`・`test_commander_workdir.py`・`test_addon_agent_mcp.py`・`test_opencode_dev_tools.py`・`test_route_map.py`。地図に `nx-team-worker-mcp`・`nx-team-inputs`・`nx-team-auto-resume` を足した。
 
 ## 2026-11-28 AI チームの配り手が GLM の担い手をローカル LLM として数えていた
 - 本番の AI チーム（コンソールのロック）で、GLM（opencode-go/glm-5.3）の実装の担い手 2 件が、ローカル LLM の調べものが終わるまで待たされた。`teams.member_is_local` が「OpenCode の既定の接続」をモデルに関係なくローカルと見ていて、「ローカルは同時に 1 つ（GPU を共有）」の枠に入っていた。

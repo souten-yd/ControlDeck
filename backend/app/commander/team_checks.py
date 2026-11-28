@@ -154,6 +154,24 @@ def _workdir_for(sid: str) -> Path | None:
         return None
 
 
+def _resolve_check(entry: object, base: Path) -> tuple[str, Path | None]:
+    """1 つの確認のコマンドと実行場所。{command, cwd} の cwd は実行場所（base）の中の相対パスとして
+    realpath で検証する（brief E・リンクで外へ出られない・外なら None）。"""
+    if isinstance(entry, dict):
+        command = str(entry.get("command") or "")
+        raw = str(entry.get("cwd") or "")
+        if not raw:
+            return command, base
+        try:
+            target = (base / raw).resolve(strict=True)
+        except OSError:
+            return command, None
+        if not target.is_relative_to(base) or not target.is_dir():
+            return command, None
+        return command, target
+    return str(entry), base
+
+
 def run_checks(team_id: str, task_id: int) -> dict:
     """checks を順に実行して結果を書く（同期。テストは直接呼ぶ）。結果の dict を返す。"""
     with teams._lock:
@@ -178,8 +196,17 @@ def run_checks(team_id: str, task_id: int) -> dict:
                   "message": "実行できませんでした（作業フォルダが分からない・許可の外）"}
     else:
         rows: list[dict] = []
-        for cmd in commands:
-            rows.append(_run_one(cmd, cwd))
+        for entry in commands:
+            command, where = _resolve_check(entry, cwd)
+            if where is None:
+                rows.append({"cmd": command, "cwd": str((entry or {}).get("cwd") or "") if isinstance(entry, dict) else "",
+                             "exit_code": 127, "seconds": 0.0,
+                             "tail": f"実行できませんでした（cwd が作業フォルダの外か、ありません: {str((entry or {}).get('cwd') or '')[:120]}）"})
+            else:
+                row = _run_one(command, where)
+                if isinstance(entry, dict) and entry.get("cwd"):
+                    row["cwd"] = str(entry["cwd"])
+                rows.append(row)
             if rows[-1]["exit_code"] != 0:
                 break  # 落ちたら残りは実行しない（直してからまとめてやり直す）
         ok = len(rows) == len(commands) and all(r["exit_code"] == 0 for r in rows)
@@ -188,15 +215,24 @@ def run_checks(team_id: str, task_id: int) -> dict:
     return result
 
 
-def run_commands(cwd: str, commands: list[str]) -> dict:
-    """任意のコマンド列を cwd（検証する）で順に実行して結果を返す（同期。leader の run_checks が使う）。落ちたら残りは実行しない。"""
+def run_commands(cwd: str, commands: list) -> dict:
+    """任意のコマンド列を cwd（検証する）で順に実行して結果を返す（同期。leader の run_checks が使う）。
+    落ちたら残りは実行しない。{command, cwd} の形も受け付ける（cwd は cwd の中の相対パス・realpath 検証）。"""
     try:
         path = workdir.resolve_dir(cwd)
     except (OSError, ValueError):
         return {"status": "error", "ran_at": teams._now(), "results": [], "message": "実行できませんでした（作業フォルダが分からない・許可の外）"}
     rows: list[dict] = []
-    for cmd in commands:
-        rows.append(_run_one(cmd, path))
+    for entry in commands:
+        command, where = _resolve_check(entry, path)
+        if where is None:
+            rows.append({"cmd": command, "exit_code": 127, "seconds": 0.0,
+                         "tail": f"実行できませんでした（cwd が作業フォルダの外か、ありません: {str((entry or {}).get('cwd') or '')[:120]}）"})
+        else:
+            row = _run_one(command, where)
+            if isinstance(entry, dict) and entry.get("cwd"):
+                row["cwd"] = str(entry["cwd"])
+            rows.append(row)
         if rows[-1]["exit_code"] != 0:
             break
     ok = len(rows) == len(commands) and all(r["exit_code"] == 0 for r in rows)

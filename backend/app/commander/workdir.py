@@ -39,16 +39,18 @@ def _check(path: str, *, must_exist: bool) -> Path:
         raise PermissionError("絶対パスで指定してください")
     if must_exist:
         resolved = normalize(str(p))
-        if not resolved.exists():
-            raise FileNotFoundError(f"存在しません: {path}")
     else:
         if p.name in ("", ".", ".."):
             raise PermissionError("不正なフォルダ名です")
         resolved = normalize(str(p.parent)) / p.name
-    if not any(is_within(resolved, r) for r in roots()):
-        raise PermissionError(f"作業フォルダのルートの外です: {resolved}")
+    # 拒否の場所（data_dir・~/.ssh など）は、存在するかどうかより先に断る
+    # （無い物を探すことで、そこに何があるかを漏らさない・2026-11-28 brief E）
     if _blocked(resolved):
         raise PermissionError(f"アクセスが拒否されています: {resolved}")
+    if must_exist and not resolved.exists():
+        raise FileNotFoundError(f"存在しません: {path}")
+    if not any(is_within(resolved, r) for r in roots()):
+        raise PermissionError(f"作業フォルダのルートの外です: {resolved}")
     return resolved
 
 
@@ -57,6 +59,17 @@ def resolve_dir(path: str) -> Path:
     resolved = _check(path, must_exist=True)
     if not resolved.is_dir():
         raise NotADirectoryError(f"ディレクトリではありません: {path}")
+    return resolved
+
+
+def resolve_path(path: str) -> Path:
+    """既存のファイルまたはディレクトリを検証して実体のパスで返す（資料の受け渡し用・brief E）。
+
+    resolve_dir と同じ決まり（許可ルートの中・realpath でリンクの逃げを検証・data_dir と files の拒否の場所は外）。
+    """
+    resolved = _check(path, must_exist=True)
+    if not (resolved.is_file() or resolved.is_dir()):
+        raise NotADirectoryError(f"ファイルでもディレクトリでもありません: {path}")
     return resolved
 
 

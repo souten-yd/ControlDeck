@@ -58,8 +58,11 @@ def candidates(team: dict, current_key: str, exclude: set[str], rows: dict[str, 
     """次の担い手の候補（順位つき）。current_key と exclude の担い手は含めない。
 
     team.fallback があればその順（載っていないメンバーは後ろ）。無ければ既定: 別の CLI → 同じ CLI の別アカウント → ローカル。
+    閉じたチーム（local_only）ではローカル LLM の担い手だけを候補にする。
     """
     members = [m for m in team.get("members", []) if teams.member_key(m) not in exclude | {current_key}]
+    if team.get("local_only"):
+        members = [m for m in members if not teams.member_local_problem(m)]
     order = [k for k in team.get("fallback", []) if isinstance(k, str)]
     if order:
         rank = {k: i for i, k in enumerate(order)}
@@ -141,10 +144,16 @@ def handoff_text(prev_label: str, last_work: str, git: str, why: str = "上限�
 
 
 def resume_text(team: dict, task: dict, why: str) -> str:
-    """同じ担当で続きから再実行するときの本文（中断・回復の後）。"""
-    cwd = _workdir_of(team, None)
+    """同じ担当で続きから再実行するときの本文（中断・回復の後）。
+
+    worktree の仕事（task.cwd）はそこから git の変更を読み、「変更がそのまま残っている」ことを伝える
+    （brief D・2026-11-28: 前はチームの作業場所を読んでいたので、worktree で働く担い手に自分の変更が見えなかった）。"""
+    cwd = Path(str(task.get("cwd") or "")) if task.get("cwd") else _workdir_of(team, None)
     git = team_runner.git_changes(cwd) if cwd else ""
-    text = f"【引き継ぎ】{why}。ここまでの作業: {_last_work(task, None)}。"
+    text = f"【引き継ぎ】{why}。"
+    if task.get("cwd"):
+        text += "前回は途中で中断。worktree の変更はそのまま残っている。git status と diff を見て続きから。"
+    text += f"ここまでの作業: {_last_work(task, None)}。"
     if git:
         text += f"\n作業フォルダの変更:\n{git}\n"
     return text + "続きから仕上げて、同じ 5 行で報告してください。"

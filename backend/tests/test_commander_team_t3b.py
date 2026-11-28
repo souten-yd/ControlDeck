@@ -142,6 +142,98 @@ def test_models_api(admin_client):
     assert admin_client.get("/api/v1/commander/models", params={"cli": "gemini"}).status_code == 400
 
 
+# ---------------------------------------------------------------- 役割用のモデルの統合一覧（B）
+
+def test_role_choices_groups_and_endpoints(tmp_path, monkeypatch):
+    """目的: 役割の設定で「モデル」を 1 つの選択肢から選べるようにする（B。2026-11-28 利用者
+    「AI チームではモデルをどう指定するのか。CLI を開いて設定するのは面倒。使えるモデルを事前に抽出して
+    選択肢から選べるように。役割を決める所でモデルを選べるとよい」）。
+    - 種類ごとのまとまり（group）: local / opencode（Zen） / openrouter（外部） / claude / codex。
+    - 選べば CLI・接続（endpoint の cli・account）が決まる。model・effort は既存の検証（clean_model・clean_effort）へそのまま渡せる形。
+    - 外へは何も取りに行かない（既存の models.py の一覧の作り方をそのまま使う）。
+    - id は CLI・接続・モデルで一意。"""
+    from app.models_mgmt import local_llm
+
+    home = tmp_path / "codexhome"
+    home.mkdir()
+    (home / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "gpt-x", "display_name": "GPT X", "supported_reasoning_levels": [{"effort": "low"}]}]}), encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: [{"alias": "qwen-local"}])
+    monkeypatch.setattr(accounts, "opencode_connection", lambda account: {"name": account, "model": "auto"})
+    from app.integrations.opencode import provider
+
+    monkeypatch.setattr(provider, "_cloud_models_for_opencode",
+                        lambda: [{"id": "cloud:openrouter/deepseek/r1", "name": "DeepSeek R1 / OpenRouter", "provider": "openrouter"}])
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(zen, "configured", lambda: True)
+    models.clear_cache()
+    out = models.role_choices()
+    choices = out["choices"]
+    groups = {c["group"] for c in choices}
+    assert groups <= {"local", "opencode", "openrouter", "claude", "codex"}
+    assert {"local", "opencode", "openrouter", "claude", "codex"} <= groups
+    from app.integrations.opencode import model_choice
+
+    assert len({c["id"] for c in choices}) == len(choices)
+    by = {c["id"]: c for c in choices}
+    # claude: 別名 4 つ・接続は既定・考えるレベルは固定
+    claude = [c for c in choices if c["group"] == "claude"]
+    assert {c["endpoint"]["model"] for c in claude} == {"fable", "opus", "sonnet", "haiku"}
+    assert all(c["endpoint"]["cli"] == "claude" and c["endpoint"]["account"] == "default" for c in claude)
+    assert claude[0]["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    # codex: models_cache の slug と考えるレベルだけ（auth.json は読まない）
+    codex = [c for c in choices if c["group"] == "codex"]
+    assert [c["endpoint"]["model"] for c in codex] == ["gpt-x"] and codex[0]["efforts"] == ["low"]
+    assert codex[0]["endpoint"]["cli"] == "codex"
+    # local: ゲートウェイのモデル（OpenCode の既定の接続・外へ出ない）
+    local = [c for c in choices if c["group"] == "local"]
+    assert {c["endpoint"]["model"] for c in local} >= {"auto", "qwen-local"}
+    assert all(c["endpoint"]["cli"] == "opencode" and c["endpoint"]["account"] == "default" for c in local)
+    # opencode（Zen）と openrouter（外部）: 接続は既定・opencode の鍵があるときだけ Zen
+    zen_choices = [c for c in choices if c["group"] == "opencode"]
+    assert {c["endpoint"]["model"] for c in zen_choices} == set(model_choice.ZEN_MODELS)
+    ext = [c for c in choices if c["group"] == "openrouter"]
+    assert {c["endpoint"]["model"] for c in ext} == {"cloud:openrouter/deepseek/r1"}
+    assert all(c["endpoint"]["cli"] == "opencode" for c in ext)
+    # endpoint の形: 選んだものはそのまま役割の endpoint へ使える（kind・cli・account・model・effort）
+    for c in choices:
+        assert set(c["endpoint"]) == {"kind", "cli", "account", "model", "effort"}
+        assert c["endpoint"]["kind"] == "headless" and c["endpoint"]["effort"] == ""
+        assert isinstance(c["label"], str) and c["label"]
+        assert isinstance(c["efforts"], list)
+    assert isinstance(out["note"], str) and out["note"]
+
+
+def test_role_choices_zen_without_key_not_listed(monkeypatch):
+    """Zen の鍵が無いときは opencode（Zen）の group を出さない（起動できないものを選ばせない）。"""
+    from app.integrations.opencode import zen
+
+    monkeypatch.setattr(zen, "configured", lambda: False)
+    monkeypatch.setattr(accounts, "opencode_connection", lambda account: {"name": account, "model": "auto"})
+    from app.models_mgmt import local_llm
+
+    monkeypatch.setattr(local_llm, "llm_instances", lambda **kw: [])
+    models.clear_cache()
+    out = models.role_choices()
+    assert not [c for c in out["choices"] if c["group"] == "opencode"]
+
+
+def test_role_choices_api(admin_client):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as anonymous:  # ログインしていない利用者には返さない
+        assert anonymous.get("/api/v1/commander/model-choices").status_code == 401
+    r = admin_client.get("/api/v1/commander/model-choices")
+    assert r.status_code == 200
+    body = r.json()
+    assert {"choices", "note"} <= set(body)
+    assert all({"id", "label", "group", "endpoint", "efforts"} <= set(c) for c in body["choices"])
+
+
 # ---------------------------------------------------------------- 引数への反映と検証
 
 def test_claude_argv_gets_model_and_effort_only_when_set(env):
