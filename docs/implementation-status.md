@@ -1,5 +1,10 @@
 # 実装状況
 
+## 2026-11-28 箱の OpenCode から git の worktree（AI チームの担い手の作業場所）で git と依頼の全文が見える
+- 本番の AI チームで、担い手（箱の OpenCode）から「箱の中で brief・git・venv が見えなかった」と報告があった。担い手の worktree の `.git` はファイルで `<repo>/.git/worktrees/<名前>` を指すが、箱にそこがつながっていなかった。チームの `.nexarch/`（依頼の全文）も見えなかった。
+- 直し（`provider._git_worktree_mounts`）: worktree が本体のリポジトリの中にあるときだけ、本体の `.git` を**読み取り専用**、その worktree の分（index・HEAD）を書ける、本体の `.nexarch/` を読み取り専用でつなぐ。本体の `.git` を書けないのは、`config` を書かれるとホストの git（`team_git` は hooks を切っているが filter などは残る）でコードが走るため。`.git` が本体の外を指していたら何もつながない。
+- 実機（本番の設定・本物の箱）: 担い手の worktree で `git status` が通り、`.nexarch/brief-runtime-unify.md` が見え、本体の `.git` への書き込みは Read-only file system で断られた。
+- 試験: `backend/tests/test_opencode_box_git_worktree.py`（3 件）。
 ## 2026-11-28 AI チームの配り手が GLM の担い手をローカル LLM として数えていた
 - 本番の AI チーム（コンソールのロック）で、GLM（opencode-go/glm-5.3）の実装の担い手 2 件が、ローカル LLM の調べものが終わるまで待たされた。`teams.member_is_local` が「OpenCode の既定の接続」をモデルに関係なくローカルと見ていて、「ローカルは同時に 1 つ（GPU を共有）」の枠に入っていた。
 - 直し: 既定の接続でも、モデルが OpenCode（Zen・Go）か外部（`cloud:`）ならローカルに数えない。

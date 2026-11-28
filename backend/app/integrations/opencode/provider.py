@@ -1517,6 +1517,38 @@ def _sibling_projects(project: Path) -> list[Path]:
     return [root] if project.resolve().parent == root else []
 
 
+def _git_worktree_mounts(project: Path) -> tuple[list[Path], list[Path]]:
+    """git の worktree を箱で使うための（書ける場所, 読み取り専用の場所）。worktree でなければ空。
+
+    worktree の `.git` はファイルで、本体の `<repo>/.git/worktrees/<名前>` を指す。箱にそこが無いと、箱の中で
+    git が使えず、チームの作業場所の `.nexarch/`（依頼の全文・資料）も見えない（2026-11-28 本番の AI チームで判明）。
+    - 本体の `.git` は読み取り専用（`config` を書かれると、ホストの git で filter などからコードが走るため）。
+    - その worktree の分（index・HEAD）だけ書ける。
+    - 本体の `.nexarch/` は読み取り専用で見せる。
+    worktree が本体のリポジトリの中にあるとき（Nexarch のチームの worktree）だけ。`.git` が他の場所を指していたら何もつながない。"""
+    gitfile = project / ".git"
+    try:
+        if not gitfile.is_file():
+            return [], []
+        text = gitfile.read_text(encoding="utf-8", errors="replace")[:4096].strip()
+    except OSError:
+        return [], []
+    if not text.startswith("gitdir:"):
+        return [], []
+    raw = Path(text[len("gitdir:"):].strip())
+    gitdir = (raw if raw.is_absolute() else project / raw).resolve()
+    common = gitdir.parent.parent
+    if gitdir.parent.name != "worktrees" or common.name != ".git" or not gitdir.is_dir() or not common.is_dir():
+        return [], []
+    repo = common.parent
+    if not project.resolve().is_relative_to(repo):
+        return [], []
+    readonly = [common]
+    if (repo / ".nexarch").is_dir():
+        readonly.append(repo / ".nexarch")
+    return [gitdir], readonly
+
+
 def project_tmp_dir(project: Path) -> Path:
     """プロジェクトの箱の /tmp（箱の外に残る。プロジェクトごとに別）。
 
@@ -1557,9 +1589,10 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         path.mkdir(parents=True, exist_ok=True)
     ui_shots = _integration_dir() / "ui-verify"
     ui_shots.mkdir(parents=True, exist_ok=True)
-    writable = [project, config, home, *opencode_state, _mcp_result_dir(), ui_shots]
+    git_writable, git_readonly = _git_worktree_mounts(project)
+    writable = [project, config, home, *opencode_state, _mcp_result_dir(), ui_shots, *git_writable]
     readonly_paths = [Path(sys.prefix), Path(__file__).resolve().parent, *map(Path, _skill_paths()),
-                      *_addon_asset_roots(), attachments.store.root, *readonly]
+                      *_addon_asset_roots(), attachments.store.root, *readonly, *git_readonly]
     # session の cli.json は共有設定への絶対 symlink。config だけのマウントでは
     # リンク先が箱の外になり、Tab の plan 切替など利用者のキー設定が消える。
     # integration 全体を公開せず、TUI 設定の1枚だけを読み取り専用で渡す。
