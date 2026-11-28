@@ -399,6 +399,26 @@ def create_for_assistant(goal: object, work_path: str, *, owner_user_id: int = 0
     return start(team["id"], goal_text)
 
 
+def close(team_id: str, summary: str) -> dict:
+    """チームを「完了」にして閉じる（外で引き取って仕上げたチームなど）。走っているチームリーダーは先に止める。
+    残った待ち・止まった仕事は取り下げる。2026-11-28: Claude が引き取って仕上げたチームが「止まった」のまま残っていた。"""
+    text = teams.clean_text(summary, "まとめ", teams.TEXT_MAX) or "完了にしました"
+    with teams._lock:  # noqa: SLF001
+        team = teams._find_team(teams._load(), team_id)  # noqa: SLF001
+        if (team.get("leader_run") or {}).get("status") == "running":
+            raise teams.TeamError("チームリーダーが走っています。先に止めてください", 409)
+
+    def save(team: dict) -> None:
+        run = team.setdefault("leader_run", {})
+        run.update({"status": "done", "ended_at": teams._now(), "reason": ""})  # noqa: SLF001
+        run["finish"] = {"summary": text, "outcome": "done", "at": teams._now()}  # noqa: SLF001
+        left = leader_mcp.drop_tasks(team, None, "チームを完了にしたとき残っていた", "利用者")
+        leader_mcp.add_timeline(team, "finish", "完了: " + text[:150] + (f"（残りの仕事 {len(left)} 件を取り下げ）" if left else ""))
+
+    leader_mcp._mutate(team_id, save)  # noqa: SLF001
+    return leader_mcp._read(team_id)  # noqa: SLF001
+
+
 def stop(team_id: str) -> bool:
     """チームリーダー（と走っている仕事）を止める。
 

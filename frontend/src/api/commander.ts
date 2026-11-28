@@ -285,7 +285,7 @@ export const TEAM_ROLES: ReadonlyArray<readonly [TeamRole, string]> = [
 ];
 export const ROLE_LABEL: Record<TeamRole, string> = Object.fromEntries(TEAM_ROLES) as Record<TeamRole, string>;
 
-export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected" | "blocked";
+export type TaskStatus = "todo" | "doing" | "review" | "done" | "rejected" | "blocked" | "dropped";
 
 /** チームのメンバー。console は Nexarch のコンソール（session_id）、headless は CLI と接続だけ（画面なし。id）。
  * key は担当（assignee）に入れる識別子（サーバーが付ける）。 */
@@ -474,6 +474,7 @@ export interface Team {
   leader_run?: {
     status: "running" | "done" | "failed" | "blocked" | "stopped"; started_at?: number; endpoint?: string; tasks?: number; reason?: string;
     dropped?: string[]; goal?: string; resumes?: number; n?: number;
+    finish?: { summary: string; outcome: "done" | "blocked"; at?: number } | null;
   };
   created_by?: string;
   /** T3c */
