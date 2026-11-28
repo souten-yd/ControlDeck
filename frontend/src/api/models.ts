@@ -179,3 +179,190 @@ export interface FailedInstance {
 export const getLlamaCapacity = () =>
   api<{ endpoints: EndpointCapacity[]; failed?: FailedInstance[]; power?: LlmPower; last_local?: LastLocal | null }>(
     "/models/llama/capacity");
+
+// ---- ランタイム共通の目録・取得・登録・設定（backend/app/models_mgmt/runtime_catalog.py・
+// runtime_settings.py・schemas/models.py の契約。docs/PLAN-model-catalog.md「run3」） ----
+
+/** 目録の 1 行。size_gib が null のときは大きさを推測しない（取得の開始時に HF から読む）。 */
+export interface RuntimeCatalogEntry {
+  id: string;
+  name: string;
+  kind: "model" | "drafter";
+  format: string;
+  repo: string;
+  quantization: string;
+  size_gib: number | null;
+  memory_gib: number | null;
+  uncensored: boolean;
+  supported: boolean;
+  note: string;
+  acquire: "hf" | "runtime" | "none";
+  source: string;
+  fit: "fits" | "tight" | "no" | "unknown" | string;
+}
+
+export interface RuntimeCatalogBlock {
+  id: string;
+  name: string;
+  installed: boolean;
+  formats: string[];
+  acquire: "hf" | "runtime" | "none";
+  entries: RuntimeCatalogEntry[];
+  /** 動的な全一覧（Maya の probe など）への既存 API。 */
+  catalog_ref?: string;
+  /** HF 検索の既存 API（目録に推奨行が無いランタイム）。 */
+  search_ref?: string;
+}
+
+export interface RuntimeCatalogResponse {
+  runtimes: RuntimeCatalogBlock[];
+  hardware?: { ram_total_gib: number; vram_total_gib: number };
+}
+
+export const getRuntimeCatalog = () => api<RuntimeCatalogResponse>("/models/catalog");
+
+export interface RuntimeCatalogFiles {
+  repo: string;
+  files: Array<{ path: string; size: number }>;
+  total_bytes: number;
+  libraries: ModelLibrary[];
+}
+
+export const getRuntimeCatalogFiles = (runtime: string, entryId: string) =>
+  api<RuntimeCatalogFiles>(
+    `/models/catalog/${encodeURIComponent(runtime)}/entries/${encodeURIComponent(entryId)}/files`);
+
+/** 取得後に登録する場合の欄（backend schemas/models.py::AcquireRegister）。
+ *  runtime ごとに使える欄が違う。Maya は登録そのものが無いので渡さない。 */
+export interface AcquireRegister {
+  alias: string;
+  role?: "llm" | "embedding" | "reranker";
+  endpoint_id?: string;
+  port?: number;
+  context?: number;
+  ctx_size?: number;
+  n_parallel?: number;
+  max_num_seqs?: number;
+  kv_cache?: string;
+  quantization?: string;
+  gpu_memory_utilization?: number;
+  prefill_chunk?: number;
+  reasoning_effort?: string;
+}
+
+export interface AcquireJobBody {
+  runtime: string;
+  entry_id: string;
+  library_id?: string;
+  files?: string[];
+  register?: AcquireRegister;
+}
+
+export const startRuntimeAcquire = (body: AcquireJobBody) =>
+  api<{ job_id: string; repo: string }>("/models/acquire-jobs", { method: "POST", json: body });
+
+/** 共通の一覧（GET /models/instances）。既存の各ランタイム API はそのまま。 */
+export interface RuntimeInstance {
+  runtime: string;
+  alias: string;
+  role?: string;
+  model_path: string;
+  format: string;
+  size_bytes: number;
+  loaded: boolean;
+  port: number;
+  ctx_size: number;
+  n_parallel: number;
+  base_url: string;
+  selected?: boolean;
+  display_name?: string;
+  error?: string;
+}
+
+export const listRuntimeInstances = () =>
+  api<{ instances: RuntimeInstance[] }>("/models/instances");
+
+/** ファイルから登録する前の読み取り（GET /models/register/inspect）。 */
+export interface RuntimeRegisterView {
+  runtime: string;
+  eligible: boolean;
+  reason: string;
+  register_endpoint: string;
+}
+
+export interface RegisterInspect {
+  path: string;
+  kind: "file" | "folder" | "unknown" | string;
+  format: "gguf" | "safetensors" | "rad" | "unknown" | string;
+  alias_suggestion: string;
+  size_bytes: number;
+  metadata: Record<string, unknown>;
+  runtimes: RuntimeRegisterView[];
+}
+
+export const inspectRegisterPath = (path: string) =>
+  api<RegisterInspect>(`/models/register/inspect?path=${encodeURIComponent(path)}`);
+
+/** 設定の形（GET /models/settings/capabilities）。欄の id は保存 API の引数名と同じ。 */
+export interface CapabilityField {
+  id: string;
+  label: string;
+  type: "bool" | "select" | "int" | "float" | "text" | "path" | "ref" | "dict" | string;
+  default: unknown;
+  expert: boolean;
+  choices?: Array<string | number>;
+  min?: number;
+  max?: number;
+  step?: number;
+  note?: string;
+}
+
+export interface CapabilitySection {
+  id: "model" | "context" | "parallel" | "speed" | "launch" | "expert" | string;
+  label: string;
+  fields: CapabilityField[];
+}
+
+export interface RuntimeCapabilities {
+  sections: CapabilitySection[];
+  /** 常時オンで切る欄が無いもの（Sly の prefix cache など）。 */
+  always_on?: Array<{ id: string; note: string }>;
+  /** 既存保存 API が受け付ける引数名。capability に無い既存値を落とさないために使う。 */
+  save_keys?: string[];
+  endpoints?: { instances?: string };
+}
+
+export const getRuntimeCapabilities = () =>
+  api<{ runtimes: Record<string, RuntimeCapabilities> }>("/models/settings/capabilities");
+
+/** 取得ジョブの進捗と操作（/jobs）。停止は .part を残し、取消は消す。 */
+export interface ModelJob {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  phase?: string | null;
+  wait_reason?: string | null;
+  progress: { status?: string; completed?: number | null; total?: number | null };
+  error: string;
+  can_resume?: boolean;
+  result?: Record<string, unknown>;
+}
+
+export const getModelJob = (jobId: string) =>
+  api<ModelJob>(`/jobs/${encodeURIComponent(jobId)}`);
+
+/** 取得ジョブの一覧（画面を開き直したあと停止中の Job を再表示する）。 */
+export const listModelJobs = (kind: string) =>
+  api<ModelJob[]>(`/jobs?kind=${encodeURIComponent(kind)}&limit=30`);
+
+export const stopModelJob = (jobId: string) =>
+  api<{ ok: boolean; status: string; can_resume: boolean }>(
+    `/jobs/${encodeURIComponent(jobId)}/stop`, { method: "POST" });
+
+export const resumeModelJob = (jobId: string) =>
+  api<{ ok: boolean; job_id: string }>(
+    `/jobs/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
+
+export const cancelModelJob = (jobId: string) =>
+  api<{ ok: boolean }>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });

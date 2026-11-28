@@ -14,7 +14,9 @@ from app.jobs import service as jobs
 from app.models import User
 from app.models_mgmt import ollama
 from app.models_mgmt import resume as model_resume
+from app.schemas.models import AcquireBody
 from app.security.deps import authenticate_websocket, require_permission
+from app.security.offline import ExternalResearchBlocked
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -790,7 +792,30 @@ def llama_vision_detection(
     }
 
 
-def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
+def _enforce_new_selection(values: dict, *, existing: dict | None = None,
+                           keys: tuple[str, ...] = ("model_path",)) -> None:
+    """新規登録・パス変更のモデルパスを 2 ルート制限（model_paths）で検証する。
+
+    Files の allowed_roots が広く設定されていても、新しく選ぶパスは常に
+    model_paths.SELECTION_ROOTS（/data1tb と /data2tb）の中でなければならない。
+    既存の登録をそのまま再保存するとき（PUT でパスが変わらないとき）は検証しない
+    （旧登録の表示・再保存・起動を壊さない。2026-11-27 利用者の決まり）。
+    """
+    from app.models_mgmt import model_paths
+
+    for key in keys:
+        raw = values.get(key)
+        if not raw:
+            continue
+        if existing is not None and str(existing.get(key) or "") == str(raw):
+            continue
+        try:
+            values[key] = str(model_paths.resolve_selection(str(raw)))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _llama_instance_patch(body: LlamaInstanceBody, *, existing: dict | None = None) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     from app.files import service as files
 
@@ -807,6 +832,10 @@ def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
         if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
             raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
         patch[key] = str(resolved)
+    _enforce_new_selection(
+        patch, existing=existing,
+        keys=("model_path", "mmproj_path", "spec_draft_model_path"),
+    )
     return patch
 
 
@@ -880,8 +909,8 @@ def llama_update_instance(
     from app.models_mgmt import llama
 
     try:
-        llama.get_instance(alias)
-        result = llama.save_instance(alias, _llama_instance_patch(body))
+        existing = llama.get_instance(alias)
+        result = llama.save_instance(alias, _llama_instance_patch(body, existing=existing))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1047,6 +1076,9 @@ async def hf_search_repos(q: str, user: User = Depends(require_permission("workf
         return []
     try:
         return await hf.search_models(q.strip())
+    except ExternalResearchBlocked as exc:
+        # 秘密の会話では通信の前に止まる。500 にせず拒否として返す（レビュー #25 / 2026-11-28）。
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1059,6 +1091,8 @@ async def hf_repo_files(repo: str, revision: str = "main",
 
     try:
         files = await hf.list_repo_files(repo, revision)
+    except ExternalResearchBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"repo": repo, "variants": files, "libraries": libraries.list_libraries()}
@@ -1562,6 +1596,7 @@ def strata_create_instance(
 ):
     from app.models_mgmt import strata_gateway
 
+    _enforce_new_selection({"model_path": body.model_path})
     try:
         result = strata_gateway.save_instance(
             body.alias, family=body.family, model=body.model,
@@ -1587,7 +1622,9 @@ def strata_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     try:
+        existing = strata_gateway.get_instance(alias)
         payload = body.model_dump()
+        _enforce_new_selection(payload, existing=existing)
         for key in {"kv_resident", "ram_keep_gib"} - body.model_fields_set:
             payload.pop(key)
         result = strata_gateway.save_instance(**payload, replace=True)
@@ -1693,6 +1730,7 @@ def radiance_create_instance(
 ):
     from app.models_mgmt import radiance
     values = body.model_dump()
+    _enforce_new_selection(values)
     try:
         result = radiance.save_instance(values.pop("alias"), **values)
     except radiance.RadianceError as exc:
@@ -1711,6 +1749,10 @@ def radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=radiance.get_instance(alias))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = radiance.save_instance(alias, **values, replace=True)
@@ -1807,26 +1849,13 @@ class SlyRadianceModelBody(BaseModel):
     idle_exclude: bool = False
     auto_start: bool = False
 
-
-@router.get("/sly-radiance/catalog")
-def sly_radiance_catalog(user: User = Depends(require_permission("workflows.run"))):
-    from app.models_mgmt import sly_radiance_catalog
-    return sly_radiance_catalog.api_payload()
-
-
-@router.get("/sly-radiance/catalog/{entry_id}/files")
-async def sly_radiance_catalog_files(entry_id: str, user: User = Depends(require_permission("workflows.run"))):
-    """目録の 1 行の repo のファイル一覧（取得の前に見せる）。目録にある repo だけ。"""
-    from app.models_mgmt import hf, libraries, sly_radiance_catalog
-    entry = sly_radiance_catalog.get(entry_id)
-    if entry is None or not entry.supported or not entry.repo:
-        raise HTTPException(status_code=404, detail="目録にないか、未対応のモデルです")
-    try:
-        files = await hf.list_model_files(entry.repo)
-    except hf.HfError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
-            "libraries": await asyncio.to_thread(libraries.list_libraries)}
+    @field_validator("prefix_cache")
+    @classmethod
+    def _prefix_cache_always_on(cls, value: bool) -> bool:
+        # 利用者の決まり（2026-11-28）: Sly の prefix cache は切らない。sly_radiance の層でも断る。
+        if not value:
+            raise ValueError("Sly-Radiance の prefix cache は常にオンです（切る設定はありません）")
+        return value
 
 
 @router.get("/sly-radiance/inspect")
@@ -1852,6 +1881,7 @@ def sly_radiance_create_instance(
 ):
     from app.models_mgmt import sly_radiance
     values = body.model_dump()
+    _enforce_new_selection(values, keys=("model_path", "drafter_path"))
     try:
         result = sly_radiance.save_instance(values.pop("alias"), **values)
     except sly_radiance.SlyRadianceError as exc:
@@ -1870,6 +1900,11 @@ def sly_radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=sly_radiance.get_instance(alias),
+                               keys=("model_path", "drafter_path"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = sly_radiance.save_instance(alias, **values, replace=True)
@@ -1942,6 +1977,235 @@ def sly_radiance_instance_log(alias: str, user: User = Depends(require_permissio
     if alias not in {item["alias"] for item in sly_radiance.list_instances()}:
         raise HTTPException(status_code=404, detail="Sly-Radianceモデル設定がありません")
     return {"alias": alias, "log": sly_radiance.log_tail(alias, 80)}
+
+
+# ---- ランタイム共通の目録・取得・登録・設定（docs/PLAN-model-catalog.md「run3 共通バックエンド API」） ----
+# 既存の各ランタイム API は削除しない（互換）。ここは共通部品（UI の RuntimeCatalog・
+# RuntimeRegisterFromFile・RuntimeSettings）が使うまとめ役。
+
+
+@router.get("/catalog")
+def models_catalog(user: User = Depends(require_permission("workflows.run"))):
+    """全ランタイムの推奨モデル目録（大きさ未確認の行は size_gib が null。取得時に HF から読む）。"""
+    from app.models_mgmt import runtime_catalog
+    return runtime_catalog.api_payload()
+
+
+@router.get("/catalog/{runtime}/entries/{entry_id}/files")
+async def models_catalog_entry_files(
+    runtime: str, entry_id: str,
+    user: User = Depends(require_permission("workflows.run")),
+):
+    """目録の 1 行の repo のファイル一覧（取得の直前に見せる。外部許可と出口の検査を通る）。
+
+    GGUF の量子化行はサブフォルダの分割全片を列挙し、選んだ量子化だけを返す（repo 全体の
+    他量子化を混ぜない）。`.rad` は最上位の .rad だけ。フォルダ形式（Sly）は従来どおり。
+    """
+    from app.models_mgmt import hf, libraries, runtime_catalog
+
+    entry = runtime_catalog.get_entry(runtime, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="目録にないモデルです")
+    if not entry.supported or entry.acquire != "hf" or not entry.repo:
+        raise HTTPException(status_code=422, detail="この行は HF からの取得に対応していません")
+    try:
+        if entry.quantization and entry.format == "gguf":
+            files = await hf.list_quantization_files(entry.repo, quantization=entry.quantization)
+        elif entry.format == "rad":
+            files = [item for item in await hf.list_model_files(entry.repo)
+                     if item["path"].lower().endswith(".rad")]
+        else:
+            files = await hf.list_model_files(entry.repo)
+    except ExternalResearchBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except hf.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
+            "libraries": await asyncio.to_thread(libraries.list_libraries)}
+
+
+@router.post("/acquire-jobs", status_code=201)
+async def models_acquire(
+    body: AcquireBody, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """共通のモデル取得（目録の行から）。大きさは Job の開始時に HF の API から読む。
+
+    停止・再開・取り消しは Job の API（POST /api/v1/jobs/{id}/stop・resume・cancel）。
+    """
+    from app.models_mgmt import runtime_catalog
+
+    entry = runtime_catalog.get_entry(body.runtime, body.entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="目録にないモデルです")
+    if not entry.supported or entry.acquire != "hf" or not entry.repo:
+        raise HTTPException(status_code=422, detail="この行は HF からの取得に対応していません")
+    register = None
+    if body.register_model is not None:
+        # Maya・ランタイムに無い欄は AcquireBody の検査で先に 422 になっている。
+        register = dict(body.register_model.model_dump())
+        register["runtime"] = body.runtime
+        # alias の軽い検証だけここで（詳細は登録のとき各ランタイムが検証する）。
+        if body.runtime == "sly-radiance":
+            from app.models_mgmt import sly_radiance
+
+            if sly_radiance._ALIAS.fullmatch(register["alias"]) is None:  # noqa: SLF001 - 検証の正規表現を共用
+                raise HTTPException(status_code=422, detail="Sly-Radiance の別名は小文字英数字・ドット・ハイフンにしてください")
+            port = register.get("port")
+            if port is not None and not (sly_radiance._MIN_PORT <= port <= sly_radiance._MAX_PORT):  # noqa: SLF001
+                raise HTTPException(status_code=422, detail="Sly-Radiance のポートは 8081〜65535 です")
+        elif body.runtime in ("radiance", "strata"):
+            from app.models_mgmt import radiance, strata_gateway
+
+            checker = radiance if body.runtime == "radiance" else strata_gateway
+            if checker._ALIAS.fullmatch(register["alias"]) is None:  # noqa: SLF001 - 検証の正規表現を共用
+                raise HTTPException(status_code=422, detail="別名は小文字英数字・ハイフン（先頭英字）にしてください")
+            port = register.get("port")
+            if port is not None and not (checker._MIN_PORT <= port <= checker._MAX_PORT):  # noqa: SLF001
+                raise HTTPException(status_code=422, detail="ポートは 8081〜65535 です")
+            if body.runtime == "strata":
+                # 既存の Strata 登録 API と同じ family/model を目録の行から渡す。
+                register["family"] = entry.family or ""
+                register["model"] = entry.quantization.casefold()
+        else:
+            from app.models_mgmt import llama
+
+            if llama.ALIAS_RE.fullmatch(register["alias"]) is None:
+                raise HTTPException(status_code=422, detail="別名は英数字・._:- だけにしてください")
+    # 大きさはここで書かない（expected_bytes=0 + fetch_sizes=True: Job の開始時に HF から読む）。
+    # 量子化行は files=[] のまま、開始時に HF の tree からその量子化の分割全片を列挙する。
+    # .rad は最上位に置かれるので、調査済みのファイル名をそのまま渡す（README 等を落とさない）。
+    files = list(body.files)
+    if not files and entry.format == "rad":
+        files = list(entry.files)
+    resume = {
+        "repo": entry.repo, "files": files, "revision": "main",
+        "library_id": body.library_id, "expected_bytes": 0, "fetch_sizes": True,
+        "quantization": entry.quantization if entry.format == "gguf" else "",
+        "register": register,
+    }
+    # 同じ取得先・同じ repo の取得が実行中・停止中なら弾く。2 つの Job が同じ .part へ追記して壊し、
+    # 取り消しで相手の .part まで消すため（2026-11-28 Claude のレビュー）。続きは Job の再開で。
+    others = await asyncio.to_thread(jobs.resume_records, "model.hf_download")
+    for other in others:
+        if other.get("repo") == entry.repo and (other.get("library_id") or None) == (body.library_id or None):
+            raise HTTPException(status_code=409, detail="同じモデルの取得が実行中か停止中です。Job の画面から再開・取り消しをしてください")
+    # jobs.create は中で asyncio.create_task で runner を立てるので event loop 上で呼ぶ
+    # 必要がある（threadpool から呼ぶと RuntimeError: no running event loop で 500 になる）。
+    # 同期 DB 書き込みの audit.record だけを threadpool へ出す（jobs/router.py と同じ）。
+    job = jobs.create(
+        "model.hf_download", f"モデル取得: {entry.name}",
+        model_resume.huggingface_download_runner(resume),
+        owner_user_id=user.id,
+        idempotency_key=request.headers.get("idempotency-key"), priority=0,
+        resume=resume,
+    )
+    await asyncio.to_thread(
+        audit.record, db, "model.acquire", user=user, resource_type="model",
+        resource_id=entry.repo, request=request,
+        metadata={"runtime": body.runtime, "entry_id": entry.id, "job_id": job.id,
+                  "files": len(body.files), "library_id": body.library_id,
+                  "alias": (register or {}).get("alias", "")},
+    )
+    return {"job_id": job.id, "repo": entry.repo}
+
+
+def _instance_row(item: dict, runtime: str, fmt: str) -> dict:
+    """各ランタイムの一覧の行を共通の形へ（models/instances の adapter）。"""
+    from pathlib import Path as _Path
+
+    size = 0
+    try:
+        path = _Path(str(item.get("model_path") or ""))
+        if path.is_file():
+            size = path.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "runtime": runtime, "alias": item.get("alias", ""), "role": item.get("role", "llm"),
+        "model_path": item.get("model_path", ""), "format": fmt, "size_bytes": size,
+        "loaded": bool(item.get("loaded")), "port": int(item.get("port") or 0),
+        "ctx_size": int(item.get("ctx_size") or 0),
+        "n_parallel": int(item.get("n_parallel") or 0),
+        "base_url": item.get("base_url", ""),
+        "selected": bool(item.get("selected")),
+    }
+
+
+@router.get("/instances")
+async def models_instances(user: User = Depends(require_permission("workflows.run"))):
+    """全ランタイムの登録済みモデルを共通の形で一覧にする（既存の各一覧 API はそのまま）。
+
+    systemd の状態読み取りを含むので threadpool へ出す（AGENTS.md 絶対ルール 9）。
+    """
+    from app.models_mgmt import llama, radiance, sly_radiance, strata_gateway
+
+    def collect() -> list[dict]:
+        rows: list[dict] = []
+        try:
+            rows += [_instance_row(item, "llama.cpp", "gguf") for item in llama.list_instances()]
+        except Exception:  # noqa: BLE001 - 一覧はほかのランタイムを出す（AGENTS.md 7）
+            rows.append({"runtime": "llama.cpp", "alias": "", "error": "読み取れません"})
+        try:
+            rows += [_instance_row(item, "strata", "strata-quant")
+                     for item in strata_gateway.list_instances()]
+        except Exception:  # noqa: BLE001
+            rows.append({"runtime": "strata", "alias": "", "error": "読み取れません"})
+        try:
+            if radiance.installed():
+                rows += [_instance_row(item, "radiance", "rad") for item in radiance.list_instances()]
+        except Exception:  # noqa: BLE001
+            rows.append({"runtime": "radiance", "alias": "", "error": "読み取れません"})
+        try:
+            if sly_radiance.installed():
+                rows += [_instance_row(item, "sly-radiance", "safetensors")
+                         for item in sly_radiance.list_instances()]
+        except Exception:  # noqa: BLE001
+            rows.append({"runtime": "sly-radiance", "alias": "", "error": "読み取れません"})
+        try:
+            from app.models_mgmt import maya_s
+
+            if maya_s.installed():
+                for record in maya_s._records():  # noqa: SLF001 - 共通一覧の adapter（読み取りだけ）
+                    rows.append({
+                        "runtime": "maya", "alias": record.get("alias", ""),
+                        "role": "llm", "model_path": "", "format": "maya-quant",
+                        "size_bytes": 0, "loaded": maya_s._running(record.get("alias", "")),  # noqa: SLF001
+                        "port": int(record.get("port") or 0), "ctx_size": 0, "n_parallel": 1,
+                        "base_url": f"http://127.0.0.1:{int(record.get('port') or 0)}/v1",
+                        "selected": False, "display_name": maya_s.display_name(record),
+                    })
+        except Exception:  # noqa: BLE001
+            rows.append({"runtime": "maya", "alias": "", "error": "読み取れません"})
+        return rows
+
+    return {"instances": await asyncio.to_thread(collect)}
+
+
+@router.get("/register/inspect")
+def models_register_inspect(path: str, user: User = Depends(require_permission("workflows.edit"))):
+    """ファイル・フォルダから登録するときの読み取り（新規選択は /data1tb と /data2tb の中だけ）。
+
+    GGUF のヘッダ・config.json の読み取りは件数・量を制限する。同期的な処理なので
+    endpoint は def（threadpool）で event loop を止めない。
+    """
+    from app.models_mgmt import model_paths
+
+    try:
+        return model_paths.inspect(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"読み取れません: {exc}") from exc
+
+
+@router.get("/settings/capabilities")
+def models_settings_capabilities(user: User = Depends(require_permission("workflows.run"))):
+    """ランタイムごとの設定の形（共通の並び・実際の保存 API の欄だけ。無い欄は返さない）。"""
+    from app.models_mgmt import runtime_settings
+    return runtime_settings.api_payload()
 
 
 # ---- 外部のフロンティアモデル（docs/PLAN-frontier-models.md） ----

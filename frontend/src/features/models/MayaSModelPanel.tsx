@@ -1,9 +1,12 @@
 /** Maya-S（GLM-5.3-Flash）のモデル準備と個別設定。
  *
- * アドオン（設定 → オプション機能）はエンジンのコード導入とHIPビルドだけを持つ。
- * モデルの取得・既存GGUFの読み込み・個別設定はModels画面に集約する。
- * 準備・保存ではモデルを起動しない。起動は一覧の「ロード」、または個別設定の
- * 「要求時に自動起動」「ControlDeck起動時に自動起動」による（llama.cpp と同じ）。 */
+ *  アドオン（設定 → オプション機能）はエンジンのコード導入とHIPビルドだけを持つ。
+ *  モデルの取得・既存GGUFの読み込み・個別設定はModels画面に集約する。
+ *  設定・目録・ファイルからの登録は共通部品（RuntimeSettings / RuntimeCatalog /
+ *  RuntimeRegisterFromFile）へ。既存の probe/catalog/job と保存 API は壊さない。
+ *  準備・保存ではモデルを起動しない。起動は一覧の「ロード」、または個別設定の
+ *  「要求時に自動起動」「ControlDeck起動時に自動起動」による（llama.cpp と同じ）。
+ */
 import { DisplayNameField } from "./DisplayNameField";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,7 +15,12 @@ import { useAuth, useToasts } from "../../stores";
 import { BottomSheet } from "../../components/ui";
 import { FilePicker } from "../../components/FilePicker";
 import { IconFolder } from "../../components/icons";
-import { CTX_PRESETS, CopyText, FileName, ModelStatusSummary, PresetOrCustom, SettingsGroup, SheetActions, Toggle, primaryButton, secondaryButton } from "./formControls";
+import { useExpert } from "../commander/TeamRoles";
+import { CopyText, FileName, ModelStatusSummary, SettingsGroup } from "./formControls";
+import { RuntimeCatalog } from "./RuntimeCatalog";
+import { MODEL_FILE_PICKER_SOURCE, RuntimeRegisterFromFile } from "./RuntimeRegisterFromFile";
+import { RuntimeSettings } from "./RuntimeSettings";
+import { applyInspectValues, type SettingValues } from "./runtimeSettings";
 
 export interface MayaSettings {
   model_path: string;
@@ -30,9 +38,6 @@ export interface MayaSettings {
 
 /** ControlDeck側だけの設定。稼働中でも変更できる（Maya の設定ファイルは変わらない）。 */
 const LIFECYCLE_KEYS = ["on_demand_start", "idle_exclude", "auto_start"] as const;
-// GLM-5.3-Flash は最大 1M。Maya は VRAM を超える KV を RAM へ逃がす。
-const MAYA_CTX_PRESETS = [...CTX_PRESETS.filter((p) => Number(p.v) >= 8192),
-  ...[524288, 1048576].map((v) => ({ v, label: v.toLocaleString() }))];
 
 export interface MayaStatus {
   installed: boolean;
@@ -100,165 +105,125 @@ export function MayaSDetailSheet({ onClose }: { onClose: () => void }) {
   const { data: status } = useMayaStatus();
   return (
     <BottomSheet title="GLM-5.3-Flash · Maya-S · 個別設定" onClose={onClose} wide>
-      {status ? <div className="space-y-3"><DisplayNameField runtime="maya-s" alias="maya-s" /><MayaSettingsForm status={status} mode="detail" onDone={onClose} /></div>
+      {status ? <div className="space-y-3"><DisplayNameField runtime="maya-s" alias="maya-s" /><MayaSettingsForm status={status} onDone={onClose} /></div>
         : <p className="text-sm text-zinc-500">状態を読み込み中です</p>}
     </BottomSheet>
   );
 }
 
-function MayaSettingsForm({ status, mode, onDone }: {
-  status: MayaStatus; mode: "existing" | "detail"; onDone: () => void;
+/** capability に無い Maya 固有の欄（model_path・drafting・ram_headroom_gb）は
+ *  「旧パス維持」のためにそのまま保持し、保存のときに既存の API へ渡す。 */
+function MayaSettingsForm({ status, onDone }: {
+  status: MayaStatus; onDone: () => void;
 }) {
   const qc = useQueryClient();
-  const show = useToasts((s) => s.show);
+  const expert = useExpert();
   const { active, refresh } = useMayaJobs();
-  const [settings, setSettings] = useState<MayaSettings>({ ...DEFAULT_SETTINGS, ...status.settings });
+  const [values, setValues] = useState<SettingValues>({});
   const [picker, setPicker] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const saved = { ...DEFAULT_SETTINGS, ...status.settings };
-  const onlyLifecycle = (Object.keys(settings) as (keyof MayaSettings)[])
-    .every((key) => (LIFECYCLE_KEYS as readonly string[]).includes(key) || settings[key] === saved[key]);
+  const legacy = { ...DEFAULT_SETTINGS, ...status.settings };
+  const modelPath = String(values.model_path ?? legacy.model_path ?? "");
   const locked = status.running || active.length > 0;
-  // 起動・停止の扱いだけなら稼働中でも保存できる。
-  const saveLocked = active.length > 0 || (status.running && !onlyLifecycle);
-  const modelChanged = settings.model_path !== (status.settings?.model_path ?? "");
-  // 既存モデル読み込みはパス必須。個別設定では、パスを変えたときだけ再準備が要る。
-  const needsPrepare = mode === "existing" || (modelChanged && !!settings.model_path) || !status.configured;
-  const field = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900";
+  const apply = (patch: SettingValues) => setValues((current) => ({ ...current, ...patch }));
+  const dirname = (path: string) => path.replace(/\/[^/]*$/, "");
 
-  const save = async (prepare: boolean) => {
-    if (prepare && !settings.model_path.trim()) {
-      show("Maya-S の GGUF（分割モデルは先頭ファイル）を指定してください", "error");
-      return;
-    }
-    setSaving(true);
-    try {
-      await api("/features/maya-s/settings", { method: "PUT", json: { ...settings, model_path: settings.model_path.trim() } });
-      if (prepare) {
-        await api("/features/maya-s/model/existing-jobs", { method: "POST", json: {} });
-        show("既存モデルの準備を開始しました（ダウンロード・起動はしません）");
-        await refresh();
-      } else {
-        show(onlyLifecycle ? "Mayaの起動・停止の設定を保存しました" : "Mayaの設定を保存しました。次回のロードから反映されます");
-      }
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["maya-s-model"] }),
-        qc.invalidateQueries({ queryKey: ["models"] }),
-      ]);
-      onDone();
-    } catch (e) {
-      show(e instanceof Error ? e.message : "Mayaの設定を保存できませんでした", "error");
-    } finally { setSaving(false); }
+  // REQUIRED_BY_RUNTIME.maya は setup_id と folder を要する。最初のモデルは Maya 側の
+  // 決め打ち（glm-maya-s）なので、共通保存ボタンを押せるようにここで入れる（保存時は除く）。
+  const initial: SettingValues = {
+    ...legacy,
+    setup_id: "glm-maya-s",
+    folder: dirname(legacy.model_path) || status.models_dir,
   };
 
-  const num = (key: "gpu_index" | "parallel" | "ram_headroom_gb" | "thinking_budget", label: string, min: number, max: number, step = 1, hint?: string) => (
-    <label className="block text-xs">{label}
-      <input aria-label={`Maya-S ${label}`} type="number" min={min} max={max} step={step} disabled={locked}
-        value={settings[key]} className={`mt-1 ${field}`}
-        onChange={(e) => setSettings({ ...settings, [key]: Number(e.target.value) })} />
-      {hint && <span className="text-[11px] text-zinc-500">{hint}</span>}
-    </label>
-  );
+  const save = async (body: SettingValues) => {
+    const next: Record<string, unknown> = { ...legacy };
+    for (const source of [values, body]) {
+      for (const [key, value] of Object.entries(source)) {
+        if (key in legacy && value !== undefined) next[key] = value;
+      }
+    }
+    next.model_path = modelPath.trim();
+    const lifecycleOnly = (Object.keys(legacy) as (keyof MayaSettings)[])
+      .every((key) => (LIFECYCLE_KEYS as readonly string[]).includes(key) || next[key] === legacy[key]);
+    if (locked && !lifecycleOnly) {
+      throw new Error("稼働中は「起動」の設定だけ変更できます。ほかはモデルを停止してから変更してください。");
+    }
+    // 既存の保存 API（extra="forbid"）へは MayaSettings の欄だけを渡す。
+    await api("/features/maya-s/settings", { method: "PUT", json: next });
+    const prepare = !status.configured
+      || (!!modelPath.trim() && modelPath.trim() !== String(legacy.model_path ?? "").trim());
+    if (prepare) {
+      await api("/features/maya-s/model/existing-jobs", { method: "POST", json: {} });
+      await refresh();
+    }
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["maya-s-model"] }),
+      qc.invalidateQueries({ queryKey: ["models"] }),
+    ]);
+  };
 
-  return (
-    <div className="space-y-3 text-sm">
-      {mode === "detail" && (
-        <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動と停止」だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
-          ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
-          ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
-          ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
-        ]} />
-      )}
-      <SettingsGroup title="モデル" description={mode === "detail" ? "GGUFを変えたときは「保存して準備し直す」" : "手元の Maya-S の GGUF（分割モデルは先頭ファイル）"}>
-        <div className="flex gap-2">
-          <input aria-label="Maya-S GGUFパス" value={settings.model_path} disabled={locked}
-            onChange={(e) => setSettings({ ...settings, model_path: e.target.value })}
-            placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya/.../GLM-5.3-Flash-Maya-S-...-00001-of-00003.gguf"
-            className={`min-w-0 flex-1 font-mono text-xs ${field}`} />
-          <button type="button" disabled={locked} onClick={() => setPicker(true)} aria-label="GGUFを選ぶ"
-            className="grid min-h-11 min-w-11 place-items-center rounded-xl border border-zinc-300 disabled:opacity-40 dark:border-zinc-700">
-            <IconFolder />
-          </button>
-        </div>
-      </SettingsGroup>
-      <SettingsGroup title="基本" description="扱える長さ。1回の応答（思考＋回答）は全モデル共通でコンテキストの半分まで">
-        <label className="block text-xs">コンテキスト長（CTX）
-          <div className="mt-1">
-            <PresetOrCustom ariaLabel="Maya-S コンテキスト長" value={settings.context} presets={MAYA_CTX_PRESETS} placeholder="8192" disabled={locked}
-              onChange={(v) => setSettings({ ...settings, context: Math.min(1048576, Math.max(1024, Number(v ?? 8192))) })} />
-          </div>
-          <span className="text-[11px] text-zinc-500">GLM-5.3-Flash は最大 1M。この PC では 1M でも速度はほぼ変わりません（KV は RAM に置かれます）。</span>
-        </label>
-      </SettingsGroup>
-      {mode === "detail" && (
-        <SettingsGroup title="起動と停止" description="アイドル時の自動アンロードは共通設定で切り替えます">
-          <Toggle label="使われたときに自動で起動" hint="チャットやゲートウェイから呼ばれたら起動します（Strata や使っていない llama.cpp のモデルは先に停止）"
-            value={settings.on_demand_start} onChange={(v) => setSettings({ ...settings, on_demand_start: v })} />
-          <Toggle label="PC起動時に自動で起動" hint="ControlDeck が立ち上がったらロードします。Strata にも付けた場合は Maya が優先です"
-            value={settings.auto_start} onChange={(v) => setSettings({ ...settings, auto_start: v })} />
-          <Toggle label="アイドルでも止めない（常駐）" hint="共通設定の「アイドル時に自動アンロード」の対象から外します"
-            value={settings.idle_exclude} onChange={(v) => setSettings({ ...settings, idle_exclude: v })} />
-        </SettingsGroup>
-      )}
-      <SettingsGroup title="思考">
-        <label className="block text-xs">思考の深さ（既定）
-          <select aria-label="Maya-S 思考の深さ" value={settings.reasoning_effort ?? "high"} disabled={locked}
-            onChange={(e) => setSettings({ ...settings, reasoning_effort: e.target.value as MayaSettings["reasoning_effort"] })}
-            className={`mt-1 ${field}`}>
-            <option value="low">low（最速）</option>
-            <option value="medium">medium</option>
-            <option value="high">high（推奨・コーディング）</option>
-            <option value="max">max（モデルカード既定・1回答に約30分）</option>
-          </select>
-          <span className="text-[11px] text-zinc-500">要求が深さを指定しないときに使います。この PC の実測では high で max と同じ正答を約4分の1の時間で返しました。</span>
-        </label>
-        <label className="block text-xs">思考の上限（トークン）
-          <div className="mt-1">
-            <PresetOrCustom ariaLabel="Maya-S 思考の上限" value={settings.thinking_budget} disabled={locked}
-              presets={[{ v: 4096, label: "4,096" }, { v: 8192, label: "8,192" }, { v: 16384, label: "16,384" }, { v: 32768, label: "32,768（推奨）" }, { v: 0, label: "無制限" }]}
-              placeholder="32768" onChange={(v) => setSettings({ ...settings, thinking_budget: Math.min(131072, Math.max(0, Number(v ?? 32768))) })} />
-          </div>
-          <span className="text-[11px] text-zinc-500">超えると思考を閉じて回答を始めます。要求ごとの思考の深さ（low〜max）は使う側で指定します。</span>
-        </label>
-      </SettingsGroup>
-      <SettingsGroup title="性能" description="投機デコード・同時実行" collapsible defaultOpen={false}>
-        <label className="block text-xs">投機デコード（MTP）
-          <select aria-label="Maya-S 投機デコード" value={settings.drafting} disabled={locked}
-            onChange={(e) => setSettings({ ...settings, drafting: e.target.value as "on" | "off" })}
-            className={`mt-1 ${field}`}>
-            <option value="on">有効（推奨・この PC で約5%速い）</option>
-            <option value="off">無効</option>
-          </select>
-        </label>
-        {/* 同時実行数は出さない。2 にすると 1M の会話をもう 1 本ぶん RAM に確保し、
-            92GB の RAM では 20 分たっても起動しなかった（2026-11-15 実測）。1 本ずつ順に処理する。 */}
-        <p className="text-[10px] leading-relaxed text-zinc-500">Maya は 1 件ずつ順に処理します（同時に受けると RAM が足りず起動しません）。</p>
-      </SettingsGroup>
-      <SettingsGroup title="詳細" description="GPU 番号・RAM の空き確保量" collapsible defaultOpen={false}>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {num("gpu_index", "ROCm GPU番号", 0, 15)}
-          {num("ram_headroom_gb", "RAMの空き確保量 (GB)", 1, 256, 1, "小さいほどエキスパートを RAM に多く置けて速くなります（この PC の推奨 8）。")}
-        </div>
-      </SettingsGroup>
-      <SheetActions note={locked && !status.running ? "準備ジョブの完了後に変更できます。" : undefined}>
-        {mode === "detail" && !needsPrepare && (
-          <button type="button" disabled={saving || saveLocked} onClick={() => void save(false)} className={primaryButton}>
-            {saving ? "保存中…" : "保存"}
-          </button>
-        )}
-        {(needsPrepare || mode === "detail") && (
-          <button type="button" disabled={saving || locked || !settings.model_path.trim()} onClick={() => void save(true)}
-            className={needsPrepare ? primaryButton : secondaryButton}>
-            {saving ? "保存中…" : mode === "existing" ? "読み込んで準備" : "保存して準備し直す"}
-          </button>
-        )}
-      </SheetActions>
-      {picker && (
-        <FilePicker mode="file" title="Maya-S の GGUF を選択"
-          initialPath={settings.model_path || "/data1tb/LLM"}
-          onSelect={(path) => { setSettings({ ...settings, model_path: path }); setPicker(false); }}
-          onClose={() => setPicker(false)} />
-      )}
-    </div>
-  );
+  const modelSlot = <div className="space-y-3">
+    <SettingsGroup title="モデル" description="GGUFを変えたときは保存と一緒に準備し直します（分割モデルは先頭ファイル）">
+      <div className="flex gap-2">
+        <input aria-label="Maya-S GGUFパス" value={modelPath} disabled={locked}
+          onChange={(e) => apply({ model_path: e.target.value })}
+          placeholder="/data1tb/LLM/GLM-5.3-Flash-Maya/...-00001-of-00003.gguf"
+          className="min-h-11 min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 font-mono text-xs disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900" />
+        <button type="button" disabled={locked} onClick={() => setPicker(true)} aria-label="GGUFを選ぶ"
+          className="grid min-h-11 min-w-11 place-items-center rounded-xl border border-zinc-300 disabled:opacity-40 dark:border-zinc-700">
+          <IconFolder />
+        </button>
+      </div>
+      {modelPath && <p className="min-w-0 truncate font-mono text-[11px] text-zinc-500" title={modelPath}>{modelPath}</p>}
+    </SettingsGroup>
+    <SettingsGroup title="目録から取得" description="Maya の候補は共通目録と Maya 本体の目録で確認できます（取得した GGUF は上のパスへ入ります）"
+      collapsible defaultOpen={false}>
+      <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path) => apply({ model_path: path })} />
+    </SettingsGroup>
+    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます。名前はファイル名から自動で入ります"
+      collapsible defaultOpen={false}>
+      <RuntimeRegisterFromFile runtime="maya" mode="file" disabled={locked} expert={expert}
+        onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "maya"))}
+        onRegistered={(info) => apply({ model_path: info.path })} />
+    </SettingsGroup>
+  </div>;
+
+  // capability に無い欄と注意は、エキスパート（または要対応の印）として最後に置く。
+  const note = <div className="space-y-3">
+    {locked && <p className="rounded-xl bg-amber-50 p-2.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+      モデルが起動中、または準備ジョブの実行中です。起動と停止の設定は変えられます。ほかの設定は、停止・完了してから変えてください。</p>}
+    {expert && <SettingsGroup title="Maya 固有" collapsible defaultOpen={false}>
+      <label className="block text-xs">投機デコード（MTP）
+        <select aria-label="Maya-S 投機デコード" value={String(values.drafting ?? legacy.drafting)} disabled={locked}
+          onChange={(e) => apply({ drafting: e.target.value as "on" | "off" })}
+          className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900">
+          <option value="on">有効（推奨・この PC で約5%速い）</option><option value="off">無効</option>
+        </select>
+      </label>
+      <label className="block text-xs">RAM の空き確保量 (GB)
+        <input aria-label="Maya-S RAMの空き確保量 (GB)" type="number" min={1} max={256} step={1} disabled={locked}
+          value={Number(values.ram_headroom_gb ?? legacy.ram_headroom_gb)}
+          onChange={(e) => apply({ ram_headroom_gb: Number(e.target.value) })}
+          className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900" />
+        <span className="text-[11px] text-zinc-500">小さいほどエキスパートを RAM に多く置けて速くなります（この PC の推奨 8）。</span>
+      </label>
+    </SettingsGroup>}
+  </div>;
+
+  return <>
+    <ModelStatusSummary running={status.running} lockedNote={status.running ? "稼働中は「起動」の設定だけ変更できます。ほかはアンロードしてから変更してください。" : undefined} rows={[
+      ["ランタイム", `Project Maya ${status.version || "-"} · ${status.built ? "HIPビルド済み" : "HIP未ビルド"}`],
+      ["モデル", status.settings?.model_path ? <FileName path={status.settings.model_path} /> : `ダウンロード版（${status.models_dir}）`],
+      ["接続先", <CopyText text="http://127.0.0.1:8099/v1" />],
+    ]} />
+    <RuntimeSettings runtime="maya" expert={expert}
+      initial={initial} values={values} onValuesChange={setValues}
+      modelSlot={modelSlot} save={save} onDone={onDone} note={note} />
+    {picker && (
+      <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode="file" title="Maya-S の GGUF を選択（/data1tb・/data2tb）"
+        initialPath={modelPath || "/data1tb/LLM"}
+        onSelect={(path) => { apply({ model_path: path }); setPicker(false); }}
+        onClose={() => setPicker(false)} />
+    )}
+  </>;
 }

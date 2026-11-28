@@ -25,9 +25,12 @@ async def list_jobs(
     # メモリ（実行中）+ DB（履歴・再起動後も残る）を統合。events は一覧では省く
     items = await jobs.list_any(kind, max(1, min(limit, 100)), user.id)
     await opencode_recovery.reconcile(items)
+    resumable_ids = await asyncio.to_thread(jobs.resume_record_ids)
     for it in items:
         it["event_count"] = int(it.get("event_count") or len(it.get("events", [])))
         it["events"] = []
+        # 「再開」の判定: 記録が残っていて中断中の Job だけ（実行中は停止が先）。
+        it["can_resume"] = it["id"] in resumable_ids and it.get("status") == "interrupted"
     return items
 
 
@@ -40,12 +43,17 @@ async def get_job(
     if job is not None:
         if not jobs.visible_to(job, user.id):
             raise HTTPException(status_code=404, detail="ジョブが見つかりません")
-        return job.to_dict(with_events_from=max(0, events_from))
+        resumable_ids = await asyncio.to_thread(jobs.resume_record_ids)
+        body = job.to_dict(with_events_from=max(0, events_from))
+        body["can_resume"] = job.id in resumable_ids and job.status == "interrupted"
+        return body
     # メモリに無ければ DB から（再起動後の履歴。interrupted 等も見える）
     persisted = await jobs.get_any(job_id)
     if persisted is None or not jobs.visible_to(persisted, user.id):
         raise HTTPException(status_code=404, detail="ジョブが見つかりません")
     await opencode_recovery.reconcile([persisted])
+    resumable_ids = await asyncio.to_thread(jobs.resume_record_ids)
+    persisted["can_resume"] = persisted["id"] in resumable_ids and persisted.get("status") == "interrupted"
     return persisted
 
 
@@ -71,10 +79,56 @@ async def cancel_job(
         await cancel_request(job_id)
     if canceled is None:
         canceled = await jobs.cancel_and_wait(job_id)
+    if not canceled and job is None:
+        # 再起動でメモリへ戻っていない停止中の Job: DB の行と再開の記録（paused の印つき）
+        # を取り消す。停止した Job を取り消す道が無いと、記録と途中のファイルが
+        # 30 日の期限まで残り続けるだけになる。
+        canceled = await asyncio.to_thread(jobs.cancel_interrupted_row, job_id)
     if not canceled:
         raise HTTPException(status_code=409, detail="実行中のジョブではありません")
     await asyncio.to_thread(audit.record, db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
     return {"ok": True}
+
+
+@router.post("/{job_id}/stop")
+async def stop_job(
+    job_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """Job を「停止」する。取り消しと違い、途中のデータと再開の記録を残す。"""
+    job = jobs.get(job_id)
+    if job is None or not jobs.visible_to(job, user.id):
+        raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    try:
+        status = await jobs.stop(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await asyncio.to_thread(
+        audit.record, db, "job.stop", user=user, resource_type="job", resource_id=job_id, request=request)
+    # 記録が実際に残っているときだけ再開できると言う（記録の書き出しに失敗した Job を
+    # 「再開できる」と出すと、押してから 409 になる）。
+    records = await asyncio.to_thread(jobs.resume_record_ids)
+    return {"ok": True, "status": status, "can_resume": job_id in records}
+
+
+@router.post("/{job_id}/resume")
+async def resume_job(
+    job_id: str, request: Request,
+    user: User = Depends(require_permission("workflows.edit")), db=Depends(get_db),
+):
+    """停止・中断した Job を保存した引数から続きで作り直す。"""
+    job = jobs.get(job_id)
+    record = job if job is not None else await jobs.get_any(job_id)
+    if record is None or not jobs.visible_to(record, user.id):
+        raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+    try:
+        new_job = await jobs.resume_stopped(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await asyncio.to_thread(
+        audit.record, db, "job.resume", user=user, resource_type="job",
+        resource_id=job_id, request=request, metadata={"new_job_id": new_job.id})
+    return {"ok": True, "job_id": new_job.id}
 
 
 @router.websocket("/stream")

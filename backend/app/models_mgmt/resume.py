@@ -21,18 +21,28 @@ def huggingface_download_runner(params: dict[str, Any]) -> Runner:
 
     repo = str(params.get("repo") or "")
     files = [str(item) for item in params.get("files") or []]
-    if not repo or not files:
+    # 大きさは保存した引数ではなく、作り直した Job の開始時に HF の API から読む
+    # （fetch_sizes の付いた引数だけ。古い記録は従来どおり渡された値を使う）。
+    fetch_sizes = bool(params.get("fetch_sizes"))
+    # files=[] は目録の行から始まった「repo の最上位ファイル全部」。展開は hf.download が
+    # fetch_sizes の分岐で行うので、記録の時点では空でよい（取得時に決まる）。
+    if not repo or not (files or fetch_sizes):
         raise ValueError("HuggingFace取得の repo または files がありません")
     library_id = str(params.get("library_id") or "")
     revision = str(params.get("revision") or "main")
     expected_bytes = int(params.get("expected_bytes") or 0)
+    # 量子化のサブフォルダ（GGUF の分割片）は引数として残す。秘密値は入れない。
+    quantization = str(params.get("quantization") or "")
     register = params.get("register")
     register = dict(register) if isinstance(register, dict) else None
 
     async def run(job: jobs.Job) -> dict:
+        # 古い記録（量子化無し）には引数を足さない（既存の呼び出し形を壊さない）。
+        extra = {"quantization": quantization} if quantization else {}
         return await hf.download(
             job, repo, files, library_id=library_id, revision=revision,
-            expected_bytes=expected_bytes, register=register,
+            expected_bytes=expected_bytes, fetch_sizes=fetch_sizes,
+            register=register, **extra,
         )
 
     return run
@@ -63,8 +73,16 @@ def strata_start_title(params: dict[str, Any]) -> str:
     return f"Strata初回起動: {params.get('alias', '')}"
 
 
+def _hf_cleanup(params: dict[str, Any]) -> None:
+    """取り消しのとき HF 取得の途中ファイルを消す（実処理は hf.py。遅延読み込み）。"""
+    from app.models_mgmt import hf
+
+    hf.cleanup_partial_files(params)
+
+
 jobs.register_resumable(
     "model.hf_download",
     huggingface_download_runner, title=huggingface_download_title,
+    cleanup=_hf_cleanup,
 )
 jobs.register_resumable("model.strata.start", strata_start_runner, title=strata_start_title)
