@@ -24,7 +24,14 @@ import { RadianceDetailSheet, RadianceRegisterPanel, useRadianceState } from "..
 import { SlyRadianceDetailSheet, SlyRadianceRegisterPanel, useSlyRadianceState } from "../features/models/SlyRadiancePanel";
 import { MayaSDetailSheet, useMayaStatus } from "../features/models/MayaSModelPanel";
 import { MayaModelSheet, MayaRegisterPanel } from "../features/models/MayaRegisterPanel";
-import { deleteLlamaInstance, duplicateLlamaInstance, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
+import { deleteLlamaInstance, duplicateLlamaInstance, getRuntimeCatalog, listLlamaEndpoints, reorderLlamaInstances, type ThinkMode } from "../api/models";
+// 共通3部品（目録・ファイル登録・設定）。Strata / llama.cpp の登録と個別設定はこれへ寄せる。
+// どの量子化が使えるかは backend の目録・inspect が持つので、ここに固定一覧は持たない。
+import { RuntimeCatalog } from "../features/models/RuntimeCatalog";
+import { RuntimeRegisterFromFile } from "../features/models/RuntimeRegisterFromFile";
+import { RuntimeSettings } from "../features/models/RuntimeSettings";
+import type { SettingValues } from "../features/models/runtimeSettings";
+import { useExpert } from "../features/commander/TeamRoles";
 
 interface Model {
   id?: string;
@@ -1534,8 +1541,27 @@ const BACKEND_LABEL: Record<string, string> = {
   rocm10: "ROCm 10", rocm7: "ROCm 7.2",
 };
 
+/** 既存の llama.cpp インスタンスを共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。 */
+function llamaSettingsInitial(instance: LlamaInstanceConfig): SettingValues {
+  const role = (instance as LlamaInstanceConfig & { role?: string }).role;
+  return {
+    alias: instance.alias,
+    model_path: instance.model_path,
+    ...(role !== undefined ? { role } : {}),
+    ctx_size: instance.ctx_size,
+    n_parallel: instance.n_parallel,
+    n_gpu_layers: instance.n_gpu_layers,
+    image_min_tokens: instance.image_min_tokens,
+    idle_exclude: instance.idle_exclude,
+    auto_start: instance.auto_start,
+    port: instance.port,
+    mmproj_path: instance.mmproj_path,
+  };
+}
+
 function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
   const qc = useQueryClient();
+  const expert = useExpert();
   const { data: st } = useQuery({ queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status") });
   const instance = st?.instances.find((item) => item.alias === alias);
   return (
@@ -1547,13 +1573,36 @@ function LlamaDetailSheet({ alias, onClose }: { alias: string; onClose: () => vo
           ["モデル", <FileName path={instance.model_path} />],
           ["接続先", <CopyText text={`http://127.0.0.1:${instance.port}/v1`} />],
         ]} /></div>
-        <LlamaInstanceControls
-          initial={instance}
-          onSaved={onClose}
-          onChanged={() => {
-            qc.invalidateQueries({ queryKey: ["llama-status"] });
-            qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] });
+        <RuntimeSettings
+          runtime="llama"
+          initial={llamaSettingsInitial(instance)}
+          save={async (values) => {
+            // 共通設定に無い引数（投機・KV・サンプリング等）を消さないよう、既存設定へ重ねて送る。
+            // role は埋め込み / reranker で使うので、元設定に無いときは上書きしない。
+            const body: Record<string, unknown> = {
+              ...llamaInstanceWriteBody(instance, false), ...values, alias: instance.alias,
+            };
+            if ((instance as LlamaInstanceConfig & { role?: string }).role === undefined) delete body.role;
+            await api(`/models/llama/instances/${encodeURIComponent(instance.alias)}`,
+              { method: "PUT", json: body });
           }}
+          onDone={onClose}
+          note={expert ? (
+            <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+              <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
+              <div className="mt-3">
+                <LlamaInstanceControls
+                  key={alias}
+                  initial={instance}
+                  onSaved={onClose}
+                  onChanged={() => {
+                    qc.invalidateQueries({ queryKey: ["llama-status"] });
+                    qc.invalidateQueries({ queryKey: ["models", "llama.cpp"] });
+                  }}
+                />
+              </div>
+            </details>
+          ) : undefined}
         />
       </>)}
     </BottomSheet>
@@ -2050,6 +2099,8 @@ function EmbedRerankPanel() {
 /** Register only models explicitly requested by the user. */
 function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   const [runtime, setRuntime] = useState<LocalRuntime>("llama.cpp");
+  // 目録／ファイルで選んだ後に共通設定で仕上げるための値。ランタイム切替で捨てる。
+  const [pending, setPending] = useState<{ runtime: "llama" | "strata"; values: SettingValues } | null>(null);
   // Sly-Radiance は Radiance の派生。Radiance を選んだ中のスイッチで切り替える（導入済みなら既定は Sly）。
   const [slyChosen, setSlyChosen] = useState<boolean | null>(null);
   const { data: strataState } = useQuery({
@@ -2059,11 +2110,13 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
   const { data: radianceState } = useRadianceState();
   const { data: slyState } = useSlyRadianceState();
   const { data: mayaStatus } = useMayaStatus();
+  const commonRuntime = runtime === "llama.cpp" ? "llama" : runtime === "strata" ? "strata" : null;
+  const choose = (next: LocalRuntime) => { setRuntime(next); setPending(null); };
   return (
     <BottomSheet title="モデル登録" onClose={onClose} wide>
       <div className="mb-3 flex flex-wrap gap-2">
         {(["llama.cpp", "strata", "radiance", "maya-s"] as const).map((choice) => (
-          <button key={choice} type="button" onClick={() => setRuntime(choice)}
+          <button key={choice} type="button" onClick={() => choose(choice)}
             disabled={(choice === "strata" && !strataState?.runtime.installed)
               || (choice === "radiance" && !radianceState?.runtime.installed && !slyState?.runtime.installed)
               || (choice === "maya-s" && !mayaStatus?.installed)}
@@ -2089,15 +2142,140 @@ function ModelRegisterSheet({ onClose }: { onClose: () => void }) {
           </button>
         );
       })()}
-      {runtime === "llama.cpp"
-        ? <LlamaRuntimePanel registrationOnly />
-        : runtime === "radiance"
-          ? (slyState?.runtime.installed && (slyChosen ?? true)) || !radianceState?.runtime.installed
-            ? <SlyRadianceRegisterPanel onDone={onClose} />
-            : <RadianceRegisterPanel onDone={onClose} />
-        : runtime === "maya-s" ? <MayaRegisterPanel onDone={onClose} />
-        : <StrataRegisterPanel onDone={onClose} />}
+      {commonRuntime && !pending && (
+        <CommonRegisterPanel runtime={commonRuntime}
+          onReady={(values) => setPending({ runtime: commonRuntime, values })} onClose={onClose} />
+      )}
+      {commonRuntime && pending && (
+        <RuntimeSettings
+          runtime={pending.runtime}
+          values={pending.values}
+          onDone={onClose}
+          note={<div className="space-y-1">
+            {pending.runtime === "strata" && (
+              <p className="text-[11px] text-zinc-500">
+                初回ロード時に Strata が重みを取得します。系列・量子化は目録の行に合わせてください（GSQ-RCO / Unsloth UD-* / Q8_0）。
+              </p>
+            )}
+            <button type="button" onClick={() => setPending(null)} className="min-h-11 text-xs text-zinc-500 underline">登録方法を選び直す</button>
+          </div>}
+        />
+      )}
+      {!commonRuntime && (runtime === "radiance"
+        ? (slyState?.runtime.installed && (slyChosen ?? true)) || !radianceState?.runtime.installed
+          ? <SlyRadianceRegisterPanel onDone={onClose} />
+          : <RadianceRegisterPanel onDone={onClose} />
+        : <MayaRegisterPanel onDone={onClose} />)}
     </BottomSheet>
+  );
+}
+
+/** llama.cpp（GGUF）と Strata（GSQ-RCO / Unsloth UD-* / Q8_0）の共通登録。
+ *  目録・ファイル選択で決めた値を共通設定へ渡して仕上げる。どの量子化が使えるかは
+ *  backend の目録と inspect が判定するので、ここに固定一覧は持たない。
+ *  旧画面はエキスパートの中に残す（導入・詳細引数は従来どおり使える）。 */
+/** Strata の別名は ^[a-z][a-z0-9-]{0,47}$ 固定（strata_gateway._ALIAS）。目録 id から作る。 */
+const strataAlias = (id: string) => id.replace(/[/_]+/g, "-").replace(/[^a-z0-9-]/g, "").slice(0, 48);
+
+function CommonRegisterPanel({ runtime, onReady, onClose }: {
+  runtime: "llama" | "strata";
+  onReady: (values: SettingValues) => void;
+  onClose: () => void;
+}) {
+  const expert = useExpert();
+  const [tab, setTab] = useState<"catalog" | "file" | "legacy">("catalog");
+  const { data: llamaSt } = useQuery({
+    queryKey: ["llama-status"], queryFn: () => api<LlamaStatus>("/models/llama/status"),
+    enabled: runtime === "llama",
+  });
+  const { data: strataSt } = useQuery({
+    queryKey: ["strata-instances"],
+    queryFn: () => api<{ instances: Array<{ port: number }> }>("/models/strata/instances"),
+    enabled: runtime === "strata",
+  });
+  // 既存インスタンスとポートが被らないようにする（旧パネルと同じ規則）。
+  const ports = runtime === "llama"
+    ? (llamaSt?.instances ?? []).map((item) => item.port)
+    : (strataSt?.instances ?? []).map((item) => item.port);
+  const base = runtime === "llama" ? 8080 : 8095;
+  const port = Math.max(base, ...ports) + (ports.length ? 1 : 0);
+  const aliasFrom = (name: string) => name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 48);
+  const toValues = (path: string, alias: string, extra: SettingValues = {}): SettingValues => ({
+    alias, model_path: path, port, ...extra,
+  });
+  return (
+    <div className="space-y-3">
+      {/* 導入は登録ではないが、未導入だと登録できないので要対応だけは常に出す。 */}
+      {runtime === "llama" && llamaSt && !llamaSt.installed && (
+        <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+          llama.cpp が未導入です。エキスパートを有効にして「従来の登録」から導入してください。
+        </p>
+      )}
+      <SegmentedTabs className="mb-3" value={tab} onChange={setTab}
+        tabs={[["catalog", "目録から取得"], ["file", "ファイルから登録"],
+          ...(expert ? [["legacy", "従来の登録"]] as const : [])] as const} />
+      {tab === "catalog" && (
+        <>
+          <RuntimeCatalog runtime={runtime} onRegister={(path, entry) => {
+            // Strata の目録 id は "<系列>/<量子化>"（backend の strata_catalog と同じ）。
+            const [family, model] = entry.id.split("/", 2);
+            onReady(toValues(path, runtime === "strata" ? strataAlias(entry.id) : aliasFrom(entry.name),
+              runtime === "strata" ? { family: family || "qwen", model: model || entry.quantization } : {}));
+          }} />
+          {/* Strata の目録行は acquire="runtime"。共通目録は HF 取得後の登録だけを扱うので、
+              同じ目録 API の行から「初回ロード時に取得する」登録もできるようにする。 */}
+          {runtime === "strata" && <StrataCatalogRegister port={port} onReady={onReady} />}
+        </>
+      )}
+      {tab === "file" && (
+        <>
+          {runtime === "strata" && (
+            <p className="text-[11px] text-zinc-500">
+              Strata は GSQ-RCO / Unsloth UD-* / Q8_0 の GGUF だけを扱えます。次の画面で系列と量子化をファイルに合わせて選んでください。
+            </p>
+          )}
+          <RuntimeRegisterFromFile runtime={runtime} mode="file"
+            onRegistered={(info, alias) => onReady(toValues(info.path, alias))} />
+        </>
+      )}
+      {tab === "legacy" && (runtime === "llama"
+        ? <LlamaRuntimePanel registrationOnly />
+        : <StrataRegisterPanel onDone={onClose} />)}
+    </div>
+  );
+}
+
+/** Strata の目録（backend の GET /models/catalog）から、初回ロード時に取得する登録を作る。
+ *  目録データは共通 API から読み、固定の一覧は持たない。 */
+function StrataCatalogRegister({ port, onReady }: { port: number; onReady: (values: SettingValues) => void }) {
+  const { data } = useQuery({ queryKey: ["runtime-catalog"], queryFn: getRuntimeCatalog, staleTime: 60_000 });
+  const entries = (data?.runtimes.find((item) => item.id === "strata")?.entries ?? [])
+    .filter((entry) => entry.supported);
+  const [selected, setSelected] = useState("");
+  const entry = entries.find((item) => item.id === selected) ?? entries[0];
+  const [family, model] = (entry?.id ?? "qwen/iq2_xs").split("/", 2);
+  const alias = strataAlias(entry?.id ?? "qwen/iq2_xs");
+  return (
+    <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+      <p className="text-xs font-medium">目録から登録（初回ロード時に Strata が重みを取得します）</p>
+      {entries.length === 0 ? (
+        <p className="text-[11px] text-zinc-500">登録できる目録行がありません。「ファイルから登録」を使ってください。</p>
+      ) : (
+        <>
+          <select aria-label="Strata の目録から選ぶ" value={entry?.id ?? ""}
+            onChange={(event) => setSelected(event.target.value)}
+            className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+            {entries.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <button type="button" disabled={!entry}
+            onClick={() => onReady({ alias, model_path: "", family, model, port })}
+            className="min-h-11 w-full rounded-xl bg-accent-600 px-4 text-sm font-medium text-white disabled:opacity-40">
+            登録する
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -2347,7 +2525,30 @@ function StrataRegisterPanel({ onDone, initial, running = false }: { onDone: () 
   </div>;
 }
 
+/** 既存の Strata 設定を共通設定の欄へ写す（欄 id は保存 API の引数名と同じ）。 */
+function strataSettingsInitial(item: StrataSettings): SettingValues {
+  return {
+    alias: item.alias,
+    family: item.family,
+    model: item.model,
+    model_path: item.model_path ?? "",
+    context: item.context,
+    port: item.port,
+    kv: item.kv ?? "int8",
+    vision: item.vision ?? "on",
+    parallel: item.parallel ?? 1,
+    drafting: item.drafting ?? "auto",
+    kv_resident: item.kv_resident ?? null,
+    ram_keep_gib: item.ram_keep_gib ?? null,
+    idle_exclude: !!item.idle_exclude,
+    auto_start: !!item.auto_start,
+    reasoning_effort: item.reasoning_effort ?? "",
+    thinking_budget: item.thinking_budget ?? 0,
+  };
+}
+
 function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => void }) {
+  const expert = useExpert();
   const { data } = useQuery({
     queryKey: ["strata-instances"], queryFn: () => api<{
       runtime: { installed: boolean; models_dir: string };
@@ -2363,8 +2564,29 @@ function StrataDetailSheet({ alias, onClose }: { alias: string; onClose: () => v
         ["モデル", item.model_path ? <FileName path={item.model_path} /> : `${item.family} / ${item.model}（初回ロード時に取得）`],
         ["接続先", <CopyText text={`http://127.0.0.1:${item.port}/v1`} />],
       ]} />
-      {/* key is the alias only: a load finishing mid-edit must not wipe the form. */}
-      <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
+      <RuntimeSettings
+        runtime="strata"
+        initial={strataSettingsInitial(item)}
+        save={async (values) => {
+          // 共通設定は別名を編集できるが、Strata の PUT は別名変更を 422 で断る。元の別名で保存する。
+          await api(`/models/strata/instances/${encodeURIComponent(item.alias)}`, {
+            method: "PUT", json: { ...values, alias: item.alias },
+          });
+        }}
+        onDone={onClose}
+        note={<div className="space-y-2">
+          <p className="text-[11px] text-zinc-500">Strata のモデル別名は変更できません（変更しても元の名前で保存されます）。</p>
+          {expert && (
+            <details className="rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+              <summary className="cursor-pointer text-xs font-medium text-zinc-500">従来の設定画面（すべての引数）</summary>
+              {/* key is the alias only: a load finishing mid-edit must not wipe the form. */}
+              <div className="mt-3">
+                <StrataRegisterPanel key={alias} initial={item} running={!!item.loaded} onDone={onClose} />
+              </div>
+            </details>
+          )}
+        </div>}
+      />
     </div> : <p className="text-sm text-zinc-500">モデルを読み込み中です</p>}
   </BottomSheet>;
 }
