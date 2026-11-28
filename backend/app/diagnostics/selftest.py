@@ -423,7 +423,10 @@ def run_tests(selection: str = "", timeout: int = 1200) -> dict:
                           "DBUS_SESSION_BUS_ADDRESS", "TMUX", "TMUX_PANE")}
     env.update({"CONTROL_DECK_NO_MACHINE_TASKS": "1", "HOME": sandbox, "TMUX_TMPDIR": sandbox,
                 "XDG_RUNTIME_DIR": sandbox, "XDG_CONFIG_HOME": f"{sandbox}/.config",
-                "XDG_DATA_HOME": f"{sandbox}/.local/share", "XDG_STATE_HOME": f"{sandbox}/.local/state"})
+                "XDG_DATA_HOME": f"{sandbox}/.local/share", "XDG_STATE_HOME": f"{sandbox}/.local/state",
+                # 添付の RAM 置き場（/dev/shm）も本番と分ける。無指定だと本プロセス（本番）と
+                # 同じ場所をテストの import が掃除しにいく（attachments.py の AttachmentStore.__init__）。
+                "CONTROL_DECK_ATTACHMENTS_DIR": f"{sandbox}/attachments"})
     started = time.monotonic()
     try:
         result = subprocess.run(args, cwd=backend, env=env, capture_output=True, text=True, timeout=timeout, check=False)

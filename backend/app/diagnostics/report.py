@@ -128,6 +128,47 @@ def _fan_summary(hours: float) -> dict | None:
         return None
 
 
+def _console_locks() -> dict:
+    """Nexarch のコンソールの鍵: 今の状態（locks.summary）と監査の履歴（外部消失・復旧失敗・上限）。
+
+    保存と監査を読むだけ（重い処理はしない）。ラベル・CLI の名前だけを出す。
+    根拠: 2026-11-28 利用者の要望（brief-console-lock.md）。外から消された・復旧できない
+    場合に気づけるように。
+    """
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import AuditLog
+
+    def summary() -> dict:
+        try:
+            from app.commander import locks
+
+            return locks.summary()
+        except Exception:  # noqa: BLE001 - 報告は鍵の不調で止めない
+            return {"locked": 0, "vanished": 0, "attempts_10min": 0, "gave_up_10min": 0, "consoles": [],
+                    "error": "ロックの診断を読めませんでした", "stopped": True}
+
+    actions = ("commander.console.vanished", "commander.console.restored",
+               "commander.console.restore_failed", "commander.console.restore_gave_up")
+    events: list[dict] = []
+    try:
+        with SessionLocal() as db:
+            rows = db.execute(select(AuditLog).where(AuditLog.action.in_(actions))
+                              .order_by(AuditLog.timestamp.desc()).limit(15)).scalars().all()
+        for row in reversed(rows):
+            meta = json.loads(row.metadata_json or "{}")
+            events.append({"ts": (row.timestamp.replace(tzinfo=timezone.utc)
+                                  if row.timestamp.tzinfo is None else row.timestamp).timestamp(),
+                           "action": row.action,
+                           "name": str(meta.get("label") or f"{meta.get('cli', '?')}/{meta.get('account', '')}"),
+                           "session_id": str(meta.get("session_id") or row.resource_id),
+                           "detail": str(meta.get("reason") or "")[:120]})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"summary": summary(), "events": events}
+
+
 def build(hours: float = 24.0, include_tests: bool = False) -> dict:
     since = time.time() - hours * 3600
     events = store.read(since=since, limit=None)
@@ -172,6 +213,7 @@ def build(hours: float = 24.0, include_tests: bool = False) -> dict:
                      for e in events if e.get("kind") == "client_timing" and e.get("page") == "viewport"][:8],
         "tests": next((e for e in events if e.get("kind") == "tests"), None),
         "fan": _fan_summary(hours),
+        "console_locks": _console_locks(),
     }
     if include_tests:
         data["tests"] = selftest.run_tests()
@@ -241,6 +283,20 @@ def to_markdown(data: dict) -> str:
             out.append(f"- {_fmt(v['ts'])} {fields}")
     out += ["", "## 失敗したジョブ（新しい順）", ""]
     out += [f"- {_fmt(jb['ts'])} {jb['kind']} {jb['title']}: {jb['error'][:200]}" for jb in data["failed_jobs"]] or ["- なし"]
+    cl = data.get("console_locks")
+    if cl is not None:
+        s = cl["summary"]
+        out += ["", "## Nexarch のコンソールのロック（外部消失・復旧・上限）", ""]
+        out.append(f"- ロック中 {s['locked']}・消失のまま {s['vanished']}・10 分の復旧試み {s['attempts_10min']} 回"
+                   f"・上限で諦め {s['gave_up_10min']} 件")
+        if s.get("error"):
+            out.append(f"- 異常: {s['error']}")
+        for row in s.get("consoles", []):
+            out.append(f"- {row['name']}: {row['state']}（復旧 {row['restored_count']} 回・"
+                       f"10 分の試み {row['attempts_10min']} 回・セッション {row['session_id']}）")
+        out += [f"- {_fmt(e['ts'])} {e['action'].removeprefix('commander.console.')}: {e['name']}"
+                + (f"（{e['detail']}）" if e["detail"] else "")
+                for e in cl["events"][-10:]] or ["- 出来事なし"]
     if data.get("tests"):
         t = data["tests"]
         out += ["", f"## テスト: {t.get('summary') or t.get('exit_code')}", ""] + [f"- {line}" for line in t.get("failed", [])[:20]]

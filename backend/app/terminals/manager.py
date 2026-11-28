@@ -19,6 +19,7 @@ import signal
 import struct
 import subprocess
 import termios
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,14 @@ COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by",
                        # C3: 自動再開（off で止める・次の予定・送った回数・最後に送った時刻）
                        "autoresume", "resume_at", "resume_count", "resume_last",
                        # コンソールごとの再開の文言（空なら全体の設定）
-                       "resume_message")
+                       "resume_message",
+                       # コンソールの鍵（ロック）。外から閉じられないようにする（2026-11-28）。
+                       # 値は "1" だけ。manager.kill_session がこの印を見て断る（中央の保護）。
+                       "locked",
+                       # 開いたときのモデル・考えるレベル（鍵をかけたときの保存・開き直しに使う）
+                       "model", "effort")
+# ロック中のセッションを閉じようとしたときの文言（409 の detail にもそのまま使う）。
+SESSION_LOCKED_MESSAGE = "ロック中です。先にロックを外してください"
 # create_session(env=) で受け付ける環境変数の名前と値の上限。
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ENV_VALUE_MAX = 4096
@@ -95,6 +103,36 @@ def _display_path(value: str) -> str:
     if value.startswith(home + os.sep):
         return "~" + value[len(home):]
     return value
+
+
+class SessionStateError(RuntimeError):
+    """tmux の状態を確認・変更できない。終了や復旧を進めてはいけない。"""
+
+
+def _tmux_missing(result: subprocess.CompletedProcess, target: str) -> bool:
+    """tmux の失敗が「対象のセッションが無い」と確かに言えるときだけ True。
+
+    ローカル tmux 3.4 を専用 -L（試験用の TMUX_TMPDIR）で実測した文言（2026-11-28・LC_ALL=C）:
+    - サーバーはあるが対象が無い: has-session / kill-session は "can't find session: <target>"
+    - サーバーが無い: "no server running on <socket>"（古いソケットのファイルが残る場合も同じ）
+    - ソケットのファイルが無い: "error connecting to <socket> (No such file or directory)"
+    - 権限が無い: "error connecting to <socket> (Permission denied)" → 欠落ではない（確認不能）
+    いずれも終了値 1。権限・通信・不明な失敗を欠落と誤認すると、閉じた扱い・二重の復旧になる。
+    """
+    error = (result.stderr or "").strip()
+    return result.returncode == 1 and (
+        error == f"can't find session: {target}"
+        or error.startswith("no server running on /")
+        or (error.startswith("error connecting to /") and error.endswith(" (No such file or directory)"))
+    )
+
+
+class SessionLockedError(RuntimeError):
+    """ロック（@cd-commander-locked=1）のかかったセッションを閉じようとした。
+
+    manager.kill_session がこの例外を出す（中央の保護・強制解除の抜け道は無い）。
+    endpoint は 409 へ直す。利用者が画面（terminal.use）で外すまで閉じられない。
+    """
 
 
 def _session_metadata(*, command: str, cwd: str, pid: int, activity_at: float, alive: bool = True) -> dict[str, object]:
@@ -191,6 +229,12 @@ class PtySession:
             return False
 
 
+# ロックの切替（set_locked）と閉じる（kill_session）を競合させないための排他。
+# この process の中だけの話。外のプロセスが tmux kill-session を直接打つことは
+# 防げないので、それは検知（commander/locks.py）で受け止める。
+_guard = threading.RLock()
+
+
 class TerminalManager:
     def __init__(self) -> None:
         self._fallback: dict[str, PtySession] = {}
@@ -270,7 +314,7 @@ class TerminalManager:
 
     def create_session(
         self, cwd: str | None = None, command: str | None = None, *, engine: str = "v1",
-        env: dict[str, str] | None = None,
+        env: dict[str, str] | None = None, session_id: str | None = None,
     ) -> dict:
         """セッションを作成する。command 指定時はシェルでそのコマンドを実行する
         （例: gh auth login。継続利用するコマンド側で exec bash 等を付ける）。
@@ -291,7 +335,10 @@ class TerminalManager:
                     raise ValueError("セッションの環境変数の名前が不正です")
                 if not value or len(value) > ENV_VALUE_MAX or any(c in value for c in "\x00\n\r"):
                     raise ValueError(f"セッションの環境変数 {key} の値が不正です")
-        sid = secrets.token_hex(4)
+        sid = session_id or secrets.token_hex(4)
+        _target(sid)
+        if session_id is not None and self.session_exists(sid):
+            raise SessionStateError("復旧先のセッションが既にあります")
         workdir = cwd or str(os.path.expanduser("~"))
         if tmux_available():
             name = TMUX_PREFIX + sid
@@ -369,28 +416,109 @@ class TerminalManager:
         return engine if engine in TERMINAL_ENGINES else "v1"
 
     def kill_session(self, sid: str) -> None:
-        if tmux_available():
-            subprocess.run(
-                ["tmux", "kill-session", "-t", _target(sid)],
-                capture_output=True, timeout=10,
+        """セッションを閉じる。ロック（@cd-commander-locked=1）のかかったセッションは断る。
+
+        保護はここ（全ての閉じる経路が通る唯一の場所）で持つ。endpoint 側の前置き確認は
+        便宜的なもので、ここを通らない閉じ方は無い（強制解除の引数も無い）。ロックの
+        切替（set_locked）と同じ排他の中で確認するので、切替と閉じるが競合しない
+        （2026-11-28 利用者「ロックをかけたものは落とさないように」）。
+        """
+        from app.commander import locks
+
+        with _guard:
+            # 印の読取失敗・保存破損でも保護する。途中の復旧先もこの記録で守る。
+            if locks.find_entry(sid) is not None or self.is_locked(sid):
+                raise SessionLockedError(SESSION_LOCKED_MESSAGE)
+            if tmux_available():
+                target = _target(sid)
+                result = self._run_tmux(["kill-session", "-t", target])
+                # 既に無い（終わった殻・外から消えた）ときだけ「閉じた」と同じ扱い。
+                # 権限・通信・不明な失敗は成功にしない（実終了失敗の偽装をしない）。
+                if result.returncode != 0 and not _tmux_missing(result, target):
+                    raise SessionStateError("セッションを閉じられませんでした")
+            else:
+                self._close_fallback(sid, kill=True)
+
+    @staticmethod
+    def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
+        """エラー分類用の文言はローカル tmux の C locale に固定する。timeout・起動失敗は確認不能。"""
+        try:
+            return subprocess.run(
+                ["tmux", *args], capture_output=True, text=True, timeout=5,
+                env={**os.environ, "LC_ALL": "C"},
             )
-            return
-        self._close_fallback(sid, kill=True)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SessionStateError("tmux の状態を確認・変更できませんでした") from exc
+
+    @classmethod
+    def _checked_tmux(cls, args: list[str]) -> subprocess.CompletedProcess:
+        result = cls._run_tmux(args)
+        if result.returncode != 0:
+            raise SessionStateError("tmux の操作に失敗しました")
+        return result
+
+    def set_locked(self, sid: str, locked: bool) -> None:
+        """保存・見回り・終了と共通の排他で印を変える。失敗は必ず呼出し側へ返す。"""
+        with _guard:
+            if locked and tmux_available():
+                # timeout・起動失敗も SessionStateError へそろえる（成功か不明かを呼出し側が確かめる）
+                self._checked_tmux(["set-option", "-t", _target(sid), "@cd-commander-locked", "1"])
+            elif locked:
+                self.tag_session(sid, {"locked": "1"})
+            elif self.session_exists(sid):
+                self.clear_marks(sid, ("locked",))
+
+    def is_locked(self, sid: str) -> bool:
+        """unset と確認不能を区別する。-q は対象不明も隠すため使わない。
+
+        ローカル tmux(1) と専用 -L の実測（2026-11-28）:
+        unset は invalid option、対象不明は no such session。ほかは保護を継続する。
+        """
+        target = _target(sid)
+        if tmux_available():
+            result = self._run_tmux(["show-options", "-v", "-t", target, "@cd-commander-locked"])
+            if result.returncode == 0:
+                value = result.stdout.strip()
+                if value not in ("", "1"):
+                    raise SessionStateError("ロックの印が不正です")
+                return value == "1"
+            if result.returncode == 1 and result.stderr.strip() == "invalid option: @cd-commander-locked":
+                return False
+            if not self.session_exists(sid):
+                return False
+            raise SessionStateError("ロックの状態を確認できませんでした")
+        session = self._fallback.get(sid)
+        return session is not None and session.marks.get("locked") == "1"
+
+    def session_exists(self, sid: str) -> bool:
+        """has-session の終了値 1 だけでは欠落と判定しない（権限エラーも 1）。
+
+        ローカル tmux(1) と専用 -L で確認した欠落の文言だけを受け入れる。
+        通信・権限・不明なエラーでは例外を出し、復旧による複製を防ぐ。
+        """
+        target = _target(sid)
+        if tmux_available():
+            result = self._run_tmux(["has-session", "-t", target])
+            if result.returncode == 0:
+                return True
+            if _tmux_missing(result, target):
+                return False
+            raise SessionStateError("セッションの存在を確認できませんでした")
+        return sid in self._fallback
 
     def clear_marks(self, sid: str, keys: tuple[str, ...]) -> None:
-        """印を外す（tmux の user option を unset）。"""
+        """印の解除失敗を成功扱いにしない。"""
         unknown = set(keys) - set(COMMANDER_MARK_KEYS)
         if unknown:
             raise ValueError("不明なセッション属性です")
-        if tmux_available():
-            target = _target(sid)
-            for key in keys:
-                subprocess.run(["tmux", "set-option", "-u", "-t", target, f"@cd-commander-{key}"],
-                               capture_output=True, timeout=10, check=False)
-            return
-        session = self._fallback.get(sid)
-        if session is not None:
-            session.marks = {k: v for k, v in session.marks.items() if k not in keys}
+        with _guard:
+            if tmux_available():
+                for key in keys:
+                    self._checked_tmux(["set-option", "-u", "-t", _target(sid), f"@cd-commander-{key}"])
+                return
+            session = self._fallback.get(sid)
+            if session is not None:
+                session.marks = {k: v for k, v in session.marks.items() if k not in keys}
 
     def capture_text(self, sid: str, lines: int = 60) -> str:
         """画面の最後の lines 行を、色の印を外した文字で返す（AI Commander の状態の判定用）。
@@ -553,6 +681,10 @@ class TerminalManager:
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "LANG": os.environ.get("LANG", "C.UTF-8"),
             }
+            if os.environ.get("TMUX_TMPDIR"):
+                # attach の子プロセスも同じソケット置き場を見る（試験の隔離・TMUX_TMPDIR は
+                # 本番では設定しないので、設定が無いときは今までどおり）。
+                env["TMUX_TMPDIR"] = os.environ["TMUX_TMPDIR"]
             proc = subprocess.Popen(
                 ["tmux", "attach-session", "-t", target],
                 stdin=slave, stdout=slave, stderr=slave,

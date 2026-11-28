@@ -69,6 +69,12 @@ class ConsoleAutoResume(BaseModel):
     enabled: bool
 
 
+class ConsoleLock(BaseModel):
+    """コンソールの鍵（ロック）の付け外し。外すのは画面（terminal.use）の操作だけ。"""
+
+    locked: bool
+
+
 class ResumeMessage(BaseModel):
     """自動再開で送る文言（空なら上の段: コンソール→全体→既定）。"""
 
@@ -76,7 +82,13 @@ class ResumeMessage(BaseModel):
 
 
 class CommanderSettingsBody(BaseModel):
-    resume_message: str = Field(default="", max_length=500)
+    """全体の設定。送った欄だけ変える（送らなかった欄はリセットしない）。
+
+    auto_restore: ロックしたコンソールが外から消えたとき自動で開き直すか（既定は入）。
+    resume_message を省略した呼び出し（auto_restore だけ変える）で文言が既定へ戻らないように。
+    """
+    resume_message: str | None = Field(default=None, max_length=500)
+    auto_restore: bool | None = None
 
 
 class UsageStatusline(BaseModel):

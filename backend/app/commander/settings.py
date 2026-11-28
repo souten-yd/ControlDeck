@@ -41,6 +41,18 @@ def resume_message() -> str:
     return value if isinstance(value, str) and value.strip() else DEFAULT_RESUME_MESSAGE
 
 
+def auto_restore() -> bool:
+    """ロックしたコンソールが外から消えたとき自動で開き直すか（既定は入）。"""
+    value = _read().get("auto_restore")
+    return bool(value) if isinstance(value, bool) else True
+
+
+def set_auto_restore(value: bool) -> None:
+    data = _read()
+    data["auto_restore"] = bool(value)
+    _write(data)
+
+
 def _write(data: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +122,8 @@ def set_team_defaults(leader: object = _UNSET, roles: list[dict] | None = None, 
 
 def get() -> dict:
     return {"resume_message": resume_message(), "default_resume_message": DEFAULT_RESUME_MESSAGE,
-            "default_leader": default_leader(), "default_roles": default_roles(), "team_root": team_root()}
+            "default_leader": default_leader(), "default_roles": default_roles(), "team_root": team_root(),
+            "auto_restore": auto_restore()}
 
 
 def set_resume_message(value: str) -> dict:

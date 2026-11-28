@@ -4,7 +4,12 @@
  * - ＋ コンソールのシートの流れ（未導入の CLI は選べない・アカウント・作業フォルダ・個数・表示名）
  * - タイル（1280px）とモバイル 320px の 1 つずつ（リスト → 全画面）
  * - アカウントを作る・消す（確認ダイアログ）
+ * - ロック（鍵の切り替え・ロック中は閉じるが無効・一括はロック中を飛ばす・409 の知らせ）
+ * - 自動で戻す（全体）の設定（エキスパートのときだけ出す・切った設定を覚える）
  * - 320 と 1280 のライト・ダークの撮影
+ *
+ * 根拠: 2026-11-28 利用者「Nexarch のコンソールモードでは、開いているコンソールごとに、ロックをかけるようにしてほしい」
+ * （勝手に落とされるのを防ぐ）。ロックの API と状態はモックで確かめ、本物の tmux には触らない。
  */
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
@@ -62,6 +67,7 @@ interface ConsoleFixture {
   commander_autoresume?: string;
   commander_resume_at?: string;
   commander_resume_message?: string;
+  commander_locked?: boolean;
   commander_usage?: { five_hour: { used_percent: number; resets_at: number | null } | null;
     seven_day: { used_percent: number; resets_at: number | null } | null };
 }
@@ -98,6 +104,11 @@ interface CommanderState {
   resumeMessage: string;
   consoleMessagePuts: { id: string; message: string }[];
   statuslinePuts: { name: string; enabled: boolean }[];
+  lockPuts: { id: string; locked: boolean }[];
+  autoRestore: boolean;
+  bulkDeletes: number;
+  /** 閉じる API を 409（ロック中）にする。画面が古いときの知らせを確かめる。 */
+  forceConflict: boolean;
 }
 
 function initialState(): CommanderState {
@@ -145,6 +156,10 @@ function initialState(): CommanderState {
     resumeMessage: "続けてください",
     consoleMessagePuts: [],
     statuslinePuts: [],
+    lockPuts: [],
+    autoRestore: true,
+    bulkDeletes: 0,
+    forceConflict: false,
   };
 }
 
@@ -176,11 +191,25 @@ async function mockCommander(page: Page, state: CommanderState) {
     }
     if (path === "teams" && method === "GET") return route.fulfill({ json: { teams: [] } });
     if (path === "settings" && method === "GET") {
-      return route.fulfill({ json: { resume_message: state.resumeMessage, default_resume_message: "続けてください" } });
+      return route.fulfill({ json: {
+        resume_message: state.resumeMessage, default_resume_message: "続けてください", auto_restore: state.autoRestore,
+      } });
     }
     if (path === "settings" && method === "PUT") {
-      state.resumeMessage = (request.postDataJSON() as { resume_message: string }).resume_message || "続けてください";
-      return route.fulfill({ json: { resume_message: state.resumeMessage, default_resume_message: "続けてください" } });
+      const body = request.postDataJSON() as { resume_message?: string; auto_restore?: boolean };
+      if (body.resume_message !== undefined) state.resumeMessage = body.resume_message || "続けてください";
+      if (body.auto_restore !== undefined) state.autoRestore = body.auto_restore;
+      return route.fulfill({ json: {
+        resume_message: state.resumeMessage, default_resume_message: "続けてください", auto_restore: state.autoRestore,
+      } });
+    }
+    const lockMatch = path.match(/^consoles\/([0-9a-f]+)\/lock$/);
+    if (lockMatch && method === "PUT") {
+      const body = request.postDataJSON() as { locked: boolean };
+      state.lockPuts.push({ id: lockMatch[1], locked: body.locked });
+      state.consoles = state.consoles.map((item) => (item.id === lockMatch[1]
+        ? { ...item, commander_locked: body.locked } : item));
+      return route.fulfill({ json: { ok: true, locked: body.locked } });
     }
     const messageMatch = path.match(/^consoles\/([0-9a-f]+)\/resume-message$/);
     if (messageMatch && method === "PUT") {
@@ -198,8 +227,20 @@ async function mockCommander(page: Page, state: CommanderState) {
         ? { ...item, commander_autoresume: body.enabled ? undefined : "off" } : item));
       return route.fulfill({ json: { ok: true, enabled: body.enabled } });
     }
+    if (path === "consoles" && method === "DELETE") {
+      // 一括で閉じる: ロック中は飛ばす（その数を返す）
+      const before = state.consoles.length;
+      state.consoles = state.consoles.filter((item) => item.commander_locked);
+      state.bulkDeletes += 1;
+      return route.fulfill({ json: {
+        closed: before - state.consoles.length, skipped_locked: state.consoles.length,
+      } });
+    }
     const consoleMatch = path.match(/^consoles\/([0-9a-f]+)$/);
     if (consoleMatch && method === "DELETE") {
+      if (state.forceConflict || state.consoles.find((item) => item.id === consoleMatch[1])?.commander_locked) {
+        return route.fulfill({ status: 409, json: { detail: "locked" } });
+      }
       state.consoleDeletes.push(consoleMatch[1]);
       state.consoles = state.consoles.filter((item) => item.id !== consoleMatch[1]);
       return route.fulfill({ json: { ok: true } });
@@ -620,6 +661,133 @@ test.describe("AI Commander", () => {
     await expect(tiles).toHaveCount(0);
     await expect(page.locator("[data-terminal-root]")).toHaveCount(0);
     await page.screenshot({ path: "test-results/commander-1280-list-dark.png", fullPage: true });
+  });
+
+  test("ロック: 鍵は押すたび切り替わり、ロック中は閉じられない。一括はロック中を飛ばす（320px）", async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width: 320, height: 700 });
+    await establishSession(page, context);
+    const state = initialState();
+    await mockCommander(page, state);
+    await page.goto("/commander");
+
+    const rows = page.locator("[data-commander-row]");
+    const first = rows.first();
+    await expect(rows).toHaveCount(2);
+
+    // 既定はロックなし。押すとロックし、もう一度押すと外れる（読み上げ名で状態が分かる）
+    const firstLockOff = first.getByRole("button", { name: "Claude Codeのロックなし（押すとロックする）" });
+    await expect(firstLockOff).toHaveAttribute("aria-pressed", "false");
+    await firstLockOff.click();
+    const firstLockOn = first.getByRole("button", { name: "Claude Codeのロック中（押すとロックを外す）" });
+    await expect(firstLockOn).toHaveAttribute("aria-pressed", "true");
+    await expect(first.locator("[data-commander-lock]")).toHaveAttribute("data-commander-lock", "on");
+    expect(state.lockPuts).toEqual([{ id: "aa110001", locked: true }]);
+    // ロック中は閉じるを出さず、「ロック中」の札を出す（2026-11-28 Claude のデザインの見直し）
+    await expect(first.getByRole("button", { name: /Claude Codeのコンソールを閉じる/ })).toHaveCount(0);
+    await expect(first.locator("[data-commander-locked-badge]")).toHaveText("🔒 ロック中");
+    await firstLockOn.click();
+    await expect(first.getByRole("button", { name: "Claude Codeのロックなし（押すとロックする）" })).toHaveAttribute("aria-pressed", "false");
+    await expect(first.getByRole("button", { name: "Claude Codeのコンソールを閉じる" })).toBeEnabled();
+
+    // 2 個目をロックして一括で閉じる。ロック中は残し、飛ばした数を知らせる
+    await rows.nth(1).getByRole("button", { name: "OpenCodeのロックなし（押すとロックする）" }).click();
+    await expect(rows.nth(1).getByRole("button", { name: /OpenCodeのコンソールを閉じる/ })).toHaveCount(0);
+    await page.screenshot({ path: "test-results/commander-lock-320.png", fullPage: true });
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "すべてのコンソールを閉じる" }).click();
+    const bulk = page.getByRole("alertdialog", { name: "すべてのコンソールを閉じますか？" });
+    await expect(bulk).toContainText("ロック中の 1 個は閉じずに残します");
+    await bulk.getByRole("button", { name: "閉じる", exact: true }).click();
+    await expect(page.getByText(/1 個のコンソールを閉じました/)).toBeVisible();
+    await expect(page.getByText(/ロック中の 1 個は閉じていません/)).toBeVisible();
+    await expect(rows).toHaveCount(1);
+    expect(state.bulkDeletes).toBe(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+
+    // ダーク・エキスパート入でも撮る（ロック中の 1 個が残っている。設定の項目がメニューに出る）
+    await page.evaluate(() => {
+      localStorage.setItem("cd-theme", "dark");
+      localStorage.setItem("control-deck:commander-expert", "1");
+    });
+    await page.reload();
+    await expect(rows).toHaveCount(1);
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await expect(page.getByRole("menuitem", { name: "自動で戻す（全体）" })).toBeVisible();
+    await page.screenshot({ path: "test-results/commander-lock-320-dark-expert.png", fullPage: true });
+    await page.keyboard.press("Escape");
+
+    // ロックを外せば閉じられる
+    const remaining = rows.first();
+    await remaining.getByRole("button", { name: "OpenCodeのロック中（押すとロックを外す）" }).click();
+    await remaining.getByRole("button", { name: "OpenCodeのコンソールを閉じる" }).click();
+    await page.getByRole("alertdialog", { name: "OpenCode のコンソールを閉じますか？" }).getByRole("button", { name: "閉じる", exact: true }).click();
+    await expect(rows).toHaveCount(0);
+  });
+
+  test("ロック: 画面が古くロック中だったとき（409）は日本語で知らせる（320px）", async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width: 320, height: 700 });
+    await establishSession(page, context);
+    const state = initialState();
+    await mockCommander(page, state);
+    await page.goto("/commander");
+
+    const rows = page.locator("[data-commander-row]");
+    await expect(rows).toHaveCount(2);
+    // 画面はロックなしのまま、サーバー側だけロック中になった場合
+    state.forceConflict = true;
+    await rows.first().getByRole("button", { name: "Claude Codeのコンソールを閉じる" }).click();
+    await page.getByRole("alertdialog", { name: "Claude Code のコンソールを閉じますか？" })
+      .getByRole("button", { name: "閉じる", exact: true }).click();
+    await expect(page.getByText("ロック中です。先にロックを外してください")).toBeVisible();
+    await expect(rows).toHaveCount(2);
+    expect(state.consoleDeletes).toEqual([]);
+  });
+
+  test("自動で戻す（全体）: エキスパートのときだけ出て、切った設定を覚える（1280px・ライト/ダーク）", async ({ page, context }) => {
+    test.skip(!hasSession(), "ログイン情報がありません");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await establishSession(page, context);
+    const state = initialState();
+    await mockCommander(page, state);
+    await page.goto("/commander");
+
+    // 既定（エキスパート切）ではメニューに出さない
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await expect(page.getByRole("menuitem", { name: "自動で戻す（全体）" })).toHaveCount(0);
+    await page.screenshot({ path: "test-results/commander-1280-expert-off.png" });
+    await page.keyboard.press("Escape");
+
+    // エキスパートを入れると出る。全体の設定なので、ロックしたコンソールが外から閉じられたら開き直す（既定は入）
+    await page.evaluate(() => localStorage.setItem("control-deck:commander-expert", "1"));
+    await page.reload();
+    await expect(page.locator("[data-commander-tile]")).toHaveCount(2);
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "自動で戻す（全体）" }).click();
+    const sheet = page.getByRole("dialog", { name: "自動で戻す（全体）" });
+    const toggle = sheet.getByRole("switch", { name: "自動で戻す" });
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    await expect(sheet.locator("[data-auto-restore-state]")).toHaveAttribute("data-auto-restore-state", "off");
+    expect(state.autoRestore).toBe(false);
+    await page.screenshot({ path: "test-results/commander-autorestore-1280.png" });
+
+    // 再読み込みしても覚えている（全体の設定）
+    await page.reload();
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "自動で戻す（全体）" }).click();
+    await expect(page.getByRole("switch", { name: "自動で戻す" })).toHaveAttribute("aria-checked", "false");
+
+    // ダークでも撮る
+    await page.evaluate(() => localStorage.setItem("cd-theme", "dark"));
+    await page.reload();
+    await page.getByRole("button", { name: "その他の操作" }).click();
+    await page.getByRole("menuitem", { name: "自動で戻す（全体）" }).click();
+    await expect(page.getByRole("dialog", { name: "自動で戻す（全体）" })).toBeVisible();
+    await page.screenshot({ path: "test-results/commander-autorestore-1280-dark.png" });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
   });
 });
 

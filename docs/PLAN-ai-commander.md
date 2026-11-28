@@ -61,3 +61,21 @@
 - アカウントに画面の名前（既定のアカウントにも）。
 - OpenCode は ControlDeck の OpenCode を OpenCode 画面の API 設定で開く（アカウントは既定の 1 つ）。
 - 2026-11-27 利用者の指定で画面の名前を「Nexarch」に改名（コードの名前 commander・URL /commander は変えない）。
+
+## 2026-11-28 追加: コンソールのロック（勝手に閉じられないように）
+- 原本は `../.nexarch/brief-console-lock.md`（git の管理外。worktree へ届かない問題は下記）。
+- 利用者「開いているコンソールごとに、ロックをかけるようにしてほしい。勝手に tmux とかを停止させられないようにしてほしい。ロックをかけたものは落とさないようにしてほしい」。
+- 3 段: (1) コンソールごとのロック（既定オフ）＝ tmux の印 `@cd-commander-locked=1` ＋ `data/ai-commander/console-locks.json`（0600）。(2) 外から消えた検知。(3) 同じ情報で開き直す自動復旧（10 分 3 回まで・設定で切れる・既定入）。
+- 保護は `terminals/manager.py` の `kill_session` 中央ガードが持つ。閉じる 4 経路（Terminal DELETE・Nexarch・一括・チームの後片付け）すべて 409「ロック中です。先にロックを外してください」。一括はロック中を飛ばして数を返す。解除は画面（terminal.use）だけ・AI / MCP には公開しない。監査 `commander.console.lock` / `unlock`。
+- 検知・復旧は既存の resume の見回り（60 秒ごと）に乗せる（新しい loop・常駐の capture-pane は足さない）。消えたら監査 `commander.console.vanished` と通知（タイトルだけ・本文や鍵は載せない）。tmux の確認失敗・dead pane は消失と扱わない。監査 `restored` / `restore_failed` / `restore_gave_up`。
+- 地図: `route_map.py` に 5 本（ロックの付け外し・保存・消失の見張り・開き直し・自動再開の送信）を足し `./deck.sh route-map` で `docs/ROUTE-MAP.md` を再生成（手編集なし）。診断レポート（`locks.summary`）と selftest にも状態を出す。
+- 統合検証・効果と処理時間・未検証の記録は `docs/implementation-status.md` の先頭の節を参照（本番は禁止・評価は隔離）。
+
+### 開発機能への要望（2026-11-28、この仕事を回して見つかったもの。実コードの修正は未）
+1. `.nexarch/` の brief が git 管理外で worktree へ届かない（毎回本文を貼るか、worktree へ写す仕組みが要る）。
+2. worktree の `.git`（`gitdir:` で共通ディレクトリを指す）が開発用の箱の中から見えず git 操作が失敗する。
+3. MCP の道具の進捗が終了するまで空のまま（途中の進捗が画面・親に見えない）。
+4. 内部の review 待ちが見えない（どの子がいつまで待っているかが時系列に出ない）。
+5. `queued` の理由が見えない・停止と引き継ぎの MCP 道具が足りない。
+6. Zen（OpenCode の無料モデル）も local 扱いにして起動の準備を事前に行いたい。
+7. 子エージェントの report が `Unknown tool` になる（道具名の食い違い）。
