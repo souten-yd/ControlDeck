@@ -66,3 +66,25 @@ def test_library_paths_must_be_inside_the_two_roots(monkeypatch, tmp_path):
         libraries.validate_entries([{"id": "x", "label": "x", "path": str(tmp_path / "other"), "subpath": "", "default": True}])
     # 内蔵（Embed・Reranker の従来の置き場）は除く
     libraries.validate_entries([{"id": libraries.BUILTIN_LIBRARY_ID, "label": "内蔵", "path": str(tmp_path / "d"), "subpath": ""}])
+
+
+def test_download_job_makes_a_missing_folder_without_the_flag(roots, monkeypatch, admin_client):
+    """更新前に開いた古い画面は create_folder を送らない。それでも取得先が無ければ作る（「存在しません」で止めない）。
+    2026-11-28 利用者「まだ存在しないと出る。存在しないからダウンロードしてほしいのに」。"""
+    from app.models_mgmt import maya_s
+    from tests.conftest import CSRF_HEADERS
+
+    one, _two, _tmp = roots
+    target = one / "LLM" / "Hy4-Flash-Maya-GGUF"
+    monkeypatch.setattr(maya_s, "installed", lambda: True)
+    seen = []
+
+    def fake_catalog(folder=""):
+        seen.append(folder)
+        raise maya_s.MayaError("stop here")   # 作られたかだけを見る
+
+    monkeypatch.setattr(maya_s, "catalog", fake_catalog)
+    response = admin_client.post("/api/v1/features/maya-s/models/download-jobs", headers=CSRF_HEADERS,
+                                 json={"setup_id": "hy4-flash-maya-l", "folder": str(target)})
+    assert response.status_code == 422 and "stop here" in response.text
+    assert target.is_dir() and seen == [str(target)]
