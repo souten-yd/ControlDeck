@@ -4,8 +4,8 @@
 頼らない）。担当のコンソールへは Terminal の inject_input（自動再開と同じ送り方）で短い文を渡し、
 終わった報告は画面の「完了報告:」の 5 行（古い 4 行も可）を正規表現で読む（LLM なし）。
 
-- 保存: `data/ai-commander/teams.json`（0600・tmp → os.replace・プロセス内は RLock）。DB は使わない。
-- 壊れた JSON は空として扱う（落とさない）。
+- 保存: `data/ai-commander/teams.json`（0600・tmp → os.replace で原子・書き換えの直前に 1 世代 `teams.json.bak` を残す）。
+  壊れていたら .bak から読む（どちらも壊れていれば空として扱い、落とさない。復元は診断へ記録）。DB は使わない。
 - 自動の取り込み・止まった／上限の印・通知は team_watch.py（T2a）。ここは一覧のときの担当の状態・報告の有無・未検証の印。
 - T3a: メンバーに headless（CLI と接続だけ・画面なし）を足せる。実行は team_runner.py、上限の方針・並列・配り手は
   team_dispatch.py。チームごとに作業場所（CodeDEV の team-日時）を持つ（workdir）。
@@ -63,22 +63,78 @@ class TeamError(Exception):
         self.status_code = status_code
 
 
+BAK_NAME = "teams.json.bak"
+
+
 def _path() -> Path:
     return data_dir() / "ai-commander" / "teams.json"
 
 
-def _load() -> list[dict]:
-    try:
-        raw = json.loads(_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+def _parse(path: Path) -> list[dict]:
+    """1 つの保存ファイルを読む。形が正しくなければ ValueError（壊れていると .bak への合図）。"""
+    raw = json.loads(path.read_text(encoding="utf-8"))
     teams = raw.get("teams") if isinstance(raw, dict) else None
-    return [t for t in teams if isinstance(t, dict) and isinstance(t.get("id"), str)] if isinstance(teams, list) else []
+    if not isinstance(teams, list):
+        raise ValueError("teams の形が正しくありません")
+    return [t for t in teams if isinstance(t, dict) and isinstance(t.get("id"), str)]
+
+
+def _diagnose_store(from_backup: bool, error: str) -> None:
+    """壊れからの復元を診断へ残す（同じことが起きたら画面・レポートに出る）。WARNING ログも出す
+    （ログは診断レポートの「警告・エラー」へ自動的に載る）。"""
+    try:
+        from app.diagnostics import store as diagnostics_store
+
+        diagnostics_store.record("teams_store_recovered", rate_key="teams-store", from_backup=from_backup, error=error)
+    except Exception:  # noqa: BLE001 - 診断の失敗で本体を止めない
+        pass
+    if from_backup:
+        logger.warning("teams.json が壊れていたので 1 世代前のバックアップ（teams.json.bak）から復元しました: %s", error)
+    else:
+        logger.warning("teams.json とバックアップの両方が壊れていたので、板を空として扱います: %s", error)
+
+
+def _load() -> list[dict]:
+    """板を読む。teams.json が壊れていたら 1 世代前の .bak から（brief D・2026-11-28）。
+
+    どちらも壊れていても落とさず空として扱う。復元したら診断へ記録する。
+    """
+    path = _path()
+    error = ""
+    try:
+        return _parse(path)
+    except FileNotFoundError:
+        try:
+            return _parse(path.with_name(BAK_NAME))  # 普通は無い（teams.json だけが消えたときの復元）
+        except (OSError, ValueError):
+            return []
+    except (OSError, ValueError) as exc:
+        error = str(exc)[:200]
+    try:
+        rows = _parse(path.with_name(BAK_NAME))
+    except (OSError, ValueError):
+        _diagnose_store(False, error)
+        return []
+    _diagnose_store(True, error)
+    return rows
 
 
 def _save(teams: list[dict]) -> None:
+    """原子に保存する（tmp → os.replace）。書き換える直前に今の状態を 1 世代 .bak へ残す（brief D）。
+
+    .bak の書き換えも tmp → os.replace なので、途中で落ちても .bak は前の状態のまま（壊れた状態で上書きしない）。
+    """
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = path.read_bytes()
+            bak_tmp = path.with_name(BAK_NAME + ".tmp")
+            bak_tmp.write_bytes(data)
+            os.chmod(bak_tmp, 0o600)
+            os.replace(bak_tmp, path.with_name(BAK_NAME))
+        except OSError:
+            logger.warning("teams.json のバックアップを更新できませんでした")
     temp = path.with_suffix(".tmp")
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -133,12 +189,27 @@ def clean_files(value: object) -> list[str]:
     return out
 
 
-def clean_checks(value: object) -> list[str]:
-    """確認のコマンド（1 行ずつ・制御文字不可）。空行は捨てる。"""
+def clean_checks(value: object) -> list[dict]:
+    """確認のコマンド（1 行ずつ・制御文字不可）。空行は捨てる。
+
+    文字列に加えて {command, cwd} の形も受け付ける（brief E・2026-11-28: 作業フォルダ（実行場所の中の
+    相対パス）を指定できる。今は `env -C backend …` で回避していた）。cwd は実行時に realpath でも検証する。
+    """
+    from app.commander import team_inputs
+
     if not isinstance(value, list):
         raise TeamError("確認のコマンドは文字列のリストで指定してください")
-    out = [clean_line(item, "確認のコマンド", CHECK_MAX, required=False) for item in value]
-    out = [c for c in out if c]
+    out: list[dict] = []
+    for item in value:
+        if isinstance(item, dict):
+            command = clean_line(item.get("command"), "確認のコマンド", CHECK_MAX, required=False)
+            cwd = team_inputs.clean_cwd(item.get("cwd"))
+            if command:
+                out.append({"command": command, "cwd": cwd} if cwd else command)
+            continue
+        text = clean_line(item, "確認のコマンド", CHECK_MAX, required=False)
+        if text:
+            out.append(text)
     if len(out) > CHECKS_MAX:
         raise TeamError(f"確認のコマンドは {CHECKS_MAX} 個までです")
     return out
@@ -194,6 +265,42 @@ def member_is_local(member: dict) -> bool:
 
     model = str(member.get("model") or "")
     return not (model_choice.is_zen(model) or model.startswith("cloud:"))
+
+
+def local_model_problem(cli: str, account: str, model: str) -> str:
+    """閉じたチーム（local_only）でこの CLI・接続・モデルが使えない理由（空なら使える）。
+
+    モデルが空なら OpenCode の接続の既定へ解決する（モデル解決の決まり）。Claude・Codex は定額のログインとはいえ
+    外部のモデルなので、閉じたチームでは使わない。
+    """
+    from app.commander import accounts
+    from app.integrations.opencode import model_choice
+
+    if cli != "opencode":
+        return f"閉じたチームでは {cli} は使えません（ローカル LLM のみ）"
+    resolved = str(model or "")
+    if not resolved:
+        try:
+            resolved = str(accounts.opencode_connection(account or accounts.DEFAULT_ACCOUNT)["model"] or "")
+        except Exception:  # noqa: BLE001 - 接続が分からなければ閉じたチームでは使わせない
+            return "閉じたチームでは OpenCode の接続が分からないので使えません"
+    if model_choice.is_zen(resolved):
+        return "閉じたチームでは OpenCode（Zen・Go）のモデルは使えません（外部へ直結します）"
+    if resolved.startswith("cloud:"):
+        return "閉じたチームでは外部のモデル（cloud:）は使えません"
+    return ""
+
+
+def member_local_problem(member: dict) -> str:
+    """閉じたチーム（local_only）でこの担い手が使えない理由（空なら使える）。画面のコンソールは限定できないので断る。"""
+    if not is_headless(member):
+        return "閉じたチームでは画面のコンソールは使えません（ローカル LLM のヘッドレスのみ）"
+    return local_model_problem(str(member.get("cli") or ""), str(member.get("account") or ""), str(member.get("model") or ""))
+
+
+def endpoint_local_problem(ep: dict) -> str:
+    """閉じたチーム（local_only）でこの endpoint が使えない理由（空なら使える）。チームリーダー・役割の指定に使う。"""
+    return local_model_problem(str(ep.get("cli") or ""), str(ep.get("account") or ""), str(ep.get("model") or ""))
 
 
 # ---------------------------------------------------------------- 担当ファイルの重なり
@@ -270,18 +377,23 @@ def ensure_workdir(team_id: str) -> str:
 CREATED_BY = ("", "nexarch", "assistant")
 
 
-def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> dict:
+def create_team(name: str, *, workdir_path: str = "", created_by: str = "", owner_user_id: int = 0) -> dict:
     """チームを作る。役割とチームリーダーは Nexarch の設定の既定を写す（T3b）。
 
     保存先: AI アシスタントから作る（created_by="assistant"）ときは、その会話の OpenCode の作業場所（workdir_path）をそのまま
     使う（新しいフォルダを作らない・必須）。それ以外は workdir_path があればそれ、無ければ Nexarch の設定の保存先
     （team_root）の下に自動で作る（未設定なら CodeDEV に自動の作業場所）。workdir_path は作業フォルダの検証を通す。
+
+    owner_user_id はチームを作った利用者（担い手の ControlDeck MCP はこの利用者の権限で動く）。
+    呼び出し側が利用者を知らない（旧 API・直呼び）ときは 0 のまま＝作成者不明として、担い手に MCP を付けない。
     """
     from app.commander import team_roles
 
     name = clean_line(name, "チーム名", NAME_MAX)
     if created_by not in CREATED_BY:
         raise TeamError("作成元が正しくありません")
+    if owner_user_id is None or isinstance(owner_user_id, bool) or not isinstance(owner_user_id, int) or owner_user_id < 0:
+        raise TeamError("作成者の指定が正しくありません")
     if created_by == "assistant" and not workdir_path:
         raise TeamError("AI アシスタントから作るときは、会話の作業場所（workdir）が必要です")
     if workdir_path:
@@ -302,7 +414,9 @@ def create_team(name: str, *, workdir_path: str = "", created_by: str = "") -> d
             "brief": "", "reset_before_dispatch": True,
             "on_limit": "handoff", "fallback": [], "codex_without_sandbox": True, "max_parallel": 3, "local_parallel": 1, "auto_run": True,
             "roles": roles, "leader": leader, "limits": {}, "created_by": created_by,
-            "git_init": True, "web_research": True, "autonomy": "high",
+            "git_init": True, "web_research": True, "autonomy": "high", "local_only": False,
+            "auto_resume": True,
+            **({"owner_user_id": owner_user_id} if owner_user_id else {}),
             **made,
         }
         teams.append(team)
@@ -350,7 +464,8 @@ def update_team(team_id: str, fields: dict) -> dict:
             if not isinstance(fields["codex_without_sandbox"], bool):
                 raise TeamError("サンドボックスなしの入り切りは真偽で指定してください")
             team["codex_without_sandbox"] = fields["codex_without_sandbox"]
-        for key, label in (("git_init", "git の初期化"), ("web_research", "Web の調査")):
+        for key, label in (("git_init", "git の初期化"), ("web_research", "Web の調査"),
+                           ("local_only", "閉じたチーム"), ("auto_resume", "自動の再開")):
             if fields.get(key) is not None:
                 if not isinstance(fields[key], bool):
                     raise TeamError(f"{label}の入り切りは真偽で指定してください")

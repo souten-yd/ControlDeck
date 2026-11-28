@@ -116,6 +116,27 @@ def test_make_directory_audited_and_conflict(admin_client, area):
     assert any(row.resource_id == str((root / "new").resolve()) for row in rows)
 
 
+def test_resolve_path_accepts_files_inside_roots_and_blocks_escape(area):
+    """目的: 資料の受け渡し（brief E・2026-11-28）でファイルも選べるように、検証つきで実体のパスを返すこと。
+
+    resolve_dir はディレクトリだけなので、資料（ファイル・フォルダ）には resolve_path を使う。
+    ルートの外・シンボリックリンクで外へ出る道・ControlDeck の data_dir の中・files の拒否の場所は
+    ディレクトリと同じ決まりで断る。
+    根拠: 2026-11-28 の依頼（brief E）「許可ルート内 realpath/機密禁止パス/リンク逃げ検証」。
+    AGENTS.md の「パスは必ず検証（symlink 脱出防止）」。"""
+    root, outside = area
+    assert workdir.resolve_path(str(root / "note.txt")) == (root / "note.txt").resolve()
+    assert workdir.resolve_path(str(root / "proj")) == (root / "proj").resolve()
+    (outside / "secret.txt").write_text("s", encoding="utf-8")
+    (root / "escape.md").symlink_to(outside / "secret.txt")
+    with pytest.raises(PermissionError):
+        workdir.resolve_path(str(root / "escape.md"))
+    with pytest.raises(FileNotFoundError):
+        workdir.resolve_path(str(root / "missing.txt"))
+    with pytest.raises(PermissionError):
+        workdir.resolve_path(str(data_dir() / "x.txt"))
+
+
 def test_create_consoles_validates_with_workdir_roots(admin_client, area, monkeypatch):
     root, outside = area
     fake = FakeManager()

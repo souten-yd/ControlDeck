@@ -209,10 +209,13 @@ async def run_once(now: float | None = None) -> list[dict]:
 async def watch_loop() -> None:
     from app.commander import team_dispatch, team_runner
 
-    try:  # 起動時: 前の ControlDeck で走っていた実行は「中断」にする（自動では続けない）
+    try:  # 起動時: 前の ControlDeck で走っていた実行を回収し、自動で続きから（brief D・2026-11-28）
         await asyncio.to_thread(team_runner.recover_interrupted)
         from app.commander import team_leader
-        await asyncio.to_thread(team_leader.recover_interrupted)
+        out = await asyncio.to_thread(team_leader.recover_interrupted)
+        if out["leaders"]:
+            logger.info("Nexarch のチーム: 再起動で中断されたチームリーダー %d 件（自動再開 %d・上限 %d・停止のまま %d）",
+                        out["leaders"], out["resumed"], out["capped"], out["stopped"])
     except Exception:  # noqa: BLE001
         logger.exception("中断した実行の回収に失敗しました")
     while True:

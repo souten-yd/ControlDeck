@@ -70,11 +70,13 @@ def fake(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_store():
     path = teams._path()
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
     yield
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
 
 
 def _post(client, url, body=None):
@@ -118,11 +120,73 @@ def test_storage_mode_and_broken_json(admin_client, fake):
     _team(admin_client)
     path = teams._path()
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    # 壊れても .bak（1 世代前）から復元する（詳しくは下の test_storage_keeps_backup...）。
+    # どちらも壊れていても落とさず空として扱う。
     path.write_text("{broken", encoding="utf-8")
+    path.with_name("teams.json.bak").write_text("also broken", encoding="utf-8")
     r = admin_client.get(API)
     assert r.status_code == 200 and r.json()["teams"] == []
     assert _post(admin_client, "", {"name": "新"}).status_code == 201
     assert json.loads(path.read_text())["teams"][0]["name"] == "新"
+
+
+def test_storage_keeps_backup_and_recovers_from_corruption(admin_client, fake):
+    """目的: チームの板（teams.json）が壊れても、前の 1 世代（teams.json.bak）から復元できること。
+
+    - 保存の直前に今の状態を .bak へ残す（原子: tmp → os.replace）。壊れていたら .bak から読む。
+    - 両方壊れていても落とさず空として扱う（従来どおり）。
+    - 復元したら診断へ記録が残る（control_deck.diagnostics・WARNING ログ。同じことが起きたら画面に出る）。
+    根拠: 2026-11-28 の依頼（brief D）「teams.json 原子保存＋1世代 .bak と破損回復、診断」。
+    利用者（2026-11-28）「PC の再起動や更新のときに、事前の状況を記録しておき、途中から再開できるように。
+    データが消えないか心配」。tmp → os.replace は原子だが、ディスクの障害・外部からの同時書き込みで
+    壊れることは起こりうるので、直前の 1 世代を残して気づけるようにする。"""
+    from app.diagnostics import store as diagnostics_store
+
+    first = _post(admin_client, "", {"name": "一班"}).json()["id"]
+    path = teams._path()
+    assert not path.with_name("teams.json.bak").exists()  # まだ前の状態が無い
+    _post(admin_client, "", {"name": "二班"})
+    backup = path.with_name("teams.json.bak")
+    # .bak は前の状態（一班だけ）。失うのは多くとも直前の 1 保存ぶん。
+    ids = [t["id"] for t in json.loads(backup.read_text(encoding="utf-8"))["teams"]]
+    assert ids == [first]
+    # 壊れていたら .bak から読む
+    path.write_text("{broken", encoding="utf-8")
+    rows = admin_client.get(API).json()["teams"]
+    assert [t["id"] for t in rows] == [first] and rows[0]["name"] == "一班"
+    recovered = diagnostics_store.read(kinds={"teams_store_recovered"}, limit=5)
+    assert recovered and recovered[0].get("from_backup") is True
+    # 両方壊れていても落とさない（空として扱う）・記録も残る
+    backup.write_text("also broken", encoding="utf-8")
+    rows = admin_client.get(API).json()["teams"]
+    assert rows == []
+    lost = diagnostics_store.read(kinds={"teams_store_recovered"}, limit=5)
+    assert lost and lost[0].get("from_backup") is False
+
+
+def test_team_owner_user_id_and_local_only_setting(admin_client, fake):
+    """目的: チームに作成した利用者（owner_user_id）を確実に残すことと、閉じたチーム（local_only）の設定。
+
+    - 担い手の ControlDeck MCP はこの利用者の権限で動く。作成者の分からないチーム（旧チーム・直作り）には
+      owner が残らず、MCP を付けない（試験は test_commander_team_t3a.py）。
+    - local_only は真偽だけを受け付け、既定は切。
+    根拠: 2026-11-28 の依頼（brief C）「team の owner_user_id を作成人から確実に保存、旧チームで不明なら MCP 無し」
+    「local_only=true は全起動/引継ぎ/モデル解決/Web出口で強制、既定 false」。"""
+    from app.database import SessionLocal
+    from app.models import User
+
+    with SessionLocal() as db:
+        uid = db.execute(select(User).where(User.username == "admin")).scalar_one().id
+    team = _post(admin_client, "", {"name": "道具班"}).json()
+    assert team["owner_user_id"] == uid
+    plain = teams.create_team("直作り")
+    assert not plain.get("owner_user_id")  # 作成者の分からないチーム（MCP 無し）
+    tid = team["id"]
+    assert _put(admin_client, f"/{tid}", {"local_only": True}).json()["local_only"] is True
+    assert _put(admin_client, f"/{tid}", {"local_only": False}).json()["local_only"] is False
+    for bad in ("maybe", [], 5):
+        assert _put(admin_client, f"/{tid}", {"local_only": bad}).status_code in (400, 422), bad
+    assert teams.create_team("既定")["local_only"] is False
 
 
 def test_name_and_text_validation(admin_client, fake):
