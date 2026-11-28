@@ -20,7 +20,7 @@
 
 ## 読む順
 
-1. `AGENTS.md`
+1. `AGENTS.md`（と問題の台帳 `docs/ISSUES.md`。未対応・対応中の問題から片付ける）
 2. `docs/ROADMAP.md` と、いまの仕事の `docs/HANDOFF-*.md`
 3. `docs/PLAN-opencode-dev-environment.md`
 4. `docs/design-opencode-feature.md`（v2 の設定の形、ゲートウェイ、MCP、圧縮）
