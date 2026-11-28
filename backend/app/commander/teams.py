@@ -1075,6 +1075,22 @@ def parallel_summary(team: dict) -> dict:
     }
 
 
+def result_shape(result: object, team: dict) -> dict | None:
+    """チームの結果を、画面が読む形にそろえる（欠けた項目を既定で埋める）。result が無ければ None。"""
+    if not isinstance(result, dict):
+        return None
+    git = team.get("git") or {}
+    base = {"summary": "", "outcome": "done", "finished_at": result.get("finished_at") or _now(), "checks": team.get("last_team_checks"),
+            "changes": None, "remaining": [], "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+            "can_land": False, "landed": False, "team_branch": git.get("team_branch") or "", "base_branch": git.get("base_branch") or ""}
+    out = {**base, **{k: v for k, v in result.items() if v is not None or k in ("checks", "changes")}}
+    if not isinstance(out.get("remaining"), list):
+        out["remaining"] = []
+    if not isinstance(out.get("usage"), dict):
+        out["usage"] = dict(base["usage"])
+    return out
+
+
 def list_teams() -> list[dict]:
     """全チーム。タスクに担当の状態（assignee_state）と、doing の報告の有無（report_ready）を添える。
 
@@ -1123,7 +1139,8 @@ def list_teams() -> list[dict]:
             members.append(row)
         from app.commander import leader_mcp, team_roles
 
-        out.append({**team, "usage_total": leader_mcp.usage_total(team), "members": members, "tasks": tasks, "parallel": parallel_summary(team),
+        out.append({**team, "result": result_shape(team.get("result"), team),
+                    "usage_total": leader_mcp.usage_total(team), "members": members, "tasks": tasks, "parallel": parallel_summary(team),
                     "roles": team_roles.role_views(team), "leader": team.get("leader"),
                     "leader_effective": team_roles.leader_endpoint(team), "limits": team.get("limits", {}),
                     "on_limit": team.get("on_limit", "handoff"), "fallback": team.get("fallback", []),

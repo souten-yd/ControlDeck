@@ -413,9 +413,11 @@ def close(team_id: str, summary: str, *, landed: bool = False) -> dict:
         run.update({"status": "done", "ended_at": teams._now(), "reason": ""})  # noqa: SLF001
         run["finish"] = {"summary": text, "outcome": "done", "at": teams._now()}  # noqa: SLF001
         left = leader_mcp.drop_tasks(team, None, "チームを完了にしたとき残っていた", "利用者")
+        # 結果は画面が読む形（summary・remaining・usage など）を必ずそろえる。チームリーダーの finish が無いまま閉じた
+        # チーム（Claude が引き取ったもの）で result が {landed} だけになり、画面が落ちた（2026-11-28 利用者の報告）
+        team["result"] = teams.result_shape({**(team.get("result") or {}), "summary": text, "outcome": "done"}, team)
         if landed:   # 外（GitHub の PR など）で元のブランチへ取り込み済み。画面は「取り込み済み」と言う
-            result = team.setdefault("result", {})
-            result.update({"landed": True, "can_land": False, "landed_outside": True})
+            team["result"].update({"landed": True, "can_land": False, "landed_outside": True})
         leader_mcp.add_timeline(team, "finish", "完了: " + text[:150] + (f"（残りの仕事 {len(left)} 件を取り下げ）" if left else ""))
 
     leader_mcp._mutate(team_id, save)  # noqa: SLF001

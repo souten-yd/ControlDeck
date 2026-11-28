@@ -159,13 +159,13 @@ function ResultSection({ team, expert, onChanged }: { team: Team; expert: boolea
     <section data-team-result={result.outcome} className={`${SECTION} ${result.outcome === "done" ? "border-emerald-300 dark:border-emerald-800" : "border-red-300 dark:border-red-800"}`}>
       <h3 className={SECTION_TITLE}>結果（{result.outcome === "done" ? "完了" : "止まりました"}）</h3>
       {/* チームリーダーの報告は Markdown で書かれる（## や ** がそのまま見えていた） */}
-      <Suspense fallback={<p className="whitespace-pre-wrap break-words text-sm">{result.summary}</p>}><MarkdownMessage text={result.summary} /></Suspense>
+      <Suspense fallback={<p className="whitespace-pre-wrap break-words text-sm">{result.summary}</p>}><MarkdownMessage text={result.summary ?? ""} /></Suspense>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         <dt className="text-zinc-500">確認の結果</dt><dd data-team-result-checks>{checks}</dd>
         <dt className="text-zinc-500">変更ファイル</dt>
         <dd data-team-result-changes>{result.changes ? `${result.changes.count} 件（+${result.changes.added} / -${result.changes.removed}）` : "なし"}</dd>
-        <dt className="text-zinc-500">残り</dt><dd>{result.remaining.length ? result.remaining.join(" / ") : "なし"}</dd>
-        {(expert || result.usage.cost_usd > 0) && <><dt className="text-zinc-500">使用量</dt>
+        <dt className="text-zinc-500">残り</dt><dd>{result.remaining?.length ? result.remaining.join(" / ") : "なし"}</dd>
+        {result.usage && (expert || result.usage.cost_usd > 0) && <><dt className="text-zinc-500">使用量</dt>
           <dd>{result.usage.input_tokens.toLocaleString()} 入力・{result.usage.output_tokens.toLocaleString()} 出力 {fmtCost(result.usage.cost_usd)}</dd></>}
       </dl>
       {result.changes && result.changes.files.length > 0 && (

@@ -152,3 +152,22 @@ def test_model_label_names_who_works(monkeypatch):
     entry = teams.runs_open(task, {"id": "h1", "kind": "headless", "cli": "opencode", "account": "default",
                                    "model": "opencode-go/glm-5.3"}, kind="headless")
     assert entry["model"] == "opencode-go/glm-5.3" and entry["model_label"] == "GLM-5.3"   # 担い手のモデルを記録に残す
+
+
+def test_closed_team_without_leader_result_has_a_full_result(monkeypatch):
+    """チームリーダーの結果が無いまま閉じたチームでも、結果は画面が読む形（remaining・usage など）になる。
+    2026-11-28 利用者: Claude が引き取った「開発機能を磨く」を開くと TypeError（i.remaining.length）で画面が落ちた。
+    閉じるが result を {landed} だけで作っていた。一覧でも欠けた項目を補う（本番に残った欠けたデータも直る）。"""
+    from app.commander import team_leader, teams
+
+    team = {"id": "tq", "name": "t", "timeline": [], "leader_run": {"status": "stopped"}, "tasks": [], "git": {"team_branch": "nexarch/tq"}}
+    monkeypatch.setattr(teams, "_load", lambda: [team])
+    monkeypatch.setattr(leader_mcp, "_mutate", lambda team_id, fn: fn(team))
+    monkeypatch.setattr(leader_mcp, "_read", lambda team_id: team)
+    out = team_leader.close("tq", "引き取って仕上げた", landed=True)
+    assert out["result"]["remaining"] == [] and out["result"]["usage"]["cost_usd"] == 0.0
+    assert out["result"]["summary"] == "引き取って仕上げた" and out["result"]["landed"] is True
+    broken = {"landed": True, "can_land": False}            # 本番に残った欠けた形
+    shaped = teams.result_shape(broken, team)
+    assert shaped["remaining"] == [] and shaped["summary"] == "" and shaped["team_branch"] == "nexarch/tq" and shaped["landed"] is True
+    assert teams.result_shape(None, team) is None
