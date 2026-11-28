@@ -67,14 +67,11 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
       if (width < 768) {
         await page.getByRole("button", { name: "Project Lab" }).click();
       }
-      // 動いている作業場があればタブに件数の印
-      const workspacesTab = page.getByRole("button", { name: /^作業場・1$/ });
-      await expect(workspacesTab).toBeVisible();
-      await expect(page.getByRole("button", { name: "プロジェクト", exact: true })).toBeVisible();
-      await workspacesTab.click();
+      // 1 つの一覧（2026-11-28）: プロジェクトの下に「ControlDeck の改修（本体の複製）」の小見出しで作業場が並ぶ
+      await expect(page.getByText(/ControlDeck の改修（本体の複製）/).first()).toBeVisible();
       // 一覧: 進み具合の短い印と ToDo の n/m（320px の一覧は header の Popover の中）
       const rows = width < 768
-        ? page.getByRole("dialog", { name: "作業場" }).getByTestId("workspace-row")
+        ? page.getByRole("dialog", { name: "プロジェクト" }).getByTestId("workspace-row")
         : page.getByTestId("workspace-row");
       await expect(rows).toHaveCount(2);
       await expect(rows.first()).toContainText("ws-a");
@@ -194,9 +191,9 @@ for (const [width, height] of [[1280, 900], [320, 700]] as const) {
 
     await page.goto("/project-lab");
     if (width < 768) await page.getByRole("button", { name: "Project Lab" }).click();
-    await page.getByRole("button", { name: /^作業場・1$/ }).click();
+    // 一覧の下の「ControlDeck の改修（本体の複製）」から作業場を選ぶ（タブは 2026-11-28 に無くした）
     const rows = width < 768
-      ? page.getByRole("dialog", { name: "作業場" }).getByTestId("workspace-row")
+      ? page.getByRole("dialog", { name: "プロジェクト" }).getByTestId("workspace-row")
       : page.getByTestId("workspace-row");
     await rows.first().click();
 

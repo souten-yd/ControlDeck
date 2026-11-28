@@ -93,7 +93,8 @@ for (const width of [320, 1280]) {
     await select.selectOption("__ws_new__");
     const create = shell.locator('[data-testid="workspace-create"]');
     await expect(create).toBeVisible();
-    await expect(create.getByRole("option")).toHaveText(["ControlDeck 本体（origin/main）", "CodeDEV: app"]);
+    // 作業場（本体の複製）の元は ControlDeck 本体だけ（2026-11-28。ふつうのプロジェクトは CodeDEV をそのまま選ぶ）
+    await expect(create.getByLabel("作業場の元")).toHaveText("ControlDeck 本体（origin/main）の複製");
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await page.screenshot({ path: `test-results/assistant-dev-workspace-${width}-create.png` });
     await create.getByRole("button", { name: "作る" }).click();

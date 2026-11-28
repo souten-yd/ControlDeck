@@ -472,7 +472,7 @@ export function WorkspaceResultCard({ workspace, busy }: { workspace: DevWorkspa
 }
 
 export function WorkspaceBar({
-  value, workspaces, projects, onCreated, onDeleted, busy = false, source, onSource, target, capabilities,
+  value, workspaces, projects: _projects, onCreated, onDeleted, busy = false, source, onSource: _onSource, target, capabilities,
 }: {
   /** 作る元（controldeck / codedev:<名前>）。＋メニューの「開発対象」と合わせるため親が持つ */
   source: string;
@@ -537,20 +537,17 @@ export function WorkspaceBar({
     return (
       <div data-testid="workspace-create" className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50/60 p-2 dark:border-sky-900 dark:bg-sky-950/20">
         <WorkspaceBadge target={target} />
-        <select aria-label="作業場の元" value={source} onChange={(e) => onSource(e.target.value)}
-          className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <option value="controldeck">ControlDeck 本体（origin/main）</option>
-          {projects.filter((p) => p.git).map((p) => (
-            <option key={p.name} value={`codedev:${p.name}`}>CodeDEV: {p.name}</option>
-          ))}
-        </select>
+        {/* 作業場（本体の複製の箱）は ControlDeck 本体の改修のときだけ。ふつうのプロジェクトは選択欄の「CodeDEV の
+            プロジェクト」をそのまま選ぶ（OpenCode はプロジェクトの箱で動き、ブランチもその場で作れる）。
+            2026-11-28 利用者「ControlDeck のミラーを作るとき以外は、全然違う場所で作る必要がない」 */}
+        <span aria-label="作業場の元" className="min-w-0 flex-1 truncate text-sm">ControlDeck 本体（origin/main）の複製</span>
         <button type="button" onClick={() => void create()} disabled={working}
           className="min-h-9 shrink-0 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50">
           {working ? "作っています…" : "作る"}
         </button>
         <p className="w-full text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
           開発対象: {targetInfo(target)?.label ?? target}（＋メニューの「開発対象」で変えられます）。
-          元の履歴から隔離した作業ツリーを作ります。元のフォルダの未コミットの変更は入りません。
+          本体を写した箱（ミラーつき）を作ります。ふつうのアプリの開発は、選択欄の「CodeDEV のプロジェクト」をそのまま選んでください。
         </p>
       </div>
     );

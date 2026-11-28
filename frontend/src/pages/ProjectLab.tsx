@@ -13,7 +13,7 @@ import {
   type ProjectLabPublishState,
 } from "../api/projectLab";
 import { CodeViewer } from "../features/projectlab/CodeViewer";
-import { BottomSheet, ConfirmDialog, Popover, SegmentedTabs, Skeleton } from "../components/ui";
+import { BottomSheet, ConfirmDialog, Popover, Skeleton } from "../components/ui";
 import { IconDots, IconDownload, IconPlay, IconRestart, IconSearch, IconStop, IconX } from "../components/icons";
 import { useToasts } from "../stores";
 import { ContextActionsMenu } from "../features/addons/ContextActionsMenu";
@@ -22,7 +22,7 @@ import { WS_STATES, WorkspaceBadge, WorkspaceResultCard, ago, type WorkspaceProg
 import { LS_CONV } from "../features/workflows/workspaceTargets";
 
 type SheetKind = "projects" | "files" | "info" | "runs" | null;
-/** Project Lab の左の一覧: プロジェクト（残る）と作業場（一時の写し）。寿命が違うので混ぜず切り替える */
+/** Project Lab の表示: プロジェクト（CodeDEV）か作業場（ControlDeck 本体の複製の箱）か。一覧は 1 つ（2026-11-28） */
 type LabView = "projects" | "workspaces";
 
 
@@ -130,13 +130,6 @@ export default function ProjectLabPage() {
     // 選んだ作業場が消えても（AI アシスタントで消す）残りの先頭を選び直す
     if (wsName === null || !wsItems.some((w) => w.name === wsName)) setWsName(wsItems[0].name);
   }, [labView, wsItems, wsName]);
-  const labTabs = useMemo(() => {
-    if (!workspacesAvailable) return [] as const;
-    return [
-      ["projects", "プロジェクト"] as const,
-      ["workspaces", wsActive > 0 ? `作業場・${wsActive}` : "作業場"] as const,
-    ];
-  }, [workspacesAvailable, wsActive]);
   /** AI アシスタントのその会話へ（AssistantChat は localStorage の会話 ID から始まる） */
   const openWsConversation = (conversationId: string) => {
     localStorage.setItem(LS_CONV, conversationId);
@@ -264,39 +257,34 @@ export default function ProjectLabPage() {
           </button>
           {/* 起点のボタン直下（左上基点）から開く。中央のシートだと視線と操作位置がずれる。 */}
           <Popover open={sheet === "projects"} label={labView === "workspaces" ? "作業場" : "プロジェクト"} onClose={() => setSheet(null)}>
-            {labTabs.length > 0 && (
-              <SegmentedTabs className="mb-2" tabs={labTabs} value={labView} onChange={(value) => setLabView(value)} />
+            {/* 1 つの一覧（2026-11-28 利用者「プロジェクトと作業場を分ける必要ある？ControlDeck の改修以外は同じ所で良い」）:
+                プロジェクト（CodeDEV。AI チーム・AI アシスタントの作業場所もここ）。作業場（箱）は ControlDeck 本体の改修
+                （本体の複製とミラー）のときだけなので、あるときだけ下に小見出しを付けて並べる。 */}
+            <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
+            {projects.map((project) => (
+              <ProjectRow
+                key={project.id}
+                project={project}
+                selected={labView === "projects" && project.id === projectId}
+                onSelect={() => {
+                  setLabView("projects");
+                  setProjectId(project.id);
+                  setSheet(null);
+                }}
+              />
+            ))}
+            {projects.length === 0 && (
+              <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
             )}
-            {labView === "workspaces" ? (
+            {workspacesAvailable && wsItems.length > 0 && (
               <>
-                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">作業場（一時）</p>
+                <p className="mt-2 border-t border-zinc-100 px-2.5 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:border-zinc-800">
+                  ControlDeck の改修（本体の複製）{wsActive > 0 && `・動いている ${wsActive}`}
+                </p>
                 {wsItems.map((w) => (
-                  <WorkspaceRow key={w.name} item={w} selected={w.name === wsName}
-                    onSelect={() => { setWsName(w.name); setSheet(null); }} />
+                  <WorkspaceRow key={w.name} item={w} selected={labView === "workspaces" && w.name === wsName}
+                    onSelect={() => { setLabView("workspaces"); setWsName(w.name); setSheet(null); }} />
                 ))}
-                {wsItems.length === 0 && !wsProgressQuery.isLoading && (
-                  <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">
-                    作業場がありません。AI アシスタントの作業フォルダの選択欄の「🧪 ＋ 新しい作業場」で作れます。
-                  </p>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
-                {projects.map((project) => (
-                  <ProjectRow
-                    key={project.id}
-                    project={project}
-                    selected={project.id === projectId}
-                    onSelect={() => {
-                      setProjectId(project.id);
-                      setSheet(null);
-                    }}
-                  />
-                ))}
-                {projects.length === 0 && (
-                  <p className="px-2.5 py-4 text-xs leading-relaxed text-zinc-500">{projectRoot} にフォルダを置くと自動で表示されます。</p>
-                )}
               </>
             )}
           </Popover>
@@ -355,9 +343,6 @@ export default function ProjectLabPage() {
       <div className="flex min-h-0 flex-1 gap-3 px-2 pb-2 md:px-3 md:pb-3">
         <aside className="hidden w-72 shrink-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 md:flex">
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {labTabs.length > 0 && (
-              <SegmentedTabs className="mb-2" tabs={labTabs} value={labView} onChange={(value) => setLabView(value)} />
-            )}
             {labView === "projects" ? (
               <>
                 <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">プロジェクト</p>
@@ -374,17 +359,31 @@ export default function ProjectLabPage() {
                     {artifacts.length === 0 && <p className="px-2 text-xs text-zinc-400">表示できるファイルがありません</p>}
                   </>
                 )}
+                {workspacesAvailable && wsItems.length > 0 && (
+                  <>
+                    <p className="mt-3 border-t border-zinc-100 px-2 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:border-zinc-800">
+                      ControlDeck の改修（本体の複製）
+                    </p>
+                    {wsItems.map((w) => (
+                      <WorkspaceRow key={w.name} item={w} selected={false} onSelect={() => { setLabView("workspaces"); setWsName(w.name); }} />
+                    ))}
+                  </>
+                )}
               </>
             ) : (
               <>
-                <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">作業場（一時）</p>
+                <button type="button" onClick={() => setLabView("projects")}
+                  className="mb-1 min-h-9 w-full rounded-lg px-2 text-left text-xs font-medium text-accent-600 hover:bg-zinc-50 dark:text-accent-400 dark:hover:bg-zinc-800">
+                  ← プロジェクトの一覧
+                </button>
+                <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">ControlDeck の改修（本体の複製）</p>
                 {wsProgressQuery.isLoading && <Skeleton className="mx-2 h-14 rounded-xl" />}
                 {wsItems.map((w) => (
                   <WorkspaceRow key={w.name} item={w} selected={w.name === wsName} onSelect={() => setWsName(w.name)} />
                 ))}
                 {wsItems.length === 0 && !wsProgressQuery.isLoading && (
                   <p className="px-2 text-xs leading-relaxed text-zinc-400">
-                    作業場がありません。AI アシスタントの作業フォルダの選択欄の「🧪 ＋ 新しい作業場」で作れます。
+                    ControlDeck 本体の複製（作業場）はありません。ふつうのプロジェクトは上の一覧（CodeDEV）にあります。
                   </p>
                 )}
               </>
