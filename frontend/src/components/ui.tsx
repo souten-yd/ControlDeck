@@ -280,6 +280,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  cancelLabel = "キャンセル",
   danger = true,
   busy,
   disabled,
@@ -290,6 +291,7 @@ export function ConfirmDialog({
   title: string;
   message: string;
   confirmLabel: string;
+  cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
   disabled?: boolean;
@@ -312,7 +314,7 @@ export function ConfirmDialog({
             onClick={onClose}
             className="min-h-11 flex-1 rounded-xl bg-zinc-100 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 sm:flex-none"
           >
-            キャンセル
+            {cancelLabel}
           </button>
           <button
             onClick={onConfirm}

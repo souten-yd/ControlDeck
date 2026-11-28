@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 283 ファイル、2967 テスト（目的の未記入 93 ファイル）
-- E2E: 152 spec、353 テスト
+- backend: 284 ファイル、2977 テスト（目的の未記入 93 ファイル）
+- E2E: 153 spec、355 テスト
 
 ## backend（backend/tests）
 
@@ -4000,6 +4000,21 @@
 - `test_schedule_unit_contains_only_worker_reference_and_absolute_utc_time`
 - `test_worker_python_keeps_virtualenv_entrypoint_symlink`
 
+### backend/tests/test_terminal_run.py
+
+目的: AI アシスタントの「▶ 実行」を画面の中で実行する API（POST /terminals/run など）を守る。 目的: (1) 管理者だけが使え、作った本人のセッションだけを読める・入力できる・止められる。 (2) 終わりの印から終了コードが取れ、パスワードの要求（英語・日本語）を見分けられる。 (3) **パスワードは監査・ログ・応答・画面の出力のどこにも残らない**。要求が出ていないときは送らない（409）。 根拠: 2026-11-28 利用者「返事のコンソールコマンドをユーザ側で実行できるように。管理者パスワードが必要なら ポップアップで入力できるように」。パスワードの扱いが最も危ない所なので、実際の tmux（conftest の隔離ソケット・ 本番の tmux には触れない）で通して確かめる。
+
+- `test_password_prompt_detection`
+- `test_parse_capture_exit_code_and_marker_hidden`
+- `test_requires_admin_and_login`
+- `test_other_users_session_and_unmarked_session_are_404`
+- `test_cwd_is_validated_like_post_terminals`
+- `test_run_reads_output_and_exit_code_and_audit_omits_command`
+- `test_password_prompt_input_never_leaves_a_trace`
+- `test_input_without_prompt_is_409_and_not_sent`
+- `test_input_validation_errors_do_not_echo_the_secret`
+- `test_stop_sends_ctrl_c`
+
 ### backend/tests/test_terminals.py
 
 目的: **未記入**
@@ -4531,10 +4546,10 @@
 
 ### frontend/e2e/assistant-code-run.spec.ts
 
-目的: 目的: 返事の中のコマンド（bash などのシェルの言語・言語なしでコマンドに見えるブロック）に「▶ 実行」が出て、 確認のシート（内容・場所・危険な内容は赤字で 2 段）を通して ControlDeck の Terminal へ渡ることを守る。 python などシェルでない言語には出ない。場所はその会話の作業場（無ければホーム）。 根拠: 2026-11-27 利用者「返事の中のコマンドを、ボタン 1 つでコンソール（Terminal）で実行する」。 API は既存の POST /terminals（cwd を足した）だけ。新しい危ない API は作っていない。
+目的: 目的: 返事の中のコマンド（bash などのシェルの言語・言語なしでコマンドに見えるブロック）に「▶ 実行」が出て、 確認のシート（内容・場所・危険な内容は赤字で 2 段）を通して実行されることを守る（2026-11-28 から画面内で実行。 出力・パスワードの入力は assistant-run-inline.spec.ts）。 python などシェルでない言語には出ない。場所はその会話の作業場（無ければホーム）。 根拠: 2026-11-27 利用者「返事の中のコマンドを、ボタン 1 つでコンソール（Terminal）で実行する」。 2026-11-28 利用者「コマンドをユーザ側で実行できるように」: 実行は POST /terminals/run（cwd つき）。
 
 - code blocks show run button only for shell commands (${width}px)
-- dangerous command needs a red note and two steps, then runs in the workspace
+- dangerous command needs a red note and two steps, then runs inline in the workspace
 
 ### frontend/e2e/assistant-dev-targets.spec.ts
 
@@ -4664,6 +4679,13 @@
 目的: **未記入**
 
 - restore the code to the checkpoint of an autosaved turn
+
+### frontend/e2e/assistant-run-inline.spec.ts
+
+目的: 目的: 返事のコマンドの「▶ 実行」が、画面の中（確認のシートの実行の枠）で走り、出力・状態・止める・閉じるが出ること、 sudo がパスワードを求めたらポップアップで受け、入力欄をすぐ空にして POST の本文だけに載せること （API は模擬。パスワードが画面・URL・保存に残らない）。320px と 1280px・ダークとライトを撮る。 根拠: 2026-11-28 利用者「コンソールコマンドをユーザ側で実行できるように。管理者パスワードが必要ならポップアップで 入力できるように。LLM が実行できないコマンドもコンソールへ移動せずに実行したい」。
+
+- inline run: output, password popup, finish (${width}px ${scheme})
+- inline run: cancelling the password popup sends Ctrl-C
 
 ### frontend/e2e/assistant-secret-lock-topbar.spec.ts
 

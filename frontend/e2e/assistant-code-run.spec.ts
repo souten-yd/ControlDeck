@@ -1,8 +1,9 @@
 // 目的: 返事の中のコマンド（bash などのシェルの言語・言語なしでコマンドに見えるブロック）に「▶ 実行」が出て、
-//       確認のシート（内容・場所・危険な内容は赤字で 2 段）を通して ControlDeck の Terminal へ渡ることを守る。
+//       確認のシート（内容・場所・危険な内容は赤字で 2 段）を通して実行されることを守る（2026-11-28 から画面内で実行。
+//       出力・パスワードの入力は assistant-run-inline.spec.ts）。
 //       python などシェルでない言語には出ない。場所はその会話の作業場（無ければホーム）。
 // 根拠: 2026-11-27 利用者「返事の中のコマンドを、ボタン 1 つでコンソール（Terminal）で実行する」。
-//       API は既存の POST /terminals（cwd を足した）だけ。新しい危ない API は作っていない。
+//       2026-11-28 利用者「コマンドをユーザ側で実行できるように」: 実行は POST /terminals/run（cwd つき）。
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
@@ -56,12 +57,13 @@ async function openAssistant(page: Page) {
   } }));
   await page.route(/\/api\/v1\/chat\/conversations\/run1\/queue$/, (route) =>
     route.fulfill({ json: { items: [], generating_message_id: null, held: false } }));
+  await page.route(/\/api\/v1\/terminals\/run$/, (route) => {
+    created.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.fulfill({ status: 201, json: { session_id: "term1" } });
+  });
+  await page.route(/\/api\/v1\/terminals\/run\/term1$/, (route) => route.fulfill({ json: {
+    output: "ok", done: true, exit_code: 0, password_prompt: false } }));
   await page.route(/\/api\/v1\/terminals$/, (route) => {
-    if (route.request().method() === "POST") {
-      created.push(route.request().postDataJSON() as Record<string, unknown>);
-      return route.fulfill({ status: 201, json: { id: "term1", name: "term1", created_at: 1, attached: false,
-        persistent: true, program: "bash", cwd: REPO, pid: 1, activity_at: 1, alive: true, workload: "idle", engine: "v1" } });
-    }
     return route.fulfill({ json: { tmux: true, sessions: [{ id: "term1", name: "term1", created_at: 1, attached: false,
       persistent: true, program: "bash", cwd: REPO, pid: 1, activity_at: 1, alive: true, workload: "idle", engine: "v1" }] } });
   });
@@ -99,7 +101,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-test("dangerous command needs a red note and two steps, then runs in the workspace", async ({ page, context }) => {
+test("dangerous command needs a red note and two steps, then runs inline in the workspace", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
   await page.setViewportSize({ width: 390, height: 844 });
   await establishSession(page, context);
@@ -117,12 +119,14 @@ test("dangerous command needs a red note and two steps, then runs in the workspa
   // 1 回目は用意だけ（まだ実行しない）
   await confirm.click();
   await expect(created).toHaveLength(0);
-  // 2 回目で実行: 作業場の cwd 付きで既存のセッション作成 API を呼び、Terminal へ渡す
+  // 2 回目で実行: 作業場の cwd 付きで POST /terminals/run を呼び、Terminal へは移らず枠に結果が出る
   await confirm.click();
   await expect.poll(() => created.length).toBe(1);
-  expect(created[0]).toEqual({ cwd: REPO });
+  expect(created[0]).toEqual({ command: "sudo rm -rf /tmp/controldeck-e2e", cwd: REPO });
+  await expect(sheet.getByTestId("run-status")).toContainText("終了（コード 0）");
+  await expect(sheet.getByTestId("run-output")).toHaveText("ok");
+  await expect(page).not.toHaveURL(/\/terminal\?/);
+  // 「ターミナルで開く」で同じセッションの Terminal へ移る（続きを手で）
+  await sheet.getByTestId("run-open-terminal").click();
   await expect(page).toHaveURL(new RegExp(`/terminal\\?session=term1$`));
-  const handed = await page.evaluate(() => JSON.parse(sessionStorage.getItem("control-deck:terminal-autorun") || "null"));
-  expect(handed).toMatchObject({ sessionId: "term1", text: "sudo rm -rf /tmp/controldeck-e2e" });
-  await page.screenshot({ path: "test-results/code-run-terminal.png" });
 });

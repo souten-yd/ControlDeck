@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-28 AI アシスタントの「▶ 実行」を画面の中で実行・出力表示・sudo のパスワードをポップアップで渡す
+- 利用者「コンソールコマンドを実行してと出るとき、ボタンでユーザ側が実行できるように。管理者パスワードが要るときはポップアップで入力できるように」。
+- backend（`terminals/run.py`）: `POST /terminals/run`（作成と貼り付け・終わりの印 `__CD_RUN_DONE__:<終了コード>` を別行で貼る）、`GET /terminals/run/{sid}`（出力・done・exit_code・password_prompt）、`POST .../input`（パスワードを標準入力で tmux へ）、`POST .../stop`。管理者（terminal.use と settings.manage）・作った本人だけ（印 `run_owner`。違えば 404）。監査はコマンドの本文を残さず長さと指紋・cwd だけ。
+- パスワード: 本文は pydantic を通さず自前検査（検証エラーに値が出ない）・監査は長さだけ・ログ・応答・画面の出力に出ない・求められていないときは 409。試験で実 tmux（隔離ソケット）を通して確認。
+- 止める: 貼った複数行の実行は tmux の Ctrl-C で止まらず（実測）、前面グループへ INT → TERM → KILL と強めて、終了コード 130 で印を出し直す。
+- 画面: 確認のシートの中に実行の枠（出力・状態・止める・ターミナルで開く・閉じる）。パスワードは alertdialog（入力欄は送る直前に空にし state に持たない）。
+- 試験: `test_terminal_run.py` 17 件・E2E `assistant-run-inline.spec.ts`・`assistant-code-run.spec.ts` を画面内実行へ合わせた。
+
 ## 2026-11-28 閉じたチームを開くと画面が落ちる不具合
 - 利用者「開発機能を磨くを押すとエラーの画面」（TypeError: i.remaining.length）。閉じる（#716/#717）が、チームリーダーの結果の無いチームで結果を `{landed}` だけで作っていた。
 - `teams.result_shape`: 結果を画面が読む形（summary・remaining・usage・changes・checks・ブランチ）にそろえる。閉じるで使い、一覧でも通す（本番に残った欠けたデータも直る）。画面も `remaining`・`usage` の欠けで落ちない。
