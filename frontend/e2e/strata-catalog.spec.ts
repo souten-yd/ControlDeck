@@ -8,6 +8,8 @@
  * 全系列・全量子化を登録画面に出す）。AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す）
  * と UI ルール（320px・ダーク/ライト・等幅数字・日本語）。
  * API は page.route でモックし、外部（HF・npm・GitHub）へ取りに行かない。
+ * #24 更新: 共通 UI では詳細な系列・量子化の選択はエキスパートの「従来の登録」に置かれた
+ * （不要な表示は隠す決まり）。導線を「モデル登録 → Strata → 従来の登録」へ更新した。
  */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
@@ -45,9 +47,16 @@ const CATALOG = {
 };
 
 async function openStrataRegistration(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+  });
   await page.route("**/api/v1/models/runtime-environment", async (route) => {
     const env = await (await route.fetch()).json();
     env.policy.selected_runtime = "strata";
+    // 共通 UI は未導入のランタイムのボタンを無効にする。モックで導入済みにする。
+    env.runtimes = ["llama", "strata", "radiance", "sly-radiance", "maya"].map((id) => ({
+      id, runtime: id, label: id, installed: true, available: true,
+    }));
     await route.fulfill({ json: env });
   });
   await page.route("**/api/v1/models/providers/*/models", (route) => route.fulfill({ json: [] }));
@@ -56,6 +65,8 @@ async function openStrataRegistration(page: import("@playwright/test").Page) {
   await page.goto("/models");
   await page.getByRole("button", { name: "モデル登録", exact: true }).click();
   await page.getByRole("button", { name: "Strata", exact: true }).click();
+  // 共通 UI では詳細な目録（系列・量子化・載る印）はエキスパートの「従来の登録」にある。
+  await page.getByRole("button", { name: "従来の登録", exact: true }).click();
   return page.getByRole("dialog", { name: "モデル登録" });
 }
 

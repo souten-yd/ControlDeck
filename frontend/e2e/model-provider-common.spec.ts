@@ -1,3 +1,7 @@
+/** 目的: Ollama のモデル取得と個別設定の保存が、共通プロバイダ経由の API だけを呼ぶこと。
+ *        320px / PC 幅で横にはみ出さないこと。API は page.route で差し替え、実取得・実保存は行わない。
+ *  根拠: 共通プロバイダ整備（Nexarch #5 以降）で旧個別ルートが廃されたことの回帰確認。
+ *  #24: 11 spec を調査したが、この spec は共通 UI の現在のラベルと一致しており変更不要（回帰のみ）。 */
 import { expect, test, type Page } from "@playwright/test";
 
 const username = process.env.CONTROL_DECK_E2E_USER;

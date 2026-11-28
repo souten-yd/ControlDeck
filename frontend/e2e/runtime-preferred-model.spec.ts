@@ -1,3 +1,7 @@
+/** 目的: ランタイムごとの起動モデル（preferred_models）を「LLM 共通設定」から選んで保存でき、
+ *        未準備のモデルは選べないこと。320px / 1280px で横にはみ出さないこと。
+ *  根拠: ランタイム切替時に起動モデルを固定したいという利用者の要望の回帰確認。
+ *  #24: 共通 UI の現在のランタイムカード名・コンボボックス名と一致しており変更不要（回帰のみ）。 */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 

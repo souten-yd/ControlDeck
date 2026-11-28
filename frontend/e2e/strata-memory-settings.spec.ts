@@ -1,9 +1,17 @@
+/** 目的: Strata のメモリ計画（KV の常駐トークン／RAM の残し量／同時実行数／コンテキスト）を
+ *        個別設定から保存でき、メモリ目安と起動ログの内訳が見えること。320px / 1280px で横にはみ出さないこと。
+ *  根拠: Strata の KV 確保量が分かりにくいという利用者の指摘と、Nexarch #12 の共通設定化。
+ *  #24 更新: 共通 UI では詳細な Strata 専用欄はエキスパートの「従来の設定画面（すべての引数）」に
+ *            移った（UI ルール「不要な表示は隠し、エキスパートで開く」）。その導線へ追随した。 */
 import { expect, test } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
 for (const width of [320, 1280]) {
   test(`Strata memory planning and settings at ${width}px`, async ({ page, context }) => {
     test.skip(!hasSession(), "E2E credentials required");
+    await page.addInitScript(() => {
+      try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+    });
     await page.setViewportSize({ width, height: 900 });
     await establishSession(page, context);
     let saved: any;
@@ -40,6 +48,8 @@ for (const width of [320, 1280]) {
     await page.goto("/models");
     await page.getByRole("button", { name: "strata-memoryの個別設定を開く" }).click();
     const sheet = page.getByRole("dialog", { name: "strata-memory · 個別設定", exact: true });
+    // Strata 専用の詳細欄は共通設定の下の <details> に畳まれている（エキスパート）。
+    await sheet.locator("summary", { hasText: "従来の設定画面（すべての引数）" }).click();
     await expect(sheet.getByLabel("StrataKVのVRAM保持長", { exact: true })).toHaveValue(width === 1280 ? "16384" : "");
     await expect(sheet.getByLabel("StrataRAM余裕", { exact: true })).toHaveValue(width === 1280 ? "4" : "");
     await sheet.getByLabel("Strata同時実行数", { exact: true }).fill("6");
@@ -70,6 +80,9 @@ for (const width of [320, 1280]) {
 // AGENTS.md「不具合・診断・テストの決まり」（目的と根拠を書いてから足す）。
 test("Strata registration offers Inkling 2 Mini with thinking and without Qwen-only memory settings", async ({ page, context }) => {
   test.skip(!hasSession(), "E2E credentials required");
+  await page.addInitScript(() => {
+    try { localStorage.setItem("control-deck:commander-expert", "1"); } catch { /* 無視 */ }
+  });
   await page.setViewportSize({ width: 390, height: 900 });
   await establishSession(page, context);
   const quantIds = ["sq-20", "sq-15", "sq-10", "ud-q8_k_xl", "ud-q4_k_xl", "ud-q4_k_m", "ud-iq4_xs",
@@ -99,6 +112,7 @@ test("Strata registration offers Inkling 2 Mini with thinking and without Qwen-o
   await page.goto("/models");
   await page.getByRole("button", { name: "inkの個別設定を開く" }).click();
   const sheet = page.getByRole("dialog", { name: "ink · 個別設定", exact: true });
+  await sheet.locator("summary", { hasText: "従来の設定画面（すべての引数）" }).click();
   await sheet.getByLabel("Strataモデル系列").selectOption("inkling-2-mini");
   await expect(sheet.getByLabel("Strataモデル量子化")).toHaveValue("sq-20");
   const options = sheet.getByLabel("Strataモデル量子化").locator("option");
