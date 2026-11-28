@@ -1035,12 +1035,46 @@ def cancel(job_id: str) -> bool:
 async def cancel_and_wait(job_id: str) -> bool:
     """Cancel and synchronously reclaim a waiting request/lease for API callers."""
     job = _jobs.get(job_id)
+    if job is not None and job.status == "interrupted":
+        # 停止していた Job の取り消し。取り消しの契約（docs/PLAN-model-catalog.md
+        # 「決めた意味」）に従い、paused の再開の記録を消して終端にする。取り消したのに
+        # 再開できる状態が残るのは不整合。途中のファイル（.part）はランタイム側の契約に
+        # 任せる（Job 基盤は場所を知らないのでここでは消さない）。
+        job.status = "canceled"
+        job.error = "停止していたジョブを取り消しました（再開はできません）"
+        job.finished_at = time.time()
+        _notify_job(job)
+        await asyncio.to_thread(_db_write, job, True)   # 終端なので再開の記録も消える
+        return True
     if not cancel(job_id):
         return False
     if job is not None and job.resource_task is not None:
         await asyncio.gather(job.resource_task, return_exceptions=True)
     if job is not None:
         await _cancel_resource_state(job, job.resource_broker or resource_broker)
+    return True
+
+
+def cancel_interrupted_row(job_id: str) -> bool:
+    """メモリに無い停止中（interrupted）の Job を取り消す（同期。呼び出し側が to_thread で包む）。
+
+    再起動でメモリから消えた停止中の Job（DB の行と paused の再開の記録だけが残っている）
+    を取り消す。取り消しの契約（docs/PLAN-model-catalog.md「決めた意味」）に従い、再開の
+    記録を消して終端にする。対象が無い・既に終わっているときは False。
+    """
+    from app.database import SessionLocal
+    from app.models import Job as JobRow
+    from app.models import utcnow
+
+    with SessionLocal() as db:
+        row = db.get(JobRow, job_id)
+        if row is None or row.status != "interrupted":
+            return False
+        row.status = "canceled"
+        row.error = "停止していたジョブを取り消しました（再開はできません）"
+        row.finished_at = utcnow()
+        db.commit()
+    _remove_resume_file(job_id)
     return True
 
 

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2901 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2909 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、353 テスト
 
 ## backend（backend/tests）
@@ -1840,6 +1840,8 @@
 - `test_stop_keeps_the_record_and_resume_starts_a_new_job` — 目的: 「停止」が再開の記録と停止の印を残し、「再開」が同じ引数で新しい Job を作ること。
 - `test_resume_stopped_refuses_a_concurrent_second_request` — 目的: 同じ Job の「再開」を同時に押しても、Job を 2 つ作らないこと。
 - `test_paused_resume_record_is_dropped_after_the_retention` — 目的: 停止したまま 30 日を過ぎた Job の再開の記録を、起動時の整理で消すこと。
+- `test_stopped_job_can_be_canceled_and_cannot_be_resumed` — 目的: 停止した Job を取り消せること。取り消しは再開の記録（paused の印つき）を
+- `test_stopped_job_left_in_db_after_restart_can_be_canceled_by_api` — 目的: 再起動でメモリから消えた停止中の Job も、API の取り消しで行と再開の記録を
 - `test_job_api_offers_resume_only_for_interrupted_jobs_with_a_record` — 目的: 一覧・詳細の can_resume が、中断していて再開の記録が残る Job だけ True になること。
 - `test_shutdown_does_not_cancel_resumable_job` — 目的: サーバーの停止で task が cancel されても、再開できる Job を「キャンセル」に
 - `test_startup_resumes_interrupted_job_with_factory_and_owner` — 目的: 起動後に、中断された Job を保存した引数から作り直すこと。
@@ -2449,6 +2451,17 @@
 - `test_validate_forces_a_default`
 - `test_unconfigured_policy_synthesizes_builtin_library` — 未設定環境では従来の data_dir/models/gguf が既定になる（後方互換）。
 - `test_library_api_routes`
+
+### backend/tests/test_model_paths_bounds.py
+
+目的: 登録前の読み取り（model_paths）が読む量・件数・型・子の symlink を厳密に守ることの試験。 目的: 新規選択の検証と登録前の読み取り（app/models_mgmt/model_paths.py）が、細工した・ 壊れたファイル・フォルダで長く回ったり、選んだフォルダの外を実体として読んだりしないこと。 量・件数・型の上限と、子（フォルダの中のファイル）の symlink の拒否を確かめる。 inspect は同期 endpoint の threadpool で動くので、1 件が長く止まると他の要求まで遅れる。 根拠: Nexarch #20（2026-11-28）のレビュー残件（P1）。 - config.json が子 symlink でもそのまま開いていた（resolve したフォルダの外を読める）。 - フォルダの大きさの走査（glob・stat）に件数の上限が無く、symlink も追いかけていた。 - GGUF の文字列配列は件数（count）だけのループで、総読取の上限が各要素の間に効いて いなかった（大きなファイルで長時間止められた）。 - .rad と config.json は名前だけで形式を認定していた。 同じ観点の既存の試験は test-catalog で探して無いことを確認した（test_runtime_catalog.py は 正しい入力の読み取りと、選択のルートの外・上位の symlink の拒否だけを確かめている）。
+
+- `test_gguf_string_array_with_a_lying_count_stops_quickly` — 目的: 文字列配列の件数（count）を大きく偽った GGUF ヘッダを短い時間で打ち切ること。
+- `test_gguf_keeps_reading_keys_after_a_legitimate_array` — 目的: 上限内の本物の文字列配列（語彙など）の後も、続く鍵を読み続けること。
+- `test_config_json_symlink_is_rejected_and_the_folder_is_not_safetensors` — 目的: 選んだフォルダの子（config.json）が symlink なら読まず、safetensors と
+- `test_folder_with_junk_config_json_is_not_safetensors` — 目的: config.json の中身が読める JSON オブジェクトでないなら safetensors と
+- `test_config_json_fifo_does_not_hang_inspect` — 目的: config.json が名前付きパイプ（FIFO）でも inspect が止まらないこと。
+- `test_folder_size_is_bounded_and_ignores_symlinked_children` — 目的: フォルダの大きさの走査が子の symlink を数えず、件数の上限で止まること。
 
 ### backend/tests/test_model_thinking.py
 

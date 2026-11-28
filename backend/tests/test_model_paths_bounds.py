@@ -205,4 +205,6 @@ def test_folder_size_is_bounded_and_ignores_symlinked_children(tmp_path, monkeyp
     monkeypatch.setattr(model_paths, "_FOLDER_MAX_ENTRIES", 2)
     for index in range(6):
         (folder / f"real-{index}.safetensors").write_bytes(b"x")
-    assert model_paths._file_size(folder) <= 2          # 上限で打ち切る
+    # 全部数えると 16 バイト（7 + 3 + 6×1）。上限 2 件で打ち切るので、どの 2 件を
+    # 数えても 16 未満になる（順序は問わない）。
+    assert model_paths._file_size(folder) < 16

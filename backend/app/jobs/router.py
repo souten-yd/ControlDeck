@@ -79,6 +79,11 @@ async def cancel_job(
         await cancel_request(job_id)
     if canceled is None:
         canceled = await jobs.cancel_and_wait(job_id)
+    if not canceled and job is None:
+        # 再起動でメモリへ戻っていない停止中の Job: DB の行と再開の記録（paused の印つき）
+        # を取り消す。停止した Job を取り消す道が無いと、記録と途中のファイルが
+        # 30 日の期限まで残り続けるだけになる。
+        canceled = await asyncio.to_thread(jobs.cancel_interrupted_row, job_id)
     if not canceled:
         raise HTTPException(status_code=409, detail="実行中のジョブではありません")
     await asyncio.to_thread(audit.record, db, "job.cancel", user=user, resource_type="job", resource_id=job_id, request=request)
