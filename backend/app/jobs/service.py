@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -50,6 +51,24 @@ _RESUME_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # 再開の処理中の Job（同時に押されても Job を二重に作らない）。event loop は 1 本なので、
 # await をまたがない「見て入れる」は原子。錠をモジュールに置くと試験ごとの loop に縛られる。
 _resuming: set[str] = set()
+# _resuming は event loop と to_thread の両方から触るので、見て入れる部分だけ錠で守る。
+_resuming_lock = threading.Lock()
+
+
+def _begin_resume_or_cancel(job_id: str) -> bool:
+    """「再開」か「取り消し」を 1 つだけ始める（両方が同時に記録を触らない）。"""
+    with _resuming_lock:
+        if job_id in _resuming:
+            return False
+        _resuming.add(job_id)
+        return True
+
+
+def _end_resume_or_cancel(job_id: str) -> None:
+    with _resuming_lock:
+        _resuming.discard(job_id)
+
+
 TERMINAL_STATUSES = ("succeeded", "failed", "canceled")
 
 
@@ -287,6 +306,10 @@ ResumeFactory = Callable[[dict[str, Any]], Callable[[Job], Awaitable[Any]]]
 class _ResumableKind:
     factory: ResumeFactory
     title: Callable[[dict[str, Any]], str]
+    # 取り消しのとき、その Job が所有する途中のファイル（.part など）を消す。
+    # 保存した引数だけを受け取り、完成済みのファイル・別の Job・symlink を触らない。
+    # 再開で途中ファイルを残す契約を持つ種類（hf 取得など）だけが登録する。
+    cleanup: Callable[[dict[str, Any]], None] | None = None
 
 
 _resumable_kinds: dict[str, _ResumableKind] = {}
@@ -297,12 +320,15 @@ def register_resumable(
     factory: ResumeFactory,
     *,
     title: Callable[[dict[str, Any]], str],
+    cleanup: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """再起動後に続きから作り直せる Job の種類を登録する（モジュールの読み込み時に呼ぶ）。
 
     factory は保存した引数から runner を作る。title は引数から画面に出す題を作る。
+    cleanup は明示的な取り消しのときに、その Job の引数から所有する途中ファイルを消す
+    （停止・再起動では呼ばない）。
     """
-    _resumable_kinds[kind] = _ResumableKind(factory=factory, title=title)
+    _resumable_kinds[kind] = _ResumableKind(factory=factory, title=title, cleanup=cleanup)
 
 
 def _resume_dir() -> Path:
@@ -377,6 +403,36 @@ def _read_resume_doc(path: Path) -> dict[str, Any] | None:
         logger.warning("再開用の記録の形が違うので消します: %s", path.name)
         return None
     return doc
+
+
+def _finalize_interrupted_cancel(job_id: str) -> bool:
+    """停止済み Job の取り消しを「再開」と排他的に仕上げる（同期・呼び出し側は to_thread）。
+
+    取り消しの契約（docs/PLAN-model-catalog.md「決めた意味」）を、記録だけではなく途中の
+    ファイルまで守る。再開の記録を消す**前**に、その Job の引数から所有する途中ファイル
+    （.part など）を種類別の cleanup で消す。停止・サーバー停止は cleanup を呼ばないので
+    途中ファイルは残る（Range で続きから取れる）。cleanup は対象 Job の引数だけを受け、
+    完成済みのファイル・別の Job・symlink は触らない（hf 側の契約、#19 で接続する）。
+
+    再開が先に印を付けていたときは何もせず False を返す（取り消しは競合を譲る）。
+    cleanup が失敗しても取り消し自体は進め、ログだけ残す（路上のファイルより記録の
+    不整合を残さない）。
+    """
+    if not _begin_resume_or_cancel(job_id):
+        return False
+    try:
+        doc = _read_resume_doc(_resume_dir() / f"{job_id}.json")
+        if doc is not None:
+            spec = _resumable_kinds.get(str(doc.get("kind") or ""))
+            if spec is not None and spec.cleanup is not None:
+                try:
+                    spec.cleanup(doc.get("params") or {})
+                except Exception:  # noqa: BLE001 - 掃除の失敗で取り消しを止めない
+                    logger.exception("取り消しの途中ファイルの掃除に失敗 (%s)", job_id)
+        _remove_resume_file(job_id)
+        return True
+    finally:
+        _end_resume_or_cancel(job_id)
 
 
 def _collect_resume_candidates() -> list[dict[str, Any]]:
@@ -1037,9 +1093,11 @@ async def cancel_and_wait(job_id: str) -> bool:
     job = _jobs.get(job_id)
     if job is not None and job.status == "interrupted":
         # 停止していた Job の取り消し。取り消しの契約（docs/PLAN-model-catalog.md
-        # 「決めた意味」）に従い、paused の再開の記録を消して終端にする。取り消したのに
-        # 再開できる状態が残るのは不整合。途中のファイル（.part）はランタイム側の契約に
-        # 任せる（Job 基盤は場所を知らないのでここでは消さない）。
+        # 「決めた意味」）に従い、その Job が所有する途中ファイルを消してから paused の
+        # 再開の記録を消し、終端にする。停止済みの runner はもう走っていないので、
+        # ここで消さないと .part が 30 日の期限まで残る（#20 のレビュー）。
+        if not await asyncio.to_thread(_finalize_interrupted_cancel, job_id):
+            return False                    # 再開と競合した: 取り消さず譲る
         job.status = "canceled"
         job.error = "停止していたジョブを取り消しました（再開はできません）"
         job.finished_at = time.time()
@@ -1070,11 +1128,14 @@ def cancel_interrupted_row(job_id: str) -> bool:
         row = db.get(JobRow, job_id)
         if row is None or row.status != "interrupted":
             return False
+        # 記録だけ消すと .part が残る（停止済み runner はもう無い）。再開との競合を
+        # 守りつつ、その Job の途中ファイルを消してから再開の記録を消す。
+        if not _finalize_interrupted_cancel(job_id):
+            return False
         row.status = "canceled"
         row.error = "停止していたジョブを取り消しました（再開はできません）"
         row.finished_at = utcnow()
         db.commit()
-    _remove_resume_file(job_id)
     return True
 
 
@@ -1149,13 +1210,12 @@ async def resume_stopped(job_id: str) -> Job:
     """
     # 記録の読み取り〜create〜_close_resume の前に印を付ける。印が無いと、同じ Job の
     # 「再開」を続けて押したときに Job が 2 つ作られる（_close_resume が後から効く）。
-    if job_id in _resuming:
-        raise ValueError("この Job は再開の処理中です")
-    _resuming.add(job_id)
+    if not _begin_resume_or_cancel(job_id):
+        raise ValueError("この Job は再開の処理中です（取り消しと同時にはできません）")
     try:
         return await _resume_stopped_unlocked(job_id)
     finally:
-        _resuming.discard(job_id)
+        _end_resume_or_cancel(job_id)
 
 
 async def _resume_stopped_unlocked(job_id: str) -> Job:

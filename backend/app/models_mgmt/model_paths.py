@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import struct
 from pathlib import Path
@@ -97,12 +98,18 @@ def gguf_metadata(path: Path) -> dict:
 
     上限: 鍵 100000 個・読み込み（読み飛ばしを含む）8MB・1 つの文字列 1MB・
     配列 1 つ 200000 要素。8MB の上限は配列の要素ごとにも効く（件数を大きく偽った
-    ヘッダで、要素の案内だけを延々回させない）。
+    ヘッダで、要素の案内だけを延々回させない）。文字列の長さ（unsigned 64bit）は
+    残り予算と実ファイルの範囲で打ち切り、読む前・seek する前に確かめる（最大値の
+    2**64-1 を C の ssize_t へ渡すと OverflowError になるため）。
     general.file_type・general.quantized_by・general.architecture と最初の
     `*.context_length` が揃ったら読むのをやめる。
     読めない・GGUF でないときは {} を返す（壊れたファイルで登録画面を止めない）。
     上限で打ち切ったときは、その時点で読めた鍵だけを返す。
     """
+
+    class _OverBudget(Exception):
+        """文字列の長さが残り予算・実ファイルの範囲を超えた（読まない・seek しない）。"""
+
     scalar = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
     wanted = ("general.file_type", "general.quantized_by", "general.architecture")
     out: dict = {}
@@ -113,19 +120,29 @@ def gguf_metadata(path: Path) -> dict:
             handle.read(4)  # version
             _tensors, count = struct.unpack("<QQ", handle.read(16))
             read_bytes = 24
+            try:
+                handle.seek(0, os.SEEK_END)
+                file_size = handle.tell()
+                handle.seek(24)
+            except (OSError, ValueError):
+                file_size = _GGUF_MAX_BYTES   # 大きさが分からなければ予算だけを頼る
 
             def text() -> str:
                 nonlocal read_bytes
                 (n,) = struct.unpack("<Q", handle.read(8))
                 read_bytes += 8
+                # 巨大な長さでいきなり read/seek しない。残り予算と実ファイルの残りの
+                # 小さい方を超えたら、そこで打ち切る（unsigned の最大値が来ても
+                # OverflowError を出さず、ファイルの終わりを seek し直さない）。
+                room = min(_GGUF_MAX_BYTES - read_bytes, file_size - handle.tell())
+                if n > max(room, 0):
+                    raise _OverBudget
                 take = min(n, _GGUF_MAX_TEXT_BYTES)
                 data = handle.read(take)
                 read_bytes += len(data)
-                if n > take:
-                    # 長すぎる文字列は全部読まない。残りを読み飛ばして位置は厳密に保つ
-                    # （細工した長さで、この後の鍵をずらして読ませない）。
-                    rest = n - take
-                    handle.seek(rest, 1)
+                rest = n - take
+                if rest:
+                    handle.seek(rest, os.SEEK_CUR)   # rest は予算内なので ssize_t に収まる
                     read_bytes += rest
                 return data.decode("utf-8", "replace")
 
@@ -171,6 +188,8 @@ def gguf_metadata(path: Path) -> dict:
                     out["context_length"] = value
                 if all(name in out for name in wanted) and "context_length" in out:
                     return out
+    except _OverBudget:
+        return out                     # 打ち切る前に読めた鍵は返す
     except (OSError, ValueError, KeyError, struct.error):
         return {}
     return out

@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 280 ファイル、2909 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2910 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、353 テスト
 
 ## backend（backend/tests）
@@ -2458,6 +2458,7 @@
 
 - `test_gguf_string_array_with_a_lying_count_stops_quickly` — 目的: 文字列配列の件数（count）を大きく偽った GGUF ヘッダを短い時間で打ち切ること。
 - `test_gguf_keeps_reading_keys_after_a_legitimate_array` — 目的: 上限内の本物の文字列配列（語彙など）の後も、続く鍵を読み続けること。
+- `test_gguf_string_length_over_budget_is_cut_before_reading_or_seeking` — 目的: 文字列の長さが残り予算・実ファイルの範囲を超えたら、読む前・seek する前に
 - `test_config_json_symlink_is_rejected_and_the_folder_is_not_safetensors` — 目的: 選んだフォルダの子（config.json）が symlink なら読まず、safetensors と
 - `test_folder_with_junk_config_json_is_not_safetensors` — 目的: config.json の中身が読める JSON オブジェクトでないなら safetensors と
 - `test_config_json_fifo_does_not_hang_inspect` — 目的: config.json が名前付きパイプ（FIFO）でも inspect が止まらないこと。
@@ -4933,10 +4934,10 @@
 目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 - 設定の节が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。 - 取得ジョブの「停止」→「再開」が API のモックで動くこと（.part を残す/再開の意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。 ※ この環境では frontend/node_modules が無く実行不能。spec と実行コマンドのみを残し、 結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
 
 - モデル登録: 4 ランタイムが同じ順番・同じ見出しで目録 → ファイル登録 → 設定を出す
-- 共通設定: 見出しの並びがランタイム間で同じで、エキスパートは${expert ? 
+- 共通設定: 見出しの並びがランタイム間で同じで、エキスパートは${expert ?
 - 取得ジョブ: 停止 → 再開のボタンがモックの API で動く（320px）
 - ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ
-- 画面写真: ${width}px ${scheme} エキスパート${expert ? 
+- 画面写真: ${width}px ${scheme} エキスパート${expert ?
 
 ### frontend/e2e/models-swap-queue.spec.ts
 

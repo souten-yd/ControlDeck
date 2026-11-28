@@ -14,10 +14,14 @@ inspect は同期 endpoint の threadpool で動くので、1 件が長く止ま
 同じ観点の既存の試験は test-catalog で探して無いことを確認した（test_runtime_catalog.py は
 正しい入力の読み取りと、選択のルートの外・上位の symlink の拒否だけを確かめている）。
 """
+import io
 import os
 import struct
 import threading
 import time
+from pathlib import Path
+
+import pytest
 
 from app.models_mgmt import model_paths
 
@@ -94,6 +98,52 @@ def test_gguf_keeps_reading_keys_after_a_legitimate_array(tmp_path, monkeypatch)
     info = model_paths.inspect(str(path))
     assert info["metadata"]["context_length"] == 4096
     assert info["metadata"]["general.file_type"] == 7
+
+
+@pytest.mark.parametrize("declared_length", [2 ** 64 - 1, model_paths._GGUF_MAX_BYTES + 1])
+def test_gguf_string_length_over_budget_is_cut_before_reading_or_seeking(
+        tmp_path, monkeypatch, declared_length):
+    """目的: 文字列の長さが残り予算・実ファイルの範囲を超えたら、読む前・seek する前に
+    打ち切り、OverflowError も巨大な相対 seek もしないこと。
+
+    根拠: Nexarch #20 の追加再現（2026-11-28）。32 バイトのヘッダ
+    `b'GGUF'+struct.pack('<IQQQ',3,0,1,2**64-1)` を BytesIO で Path.open へ mock すると、
+    修正前は text() が handle.seek(2**64-1) を呼び
+    `OverflowError: Python int too large to convert to C ssize_t` を送出した。
+    例外を掴むだけでは「巨大な文字列を読もうとする」処理が残るので、読む前に残り予算
+    と実ファイルの範囲で打ち切る规则を、最大値と予算超過の両方で確かめる。
+    """
+    monkeypatch.setattr(model_paths, "SELECTION_ROOTS", (str(tmp_path),))
+    header = b"GGUF" + struct.pack("<IQQQ", 3, 0, 1, declared_length)
+    path = tmp_path / "evil.gguf"
+    path.write_bytes(header)
+
+    real_open = Path.open
+    relative_seeks: list[int] = []
+
+    class _Tracked(io.BytesIO):
+        def seek(self, offset, whence=io.SEEK_SET):
+            if whence == io.SEEK_CUR:
+                relative_seeks.append(offset)
+            return super().seek(offset, whence)
+
+    def fake_open(self, *args, **kwargs):
+        if self.suffix == ".gguf":       # この試験のヘッダだけを BytesIO で差し替える
+            return _Tracked(header)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    start = time.perf_counter()
+    info = model_paths.inspect(str(path))
+    elapsed = time.perf_counter() - start
+
+    assert info["format"] == "gguf"
+    # 読めた鍵が無い（inspect が context_length だけ None で足す）。例外も出ない。
+    assert info["metadata"] == {"context_length": None}
+    assert elapsed < 1.0, f"悪性ヘッダの読み取りが {elapsed:.2f} 秒かかった"
+    # 予算（8MB）を超える相対 seek を一切していない（ssize_t 変換前に打ち切った）。
+    assert not any(offset > model_paths._GGUF_MAX_BYTES for offset in relative_seeks)
 
 
 # ---- フォルダ（safetensors）の子の検証 ---------------------------------------------------------
