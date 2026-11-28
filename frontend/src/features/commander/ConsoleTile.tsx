@@ -137,21 +137,39 @@ function LockButton({ item, cliName }: { item: CommanderConsole; cliName: string
   );
 }
 
-/** 閉じるのボタン。ロック中は押せない（理由を読み上げ名と説明に出す）。 */
+/** 閉じるのボタン。ロック中は出さない（押せないボタンを並べない。鍵と「ロック中」の札で分かる）。
+ *  2026-11-28 Claude のデザインの見直し: 320px で頭の行が詰まり、名前が「Cla…」まで縮んでいた。 */
 function CloseButton({ item, cliName, onClose }: { item: CommanderConsole; cliName: string; onClose: () => void }) {
-  const locked = item.commander_locked === true;
+  if (item.commander_locked === true) return null;
   return (
     <button
       type="button"
       onClick={onClose}
-      disabled={locked}
-      aria-label={locked ? `${cliName}のコンソールはロック中で閉じられません` : `${cliName}のコンソールを閉じる`}
-      title={locked ? "ロック中は閉じられません。先にロックを外してください" : "コンソールを閉じる"}
-      className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent dark:text-red-400 dark:hover:bg-red-950/40"
+      aria-label={`${cliName}のコンソールを閉じる`}
+      title="コンソールを閉じる"
+      className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
     >
       🗑️
     </button>
   );
+}
+
+/** ロック中の札（色だけに頼らず文字でも分かるように）。 */
+function LockedBadge({ item }: { item: CommanderConsole }) {
+  if (item.commander_locked !== true) return null;
+  return (
+    <span data-commander-locked-badge
+      className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-200">
+      🔒 ロック中
+    </span>
+  );
+}
+
+/** ロック中の札の枠（琥珀色）。 */
+function lockedFrame(item: CommanderConsole): string {
+  return item.commander_locked === true
+    ? "border-amber-300 ring-1 ring-amber-200 dark:border-amber-700 dark:ring-amber-900/60"
+    : "border-zinc-200 dark:border-zinc-800";
 }
 
 /** 状態の文字と最後の行（上限・エラーならその行）。 */
@@ -204,14 +222,15 @@ export function ConsoleTile({
   return (
     <li
       data-commander-tile
-      className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className={`flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-white shadow-sm dark:bg-zinc-900 ${lockedFrame(item)}`}
     >
       <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         <AliveDot item={item} />
         <button type="button" onClick={onExpand} className="min-w-0 flex-1 text-left" aria-label={`${cliName}のコンソールを大きく開く`}>
           <span className="flex min-w-0 items-center gap-1.5">
-            <strong className="min-w-0 truncate text-sm">{cliName}</strong>
-            <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+            <strong className="min-w-[4.5rem] shrink truncate text-sm">{cliName}</strong>
+            <LockedBadge item={item} />
+            <span className="min-w-0 shrink-[2] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
             </span>
             {item.commander_label && (
@@ -231,7 +250,7 @@ export function ConsoleTile({
           onClick={onExpand}
           aria-label="大きく開く"
           title="大きく開く"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          className="hidden h-9 w-9 shrink-0 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:grid"
         >
           ⤢
         </button>
@@ -276,14 +295,15 @@ export function ConsoleRow({
   return (
     <li
       data-commander-row
-      className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className={`min-w-0 rounded-2xl border bg-white p-2.5 shadow-sm dark:bg-zinc-900 ${lockedFrame(item)}`}
     >
       <div className="flex min-w-0 items-center gap-2">
       <AliveDot item={item} />
       <button type="button" onClick={onOpen} className="min-h-11 min-w-0 flex-1 text-left">
         <span className="flex min-w-0 items-center gap-1.5">
-          <strong className="min-w-0 truncate text-sm">{cliName}</strong>
-          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          <strong className="min-w-[4.5rem] shrink truncate text-sm">{cliName}</strong>
+          <LockedBadge item={item} />
+          <span className="min-w-0 shrink-[2] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
             {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
           </span>
           {item.commander_label && <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{item.commander_label}</span>}

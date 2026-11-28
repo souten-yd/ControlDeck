@@ -683,15 +683,16 @@ test.describe("AI Commander", () => {
     await expect(firstLockOn).toHaveAttribute("aria-pressed", "true");
     await expect(first.locator("[data-commander-lock]")).toHaveAttribute("data-commander-lock", "on");
     expect(state.lockPuts).toEqual([{ id: "aa110001", locked: true }]);
-    // ロック中は閉じるが押せない（理由を読み上げ名にも出す）
-    await expect(first.getByRole("button", { name: "Claude Codeのコンソールはロック中で閉じられません" })).toBeDisabled();
+    // ロック中は閉じるを出さず、「ロック中」の札を出す（2026-11-28 Claude のデザインの見直し）
+    await expect(first.getByRole("button", { name: /Claude Codeのコンソールを閉じる/ })).toHaveCount(0);
+    await expect(first.locator("[data-commander-locked-badge]")).toHaveText("🔒 ロック中");
     await firstLockOn.click();
     await expect(first.getByRole("button", { name: "Claude Codeのロックなし（押すとロックする）" })).toHaveAttribute("aria-pressed", "false");
     await expect(first.getByRole("button", { name: "Claude Codeのコンソールを閉じる" })).toBeEnabled();
 
     // 2 個目をロックして一括で閉じる。ロック中は残し、飛ばした数を知らせる
     await rows.nth(1).getByRole("button", { name: "OpenCodeのロックなし（押すとロックする）" }).click();
-    await expect(rows.nth(1).getByRole("button", { name: "OpenCodeのコンソールはロック中で閉じられません" })).toBeDisabled();
+    await expect(rows.nth(1).getByRole("button", { name: /OpenCodeのコンソールを閉じる/ })).toHaveCount(0);
     await page.screenshot({ path: "test-results/commander-lock-320.png", fullPage: true });
     await page.getByRole("button", { name: "その他の操作" }).click();
     await page.getByRole("menuitem", { name: "すべてのコンソールを閉じる" }).click();
