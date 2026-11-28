@@ -1,5 +1,14 @@
 # 実装状況
 
+## 2026-11-28 登録検査と停止取消の P1 修正（Nexarch #20）
+- run3/run4 のレビュー残件（P1）。`models_mgmt/model_paths.py`（登録前の読み取り）と `jobs` の停止・取り消しを直した。
+- **GGUF の悪性ヘッダ**: 文字列配列の件数（count）だけのループが総読取の上限（8MB）を要素の間で効かせていなかった。配列は要素ごとに上限を効かせ、1 つの文字列 1MB・配列 1 つ 200000 要素（実際の語彙は 15 万程度）で打ち切るようにした。計測（同じ入力で旧実装と比較・512MB の疎なファイル＋件数 2^40 の偽の配列）: **旧 11.32 秒・返り空 → 新 0.000 秒・読めた鍵は返す**。本物の形（語彙 15 万の配列）は 0.028 → 0.029 秒で遅くなっていない。仕上げ時に同じ入力で再計測しても旧 11.9 秒・新 0.000 秒・本物の形 0.031 → 0.031 秒で同水準。
+- **子の symlink・形式の認定**: config.json が symlink（フォルダの中向きも含む）でもそのまま開いていたのを、実体が通常ファイルでフォルダの中か確かめてから読む（FIFO も通常ファイルでないので開かない）。config.json の中身が読める JSON オブジェクトでない（壊れ・配列・深い入れ子は `RecursionError` も拾う）ときは形式 unknown に落とす（名前だけで safetensors と認定しない。sly_radiance の `inspect_folder` と同じ中身基準）。`.rad` は拡張子のまま（Radiance 本体の登録 `_validate_model_path` も拡張子だけの検証で、中身の形式はコンテナ側が読む。ここだけ中身で断ると登録できるものを誤って断る）。
+- **フォルダの走査**: 大きさを数える `glob` に件数の上限（5000 件・模型フォルダは高々数百）を付け、子の symlink は数に入れない（フォルダの外の実体の大きさを読まない）。
+- **停止済み Job の取消**: 停止（`interrupted`＋`paused` の再開記録）の Job は取消（cancel）が 409 で、記録と途中の `.part` が 30 日の期限まで残るだけだった。取消を契約（docs/PLAN-model-catalog.md「決めた意味」: 記録を消して終端にする）に揃えた: メモリにある停止中の Job は `cancel_and_wait` で、再起動でメモリから消えた停止中の Job は `jobs.cancel_interrupted_row`（`POST /jobs/{id}/cancel` から）で、行を `canceled` にして再開の記録を消す（取り消したのに再開できる不整合を無くす）。途中の `.part` はランタイム側の契約に任せる（Job 基盤は場所を知らない。同じ repo を再取得したとき Range で再利用される）。
+- 試験: `backend/tests/test_model_paths_bounds.py` を新規 6 件（目的・根拠の docstring つき。悪性ヘッダ・正規の配列・子 symlink・壊れ config・FIFO・走査の上限）。`test_jobs_persistence.py` に 2 件（メモリの停止 Job の取消・再起動後の DB だけの停止 Job の取消）。`test-catalog` で同じ観点が無いことを確認してから足した。関連の結合バッチ（model_paths_bounds・jobs 関係〔persistence・stream_cleanup・chat_persist・addon_execution の cancel 呼び出し側・jobs の一覧〕・models の登録関係〔local_register・runtime_catalog・strata/maya/sly/radiance〕・hf_download・hf_search・large_model_lifecycle・route_map・test_catalog ほか、20 ファイル）あわせて 283 件合格（env -u CONTROL_DECK_CONFIG・指定 venv）。仕上げ時点に同じ範囲を models 登録関係・large_model_lifecycle・chat_persist まで広げて再検証し、26 ファイル 383 件合格。
+- 環境の制約: この作業場所では `/dev/shm/control-deck-terminal-1000` が本番から隔離するために読み取り専用マウントされていて、backend の試験（conftest の import）が落ちる。`os.access("/dev/shm", W_OK)` を試験の間だけ偽る通し wrapper（repo の外）で流した。実機では不要。frontend は未修正・実機の画面は未確認: `frontend/src/features/models/RuntimeCatalog.tsx` は 取り消し ボタンを running/queued だけに出すので、停止中（interrupted・can_resume）の Job には API（`POST /jobs/{id}/cancel`）が対応しても画面からは押せない。models 画面は別担当につき変更は報告のみ。
+
 ## 2026-11-28 ランタイムの目録・取得・設定の共通化（backend・run3/run4）
 - 利用者「Radiance・Sly-Radiance・Strata・Maya・llama.cpp の目録・取得・登録・設定を共通部品に」。依頼 `.nexarch/brief-runtime-unify.md`、契約 `docs/PLAN-model-catalog.md`、引き継ぎ `docs/HANDOFF-model-catalog.md`。
 - **目録**: `models_mgmt/runtime_catalog.py` に 5 ランタイム（Sly 6 行・Strata 44 行・Maya 1 行）。既存の Sly 目録・`strata_catalog`・Maya の probe から読み、二重に持たない。大きさの未確認は `size_gib=null`（取得の開始時に HF の API から読む）。llama.cpp は確定 repo が無いので推奨行を置かず、既存の検索・ファイル選択へ案内する。Radiance も `.rad` 登録の既存フローを使うため推奨行を置かない（一覧・登録の受け口は共通 API に出している）。
