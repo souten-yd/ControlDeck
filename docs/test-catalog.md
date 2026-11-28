@@ -4,7 +4,7 @@
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
 - backend: 279 ファイル、2915 テスト（目的の未記入 93 ファイル）
-- E2E: 153 spec、353 テスト
+- E2E: 153 spec、354 テスト
 
 ## backend（backend/tests）
 
@@ -4931,11 +4931,12 @@
 
 ### frontend/e2e/models-runtime-common.spec.ts
 
-目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 - 設定の节が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。 - 取得ジョブの「停止」→「再開」が API のモックで動くこと（.part を残す/再開の意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。 ※ この環境では frontend/node_modules が無く実行不能。spec と実行コマンドのみを残し、 結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
+目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28、同日補強）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 目録の見出しは「目録から取得」へ統一する要求なのでその文言に期待を固定する （docs/PLAN-model-catalog.md「共通の並び」）。実装にはいまだに「目録から取る／探す」と Maya の二重目録（「Maya の目録」）が残る。要求を緩めず、不一致は #21 へ報告する。 - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。 - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 確認パネルの「取得する」は目録の行と同名なので、確認パネル固有の「やめる」を待ってから 押す（既知の競合: 行のボタンを誤クリックしてジョブが始まらない）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。目録モックの Radiance も acquire="hf"（supported かつ repo ありという実 API 契約どおり。#19 で実装も hf 化）。 ※ この環境では frontend/node_modules のリンク先（ホストの共有 node_modules）が箱から見えず 実行不能（箱内で見えないので自分では導入しない）。spec と実行コマンドのみを残し、 結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
 
-- モデル登録: 4 ランタイムが同じ順番・同じ見出しで目録 → ファイル登録 → 設定を出す
-- 共通設定: 見出しの並びがランタイム間で同じで、エキスパートは${expert ?
+- モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す
+- 共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ?
 - 取得ジョブ: 停止 → 再開のボタンがモックの API で動く（320px）
+- 取得ジョブ: 取り消しの API モックと实际操作（320px）
 - ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ
 - 画面写真: ${width}px ${scheme} エキスパート${expert ?
 
