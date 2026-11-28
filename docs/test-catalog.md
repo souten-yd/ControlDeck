@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 280 ファイル、2924 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2931 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、354 テスト
 
 ## backend（backend/tests）
@@ -1745,7 +1745,7 @@
 
 ### backend/tests/test_hf_download.py
 
-目的: HuggingFace からの GGUF 取得。 目的（Nexarch #19 で追加）: 量子化ごとにサブフォルダが分かれた repo でも、選んだ量子化の 分割全片だけを列挙・取得し、repo 全体の他量子化を落とさないこと。取得後の登録は既存の 5 ランタイムの保存 API へ渡すこと。根拠: docs/PLAN-model-catalog.md「目録候補」の Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が 置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。 充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。
+目的: HuggingFace からの GGUF 取得。 目的（Nexarch #19 で追加）: 量子化ごとにサブフォルダが分かれた repo でも、選んだ量子化の 分割全片だけを列挙・取得し、repo 全体の他量子化を落とさないこと。取得後の登録は既存の 5 ランタイムの保存 API へ渡すこと。根拠: docs/PLAN-model-catalog.md「目録候補」の Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が 置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。 充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。 目的（レビュー #25 / 2026-11-28 で追加）: HF の API が報告した大きさより多い応答を 受け取っても書き込まず、秘密の会話ではファイル一覧の取得が 500 ではなく 403 で 断られること。根拠: 報告値を超える応答でディスクを埋められることと、 ensure_external_allowed の ExternalResearchBlocked が HfError でないため 500 に なっていたこと。
 
 - `test_repo_files_lists_only_gguf_variants`
 - `test_sharded_gguf_is_grouped_with_total_size` — 分割GGUFは1つだけ落としても使えないので、まとめて扱う。
@@ -1770,6 +1770,8 @@
 - `test_shard_set_rejects_duplicate_index_and_mixed_folders` — 目的: 分割片は「同じフォルダ・同じ stem・同じ total の 1..total」が揃うこと。
 - `test_quantization_does_not_pick_a_sibling_variant` — 目的: Maya-M を選んだときに Maya-M-Derisked まで拾わないこと。
 - `test_invalid_existing_target_is_not_treated_as_downloaded` — 目的: symlink・大きさ違いの既存ファイルを「取得済み」として飛ばさないこと。
+- `test_download_does_not_write_more_than_the_reported_size` — 目的: HF の API が報告した大きさより多い応答が来ても、その分は書き込まないこと。
+- `test_hf_file_endpoints_return_403_when_external_research_is_blocked` — 目的: ファイル一覧（と検索）が ExternalResearchBlocked を 500 ではなく 403 に
 
 ### backend/tests/test_hf_search.py
 
@@ -1830,7 +1832,7 @@
 
 ### backend/tests/test_jobs_persistence.py
 
-目的: ジョブ基盤の DB 永続化・再起動復元・API のテスト。
+目的: ジョブ基盤の DB 永続化・再起動復元・API のテスト。 目的: 停止済み取得 Job の取り消しで所有する .part だけを消し、停止の印が書けない ときに失敗を隠さず、同期 DB 書き込みが event loop を止めないことを守る。 根拠: レビュー #25 の要修正 1・2・4 / 2026-11-28（docs/PLAN-model-catalog.md 「決めた意味」、AGENTS.md 9）。HF 側の契約は test_hf_download.py が担う。
 
 - `test_job_persisted_to_db` — ジョブ作成→完了が DB に記録され、get_any で再取得できる。
 - `test_bounded_event_journal_uses_monotonic_cursor` — 300件で先頭を捨ててもcursorが止まらず、新規deltaを購読できる。
@@ -1862,6 +1864,11 @@
 - `test_model_download_jobs_are_registered_as_resumable` — 目的: HF 取得と Strata 初回起動の Job が、自動再開の仕組みに載っていること。
 - `test_huggingface_download_runner_forwards_saved_params` — 目的: 保存した引数から作った HF 取得の runner が、同じ引数で hf.download を呼ぶこと。
 - `test_hf_download_endpoint_creates_resumable_job_without_secret` — 目的: 画面から始めた HF 取得が再開可能な Job になり、 HF のトークンを記録しないこと。
+- `test_hf_cancel_uses_registered_real_cleanup_to_remove_own_part` — 目的: 停止済みの HF 取得 Job を取り消すと、登録済みの**実 cleanup**が
+- `test_hf_catalog_cleanup_matches_only_the_selected_quantization` — 目的: 目録の行（files=[] + 量子化）の取り消しでも、実 cleanup が選択した
+- `test_mark_resume_paused_reports_oserror_instead_of_silently_succeeding` — 目的: 停止の印の読み取り・書き込みで OSError が起きたら、飲まずに失敗すること。
+- `test_stop_reports_a_failed_pause_mark` — 目的: 停止の印が書けないとき stop() が ValueError（API は 409）で失敗し、
+- `test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit` — 目的: POST /models/acquire-jobs が本物の jobs.create を event loop 上で呼び、
 
 ### backend/tests/test_jobs_stream_cleanup.py
 

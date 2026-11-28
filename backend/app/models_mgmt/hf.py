@@ -20,13 +20,17 @@ huggingface_hub には依存せず httpx だけで扱う。既存の role_preset
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from app.security.offline import ensure_external_allowed
+
+logger = logging.getLogger("control_deck.models.hf")
 
 HF_API = "https://huggingface.co/api"
 HF_RESOLVE = "https://huggingface.co"
@@ -337,14 +341,24 @@ async def _open_stream(client: httpx.AsyncClient, url: str, headers: dict[str, s
 
 
 async def _download_file(job, client: httpx.AsyncClient, url: str, destination: Path,
-                        *, label: str, done_bytes: int, total_bytes: int) -> int:
-    """1ファイルをレジューム付きで取得する。途中のファイル（.part）はここでは作るだけ。"""
+                        *, label: str, done_bytes: int, total_bytes: int,
+                        expected_size: int = 0) -> int:
+    """1ファイルをレジューム付きで取得する。途中のファイル（.part）はここでは作るだけ。
+
+    expected_size（HF の API が報告した大きさ）が分かっているときは、その分だけしか
+    書き込まない。報告値より多い応答（壊れた CDN・細工したサーバー）でディスクを
+    埋めないため（レビュー #25 の要修正 / 2026-11-28）。
+    """
     temp = destination.with_suffix(destination.suffix + ".part")
     if temp.is_symlink() or (temp.exists() and not temp.is_file()):
         raise HfError(f"途中ファイルが書き替えられています: {temp.name}")
     if destination.exists() and (destination.is_symlink() or not destination.is_file()):
         raise HfError(f"保存先がファイルではありません: {destination.name}")
     existing = temp.stat().st_size if temp.exists() else 0
+    if expected_size and existing > expected_size:
+        # 報告値より大きい残り物は使わない（埋まった残骸を更に延長しない）。
+        temp.unlink(missing_ok=True)
+        existing = 0
     headers = _headers()                  # 最初の HF のホストにだけ付く（_open_stream が別ホストで落とす）
     if existing:
         headers["Range"] = f"bytes={existing}-"
@@ -352,6 +366,8 @@ async def _download_file(job, client: httpx.AsyncClient, url: str, destination: 
     context, response = await _open_stream(client, url, headers)
     try:
         if response.status_code == 416:  # 既に全部取得済み
+            if expected_size and temp.stat().st_size > expected_size:
+                raise HfError(f"報告された大きさを超えています: {label}")
             temp.replace(destination)
             return destination.stat().st_size
         if response.status_code >= 400:
@@ -360,11 +376,26 @@ async def _download_file(job, client: httpx.AsyncClient, url: str, destination: 
             # レンジ非対応なら最初から取り直す
             existing, mode = 0, "wb"
         received = existing
+        remaining = max(0, expected_size - existing)
         with temp.open(mode) as target:
             async for chunk in response.aiter_bytes(1024 * 1024):
-                target.write(chunk)
-                received += len(chunk)
-                job.set_progress(f"ダウンロード中: {label}", done_bytes + received, total_bytes or None)
+                if not chunk:
+                    continue
+                over = False
+                if expected_size:
+                    if len(chunk) > remaining:
+                        over = True
+                        chunk = chunk[:remaining]
+                        remaining = 0
+                    else:
+                        remaining -= len(chunk)
+                if chunk:
+                    target.write(chunk)
+                    received += len(chunk)
+                    job.set_progress(f"ダウンロード中: {label}", done_bytes + received, total_bytes or None)
+                if over:
+                    # 余分を受け取った時点で打ち切る（書いた分は .part に残すだけ）。
+                    raise HfError(f"報告された大きさを超える応答です: {label}（{expected_size} バイト）")
     finally:
         await context.__aexit__(None, None, None)
     temp.replace(destination)
@@ -380,6 +411,60 @@ def _keep_partial(job) -> bool:
     from app.jobs import service as jobs_service
 
     return bool(getattr(job, "pause_requested", False)) or jobs_service.is_shutting_down()
+
+
+def cleanup_partial_files(params: dict[str, Any]) -> None:
+    """取り消しのとき、この Job が残した途中のファイル（.part）だけを消す（同期）。
+
+    HF へは通信せず、再開の記録（params）だけを根拠にする。停止・サーバー停止では
+    呼ばない（Range で続きから取れるように .part を残す）。完成済みファイル・別の
+    Job の .part・symlink は触らない（jobs の cleanup 契約、レビュー #25 / 2026-11-28）。
+
+    files が空のとき（目録の行）は取得の開始時に HF の tree から決まるので、量子化が
+    指定されていればその名を含む .part だけを、指定が無ければこの repo の .part を消す。
+    """
+    from app.models_mgmt import libraries
+    from app.security.paths import is_within, normalize
+
+    repo = str(params.get("repo") or "")
+    if not re.fullmatch(r"[\w.\-]+/[\w.\-]+", repo):
+        return                                  # 壊れた記録では何も触らない
+    try:
+        root = (libraries.library_path(str(params["library_id"])) if params.get("library_id")
+                else libraries.default_models_dir())
+    except Exception as exc:  # noqa: BLE001 - 消す先が読めないなら何もしない
+        logger.warning("取得先を読めないので途中ファイルの掃除をできませんでした: %s", exc)
+        return
+    raw = root / repo.replace("/", "--")
+    if raw.is_symlink():
+        return                                  # 保存先が symlink なら辿らない
+    base = normalize(str(root))
+    destination = normalize(str(raw))
+    if destination == base or not is_within(destination, base) or not destination.is_dir():
+        return
+    files = {str(item).rsplit("/", 1)[-1] + ".part" for item in (params.get("files") or [])}
+    quantization = str(params.get("quantization") or "")
+    try:
+        entries = list(destination.iterdir())
+    except OSError as exc:
+        logger.warning("取得先の一覧を読めませんでした: %s", exc)
+        return
+    for path in entries:
+        if path.is_symlink() or not path.is_file() or not path.name.endswith(".part"):
+            continue
+        if not is_within(normalize(str(path)), destination):
+            continue
+        if files:
+            if path.name not in files:
+                continue
+        elif quantization and not _quantization_matches(path.name[:-len(".part")], quantization):
+            continue
+        # files=[] で量子化指定なし: repo の最上位を全部取る Job なので、この repo の
+        # .part は自分のもの。完成済みファイル（.part でないもの）は触らない。
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("途中ファイルを消せませんでした: %s", exc)
 
 
 async def _fetch_file_sizes(repo: str, revision: str, files: list[str],
@@ -651,6 +736,7 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
                     done += await _download_file(
                         job, client, url, target, label=target.name,
                         done_bytes=done, total_bytes=expected_bytes,
+                        expected_size=int(expected_sizes.get(target.name) or 0),
                     )
                 except asyncio.CancelledError:
                     # 「取り消し」（cancel）だけが途中のファイルを消す。停止・サーバー停止は

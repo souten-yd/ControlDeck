@@ -16,6 +16,7 @@ from app.models_mgmt import ollama
 from app.models_mgmt import resume as model_resume
 from app.schemas.models import AcquireBody
 from app.security.deps import authenticate_websocket, require_permission
+from app.security.offline import ExternalResearchBlocked
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -1075,6 +1076,9 @@ async def hf_search_repos(q: str, user: User = Depends(require_permission("workf
         return []
     try:
         return await hf.search_models(q.strip())
+    except ExternalResearchBlocked as exc:
+        # 秘密の会話では通信の前に止まる。500 にせず拒否として返す（レビュー #25 / 2026-11-28）。
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1087,6 +1091,8 @@ async def hf_repo_files(repo: str, revision: str = "main",
 
     try:
         files = await hf.list_repo_files(repo, revision)
+    except ExternalResearchBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"repo": repo, "variants": files, "libraries": libraries.list_libraries()}
@@ -2010,6 +2016,8 @@ async def models_catalog_entry_files(
                      if item["path"].lower().endswith(".rad")]
         else:
             files = await hf.list_model_files(entry.repo)
+    except ExternalResearchBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
@@ -2076,6 +2084,9 @@ async def models_acquire(
         "quantization": entry.quantization if entry.format == "gguf" else "",
         "register": register,
     }
+    # jobs.create は中で asyncio.create_task で runner を立てるので event loop 上で呼ぶ
+    # 必要がある（threadpool から呼ぶと RuntimeError: no running event loop で 500 になる）。
+    # 同期 DB 書き込みの audit.record だけを threadpool へ出す（jobs/router.py と同じ）。
     job = jobs.create(
         "model.hf_download", f"モデル取得: {entry.name}",
         model_resume.huggingface_download_runner(resume),
@@ -2083,11 +2094,13 @@ async def models_acquire(
         idempotency_key=request.headers.get("idempotency-key"), priority=0,
         resume=resume,
     )
-    audit.record(db, "model.acquire", user=user, resource_type="model",
-                 resource_id=entry.repo, request=request,
-                 metadata={"runtime": body.runtime, "entry_id": entry.id, "job_id": job.id,
-                           "files": len(body.files), "library_id": body.library_id,
-                           "alias": (register or {}).get("alias", "")})
+    await asyncio.to_thread(
+        audit.record, db, "model.acquire", user=user, resource_type="model",
+        resource_id=entry.repo, request=request,
+        metadata={"runtime": body.runtime, "entry_id": entry.id, "job_id": job.id,
+                  "files": len(body.files), "library_id": body.library_id,
+                  "alias": (register or {}).get("alias", "")},
+    )
     return {"job_id": job.id, "repo": entry.repo}
 
 

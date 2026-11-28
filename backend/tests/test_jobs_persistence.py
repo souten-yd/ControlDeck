@@ -1,4 +1,10 @@
-"""ジョブ基盤の DB 永続化・再起動復元・API のテスト。"""
+"""ジョブ基盤の DB 永続化・再起動復元・API のテスト。
+
+目的: 停止済み取得 Job の取り消しで所有する .part だけを消し、停止の印が書けない
+ときに失敗を隠さず、同期 DB 書き込みが event loop を止めないことを守る。
+根拠: レビュー #25 の要修正 1・2・4 / 2026-11-28（docs/PLAN-model-catalog.md
+「決めた意味」、AGENTS.md 9）。HF 側の契約は test_hf_download.py が担う。
+"""
 import asyncio
 import time
 
@@ -1183,3 +1189,209 @@ def test_hf_download_endpoint_creates_resumable_job_without_secret(admin_client,
 
     _run(wait_file_gone())
     assert not (root / f"{job_id}.json").exists()
+
+
+def test_hf_cancel_uses_registered_real_cleanup_to_remove_own_part(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 停止済みの HF 取得 Job を取り消すと、登録済みの**実 cleanup**が
+    その Job の .part だけを消すこと。
+
+    根拠: レビュー #25 の要修正 1 / 2026-11-28。jobs 側の cleanup 契約だけでは
+    `register_resumable("model.hf_download", ..., cleanup=)` が繋がらず、本番の
+    取り消しで数 GB の .part が残る。ここでは cleanup を偽物に差し替えず、本番と
+    同じ登録（`jobs._resumable_kinds`）を通す。保存先だけを tmp へ向ける。
+    """
+    from app.models_mgmt import libraries
+    from tests.conftest import CSRF_HEADERS
+
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    models = tmp_path / "models"
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: models)
+
+    spec = jobs._resumable_kinds["model.hf_download"]
+    assert spec.cleanup is not None                  # 登録が切れていないことを先に確かめる
+
+    dest = models / "org--model"
+    dest.mkdir(parents=True)
+    own_part = dest / "own.gguf.part"
+    own_part.write_bytes(b"PARTIAL")
+    other_part = dest / "other-job.gguf.part"
+    other_part.write_bytes(b"OTHER")
+    done = dest / "done.gguf"
+    done.write_bytes(b"COMPLETE")
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"OUTSIDE")
+    linked = dest / "linked.gguf.part"
+    linked.symlink_to(outside)
+
+    job_id = _seed_interrupted(
+        root, tmp_path, kind="model.hf_download",
+        params={"repo": "org/model", "files": ["own.gguf"], "revision": "main",
+                "library_id": "", "expected_bytes": 0, "register": None},
+        owner_user_id=None, paused=True)
+
+    response = admin_client.post(f"/api/v1/jobs/{job_id}/cancel", headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert not own_part.exists()                    # 実 cleanup が自分の part を消す
+    assert other_part.is_file()                     # 別 Job の part は残す
+    assert done.is_file()                           # 完成済みファイルは残す
+    assert linked.is_symlink()                      # symlink は辿らない
+    assert outside.is_file()                        # symlink の先も触らない
+    assert not (root / f"{job_id}.json").exists()
+    assert _job_row(job_id).status == "canceled"
+
+
+def test_hf_catalog_cleanup_matches_only_the_selected_quantization(tmp_path, monkeypatch):
+    """目的: 目録の行（files=[] + 量子化）の取り消しでも、実 cleanup が選択した
+    量子化の .part だけを消すこと。
+
+    根拠: レビュー #25 の要修正 1 / 2026-11-28。目録からの取得は開始時に HF の tree
+    から分割全片を決めるので、再開の記録だけではファイル名が分からない。量子化名で
+    汎用に照合し、他量子化の .part を消さない（辞書や例外の追加で直さない）。
+    """
+    from app.models_mgmt import libraries
+
+    models = tmp_path / "models"
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: models)
+    destination = models / "org--model"
+    destination.mkdir(parents=True)
+    own = [destination / f"model-Q2_0-0000{i}-of-00002.gguf.part" for i in (1, 2)]
+    foreign = destination / "model-Q8_0-00001-of-00002.gguf.part"
+    for path in [*own, foreign]:
+        path.write_bytes(b"PARTIAL")
+    linked = destination / "model-Q2_0-linked.gguf.part"
+    linked.symlink_to(tmp_path / "elsewhere.gguf")
+
+    # 本番登録の cleanup をそのまま呼ぶ（test 用の偽実装を差し込まない）。
+    cleanup = jobs._resumable_kinds["model.hf_download"].cleanup
+    assert cleanup is not None
+    cleanup({"repo": "org/model", "files": [], "quantization": "Q2_0", "library_id": ""})
+
+    assert not any(path.exists() for path in own)
+    assert foreign.is_file()                        # 選ばなかった量子化は残す
+    assert linked.is_symlink()                      # symlink は辿らない
+
+
+def test_mark_resume_paused_reports_oserror_instead_of_silently_succeeding(
+        client, monkeypatch, tmp_path):
+    """目的: 停止の印の読み取り・書き込みで OSError が起きたら、飲まずに失敗すること。
+
+    根拠: レビュー #25 の要修正 4 / 2026-11-28。印が書けないのに「停止しました」と
+    返すと、再開できず .part だけが残る。壊れた記録（ValueError）は従来どおり無視する。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    job_id = _seed_interrupted(root, tmp_path, kind="test.resume", params={"n": 1},
+                               owner_user_id=None)
+    path = root / f"{job_id}.json"
+    path.unlink()
+    path.mkdir()                                    # 読み取りが IsADirectoryError になる
+    with pytest.raises(OSError):
+        jobs._mark_resume_paused(job_id, True)
+
+    path.rmdir()
+    path.write_text('{"kind": "test.resume", "params": {"n": 1}, "owner_user_id": null, '
+                    '"title": "t", "created_at": 1.0, "attempts": 0}', encoding="utf-8")
+    # 書き込み側の OSError もそのまま返す。
+    monkeypatch.setattr(jobs.os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        jobs._mark_resume_paused(job_id, True)
+
+
+def test_stop_reports_a_failed_pause_mark(client, monkeypatch, tmp_path):
+    """目的: 停止の印が書けないとき stop() が ValueError（API は 409）で失敗し、
+    pause_requested を戻して中途半端な状態を残さないこと。
+
+    根拠: レビュー #25 の要修正 4 / 2026-11-28。内部の OSError をそのまま投げると
+    API は 500 になり、利用者へ理由が伝わらない。
+    """
+    root = _use_tmp_resume_dir(monkeypatch, tmp_path)
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    def factory(params):
+        async def run(job):
+            started.set()
+            await gate.wait()
+
+        return run
+
+    monkeypatch.setitem(jobs._resumable_kinds, "test.stop-mark",
+                        jobs._ResumableKind(factory, lambda params: "停止"))
+
+    async def scenario():
+        job = jobs.create("test.stop-mark", "停止の印の試験", factory({}), resume={"n": 1})
+        await asyncio.wait_for(started.wait(), 5)
+        path = root / f"{job.id}.json"
+        path.unlink()
+        path.mkdir()
+        with pytest.raises(ValueError, match="停止の印"):
+            await jobs.stop(job.id)
+        assert job.pause_requested is False
+        gate.set()
+        await asyncio.gather(job.task, return_exceptions=True)
+
+    _run(scenario())
+
+
+def test_models_acquire_keeps_job_creation_on_loop_and_offloads_audit(
+        admin_client, monkeypatch, tmp_path):
+    """目的: POST /models/acquire-jobs が本物の jobs.create を event loop 上で呼び、
+    同期 DB 書き込みの audit.record だけを threadpool へ出すこと。
+
+    根拠: レビュー #25 の要修正 2 / 2026-11-28。当初の指示どおり jobs.create を
+    to_thread で呼ぶと、内部の asyncio.create_task が loop を要求して
+    RuntimeError: no running event loop で本番が 500 になる（2026-11-28 実測）。
+    だから create は loop に残し、threadpool へ出すのは audit.record だけにする。
+    create を偽らず、作られた Job が最後まで走るところまで確かめる。
+    """
+    import threading
+    import time
+
+    from app.audit import service as audit
+    from app.models_mgmt import hf, runtime_catalog
+    from tests.conftest import CSRF_HEADERS
+
+    _use_tmp_resume_dir(monkeypatch, tmp_path)          # 本番の再開記録を触らない
+
+    async def fake_download(job, repo, files, **kwargs):
+        return {"ok": True}
+
+    monkeypatch.setattr(hf, "download", fake_download)   # 外部通信だけを塞ぐ
+
+    loop_threads: list[int] = []
+    real_get_entry = runtime_catalog.get_entry
+
+    def traced_get_entry(*args, **kwargs):
+        loop_threads.append(threading.get_ident())       # endpoint 本体のスレッド
+        return real_get_entry(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_catalog, "get_entry", traced_get_entry)
+
+    audit_threads: list[int] = []
+    real_record = audit.record
+
+    def traced_record(*args, **kwargs):
+        audit_threads.append(threading.get_ident())
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(audit, "record", traced_record)
+
+    response = admin_client.post(
+        "/api/v1/models/acquire-jobs",
+        json={"runtime": "sly-radiance", "entry_id": "swift-heretic",
+              "register": {"alias": "swift", "port": 8123}},
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    job = jobs.get(job_id)
+    assert job is not None                              # 本物の create が作った Job
+    for _ in range(500):
+        if job.status not in ("queued", "running"):
+            break
+        time.sleep(0.01)
+    assert job.status == "succeeded"
+    assert job.result == {"ok": True}
+    assert loop_threads and audit_threads
+    assert audit_threads[0] != loop_threads[0]           # audit だけ threadpool へ

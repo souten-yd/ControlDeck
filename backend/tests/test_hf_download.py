@@ -6,6 +6,12 @@
 Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が
 置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。
 充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。
+
+目的（レビュー #25 / 2026-11-28 で追加）: HF の API が報告した大きさより多い応答を
+受け取っても書き込まず、秘密の会話ではファイル一覧の取得が 500 ではなく 403 で
+断られること。根拠: 報告値を超える応答でディスクを埋められることと、
+ensure_external_allowed の ExternalResearchBlocked が HfError でないため 500 に
+なっていたこと。
 """
 from __future__ import annotations
 
@@ -667,3 +673,58 @@ def test_invalid_existing_target_is_not_treated_as_downloaded(tmp_path, monkeypa
     monkeypatch.setattr(hf.httpx, "AsyncClient", no_client)
     with pytest.raises(hf.HfError, match="保存先がファイルではありません"):
         asyncio.run(hf.download(_DownloadJob(), "owner/name", ["model.gguf"]))
+
+
+def test_download_does_not_write_more_than_the_reported_size(tmp_path, monkeypatch):
+    """目的: HF の API が報告した大きさより多い応答が来ても、その分は書き込まないこと。
+
+    根拠: レビュー #25 の要修正 3 / 2026-11-28。破損・悪意のある CDN が大きな body を
+    返すと、従来は無制限に .part へ書き続けてディスクを埋めていた。報告値を上限に
+    打ち切り、余分は書かずに失敗させる（途中ファイルは残すが最大でも報告値）。
+    """
+    import asyncio
+
+    from app.models_mgmt import libraries
+
+    monkeypatch.setattr(libraries, "default_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(hf, "_ensure_free_space", lambda *args: None)
+    entries = [{"type": "file", "path": "model.gguf", "size": 4}]
+    monkeypatch.setattr(hf.httpx, "AsyncClient",
+                        lambda **kwargs: _tree_and_stream_client(entries, [b"1234567890"])())
+
+    with pytest.raises(hf.HfError, match="大きさ"):
+        asyncio.run(hf.download(_DownloadJob(), "owner/name", ["model.gguf"], fetch_sizes=True))
+
+    target = tmp_path / "owner--name" / "model.gguf"
+    assert not target.exists()                      # 壊れた応答を完成ファイルにしない
+    partial = target.with_suffix(target.suffix + ".part")
+    assert partial.read_bytes() == b"1234"         # 報告値の 4 バイトだけ書く
+
+
+def test_hf_file_endpoints_return_403_when_external_research_is_blocked(
+        admin_client, monkeypatch):
+    """目的: ファイル一覧（と検索）が ExternalResearchBlocked を 500 ではなく 403 に
+    変換して返すこと。
+
+    根拠: レビュー #25 の要修正 5 / 2026-11-28。hf.py の ensure_external_allowed は
+    HfError ではないので、従来の `except hf.HfError` では捕捉されず 500 になっていた。
+    秘密の会話の拒否は利用者へ理由が見える形（403）で返す。
+    """
+    from app.security.offline import ExternalResearchBlocked
+
+    def blocked(what):
+        raise ExternalResearchBlocked(f"外部への調査は止めています（秘密の会話）: {what}")
+
+    monkeypatch.setattr(hf, "ensure_external_allowed", blocked)
+
+    files = admin_client.get("/api/v1/models/hf/repos/org/name/files")
+    assert files.status_code == 403, files.text
+    assert "秘密" in files.json()["detail"]
+
+    catalog_files = admin_client.get(
+        "/api/v1/models/catalog/sly-radiance/entries/swift-heretic/files")
+    assert catalog_files.status_code == 403, catalog_files.text
+    assert "秘密" in catalog_files.json()["detail"]
+
+    search = admin_client.get("/api/v1/models/hf/search", params={"q": "qwen"})
+    assert search.status_code == 403, search.text
