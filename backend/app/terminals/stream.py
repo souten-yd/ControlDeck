@@ -247,6 +247,7 @@ class TerminalStreamRegistry:
     def __init__(self, terminal_manager: TerminalManager) -> None:
         self.manager = terminal_manager
         self._streams: dict[tuple[str, str], TerminalClientStream] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def acquire(
         self,
@@ -256,6 +257,7 @@ class TerminalStreamRegistry:
         rows: int,
         cols: int,
     ) -> tuple[TerminalClientStream, bool, asyncio.Queue[JournalEntry | None]]:
+        self._loop = asyncio.get_running_loop()
         key = (session_id, client_instance_id)
         stream = self._streams.get(key)
         created = stream is None or stream.closed
@@ -279,10 +281,28 @@ class TerminalStreamRegistry:
         stream.cleanup_handle = loop.call_later(STREAM_GRACE_SECONDS, self._expire, stream)
 
     def close_session(self, session_id: str) -> None:
+        # DELETE は threadpool で tmux を待つ。Task.cancel / TimerHandle / Queue と
+        # registry の変更は WebSocket が走る所有 loop 上だけで行う。
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            try:
+                current = asyncio.get_running_loop()
+            except RuntimeError:
+                current = None
+            if current is not loop:
+                try:
+                    loop.call_soon_threadsafe(self.close_session, session_id)
+                    return
+                except RuntimeError:
+                    pass  # 調べた直後に loop が閉じた。下で registry からだけ外す
         for key, stream in list(self._streams.items()):
             if key[0] == session_id:
                 self._streams.pop(key, None)
-                stream.close()
+                try:
+                    stream.close()
+                except RuntimeError:
+                    # 所有 loop が既に閉じている（その task はもう動かない）。接続だけ閉じる
+                    stream.connection.close()
 
     def _expire(self, stream: TerminalClientStream) -> None:
         key = (stream.session_id, stream.client_instance_id)

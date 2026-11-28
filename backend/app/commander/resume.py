@@ -119,7 +119,11 @@ def plan(row: dict, now: float) -> dict:
 
 
 def tick(now: float | None = None) -> list[str]:
-    """1 回分の見回り。送ったセッションの id を返す（同期・tmux を呼ぶので thread で動かす）。"""
+    """1 回分の見回り。送ったセッションの id を返す（同期・tmux を呼ぶので thread で動かす）。
+
+    ついでに、ロックしたコンソールが外から消えていないかも見る（commander/locks.py。
+    新しい見張りの loop は作らない。失敗でこちらの再開を止めない）。
+    """
     from app.commander import consoles
     from app.terminals.manager import manager
 
@@ -150,6 +154,14 @@ def tick(now: float | None = None) -> list[str]:
                 sent.append(sid)
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
             logger.warning("AI Commander の自動再開でセッション %s を扱えませんでした: %s", sid, exc)
+    try:
+        from app.commander import locks
+
+        events = locks.check(now=now)
+        if events:
+            logger.info("AI Commander: ロックしたコンソールの外部消失を %d 件扱いました", len(events))
+    except Exception:  # noqa: BLE001 - 鍵の見回りの失敗で再開の見回りを止めない
+        logger.exception("AI Commander のロックしたコンソールの見回りに失敗しました")
     return sent
 
 

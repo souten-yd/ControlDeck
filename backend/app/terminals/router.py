@@ -17,7 +17,7 @@ from app.database import SessionLocal, get_db
 from app.models import User
 from app.security.deps import authenticate_websocket, require_permission
 from app.terminals import attachments
-from app.terminals.manager import HISTORY_LINES, manager, tmux_available
+from app.terminals.manager import HISTORY_LINES, SessionLockedError, manager, tmux_available
 from app.terminals.stream import JournalEntry, TerminalClientStream, TerminalStreamRegistry
 
 logger = logging.getLogger("control_deck.terminals")
@@ -136,17 +136,24 @@ def delete_attachment(
 
 
 @router.delete("/{session_id}")
-async def delete_terminal(
+def delete_terminal(
     session_id: str,
     request: Request,
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
+    # subprocess は threadpool、stream の操作は registry が所有 loop へ渡す。
     try:
-        streams.close_session(session_id)
         manager.kill_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="セッションが見つかりません") from exc
+    except SessionLockedError as exc:
+        # 一覧を見てから鍵をかけられた競合も中央ガード（manager）が守る
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="セッションを閉じられませんでした") from exc
+    # 終了が確かになってから接続を閉じる（断ったとき・確認できないときは接続を保つ）
+    streams.close_session(session_id)
     audit.record(
         db, "terminal.kill", user=user, resource_type="terminal",
         resource_id=session_id, request=request,
