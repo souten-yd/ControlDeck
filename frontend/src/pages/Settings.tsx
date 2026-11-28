@@ -635,7 +635,7 @@ const versionName = (tag: string | undefined, sha: string | undefined) =>
 const PHASE_LABELS: Record<string, string> = { scheduled: "開始待ち", running: "更新中", succeeded: "完了", failed: "失敗" };
 const STEP_LABELS: Record<string, string> = { fetch: "取得", build: "準備・ビルド", restart: "再起動・確認" };
 
-interface AutoUpdateSettings { enabled: boolean; idle_minutes: number; check_interval_minutes: number; busy: string[] }
+interface AutoUpdateSettings { enabled: boolean; idle_minutes: number; check_interval_minutes: number; force: boolean; busy: string[] }
 
 /** 正式 Release は、使われていない時間に自動で適用する（L1、docs/POLICY-autonomous-development.md）。
  * 手動の「本体を更新」も残す。自動で適用した結果は通知先へ届き、履歴（UpdateHistoryList）と次に開いた画面の知らせにも出る。 */
@@ -697,6 +697,15 @@ function ControlDeckUpdateSection() {
               aria-label="自動で適用する" className="h-5 w-5 shrink-0" />
           </label>
           {auto.data.enabled && (
+            <label className="flex min-h-11 items-center justify-between gap-3">
+              <span className="text-xs">使われているときでも更新する
+                <span className="block text-[11px] text-zinc-500">新しい Release を見つけたら、待たずにすぐ適用します。走っている AI チーム・Job・OpenCode は再起動で中断されます</span>
+              </span>
+              <input type="checkbox" checked={auto.data.force} onChange={(e) => void saveAuto({ force: e.target.checked })}
+                aria-label="使われているときでも更新する" data-auto-update-force className="h-5 w-5 shrink-0" />
+            </label>
+          )}
+          {auto.data.enabled && !auto.data.force && (
             <label className="block text-xs">使われていない時間がこれだけ続いたら
               <select value={auto.data.idle_minutes} onChange={(e) => void saveAuto({ idle_minutes: Number(e.target.value) })}
                 className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -706,7 +715,9 @@ function ControlDeckUpdateSection() {
           )}
           {auto.data.enabled && (
             <p className="text-[11px] text-zinc-500" data-auto-update-wait>
-              {!data?.update_available
+              {auto.data.force
+                ? `新しい Release は ${auto.data.check_interval_minutes} 分ごとに確認し、見つけたらすぐ適用します`
+                : !data?.update_available
                 ? `新しい Release は ${auto.data.check_interval_minutes} 分ごとに確認します。見つけたら、使われていない状態が ${auto.data.idle_minutes} 分続いた時点で適用します`
                 : auto.data.busy.length ? `${versionName(data.release_tag, data.remote_sha)} の適用を待っています: ${auto.data.busy.join("、")}`
                 : `${versionName(data.release_tag, data.remote_sha)} は、使われていない状態が ${auto.data.idle_minutes} 分続けば適用します`}

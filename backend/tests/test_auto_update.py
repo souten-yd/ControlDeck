@@ -20,6 +20,7 @@ def env(monkeypatch, tmp_path):
         state["notified"].append(title)
 
     monkeypatch.setattr(auto_update, "notify", notify)
+    auto_update.save_settings({"force": False})   # 以下の試験は「使われていない時間を待つ」形（強制は下の試験）
     return state
 
 
@@ -103,3 +104,31 @@ def test_a_prompt_for_another_release_is_ignored(env):
     auto_update.request_prompt_apply("ControlDeck_v0.99")
     assert run(auto_update.tick(None, 1000.0)) == 1000.0
     assert env["started"] == []
+
+
+def test_force_updates_even_while_busy(env):
+    """強制（既定は入）: 使われていても、待たずにすぐ適用する。利用者 2026-11-28「使われている時でも更新する。既定 On」。"""
+    auto_update.save_settings({"force": True})
+    env["busy"] = ["LLM の推論中", "実行中の Job"]
+    assert run(auto_update.tick(None, 0.0)) is None
+    assert env["started"] == [("a" * 40, {"automatic": True, "release_tag": "ControlDeck_v0.13"})]
+
+
+def test_force_still_skips_a_running_update(env):
+    auto_update.save_settings({"force": True})
+    env["status"]["job"] = {"phase": "running"}
+    assert run(auto_update.tick(None, 0.0)) is None and env["started"] == []
+
+
+def test_defaults_check_every_5_minutes_and_force(monkeypatch, tmp_path):
+    """既定は 5 分ごと・強制は入。強制の項目が無い古い保存（30 分ごと）は 5 分ごとへ移す。"""
+    import json
+
+    monkeypatch.setattr(auto_update, "data_dir", lambda: tmp_path)
+    assert auto_update.get_settings()["check_interval_minutes"] == 5 and auto_update.get_settings()["force"] is True
+    (tmp_path / "updates").mkdir()
+    (tmp_path / "updates" / "auto.json").write_text(json.dumps({"enabled": True, "idle_minutes": 5, "check_interval_minutes": 30}))
+    got = auto_update.get_settings()
+    assert got["check_interval_minutes"] == 5 and got["force"] is True and got["idle_minutes"] == 5
+    auto_update.save_settings({"check_interval_minutes": 60, "force": False})
+    assert auto_update.get_settings()["check_interval_minutes"] == 60   # 新しい形の保存は利用者の値のまま

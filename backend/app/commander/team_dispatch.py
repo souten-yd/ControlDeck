@@ -78,6 +78,24 @@ def candidates(team: dict, current_key: str, exclude: set[str], rows: dict[str, 
 
 # ---------------------------------------------------------------- 同時並列の決まり
 
+def _local_running(team: dict, task: dict) -> int:
+    """走っているローカルの担い手の数（全チーム。このタスクは除く）。保存が読めなければこのチームの分だけ。"""
+    try:
+        all_teams = teams._load()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        all_teams = []
+    pool = [t for t in all_teams if t.get("id") != team.get("id")] + [team]
+    count = 0
+    for each in pool:
+        for t in each.get("tasks", []):
+            if t.get("status") != "doing" or (each is team and t.get("id") == task.get("id")):
+                continue
+            m = teams.find_member(each, str(t.get("assignee") or ""))
+            if m and teams.member_is_local(m):
+                count += 1
+    return count
+
+
 def blocker(team: dict, task: dict, member: dict, *, check_overlap: bool, retry: bool = False) -> str:  # noqa: ARG001
     """今このタスクをこの担い手で走らせられない理由（空なら走らせてよい）。"""
     key = teams.member_key(member)
@@ -87,9 +105,10 @@ def blocker(team: dict, task: dict, member: dict, *, check_overlap: bool, retry:
     if len(others) >= int(team.get("max_parallel") or 3):
         return f"同時に走らせる上限（{int(team.get('max_parallel') or 3)}）に達しています"
     if teams.member_is_local(member):
-        local = sum(1 for t in others if (m := teams.find_member(team, str(t.get("assignee") or ""))) and teams.member_is_local(m))
-        if local >= int(team.get("local_parallel") or 1):
-            return "ローカルの担い手の同時の数の上限です（GPU を共有）"
+        # GPU は 1 枚なので、ローカルの担い手はチームをまたいで数える（2026-11-28 本番: 3 チームの調べものが
+        # 1 枠の Strata に並び、1 本 17〜33 分かかった。docs/ISSUES.md「AI チームの調べものが遅い」）
+        if _local_running(team, task) >= int(team.get("local_parallel") or 1):
+            return "ローカルの担い手の同時の数の上限です（GPU を共有・ほかのチームを含む）"
     if check_overlap and task.get("files") and not task.get("cwd"):  # worktree の仕事は隔離されているので重なっても並べる
         for other in others:
             if any(teams._overlaps(a, b) for a in task["files"] for b in other.get("files", [])):  # noqa: SLF001

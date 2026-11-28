@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-28 本体の自動の更新: 5 分ごとに確かめ、使われているときでも更新する（既定は入）
+- 利用者「本体の更新は 5 分ごとにチェックして、強制的に更新する機能を入れて。チェックボックス、使われている時でも更新する機能。既定 On」。
+- `auto_update`: 項目 `force`（既定 true）。入なら、推論中・Job・OpenCode のセッションを待たずに、新しい Release を見つけたらすぐ `self_update.start`。更新が走っている間は重ねない。確かめる間隔の既定を 30 分 → 5 分。`force` の無い古い保存（30 分）は 5 分へ移す（新しい形の保存は利用者の値のまま）。
+- 画面（設定 → ControlDeck 本体の更新）: 「使われているときでも更新する」のチェックボックス。入のときは「使われていない時間」の選択を隠す。
+- 試験: `test_auto_update.py` に 3 件（強制・更新中は重ねない・既定と古い保存の移し）。既存の試験は強制を切って流す。
+## 2026-11-28 AI チームのローカル LLM の同時の数をチームをまたいで数える・日付の境目で落ちる試験
+- 本番の AI チーム 3 つの調べもの（ローカル LLM）が 1 枠の Strata（parallel=1）に並び、1 本 17〜33 分かかった。「ローカルは同時に 1 つ」の制限がチームごとだった。`team_dispatch.blocker` は、ほかのチームで走っているローカルの担い手も数える（`_local_running`）。あわせて本番の設定で explore の第 1 を OpenRouter の DeepSeek Flash にした（`docs/ISSUES.md`）。
+- 試験 `test_fetchlog_keeps_200_per_source_and_summarizes` が UTC の 0 時 51 分より前に落ちていた（記録の大半が前の日）。「今」を UTC 12 時に固定した。
 ## 2026-11-28 箱の OpenCode から git の worktree（AI チームの担い手の作業場所）で git と依頼の全文が見える
 - 本番の AI チームで、担い手（箱の OpenCode）から「箱の中で brief・git・venv が見えなかった」と報告があった。担い手の worktree の `.git` はファイルで `<repo>/.git/worktrees/<名前>` を指すが、箱にそこがつながっていなかった。チームの `.nexarch/`（依頼の全文）も見えなかった。
 - 直し（`provider._git_worktree_mounts`）: worktree が本体のリポジトリの中にあるときだけ、本体の `.git` を**読み取り専用**、その worktree の分（index・HEAD）を書ける、本体の `.nexarch/` を読み取り専用でつなぐ。本体の `.git` を書けないのは、`config` を書かれるとホストの git（`team_git` は hooks を切っているが filter などは残る）でコードが走るため。`.git` が本体の外を指していたら何もつながない。

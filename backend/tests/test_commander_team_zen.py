@@ -149,3 +149,19 @@ def test_leader_sees_live_progress_and_wait_reason(monkeypatch):
         with team_runner._active_lock:
             team_runner._active.pop(("tX", 1), None)
         team_dispatch._wait_reasons.pop(("tX", 2), None)
+
+
+def test_local_slot_is_counted_across_teams(monkeypatch):
+    """ローカル LLM の担い手は、ほかのチームで走っている分も数える（GPU は 1 枚）。
+    2026-11-28 本番: 3 チームの調べものが 1 枠の Strata に並び、1 本 17〜33 分かかった。"""
+    from app.commander import team_dispatch, teams
+
+    local = {"kind": "headless", "cli": "opencode", "account": "default", "model": "auto"}
+    other = {"id": "tB", "members": [{**local, "id": "b1"}],
+             "tasks": [{"id": 1, "status": "doing", "assignee": teams.member_key({**local, "id": "b1"})}]}
+    mine = {"id": "tA", "members": [{**local, "id": "a1"}], "max_parallel": 3, "local_parallel": 1,
+            "tasks": [{"id": 1, "status": "todo"}]}
+    monkeypatch.setattr(teams, "_load", lambda: [other, mine])
+    assert "ほかのチーム" in team_dispatch.blocker(mine, mine["tasks"][0], {**local, "id": "a1"}, check_overlap=False)
+    other["tasks"][0]["status"] = "done"
+    assert team_dispatch.blocker(mine, mine["tasks"][0], {**local, "id": "a1"}, check_overlap=False) == ""

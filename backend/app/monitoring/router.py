@@ -151,9 +151,10 @@ def control_deck_auto_update_save(
 
     allowed = set(auto_update.DEFAULTS)
     if not body or set(body) - allowed:
-        raise HTTPException(status_code=422, detail="enabled / idle_minutes / check_interval_minutes だけ指定できます")
-    if "enabled" in body and not isinstance(body["enabled"], bool):
-        raise HTTPException(status_code=422, detail="enabled は true / false です")
+        raise HTTPException(status_code=422, detail="enabled / idle_minutes / check_interval_minutes / force だけ指定できます")
+    for key in ("enabled", "force"):
+        if key in body and not isinstance(body[key], bool):
+            raise HTTPException(status_code=422, detail=f"{key} は true / false です")
     for key in ("idle_minutes", "check_interval_minutes"):
         if key in body and (not isinstance(body[key], int) or isinstance(body[key], bool)):
             raise HTTPException(status_code=422, detail=f"{key} は整数です")

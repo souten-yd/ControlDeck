@@ -121,7 +121,9 @@ def test_feedgen_builds_urls_and_rejects_bad_input():
 # ---- 取得の履歴 ----
 
 def test_fetchlog_keeps_200_per_source_and_summarizes():
-    now = datetime.now(timezone.utc)
+    # 「今」を日の中ほど（UTC 12 時）に固定する。記録は今から 300〜51 分前に置くので、UTC の 0 時 51 分より前に流すと
+    # 全部が前の日に入り、今日の棒が空になって落ちていた（2026-11-28・docs/ISSUES.md）。
+    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     rows = [{"source_key": "rss:https://a.test/f", "at": now - timedelta(minutes=300 - i), "ok": i % 10 != 0, "status": 200 if i % 10 else 503, "count": 5, "new": 1, "ms": 120,
              "error": "" if i % 10 else "HTTP 503"} for i in range(250)]
     rows.append({"source_key": "hn", "at": now, "ok": True, "status": 200, "count": 3, "new": 0, "ms": 50, "error": ""})
@@ -131,7 +133,7 @@ def test_fetchlog_keeps_200_per_source_and_summarizes():
         assert len(fetchlog.history(db, "rss:https://a.test/f")) == fetchlog.HISTORY_DEFAULT
         s = fetchlog.summary(db)
         assert s["hn"]["last_ok"] is True and s["rss:https://a.test/f"]["last_ok_at"]
-        bars = fetchlog.week_bars(db)["rss:https://a.test/f"]
+        bars = fetchlog.week_bars(db, now=now)["rss:https://a.test/f"]
         assert len(bars) == 7 and bars[-1] is not None and bars[-1] < 100
         fetchlog.forget(db, ["hn"])
         assert fetchlog.history(db, "hn") == []
