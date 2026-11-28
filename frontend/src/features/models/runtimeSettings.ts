@@ -140,8 +140,18 @@ export function contextLimit(values: SettingValues | undefined | null): number |
 
 /** 選択肢（select）か、コンテキスト長のよく使う値（int）を返す。無ければスライダー/+expert の数値入力。 */
 export function fieldPresets(
-  field: CapabilityField, limit?: number | null,
+  field: CapabilityField, limit?: number | null, form?: SettingValues,
 ): Array<{ v: string | number; label: string }> | null {
+  if (field.type === "select" && field.choices_by && form) {
+    // 別の欄（Strata の系列）に合わせた選択肢。今の値が一覧に無いときは、その値を先頭に出す
+    // （一覧の先頭を見せると、中の値と画面がずれる。2026-11-28）
+    const by = form[field.choices_by.field];
+    const list = field.choices_by.map[String(by ?? "")] ?? field.choices ?? [];
+    const current = form[field.id];
+    const all = current !== undefined && current !== null && current !== "" && !list.includes(current as string)
+      ? [current as string, ...list] : list;
+    return all.map((choice) => ({ v: choice, label: field.choice_labels?.[String(choice)] ?? `${choice}` }));
+  }
   if (field.type === "select" && field.choices?.length) {
     if (field.id === "context" && typeof field.choices[0] === "string") {
       // Strata は "<N>k"。モデルの上限が分かっていればそれより長い選択肢を出さない。
@@ -154,7 +164,7 @@ export function fieldPresets(
     }
     return field.choices.map((choice) => ({
       v: choice,
-      label: choice === "" ? "モデルの既定" : `${choice}`,
+      label: choice === "" ? "モデルの既定" : field.choice_labels?.[String(choice)] ?? `${choice}`,
     }));
   }
   if (field.type === "int" && (field.id === "ctx_size" || field.id === "context")) {

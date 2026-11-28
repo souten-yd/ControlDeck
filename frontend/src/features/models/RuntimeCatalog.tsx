@@ -37,6 +37,7 @@ const FIT: Record<string, { label: string; tone: string }> = {
 };
 /** 大きさ（GB = 10^9 バイト。Strata・Maya・HF の表示と同じ単位） */
 const gib = (value: number) => value >= 10 ? `${Math.round(value)} GB` : `${value.toFixed(1)} GB`;
+const sizeText = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 const rateText = (perSec: number) => perSec >= 1e6
   ? `${(perSec / 1e6).toFixed(1)} MB/s` : `${(perSec / 1e3).toFixed(0)} KB/s`;
 const etaText = (seconds: number) => seconds < 60
@@ -78,7 +79,7 @@ const weightPath = (entry: RuntimeCatalogEntry, paths: string[]) =>
   pickWeightFile(paths.map((path) => ({ path, size: 0 })), entry.format) ?? paths[0] ?? "";
 
 /** 取得ジョブの進み具合。速度と残り時間は進捗の増分から画面側で計算する（backend は completed/total を出す）。 */
-function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismiss }: {
+export function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismiss }: {
   jobId: string;
   title: string;
   restored?: boolean;
@@ -155,14 +156,18 @@ function AcquireJobCard({ jobId, title, restored, onFinished, onResumed, onDismi
         : job.status === "queued" ? "開始待ち" : job.progress?.status || "取得中";
   return <>
     <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700" data-acquire-job={jobId}>
-      <p className="truncate text-xs">{title} · {label}</p>
+      <p className="text-sm font-medium">{title}</p>
+      {/* 進み具合の文（何個目のファイルか・取得先）。2026-11-28 利用者「ダウンロードが進んでいるのか分からない」 */}
+      <p className="mt-0.5 break-words text-[11px] text-zinc-500">{label}</p>
       {pct !== null && (
         <>
           <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
             <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pct}%` }} />
           </div>
           <p className="num mt-1 text-[11px] text-zinc-500">
-            {pct}%{rate !== null && ` · ${rateText(rate)}`}{eta && ` · ${eta}`}
+            {pct}%{total >= 1e6 && <> · <span className="whitespace-nowrap">{sizeText(done)} / {sizeText(total)}</span></>}
+            {rate !== null && <> · <span className="whitespace-nowrap">{rateText(rate)}</span></>}
+            {eta && <> · <span className="whitespace-nowrap">{eta}</span></>}
           </p>
         </>
       )}

@@ -740,11 +740,12 @@ async def download(job, repo: str, files: list[str], *, library_id: str = "",
         ensure_external_allowed("Hugging Face のモデル取得")
         # トークンは要求ごとに付ける（クライアントの既定にすると redirect 先へ漏れる）。
         async with _client(None, with_auth=False) as client:
-            for path, target in pending:
+            for index, (path, target) in enumerate(pending, 1):
                 url = f"{HF_RESOLVE}/{repo}/resolve/{revision}/{path}"
                 try:
                     done += await _download_file(
-                        job, client, url, target, label=target.name,
+                        # 何個目のファイルかを進み具合の文に入れる（Models の「ダウンロード中」に出す。2026-11-28）
+                        job, client, url, target, label=f"{target.name}（{index}/{len(pending)} ファイル目）",
                         done_bytes=done, total_bytes=expected_bytes,
                         expected_size=int(expected_sizes.get(target.name) or 0),
                     )

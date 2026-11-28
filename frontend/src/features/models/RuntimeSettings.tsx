@@ -98,7 +98,13 @@ export function RuntimeSettings({
 
 
   const setField = (id: string, value: unknown) => {
-    const next = { ...form, [id]: value };
+    const next: SettingValues = { ...form, [id]: value };
+    // 系列を変えたら、その系列に無い量子化を先頭の量子化へ直す（choices_by）
+    for (const other of (cap?.sections ?? []).flatMap((section) => section.fields)) {
+      if (other.choices_by?.field !== id) continue;
+      const list = other.choices_by.map[String(value)] ?? [];
+      if (list.length && !list.includes(next[other.id] as string)) next[other.id] = list[0];
+    }
     setForm(next);
     onValuesChange?.(next);
   };
@@ -138,7 +144,7 @@ export function RuntimeSettings({
   const renderField = (field: CapabilityField): ReactNode => {
     if (!isFieldVisible(field, expert)) return null;
     const value = form[field.id];
-    const presets = fieldPresets(field, limit);
+    const presets = fieldPresets(field, limit, form);
     const bound = limit !== null && (field.id === "ctx_size" || field.id === "context")
       ? <span className="mt-1 block text-[11px] text-zinc-500">ファイルの上限 {limit.toLocaleString()} トークンまで</span>
       : null;

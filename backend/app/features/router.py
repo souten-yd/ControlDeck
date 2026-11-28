@@ -692,16 +692,14 @@ async def maya_download(request: Request, body: MayaDownloadBody,
         raise HTTPException(status_code=422, detail=f"空き容量が足りません（必要 約{item.get('download_gb')}GB・"
                                                     f"空き {item.get('free_gb')}GB）")
 
-    async def run(job: jobs.Job) -> dict:
-        state = await maya_s.download_and_register_stream(
-            job, setup_id=body.setup_id, folder=body.folder, context=body.context,
-            gpu_index=body.gpu_index, replace=body.replace)
-        job.set_progress("ダウンロードして登録しました", 3, 3)
-        return state
+    from app.models_mgmt import resume as model_resume
 
+    # 再起動（本体の自動更新など）の後に続きから取り直せるよう、引数を再開の記録に残す（2026-11-28）
+    params = {"setup_id": body.setup_id, "folder": body.folder, "context": body.context,
+              "gpu_index": body.gpu_index, "replace": body.replace}
     title = f"Mayaダウンロード {maya_s.display_name(item)}"
-    job = jobs.create("model.maya-s.download", title, run, owner_user_id=user.id,
-                      idempotency_key=request.headers.get("idempotency-key"))
+    job = jobs.create("model.maya-s.download", title, model_resume.maya_download_runner(params), owner_user_id=user.id,
+                      idempotency_key=request.headers.get("idempotency-key"), resume=params)
     audit.record(db, "maya-s.download", user=user, resource_type="feature", resource_id=item["alias"],
                  request=request, metadata={"job_id": job.id, "setup_id": body.setup_id,
                                             "download_gb": item.get("download_gb"), "root": item.get("download_root")})
