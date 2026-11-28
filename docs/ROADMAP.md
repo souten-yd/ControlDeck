@@ -1,6 +1,6 @@
 # 全体計画（ロードマップ）
 
-状態: 2026-11-21 作成。ばらばらだった計画（OpenCode の開発環境・統合ナレッジ・Patent・検索基盤・フロンティアモデル・モデル管理・Terminal）を 1 つの順番にまとめた。
+状態: 2026-11-21 作成、2026-11-28 に表を今の状態へ直した。ばらばらだった計画（OpenCode の開発環境・統合ナレッジ・Patent・検索基盤・フロンティアモデル・モデル管理・Terminal）を 1 つの順番にまとめた。
 **引き継ぐ AI はまずこの文書を読み、次に「いまの仕事」の引き継ぎ資料（`docs/HANDOFF-*.md`）を読む。**
 各計画の中身（設計・判断の理由・実装メモ）は個別の文書が正。この文書は順番・依存・判断待ちだけを持つ。進捗が動いたら、個別の文書と一緒にここの表も直す。
 
@@ -13,25 +13,30 @@
 
 ## 順番
 
+2026-11-28 に今の状態へ直した（利用者「ロードマップを直して」）。**利用者の指示（2026-11-28）: 次は AI チームの改善、その後に残りの作業。**
+
 | 順 | 仕事 | 段 | 状態 | 文書 |
 |---|---|---|---|---|
-| 1 | **OpenCode で全ての開発（開発環境 第 2 段階）** | P1 安全（箱ごとの pod・中継） | 完了 | `HANDOFF-opencode-dev-environment.md`、`PLAN-opencode-dev-environment.md` |
-| | | P2 Project Lab で確かめる・試す（MCP の実行の道具・箱の run・HMR の記録・評価・画面） | 未着手 | 同上 |
-| | | P3 ミラーが LLM を使える | 未着手 | 同上 |
+| 0 | **AI チーム（Nexarch）の改善**（2026-11-28 利用者「次に AI チームの改善を進めてから残りの作業を進めて」） | 台帳の対応中 3 件（調べものが遅い・担い手の中が見えない・チームリーダーの引き継ぎ）→ A4 担い手の中の状態をチームリーダーへ → C 担い手に ControlDeck の検索（MCP）を渡す → S1 調べものの速い形（測ってから）→ A5 結果を差分つきで取り込む画面 → 仕事の停止・担当の付け替えの道具 | devx の A1〜A3・S2、no_handoff の再開、取り下げ・閉じる、モデルの表示、自動再開は済み（#704〜#719）。本番で 3 チームを動かし、ランタイムの共通化（30 件）を最後まで作れた（#721） | `HANDOFF-nexarch-devx.md`、`PLAN-nexarch-team.md`、`ISSUES.md` |
+| 1 | **OpenCode で全ての開発（開発環境 第 2 段階）** | P1 安全（箱ごとの pod・中継） | 完了（実機で確認） | `HANDOFF-opencode-dev-environment.md`、`PLAN-opencode-dev-environment.md` |
+| | | 作業場 1〜5 段目（AI アシスタントから作業場・関門・差分・PR・マージ・Project Lab の作業場）と保存・中断・再開 | 実装・E2E 済み。**実機の箱での通し（会話サーバー・push・`gh pr merge`）は未確認** | 同上 |
+| | | P2 Project Lab で確かめる・試す | P2a（MCP の実行の道具）・P2c（見張りモード）は実装済み・実機は未確認。P2b（箱の run）・P2d（評価）・P2e（記録と評価の画面）は未着手 | 同上 |
+| | | P3 ミラーが LLM を使える | 実装済み・実機は未確認 | 同上 |
 | | | P4 GPU の貸し出し | 未着手 | 同上 |
 | | | P5 ホストの API で評価 | 未着手 | 同上 |
-| | | P6 試運転（下の 2 の W2 の最初の項目を OpenCode にやらせる） | 未着手 | 同上 |
-| 1b | 作業場から実機（USB・Wi-Fi）の開発 | 第 1 段 USB のシリアル・adb の許可（実装済み）→ 第 2 段 承認・ツールチェーン → 第 3 段 Wi-Fi → 第 4 段 Pi のガジェット・SWD | 第 1 段完了（実機の確認は未）。第 2 段から | `design-device-dev.md` |
-| 2 | 検索基盤（Web 収集） | W2 ブラウザ（JS が要るページ・中継・data_api）→ W3 巡回 | W1 完了（v0.108）。W2 から | `HANDOFF-web-collector.md`、`PLAN-web-collector.md` |
-| 3 | 特許の調査（Patent P1） | テーマ→検索語→承認→取得→関連順→全文判定→保存 | 未着手。W2 とナレッジの検索入口が前提 | 同上 |
-| 4 | 統合ナレッジ（PatentBuddy の未反映の内容を作り直す） | K1 知識エッセンス → K2 横断検索・比較 → K3 知識マップ・仮説 → K4 Idea Canvas → K5 3 段の画面 → K6（R3-6 の残り）。R2-3 書誌グラフ・R2-5 PDF の座標 | R3-0〜3 完了。PB の PR は 2026-11-21 に閉じた。K1 から（`HANDOFF-knowledge-platform.md`） | `HANDOFF-knowledge-platform.md`、`PLAN-knowledge-platform.md` |
-| 5 | フロンティアモデル | F4 役割と接続（AI アシスタントのゲートウェイ経由化・プロジェクトの「機密」）→ F3 エージェント CLI → F5 開発チーム | F1・F2・F2+（費用・残高・月の上限）完了 | `PLAN-frontier-models.md` |
+| | | P6 試運転（本体の機能を 1 つ、AI アシスタントの作業場の OpenCode に作らせ PR → Release まで。上の「実機は未確認」をここでまとめて確かめる） | **未着手（AI チームの改善の次に行う）** | 同上 |
+| 1b | 作業場から実機（USB・Wi-Fi）の開発 | 第 1 段 USB のシリアル・adb の許可（実装済み）→ 第 2 段 承認・ツールチェーン → 第 3 段 Wi-Fi → 第 4 段 Pi のガジェット・SWD | 第 1 段完了（実機の確認は未）。M5Paper・Android・iOS への書き込みは 11-27 に実装。第 2 段から | `design-device-dev.md` |
+| 2 | 検索基盤（Web 収集） | W1 → W2 ブラウザ（JS が要るページ・中継）・公開データ API → W3 巡回 → W4 表の取り込み | W1（v0.108）・W2（#636）・公開データ API（#656）は済み。**W3 巡回は未**（Codex の下書き `feat/web-collector-w3a-discovery-queue`・`w3b-guarded-http` が未取り込み）。W4 も下書き（`w4a-structured-tables`）のみ | `HANDOFF-web-collector.md`、`PLAN-web-collector.md` |
+| 3 | 特許の調査（Patent P1） | テーマ→検索語→承認→取得→関連順→全文判定→保存 | 未着手。W2 は済み、ナレッジの検索入口が前提 | 同上 |
+| 4 | 統合ナレッジ（PatentBuddy の未反映の内容を作り直す） | K1 知識エッセンス → K2 横断検索・比較 → K3 知識マップ・仮説 → K4 Idea Canvas → K5 3 段の画面 → K6（R3-6 の残り）。R2-3 書誌グラフ・R2-5 PDF の座標 | R3-0〜3 完了。K1 から（`HANDOFF-knowledge-platform.md`）。QnapNewsHub との統合（案 C）は下の節 | `HANDOFF-knowledge-platform.md`、`PLAN-knowledge-platform.md` |
+| 5 | フロンティアモデル | F4 役割と接続（AI アシスタントのゲートウェイ経由化・プロジェクトの「機密」）→ F3 エージェント CLI → F5 開発チーム | F1・F2・F2+ 完了。F3・F5 は AI Commander（9）と Nexarch のチーム（0）で実質的に実現。Claude・Codex は定額のログインだけ（#702）。F4 は未 | `PLAN-frontier-models.md` |
 | 6 | モデル管理の残り | 既知の不具合 4 件（`HANDOVER-model-management-v2.md` の「既知のバグ」）、A の画面、D-5 の画面 | 文書は 2026-08 で止まっている。直す前に今のコードで再確認 | `HANDOVER-model-management-v2.md` |
 | 7 | Terminal V2 | 4c-5 実機の iPhone・PWA → 4c-6 既定化 | 利用者の実機が要る | `implementation-plan.md` |
-| 8 | **モデル登録（目録・取得・再開・フォルダ・設定の形）**（2026-11-26） | M0 Strata 0.2.22 へ更新 → M1 Strata の目録 → M2 Maya の目録と取得 → M3 取得の自動再開 → M4 フォルダとファイルの選択 → M5 設定の形を揃える → M6 無検閲 | M0 済み | `PLAN-model-catalog.md` |
-| 9 | **AI Commander**（2026-11-26。複数の AI の CLI を 1 画面で・複数アカウント・監視・自動再開・利用量・チーム） | C0 実機の確認 → C1 コンソールとアカウント → C2 状態 → C3 自動再開 → C4 利用量 → C5 MCP → C6 チーム | 計画のみ。ControlDeck の作業場（OpenCode）で作り、開発環境を直しながら進める | `PLAN-ai-commander.md` |
+| 8 | モデル登録（目録・取得・再開・フォルダ・設定の形）（2026-11-26） | M0〜M6 | **M0〜M5 済み**（ランタイムの共通化 #721・v0.186。実機の実重みの取得と再起動での再開は未確認）。M6 は目録の行だけ済み、Strata の無検閲の変換の Job 化は未 | `PLAN-model-catalog.md`、`HANDOFF-model-catalog.md` |
+| 9 | AI Commander（Nexarch）（2026-11-26） | C0 → C1 コンソール → C2 状態 → C3 自動再開 → C4 利用量 → C5 MCP → C6 チーム | C0〜C3 済み（コンソールのロックと自動の開き直し #713）。C4 一部（使用率と回復の時刻。トークン・費用は未）。C5 未。C6 チームは本番で稼働（改善は 0） | `PLAN-ai-commander.md`、`PLAN-nexarch-team.md` |
 
 順番の理由:
+- 0（AI チームの改善）を先にするのは、以降の開発をこのプラットフォームで行うため（方針 3）。詰まりが残ったままだと、残りの全部の作業が遅くなる。
 - 1 ができると、2〜6 を OpenCode とローカル LLM で進められ、Claude の使用量を減らせる。
 - 2 の W2 は 3（特許の調査）の前提。3 は 4 の検索入口（`search_documents`）も前提。
 - 5 の F4（AI アシスタントのゲートウェイ経由化）は 1 の P1・P3（中継・ミラーの LLM）と同じ場所を触るので、1 の後にまとめて行う。
