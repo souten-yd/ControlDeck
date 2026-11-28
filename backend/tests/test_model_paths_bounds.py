@@ -43,7 +43,7 @@ def test_gguf_string_array_with_a_lying_count_stops_quickly(tmp_path, monkeypatc
 
     根拠: 修正前は総読取の上限（8MB）が配列の要素の間に効かず、ファイルの終わりまで
     要素ごとのループを回し続けた。GGUF は数十 GB のファイルなので、細工したヘッダで
-    threadpool の枠を長時間奪える（64MB の疎なファイルで修正前は約 10 秒・返りは空。
+    threadpool の枠を長時間奪える（512MB の疎なファイルで修正前は約 11 秒・返りは空。
     修正後は配列 1 つ 200000 要素の上限で打ち切り、0.1 秒未満・読めた値は返す）。
     上限は語彙（15 万程度）の本物の配列が収まる大きさにしている。
     """
@@ -58,7 +58,9 @@ def test_gguf_string_array_with_a_lying_count_stops_quickly(tmp_path, monkeypatc
     path.write_bytes(header)
     with path.open("rb+") as handle:
         # 疎なファイル: 中身はゼロで、要素（長さ 0 の文字列）が延々続くように見える。
-        handle.truncate(len(header) + 64 * 1024 * 1024)
+        # 512MB はディスクを消さない（穴のまま）。GGUF は実際に数十 GB あるので、
+        # この大きさのファイルで止められないと実害になる。
+        handle.truncate(len(header) + 512 * 1024 * 1024)
 
     start = time.perf_counter()
     info = model_paths.inspect(str(path))
