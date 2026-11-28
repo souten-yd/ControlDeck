@@ -105,3 +105,47 @@ def test_zen_models_listed_only_with_a_key(monkeypatch):
 def test_console_refuses_zen_model():
     with pytest.raises(ValueError, match="コンソールでは使えません"):
         consoles._command_for(accounts.CLIS["opencode"], "/tmp", 1, model="opencode-go/glm-5.3")
+
+
+def test_zen_and_cloud_members_do_not_take_the_local_slot():
+    """GLM（Zen・Go）や OpenRouter のモデルの担い手は、ローカル LLM の同時の数（GPU を共有）に数えない。
+    2026-11-28 本番: GLM の実装の担い手が、ローカルの調べものが終わるまで待たされた。"""
+    from app.commander import team_dispatch, teams
+
+    base = {"kind": "headless", "cli": "opencode", "account": "default"}
+    assert teams.member_is_local({**base, "model": "auto"})
+    assert teams.member_is_local({**base, "model": "qwen-flash-next"})
+    assert not teams.member_is_local({**base, "model": "opencode-go/glm-5.3"})
+    assert not teams.member_is_local({**base, "model": "cloud:openrouter/deepseek/deepseek-v4.1-flash-1017"})
+    local = {**base, "id": "m1", "model": "auto"}
+    glm = {**base, "id": "m2", "model": "opencode-go/glm-5.3"}
+    team = {"members": [local, glm], "max_parallel": 3, "local_parallel": 1,
+            "tasks": [{"id": 1, "status": "doing", "assignee": teams.member_key(local)}, {"id": 2, "status": "todo"}]}
+    assert team_dispatch.blocker(team, team["tasks"][1], glm, check_overlap=False) == ""
+    assert "ローカル" in team_dispatch.blocker(team, team["tasks"][1], {**local, "id": "m3"}, check_overlap=False)
+
+
+def test_leader_sees_live_progress_and_wait_reason(monkeypatch):
+    """チームリーダーの wait・read_result が、走っている仕事の今の進み具合と、待ちの理由を返す。
+    2026-11-28 本番: 実行中の last_line・progress が空で、待ちの理由も無く、チームリーダーが状態を読めなかった。"""
+    import time as _time
+
+    from app.commander import leader_mcp, team_dispatch, team_runner
+
+    team = {"id": "tX", "tasks": []}
+    running = {"id": 1, "status": "doing", "title": "a", "run": {"started_at": _time.time() - 5, "last_line": "", "progress": []}}
+    waiting = {"id": 2, "status": "todo", "title": "b"}
+    with team_runner._active_lock:
+        team_runner._active[("tX", 1)] = {"live": {"last_line": "shell: pytest", "progress": ["read: a.py"]}}
+    team_dispatch._wait_reasons[("tX", 2)] = "ローカルの担い手の同時の数の上限です（GPU を共有）"
+    try:
+        monkeypatch.setattr(leader_mcp, "_brief", lambda team, task: {"run_id": str(task["id"])})
+        monkeypatch.setattr(leader_mcp, "task_state", lambda task: "running" if task["status"] == "doing" else "queued")
+        a = leader_mcp._result(team, running, {})
+        assert a["last_line"] == "shell: pytest" and a["progress"] == ["read: a.py"] and a["elapsed_s"] >= 4
+        b = leader_mcp._result(team, waiting, {})
+        assert "GPU" in b["wait_reason"]
+    finally:
+        with team_runner._active_lock:
+            team_runner._active.pop(("tX", 1), None)
+        team_dispatch._wait_reasons.pop(("tX", 2), None)

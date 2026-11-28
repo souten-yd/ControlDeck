@@ -305,7 +305,19 @@ def _result(team: dict, task: dict, info: dict) -> dict:
     out = _brief(team, task)
     run = task.get("run") if isinstance(task.get("run"), dict) else {}
     if task_state(task) not in FINISHED:
-        out["last_line"] = _cut(run.get("last_line"), 200)
+        # 走っている間は、保存前の進み具合（最後の行・道具の呼び出し・経過）をメモリから重ねる（team_runner.live_overlay）。
+        # 待ちなら、配り手が始められなかった理由を返す。2026-11-28 本番: どちらも空で、チームリーダーが状態を読めなかった。
+        from app.commander import team_dispatch, team_runner
+
+        live = team_runner.live_overlay(str(team.get("id") or ""), int(task["id"]), run) if run.get("started_at") else run
+        out["last_line"] = _cut(live.get("last_line"), 200)
+        if live.get("progress"):
+            out["progress"] = [_cut(p, 120) for p in list(live["progress"])[-5:]]
+        if run.get("started_at"):
+            out["elapsed_s"] = live.get("elapsed")
+        why = team_dispatch.wait_reason(str(team.get("id") or ""), int(task["id"]))
+        if why and task.get("status") == "todo":
+            out["wait_reason"] = why
         return out
     report = task.get("report") if isinstance(task.get("report"), dict) else None
     out["report"] = report
@@ -732,8 +744,16 @@ def tool_read_result(team_id: str, args: dict) -> dict:
     info = team.get("git") or {}
     run = task.get("run") if isinstance(task.get("run"), dict) else {}
     if what == "output_tail":
-        return {"run_id": str(task["id"]), "last_line": _cut(run.get("last_line"), 300), "output_tail": _cut(run.get("tail"), RESULT_TAIL),
-                "progress": (run.get("progress") or [])[-5:]}
+        from app.commander import team_runner
+
+        running = task_state(task) not in FINISHED and run.get("started_at")
+        live = team_runner.live_overlay(str(team.get("id") or ""), int(task["id"]), run) if running else run
+        out = {"run_id": str(task["id"]), "last_line": _cut(live.get("last_line"), 300), "output_tail": _cut(run.get("tail"), RESULT_TAIL),
+               "progress": (live.get("progress") or [])[-5:]}
+        if running:
+            out["elapsed_s"] = live.get("elapsed")
+            out["note"] = "実行中です。output_tail は終わってから入ります（last_line と progress は今の進み具合）"
+        return out
     if what == "files":
         if info.get("enabled") and task.get("branch"):
             team_git.commit_all(task["cwd"], f"Nexarch: #{task['id']} {task['title']}")
