@@ -13,6 +13,7 @@ import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import { api } from "../../api/client";
 import { inspectRegisterPath, type RegisterInspect } from "../../api/models";
+import { invalidateRuntimeQueries } from "./runtimeSettings";
 
 /** ルート一覧だけは 2 つに統一した API から。一覧・作成は files API（path 検証つき）。 */
 export const MODEL_FILE_PICKER_SOURCE: FilePickerSource = {
@@ -64,7 +65,11 @@ export function RuntimeRegisterFromFile({
 
   const view = data?.runtimes.find((item) => item.runtime === viewName(runtime) || item.runtime === runtime);
   const meta = data?.metadata ?? {};
-  const canRegister = !!view?.eligible && !!alias.trim() && !disabled && !saving;
+  // Maya の登録は setup_id + folder が必須の別 API。Strata は family + model が要る。
+  // それらを渡さないまま既定の POST を叩くと 422 になるので、その場合は親の保存処理を要求する。
+  const needsCustomSave = runtime === "maya" && !onRegistered
+    || runtime === "strata" && !onRegistered && (!extra?.family || !extra?.model);
+  const canRegister = !!view?.eligible && !!alias.trim() && !disabled && !saving && !needsCustomSave;
 
   const register = async () => {
     if (!data || !view) return;
@@ -79,11 +84,7 @@ export function RuntimeRegisterFromFile({
           json: { alias: alias.trim(), model_path: data.path, ...(extra ?? {}) },
         });
       }
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["models", "local"] }),
-        qc.invalidateQueries({ queryKey: [`${runtime}-instances`] }),
-        qc.invalidateQueries({ queryKey: ["runtime-environment"] }),
-      ]);
+      await Promise.all(invalidateRuntimeQueries(qc, runtime));
       show("登録しました");
     } catch (e) {
       show(e instanceof Error ? e.message : "登録できませんでした", "error");
@@ -124,6 +125,11 @@ export function RuntimeRegisterFromFile({
           {view?.eligible && view.reason && (
             <p className="text-[11px] text-zinc-500">{view.reason}</p>
           )}
+          {needsCustomSave && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-300">
+              Maya・Strata は専用の登録画面（または onRegistered）から保存してください
+            </p>
+          )}
           {expert && (
             <div className="space-y-1 border-t border-zinc-100 pt-2 dark:border-zinc-800">
               <p className="text-[11px] text-zinc-500">{data.kind} · {data.path}</p>
@@ -148,7 +154,14 @@ export function RuntimeRegisterFromFile({
       {picking && <FilePicker source={MODEL_FILE_PICKER_SOURCE} mode={mode}
         title={mode === "file" ? "モデルのファイルを選択（/data1tb・/data2tb）" : "モデルのフォルダを選択（/data1tb・/data2tb）"}
         initialPath={path || undefined}
-        onSelect={(selected) => { setPath(selected); setAlias(""); setAliasEdited(false); setPicking(false); }}
+        onSelect={(selected) => {
+          // picker のルート一覧と別に、選んだ値も 2 ルートの中に閉じる（defense in depth）。
+          if (!/^\/data(1|2)tb\//.test(selected) && selected !== "/data1tb" && selected !== "/data2tb") {
+            show("選べるのは /data1tb と /data2tb の中だけです", "error");
+            return;
+          }
+          setPath(selected); setAlias(""); setAliasEdited(false); setPicking(false);
+        }}
         onClose={() => setPicking(false)} />}
     </div>
   );

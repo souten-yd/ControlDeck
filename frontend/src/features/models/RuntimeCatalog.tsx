@@ -47,11 +47,12 @@ interface Pending {
 }
 
 /** 取得ジョブの進み具合。速度と残り時間は進捗の増分から画面側で計算する（backend は completed/total を出す）。 */
-function AcquireJobCard({ jobId, title, onFinished, onResumed }: {
+function AcquireJobCard({ jobId, title, onFinished, onResumed, onDismiss }: {
   jobId: string;
   title: string;
   onFinished: (job: ModelJob) => void;
   onResumed: (newJobId: string) => void;
+  onDismiss: () => void;
 }) {
   const show = useToasts((s) => s.show);
   const qc = useQueryClient();
@@ -150,6 +151,12 @@ function AcquireJobCard({ jobId, title, onFinished, onResumed }: {
           取り消し
         </button>
       )}
+      {terminal(job.status) && (
+        <button type="button" onClick={onDismiss}
+          className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
+          閉じる
+        </button>
+      )}
     </div>
     <p className="mt-1 text-[10px] text-zinc-400">サーバー側で実行中 — 画面を閉じても継続します</p>
   </div>;
@@ -203,15 +210,21 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
     }
   };
 
+  const dropJob = (jobId: string) => setJobs((current) => current.filter((item) => item.id !== jobId));
   const onFinished = (jobId: string, entry: RuntimeCatalogEntry) => (job: ModelJob) => {
-    if (job.status !== "succeeded") {
-      show(job.error || `${entry.name} を取得できませんでした`, "error");
+    // 停止は意図した操作なので失敗扱いにしない。再開できるようカードは残す。
+    if (job.status === "interrupted") {
+      show("停止しました。続きから再開できます", "info");
       return;
     }
     const files = (job.result?.files as string[] | undefined) ?? [];
-    if (!files.length) return;
+    if (job.status !== "succeeded" || !files.length) {
+      show(job.error || `${entry.name} を取得できませんでした`, "error");
+      dropJob(jobId);
+      return;
+    }
     setAcquired((current) => ({ ...current, [entry.id]: files }));
-    setJobs((current) => current.filter((item) => item.id !== jobId));
+    dropJob(jobId);
     show(`${entry.name} を取得しました`);
   };
 
@@ -295,7 +308,11 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
             <div className="mt-2 flex flex-wrap gap-1.5">
               {done && <span className="min-h-11 content-center text-xs text-emerald-600">登録済み</span>}
               {!done && acquired[entry.id]?.[0] && onRegister && (
-                <button type="button" onClick={() => onRegister(acquired[entry.id][0], entry)}
+                <button type="button" onClick={() => {
+                  const file = acquired[entry.id][0];
+                  // safetensors はフォルダ単位で登録する（Sly は config.json のあるフォルダ）。
+                  onRegister(entry.format === "safetensors" ? dirname(file) : file, entry);
+                }}
                   className="min-h-11 rounded-lg border border-zinc-300 px-3 text-xs dark:border-zinc-600">
                   登録する
                 </button>
@@ -317,6 +334,7 @@ export function RuntimeCatalog({ runtime, onRegister, expert: expertProp }: Runt
       {jobs.map(({ id, entry }) => (
         <AcquireJobCard key={id} jobId={id} title={entry.name}
           onFinished={onFinished(id, entry)}
+          onDismiss={() => dropJob(id)}
           onResumed={(newId) => setJobs((current) => [
             { id: newId, entry }, ...current.filter((item) => item.id !== id),
           ])} />

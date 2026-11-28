@@ -19,8 +19,8 @@ import {
   SettingsGroup, SheetActions, Toggle, primaryButton,
 } from "./formControls";
 import {
-  buildSaveBody, coerceField, dictToText, displayValue, fieldPresets, isFieldVisible,
-  mergeSettingValues, sectionFields, sectionLabels, textToDict, useRuntimeCapabilities,
+  buildSaveBody, coerceField, dictToText, displayValue, fieldPresets, invalidateRuntimeQueries,
+  isFieldVisible, mergeSettingValues, sectionFields, sectionLabels, textToDict, useRuntimeCapabilities,
   type SettingValues,
 } from "./runtimeSettings";
 import type { CapabilityField } from "../../api/models";
@@ -107,15 +107,13 @@ export function RuntimeSettings({
       } else {
         const endpoint = cap.endpoints?.instances;
         if (!endpoint) throw new Error("このランタイムの保存先が分かりません");
+        // capability の endpoint は /api/v1 付きの完全パス。api() が前置するので外す。
+        const path = endpoint.replace(/^\/api\/v1/, "");
         const alias = String(initial?.alias ?? form.alias ?? "");
-        await api(initial?.alias ? `${endpoint}/${encodeURIComponent(alias)}` : endpoint,
+        await api(initial?.alias ? `${path}/${encodeURIComponent(alias)}` : path,
           { method: initial?.alias ? "PUT" : "POST", json: body });
       }
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["models", "local"] }),
-        qc.invalidateQueries({ queryKey: [`${runtime}-instances`] }),
-        qc.invalidateQueries({ queryKey: ["runtime-environment"] }),
-      ]);
+      await Promise.all(invalidateRuntimeQueries(qc, runtime));
       show(initial ? "設定を保存しました" : "登録しました。ロードで起動できます");
       onDone?.();
     } catch (e) {
@@ -132,6 +130,16 @@ export function RuntimeSettings({
     const label = <span className="mb-1 block text-xs font-medium text-zinc-500">{field.label}</span>;
     const hint = field.note ? <span className="mt-1 block text-[11px] text-zinc-500">{field.note}</span> : null;
 
+    // 別名はファイル名から自動で入るが、登録の必須欄なので通常モードでも直せるようにする
+    // （細かい設定ではなく名前そのもの。エキスパートに隠すと登録が行き詰まる）。
+    if (field.id === "alias") {
+      return <label key={field.id} className="block">{label}
+        <input aria-label={field.label} disabled={disabled} value={value === undefined || value === null ? "" : String(value)}
+          onChange={(e) => setField(field.id, e.target.value)}
+          className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+        {hint}
+      </label>;
+    }
     if (field.type === "bool") {
       return <Toggle key={field.id} label={field.label} hint={field.note}
         value={Boolean(value)} disabled={disabled} onChange={(v) => setField(field.id, v)} />;
@@ -221,7 +229,7 @@ export function RuntimeSettings({
           {fields.map(renderField)}
         </SettingsGroup>;
       })}
-      {cap?.always_on?.map((item) => (
+      {expert && cap?.always_on?.map((item) => (
         <p key={item.id} className="rounded-xl border border-dashed border-zinc-200 px-3 py-2 text-[11px] text-zinc-500 dark:border-zinc-700">
           {item.note}
         </p>

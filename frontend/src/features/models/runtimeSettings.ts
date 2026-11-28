@@ -5,7 +5,7 @@
  * そのまま使い、保存本体を作るときに `ref`（既存の別画面へ委ねる欄）と
  * Sly の prefix cache（常時オンで切る欄が無い）を取り除く。
  */
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import {
   getRuntimeCapabilities,
   type CapabilityField,
@@ -20,6 +20,18 @@ export const SECTION_ORDER = ["model", "context", "parallel", "speed", "launch",
 
 /** prefix cache は常にオン（2026-11-28 利用者の決まり）。切る欄は出さず保存にも入れない。 */
 export const ALWAYS_ON_FIELD_IDS = new Set(["prefix_cache"]);
+
+/** 保存・登録の後に更新する query。各パネルが既に使っている key も含める（no-op の invalidate を避ける）。 */
+export function invalidateRuntimeQueries(qc: QueryClient, runtime: string): Promise<unknown>[] {
+  // 既存の各パネルが実際に使っている key だけ（存在しない key を足さない）。
+  const keys: string[][] = [["models", "local"], ["runtime-environment"]];
+  if (runtime === "llama") keys.push(["llama-status"], ["models", "llama.cpp"]);
+  if (runtime === "strata") keys.push(["strata-instances"]);
+  if (runtime === "radiance") keys.push(["radiance-instances"]);
+  if (runtime === "sly-radiance") keys.push(["sly-radiance-instances"]);
+  if (runtime === "maya") keys.push(["maya-s-model"], ["maya-catalog"], ["maya-s-jobs"]);
+  return keys.map((key) => qc.invalidateQueries({ queryKey: key }));
+}
 
 export function useRuntimeCapabilities(runtime: string) {
   return useQuery({
@@ -77,6 +89,9 @@ export function buildSaveBody(cap: RuntimeCapabilities, values: SettingValues): 
 export function coerceField(field: CapabilityField, raw: unknown): unknown {
   if (field.type === "bool") return Boolean(raw);
   if (field.type === "int" || field.type === "float") {
+    // null は「自動」「既定」を表す保存 API の値（speculative_tokens・kv_resident など）。
+    // Number(null) === 0 で上書きすると意味が変わるのでそのまま通す。
+    if (raw === null) return null;
     const num = typeof raw === "number" ? raw : Number(raw);
     if (!Number.isFinite(num)) return field.default;
     const low = field.min ?? -Infinity;
