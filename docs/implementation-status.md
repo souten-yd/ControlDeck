@@ -1,5 +1,9 @@
 # 実装状況
 
+## 2026-11-28 閉じたチームを開くと画面が落ちる不具合
+- 利用者「開発機能を磨くを押すとエラーの画面」（TypeError: i.remaining.length）。閉じる（#716/#717）が、チームリーダーの結果の無いチームで結果を `{landed}` だけで作っていた。
+- `teams.result_shape`: 結果を画面が読む形（summary・remaining・usage・changes・checks・ブランチ）にそろえる。閉じるで使い、一覧でも通す（本番に残った欠けたデータも直る）。画面も `remaining`・`usage` の欠けで落ちない。
+- 試験: `test_closed_team_without_leader_result_has_a_full_result`。本番のデータで一覧の形を確かめた（読むだけ）。
 ## 2026-11-28 AI チームで、どのモデルが担当しているか・担当したかを出す
 - 利用者「どのモデルが作業を担当しているか、もしくは担当した作業か分かるようにしてほしい」。
 - `teams.model_label(cli, account, model)`: 短いわかりやすい名前（GLM-5.3・HY4 Flash（無料）・Nemotron（OpenRouter 無料）・Codex・Claude sonnet・ローカル LLM）。OpenCode の接続（api-…）のモデルは接続から引く。
