@@ -1,5 +1,13 @@
 # 実装状況
 
+## 2026-11-28 AI チームの画面を「いま」が一目で分かる形にする（アバター・6 段・モデルの選び手・資料）
+- 利用者の要望（Nexarch #3）: AI チームの画面を図で分かるようにし、役割のモデルは 1 つの選択から決め、資料をチームへ添えられるようにする。
+- **進み具合**（`features/commander/TeamMission.tsx`）: チームの上に、アバターの列・6 段（調査→計画→実装→評価→統合→試験）・一文のまとめを出す。段の状態は計画の項目（`team.plan.items`）・タスク・結果から求め、進んでいる段だけ `motion-safe:animate-pulse` で控えめに動かす（動きを減らす設定では止まる）。段やアバターを押すと中身（仕事・担当・状態）が開き、細かい値（モデル・接続）はエキスパートのときだけ添える。
+- **モデルの選び手**（`TeamRoles.tsx`・`api/commander.ts`）: `GET /commander/model-choices` から使えるモデルをまとまり（ローカル・OpenCode（無料・Go）・OpenRouter・Claude・Codex）ごとに並べ、1 つ選ぶと CLI・接続・モデル・考えるレベルがまとめて決まる。普段の画面はこの 1 つの選択だけで、CLI・接続・モデルの直接指定・考えるレベルはエキスパートのときだけ出す。
+- **資料**（`TeamMaterials.tsx`・`LeaderTimeline.tsx`・`TeamRoles.tsx`）: 既存の FilePicker（`/data1tb`・`/data2tb` の許可ルート）でファイル・フォルダを選び、パスの一覧だけをチームへ渡す（中身は送らない）。選んだパスは札で見せて外せる。`teams/auto` と `leader/run` の `input_paths` に載せる。
+- **チームの前提**（`TeamView.tsx`）: 閉じたチーム（`local_only`）と再起動の後の自動再開（`auto_resume`）を、既存のチームの操作メニューの切り替えに足した。確認のコマンドは文字列と `{command, cwd}` の両方を受け、表示・編集・保存で作業フォルダを保つ。
+- 試験: E2E `frontend/e2e/commander-team.spec.ts` を新しい API（`model-choices`・`input_paths`・`checks` の作業フォルダ）へ合わせ、段・アバター・モデルのまとまり・資料・切り替えの確認を足した。**この作業場には frontend の `node_modules` が無いため `npm run build` と E2E は未実施**（依存のある環境で `cd frontend && npm run build` と `./deck.sh e2e commander-team.spec.ts` を流す）。backend は変更なし。
+
 ## 2026-11-28 AI チームの配り手が GLM の担い手をローカル LLM として数えていた
 - 本番の AI チーム（コンソールのロック）で、GLM（opencode-go/glm-5.3）の実装の担い手 2 件が、ローカル LLM の調べものが終わるまで待たされた。`teams.member_is_local` が「OpenCode の既定の接続」をモデルに関係なくローカルと見ていて、「ローカルは同時に 1 つ（GPU を共有）」の枠に入っていた。
 - 直し: 既定の接続でも、モデルが OpenCode（Zen・Go）か外部（`cloud:`）ならローカルに数えない。

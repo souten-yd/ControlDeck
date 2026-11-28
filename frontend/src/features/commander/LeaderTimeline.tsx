@@ -10,6 +10,7 @@ import {
 } from "../../api/commander";
 import { primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
+import { MaterialAttach } from "./TeamMaterials";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const TIER_LABEL = { explore: "調べる", implement: "実装", review: "評価", hard: "難所" } as const;
@@ -35,6 +36,7 @@ function fmtCost(usd: number | undefined): string {
 export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string) => void }) {
   const show = useToasts((s) => s.show);
   const [text, setText] = useState("");
+  const [paths, setPaths] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [addToThis, setAddToThis] = useState(false);
   const running = team?.leader_run?.status === "running";
@@ -42,8 +44,9 @@ export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string
   const submit = async () => {
     setBusy(true);
     try {
-      const made = team && addToThis ? await askLeader(team.id, text.trim()) : await createAutoTeam(text.trim());
+      const made = team && addToThis ? await askLeader(team.id, text.trim(), paths) : await createAutoTeam(text.trim(), "", "", paths);
       setText("");
+      setPaths([]);
       onAsked(made.id);
       show("チームリーダーに頼みました");
     } catch (e) {
@@ -60,6 +63,7 @@ export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string
         />
         <button type="submit" data-team-ask-submit disabled={!text.trim() || busy || (addToThis && running)} className={`${primaryButtonClass} shrink-0`}>頼む</button>
       </div>
+      <MaterialAttach paths={paths} onChange={setPaths} />
       {canAdd && (
         <label className="mt-1.5 flex min-h-8 items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
           <input type="checkbox" checked={addToThis} onChange={(e) => setAddToThis(e.target.checked)} />
