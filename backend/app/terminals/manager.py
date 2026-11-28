@@ -109,6 +109,24 @@ class SessionStateError(RuntimeError):
     """tmux の状態を確認・変更できない。終了や復旧を進めてはいけない。"""
 
 
+def _tmux_missing(result: subprocess.CompletedProcess, target: str) -> bool:
+    """tmux の失敗が「対象のセッションが無い」と確かに言えるときだけ True。
+
+    ローカル tmux 3.4 を専用 -L（試験用の TMUX_TMPDIR）で実測した文言（2026-11-28・LC_ALL=C）:
+    - サーバーはあるが対象が無い: has-session / kill-session は "can't find session: <target>"
+    - サーバーが無い: "no server running on <socket>"（古いソケットのファイルが残る場合も同じ）
+    - ソケットのファイルが無い: "error connecting to <socket> (No such file or directory)"
+    - 権限が無い: "error connecting to <socket> (Permission denied)" → 欠落ではない（確認不能）
+    いずれも終了値 1。権限・通信・不明な失敗を欠落と誤認すると、閉じた扱い・二重の復旧になる。
+    """
+    error = (result.stderr or "").strip()
+    return result.returncode == 1 and (
+        error == f"can't find session: {target}"
+        or error.startswith("no server running on /")
+        or (error.startswith("error connecting to /") and error.endswith(" (No such file or directory)"))
+    )
+
+
 class SessionLockedError(RuntimeError):
     """ロック（@cd-commander-locked=1）のかかったセッションを閉じようとした。
 
@@ -412,20 +430,29 @@ class TerminalManager:
             if locks.find_entry(sid) is not None or self.is_locked(sid):
                 raise SessionLockedError(SESSION_LOCKED_MESSAGE)
             if tmux_available():
-                self._checked_tmux(["kill-session", "-t", _target(sid)])
+                target = _target(sid)
+                result = self._run_tmux(["kill-session", "-t", target])
+                # 既に無い（終わった殻・外から消えた）ときだけ「閉じた」と同じ扱い。
+                # 権限・通信・不明な失敗は成功にしない（実終了失敗の偽装をしない）。
+                if result.returncode != 0 and not _tmux_missing(result, target):
+                    raise SessionStateError("セッションを閉じられませんでした")
             else:
                 self._close_fallback(sid, kill=True)
 
     @staticmethod
-    def _checked_tmux(args: list[str]) -> subprocess.CompletedProcess:
-        """エラー分類用の文言はローカル tmux の C locale に固定する。"""
+    def _run_tmux(args: list[str]) -> subprocess.CompletedProcess:
+        """エラー分類用の文言はローカル tmux の C locale に固定する。timeout・起動失敗は確認不能。"""
         try:
-            result = subprocess.run(
+            return subprocess.run(
                 ["tmux", *args], capture_output=True, text=True, timeout=5,
                 env={**os.environ, "LC_ALL": "C"},
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SessionStateError("tmux の状態を確認・変更できませんでした") from exc
+
+    @classmethod
+    def _checked_tmux(cls, args: list[str]) -> subprocess.CompletedProcess:
+        result = cls._run_tmux(args)
         if result.returncode != 0:
             raise SessionStateError("tmux の操作に失敗しました")
         return result
@@ -433,7 +460,10 @@ class TerminalManager:
     def set_locked(self, sid: str, locked: bool) -> None:
         """保存・見回り・終了と共通の排他で印を変える。失敗は必ず呼出し側へ返す。"""
         with _guard:
-            if locked:
+            if locked and tmux_available():
+                # timeout・起動失敗も SessionStateError へそろえる（成功か不明かを呼出し側が確かめる）
+                self._checked_tmux(["set-option", "-t", _target(sid), "@cd-commander-locked", "1"])
+            elif locked:
                 self.tag_session(sid, {"locked": "1"})
             elif self.session_exists(sid):
                 self.clear_marks(sid, ("locked",))
@@ -446,13 +476,7 @@ class TerminalManager:
         """
         target = _target(sid)
         if tmux_available():
-            try:
-                result = subprocess.run(
-                    ["tmux", "show-options", "-v", "-t", target, "@cd-commander-locked"],
-                    capture_output=True, text=True, timeout=5, env={**os.environ, "LC_ALL": "C"},
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SessionStateError("ロックの状態を確認できませんでした") from exc
+            result = self._run_tmux(["show-options", "-v", "-t", target, "@cd-commander-locked"])
             if result.returncode == 0:
                 value = result.stdout.strip()
                 if value not in ("", "1"):
@@ -474,21 +498,10 @@ class TerminalManager:
         """
         target = _target(sid)
         if tmux_available():
-            try:
-                result = subprocess.run(
-                    ["tmux", "has-session", "-t", target], capture_output=True, text=True,
-                    timeout=5, env={**os.environ, "LC_ALL": "C"},
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SessionStateError("セッションの存在を確認できませんでした") from exc
+            result = self._run_tmux(["has-session", "-t", target])
             if result.returncode == 0:
                 return True
-            error = result.stderr.strip()
-            if result.returncode == 1 and (
-                error == f"can't find session: {target}"
-                or error.startswith("no server running on /")
-                or (error.startswith("error connecting to /") and error.endswith(" (No such file or directory)"))
-            ):
+            if _tmux_missing(result, target):
                 return False
             raise SessionStateError("セッションの存在を確認できませんでした")
         return sid in self._fallback

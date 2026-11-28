@@ -145,7 +145,6 @@ def delete_terminal(
     # subprocess は threadpool、stream の操作は registry が所有 loop へ渡す。
     try:
         manager.kill_session(session_id)
-        streams.close_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="セッションが見つかりません") from exc
     except SessionLockedError as exc:
@@ -153,6 +152,8 @@ def delete_terminal(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail="セッションを閉じられませんでした") from exc
+    # 終了が確かになってから接続を閉じる（断ったとき・確認できないときは接続を保つ）
+    streams.close_session(session_id)
     audit.record(
         db, "terminal.kill", user=user, resource_type="terminal",
         resource_id=session_id, request=request,

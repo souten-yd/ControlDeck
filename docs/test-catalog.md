@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 280 ファイル、2914 テスト（目的の未記入 93 ファイル）
+- backend: 280 ファイル、2923 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -761,21 +761,30 @@
 - `test_restore_failure_is_audited_and_counted` — 復旧の失敗（開けない・作業フォルダが消えた等）も監査に残し、回数に数える。
 - `test_resume_tick_runs_the_lock_watch` — 既存の resume の見回り（60 秒ごとの thread）から検知が動く（監視を増やしすぎない）。
 - `test_diagnostics_report_shows_lock_state_and_events` — 診断レポートで外部消失・復旧失敗・上限が分かる（locks の今の状態＋監査の履歴）。
-- `test_unknown_lock_state_never_reaches_kill`
-- `test_has_session_distinguishes_missing_from_unknown`
-- `test_tmux_mutation_failure_is_not_success`
-- `test_unlock_store_failure_relocks_and_returns_failure`
-- `test_unlock_clear_failure_keeps_record_and_returns_failure`
-- `test_unlock_origin_resolves_current_and_pending_marks`
-- `test_lock_unlock_and_kill_share_one_guard`
-- `test_late_delete_refusal_preserves_streams`
-- `test_stream_close_from_worker_runs_on_owner_loop`
-- `test_restore_partial_failure_is_tracked_across_restart`
-- `test_restore_budget_survives_failures_id_changes_and_restart`
-- `test_two_watchers_and_unlock_do_not_duplicate`
-- `test_corrupt_store_stops_watch_and_kill_and_is_diagnostic`
-- `test_unreadable_store_is_not_empty`
-- `test_all_raw_tmux_calls_use_explicit_private_socket`
+- `test_unknown_lock_state_never_reaches_kill` — 印を確認できない（timeout・OSError・権限・不明な非 0）ときは kill-session を打たない（fail-open にしない）。
+- `test_has_session_distinguishes_missing_from_unknown` — has-session の非 0 のうち、実測した欠落の文言だけを「無い」とし、権限・通信・不明は確認不能にする。
+- `test_tmux_mutation_failure_is_not_success` — kill-session・印の解除の失敗を成功として扱わない。
+- `test_unlock_store_failure_relocks_and_returns_failure` — 解除の保存に失敗したら印を戻して 503。保存の記録が残る限り中央 guard も閉じさせない。
+- `test_unlock_clear_failure_keeps_record_and_returns_failure` — 印の解除が不確か（返信が失われた）なら記録を消さず 503。
+- `test_unlock_origin_resolves_current_and_pending_marks` — 由来の古い ID で解除しても、今の ID と復旧先の印を両方外す。
+- `test_lock_unlock_and_kill_share_one_guard` — 付ける・外す・閉じるが同じ排他を通り、保存と印の途中へ割り込まない（Event で順序を固定）。
+- `test_late_delete_refusal_preserves_streams` — 一覧を見た後に中央 guard が断った・確認できないときは、接続（stream）を閉じない。
+- `test_stream_close_from_worker_runs_on_owner_loop` — threadpool の DELETE から閉じても、Task.cancel などは所有 loop の上で行う。
+- `test_restore_partial_failure_is_tracked_across_restart` — 復旧の途中（印・保存・作成の返信）で失敗しても、同じ ID を追跡して再起動後も複製を作らない。
+- `test_restore_budget_survives_failures_id_changes_and_restart` — 10 分 3 回の上限は、失敗・ID の変更・再起動をまたいで保たれる。
+- `test_two_watchers_and_unlock_do_not_duplicate` — 見回りが 2 つ重なり、解除も重なっても、作るのは 1 つだけで解除は確実に効く。
+- `test_corrupt_store_stops_watch_and_kill_and_is_diagnostic` — 保存が壊れたら空として扱わず、見回りと閉じるを止め、診断（JSON・md）に異常を出す。
+- `test_unreadable_store_is_not_empty` — 保存を読めない（権限）ときも空として扱わない。
+- `test_all_raw_tmux_calls_use_explicit_private_socket` — 全 backend の試験の tmux は PATH の wrapper で専用 -L へ通り、既定ソケット・kill-server へ抜けない。
+- `test_kill_missing_session_is_idempotent_but_permission_error_is_not` — 既に無いセッションの終了は成功（従来どおり）。権限エラーは成功にしない。
+- `test_lock_mark_failure_rolls_back_only_when_mark_is_known_absent` — 印の付与の失敗: 無いと確かめられたら記録を消して 503、不明なら記録を残して保護を続ける。
+- `test_lock_mark_reply_lost_but_applied_is_success` — 印は付いたが返信が失われたときは、確かめて成功として確定する。
+- `test_lock_on_pending_restore_session_confirms_it` — 復旧の暫定セッションへ利用者が鍵をかけたら、それを今の ID として確定する。
+- `test_watch_isolates_one_failing_entry_from_the_others` — 1 件の tmux・ID の失敗で、ほかのロックしたコンソールの検知を止めない。
+- `test_restore_adopt_retags_console_marks` — 作成直後の印の付与で止まった復旧先も、見回りで一覧用の印と鍵を付けて確定する。
+- `test_bulk_close_failure_keeps_unclosed_streams_and_audits_closed` — 一括で閉じる途中の失敗: 閉じた分は監査へ残して 503、閉じていない接続は保つ。
+- `test_stream_close_after_owner_loop_closed_does_not_fail` — 所有 loop が閉じた後の DELETE（再起動・試験の TestClient の入れ替え）でも 500 にしない。
+- `test_real_tmux_permission_denied_is_unknown_not_missing` — 実 tmux（試験専用の -L）で、ソケットへ入れないときは消失でも終了成功でもない。
 
 ### backend/tests/test_commander_consoles.py
 

@@ -390,10 +390,13 @@ def set_console_lock(
     if body.locked:
         if console is None:
             raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+        from app.terminals.manager import SessionStateError
+
         try:
             locks.lock_console(console, user=user)
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail="ロックの情報を保存できませんでした") from exc
+        except (OSError, SessionStateError, locks.LockStoreError) as exc:
+            # 保存・tmux を確かめられない。成功を装わない（付いたかどうか不明なら保存が保護を続ける）
+            raise HTTPException(status_code=503, detail="ロックをかけられませんでした") from exc
         except (RuntimeError, KeyError) as exc:
             # セッションが今まさに消えた等。一覧へ戻してもらう
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -437,6 +440,7 @@ def close_all_consoles(
 
     closed = 0
     skipped_locked = 0
+    failed = False
     for row in consoles.list_consoles():
         sid = str(row["id"])
         if row.get("commander_locked"):
@@ -444,18 +448,23 @@ def close_all_consoles(
             continue
         try:
             consoles.close_console(sid)
-            streams.close_session(sid)
-            closed += 1
         except SessionLockedError:
             # 一覧を見てから鍵をかけられた競合。中央ガードが守ったので飛ばしとして数える
             skipped_locked += 1
-        except (OSError, RuntimeError) as exc:
-            raise HTTPException(status_code=503, detail="状態を確認できないため閉じませんでした") from exc
+            continue
+        except (OSError, RuntimeError):
+            # 確認・終了できない。閉じた分は監査へ残してから 503（残りは閉じない）
+            failed = True
+            break
+        streams.close_session(sid)  # 終了が確かなものだけ接続を閉じる
+        closed += 1
     audit.record(
         db, "commander.console.close_all", user=user, resource_type="commander_console",
         resource_id="all", request=request,
-        metadata={"closed": closed, "skipped_locked": skipped_locked},
+        metadata={"closed": closed, "skipped_locked": skipped_locked, **({"failed": True} if failed else {})},
     )
+    if failed:
+        raise HTTPException(status_code=503, detail="状態を確認できないため閉じませんでした")
     return {"closed": closed, "skipped_locked": skipped_locked}
 
 
@@ -479,12 +488,12 @@ def delete_console(
         raise HTTPException(status_code=409, detail=SESSION_LOCKED_MESSAGE)
     try:
         consoles.close_console(session_id)
-        streams.close_session(session_id)
     except SessionLockedError as exc:
         # 一覧を見てから鍵をかけられた競合も中央ガードが守る
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail="セッションを閉じられませんでした") from exc
+    streams.close_session(session_id)
     audit.record(
         db, "commander.console.kill", user=user, resource_type="commander_console",
         resource_id=session_id, request=request,

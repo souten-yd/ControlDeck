@@ -113,7 +113,7 @@ class FakeManager:
 
     def set_locked(self, sid, locked):
         if self.fail_set_locked:
-            raise RuntimeError("セッション属性を保存できません")
+            raise manager_module.SessionStateError("tmux の操作に失敗しました")
         self.set_locked_calls.append((sid, bool(locked)))
         if locked:
             self.locked.add(sid)
@@ -390,7 +390,7 @@ def test_lock_does_not_mark_when_store_write_fails(admin_client, monkeypatch):
     monkeypatch.setattr(locks, "_write", fail_write)
     r = admin_client.put("/api/v1/commander/consoles/0123abcd/lock", headers=CSRF_HEADERS,
                          json={"locked": True})
-    assert r.status_code == 500, r.text
+    assert r.status_code == 503, r.text
     assert fake.set_locked_calls == [], "書けないときは印を変えない"
     assert _store() == {}
     # 監査には残さない（失敗して鍵は付いていないので lock の出来事では無い）
@@ -773,6 +773,7 @@ def test_diagnostics_report_shows_lock_state_and_events(admin_client, monkeypatc
     subprocess.CompletedProcess([], 2, stdout="", stderr="unknown failure"),
 ])
 def test_unknown_lock_state_never_reaches_kill(monkeypatch, failure):
+    """印を確認できない（timeout・OSError・権限・不明な非 0）ときは kill-session を打たない（fail-open にしない）。"""
     calls = []
 
     def run(argv, **kwargs):
@@ -797,6 +798,7 @@ def test_unknown_lock_state_never_reaches_kill(monkeypatch, failure):
     ("permission denied", False), ("", False), ("unknown error", False),
 ])
 def test_has_session_distinguishes_missing_from_unknown(monkeypatch, error, missing):
+    """has-session の非 0 のうち、実測した欠落の文言だけを「無い」とし、権限・通信・不明は確認不能にする。"""
     monkeypatch.setattr(manager_module, "tmux_available", lambda: True)
     monkeypatch.setattr(manager_module.subprocess, "run", lambda *a, **kw:
                         subprocess.CompletedProcess(a, 1, stdout="", stderr=error))
@@ -809,6 +811,7 @@ def test_has_session_distinguishes_missing_from_unknown(monkeypatch, error, miss
 
 @pytest.mark.parametrize("operation", ["kill", "clear"])
 def test_tmux_mutation_failure_is_not_success(monkeypatch, operation):
+    """kill-session・印の解除の失敗を成功として扱わない。"""
     calls = []
 
     def run(argv, **kwargs):
@@ -829,6 +832,7 @@ def test_tmux_mutation_failure_is_not_success(monkeypatch, operation):
 
 
 def test_unlock_store_failure_relocks_and_returns_failure(admin_client, monkeypatch):
+    """解除の保存に失敗したら印を戻して 503。保存の記録が残る限り中央 guard も閉じさせない。"""
     fake = FakeManager([_row()])
     _lock_now(admin_client, fake, monkeypatch)
     before = _store_path().read_bytes()
@@ -848,6 +852,7 @@ def test_unlock_store_failure_relocks_and_returns_failure(admin_client, monkeypa
 
 
 def test_unlock_clear_failure_keeps_record_and_returns_failure(admin_client, monkeypatch):
+    """印の解除が不確か（返信が失われた）なら記録を消さず 503。"""
     fake = FakeManager([_row()])
     _lock_now(admin_client, fake, monkeypatch)
     original = fake.set_locked
@@ -865,6 +870,7 @@ def test_unlock_clear_failure_keeps_record_and_returns_failure(admin_client, mon
 
 
 def test_unlock_origin_resolves_current_and_pending_marks(admin_client, monkeypatch):
+    """由来の古い ID で解除しても、今の ID と復旧先の印を両方外す。"""
     fake = FakeManager([_row()])
     _lock_now(admin_client, fake, monkeypatch)
     data = locks._read()
@@ -883,6 +889,7 @@ def test_unlock_origin_resolves_current_and_pending_marks(admin_client, monkeypa
 
 
 def test_lock_unlock_and_kill_share_one_guard(monkeypatch):
+    """付ける・外す・閉じるが同じ排他を通り、保存と印の途中へ割り込まない（Event で順序を固定）。"""
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
 
@@ -932,6 +939,7 @@ def test_lock_unlock_and_kill_share_one_guard(monkeypatch):
 @pytest.mark.parametrize("path", ["/commander/consoles/0123abcd", "/commander/consoles", "/terminals/0123abcd"])
 @pytest.mark.parametrize("error", [SessionLockedError(LOCK_DETAIL), manager_module.SessionStateError("確認不能")])
 def test_late_delete_refusal_preserves_streams(admin_client, monkeypatch, path, error):
+    """一覧を見た後に中央 guard が断った・確認できないときは、接続（stream）を閉じない。"""
     from app.commander import router as cr
     from app.terminals import router as tr
 
@@ -951,6 +959,7 @@ def test_late_delete_refusal_preserves_streams(admin_client, monkeypatch, path, 
 
 
 def test_stream_close_from_worker_runs_on_owner_loop():
+    """threadpool の DELETE から閉じても、Task.cancel などは所有 loop の上で行う。"""
     from app.terminals.stream import TerminalClientStream, TerminalStreamRegistry
 
     async def exercise():
@@ -983,6 +992,7 @@ def test_stream_close_from_worker_runs_on_owner_loop():
 
 @pytest.mark.parametrize("failure_at", ["mark", "adopt", "create_reply"])
 def test_restore_partial_failure_is_tracked_across_restart(admin_client, monkeypatch, failure_at):
+    """復旧の途中（印・保存・作成の返信）で失敗しても、同じ ID を追跡して再起動後も複製を作らない。"""
     import importlib
 
     fake = FakeManager([_row()])
@@ -1037,6 +1047,7 @@ def test_restore_partial_failure_is_tracked_across_restart(admin_client, monkeyp
 
 
 def test_restore_budget_survives_failures_id_changes_and_restart(admin_client, monkeypatch):
+    """10 分 3 回の上限は、失敗・ID の変更・再起動をまたいで保たれる。"""
     import importlib
 
     fake = FakeManager([_row()])
@@ -1057,6 +1068,7 @@ def test_restore_budget_survives_failures_id_changes_and_restart(admin_client, m
 
 
 def test_two_watchers_and_unlock_do_not_duplicate(admin_client, monkeypatch):
+    """見回りが 2 つ重なり、解除も重なっても、作るのは 1 つだけで解除は確実に効く。"""
     from concurrent.futures import ThreadPoolExecutor
 
     fake = FakeManager([_row()])
@@ -1089,6 +1101,7 @@ def test_two_watchers_and_unlock_do_not_duplicate(admin_client, monkeypatch):
 @pytest.mark.parametrize("raw", ["{", "[]", '{"locks": []}', '{"locks": {"0123abcd": null}}',
                                      '{"locks": {"0123abcd": {"session_id": "invalid"}}}'])
 def test_corrupt_store_stops_watch_and_kill_and_is_diagnostic(admin_client, monkeypatch, raw):
+    """保存が壊れたら空として扱わず、見回りと閉じるを止め、診断（JSON・md）に異常を出す。"""
     from app.diagnostics import report
 
     _store_path().parent.mkdir(parents=True, exist_ok=True)
@@ -1102,7 +1115,7 @@ def test_corrupt_store_stops_watch_and_kill_and_is_diagnostic(admin_client, monk
     assert summary["stopped"] and summary["error"]
     data = {"console_locks": report._console_locks()}
     # 実 API の JSON レポートからも同じ異常が読める。
-    r = admin_client.get("/api/v1/diagnostics/report")
+    r = admin_client.get("/api/v1/diagnostics/report?format=json")
     assert r.status_code == 200
     assert r.json()["console_locks"]["summary"]["error"]
     md = admin_client.get("/api/v1/diagnostics/report?format=md").text
@@ -1111,6 +1124,7 @@ def test_corrupt_store_stops_watch_and_kill_and_is_diagnostic(admin_client, monk
 
 
 def test_unreadable_store_is_not_empty(monkeypatch):
+    """保存を読めない（権限）ときも空として扱わない。"""
     original = Path.read_text
 
     def read(path, *args, **kwargs):
@@ -1125,6 +1139,7 @@ def test_unreadable_store_is_not_empty(monkeypatch):
 
 
 def test_all_raw_tmux_calls_use_explicit_private_socket():
+    """全 backend の試験の tmux は PATH の wrapper で専用 -L へ通り、既定ソケット・kill-server へ抜けない。"""
     import shutil
 
     wrapper = Path(shutil.which("tmux"))
@@ -1132,6 +1147,233 @@ def test_all_raw_tmux_calls_use_explicit_private_socket():
     assert " -L nexarch-test-" in source
     assert "unset TMUX TMUX_PANE" in source
     assert not os.environ.get("TMUX") and not os.environ.get("TMUX_PANE")
-    # 迂回は実 tmux に到達する前に wrapper が拒否する。
-    result = subprocess.run(["tmux", "-L", "default", "list-sessions"], capture_output=True)
-    assert result.returncode == 97
+    # 迂回は実 tmux に到達する前に wrapper が拒否する（大域の -L/-S・kill-server・; で続けた kill-server）。
+    for argv in (["-L", "default", "list-sessions"], ["-Ldefault", "ls"], ["-S", "/tmp/x", "ls"],
+                 ["-f", "/dev/null", "kill-server"], ["kill-ser"],
+                 ["-uL", "default", "ls"], ["-2S", "/tmp/x", "ls"], ["-uf", "/dev/null", "-L", "x", "ls"],
+                 ["has-session", "-t", "cdterm-zz", ";", "kill-server"]):
+        assert subprocess.run(["tmux", *argv], capture_output=True).returncode == 97, argv
+    # 命令の後の -S（capture-pane の開始行）は別の意味なので通し、専用ソケットへ届く。
+    probe = subprocess.run(["tmux", "capture-pane", "-p", "-S", "-1", "-t", "cdterm-zzzzzzzz"],
+                           capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"})
+    assert probe.returncode not in (0, 97)
+    socket = os.environ["CONTROL_DECK_TEST_TMUX_SOCKET"]
+    assert socket in probe.stderr or "can't find" in probe.stderr or "no such session" in probe.stderr
+    assert "/default" not in probe.stderr, "本番の既定ソケットへ届いてはいけない"
+
+
+# ---------------------------------------------------------------- #5 追加: 失敗時の保護・整合性
+# 根拠: Nexarch #5（2026-11-28）。先行の試験は正常系が中心で、次の穴を守れていなかった。
+# - 既に無いセッションの終了は「閉じた」と同じ（Terminal の DELETE の従来の振る舞い）。
+#   権限・通信の失敗は成功にしない（実終了の失敗の偽装をしない）。
+# - ロックの付与が途中で失敗したとき: 印が無いと確かめられたら記録を消して失敗、
+#   確かめられなければ記録を残して保護を続ける（弱める方向へ倒さない）。
+# - 見回りは 1 件の失敗で他のロックを見落とさない。復旧先へは一覧用の印も付け直す。
+# - 一括で閉じる途中の失敗: 閉じた分は監査へ残し、閉じていない接続は保つ。
+
+
+def test_kill_missing_session_is_idempotent_but_permission_error_is_not(monkeypatch):
+    """既に無いセッションの終了は成功（従来どおり）。権限エラーは成功にしない。"""
+    target_errors = {"kill": "can't find session: cdterm-0123abcd"}
+    calls: list[list[str]] = []
+
+    def run(argv, **kwargs):  # noqa: ANN001, ANN003
+        calls.append(argv)
+        if "show-options" in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no such session: cdterm-0123abcd")
+        if "has-session" in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="can't find session: cdterm-0123abcd")
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr=target_errors["kill"])
+
+    monkeypatch.setattr(manager_module, "tmux_available", lambda: True)
+    monkeypatch.setattr(manager_module.subprocess, "run", run)
+    TerminalManager().kill_session("0123abcd")  # 既に無い → 閉じたのと同じ
+    assert any("kill-session" in a for a in calls)
+    target_errors["kill"] = "error connecting to /tmp/x/sock (Permission denied)"
+    with pytest.raises(manager_module.SessionStateError):
+        TerminalManager().kill_session("0123abcd")
+
+
+def test_lock_mark_failure_rolls_back_only_when_mark_is_known_absent(admin_client, monkeypatch):
+    """印の付与の失敗: 無いと確かめられたら記録を消して 503、不明なら記録を残して保護を続ける。"""
+    fake = FakeManager([_row()])
+    _fake(monkeypatch, fake)
+    fake.fail_set_locked = True
+    before = len(_audit_rows("commander.console.lock", "0123abcd"))
+    r = admin_client.put("/api/v1/commander/consoles/0123abcd/lock", headers=CSRF_HEADERS, json={"locked": True})
+    assert r.status_code == 503 and _store() == {}, "印が無いのに記録だけ残すと、画面と保護が食い違う"
+    assert len(_audit_rows("commander.console.lock", "0123abcd")) == before, "失敗を lock として残さない"
+
+    # 確かめられない（tmux 不調）: 記録は locking のまま残り、中央 guard が閉じさせない
+    monkeypatch.setattr(fake, "is_locked", lambda sid: (_ for _ in ()).throw(
+        manager_module.SessionStateError("確認不能")))
+    r = admin_client.put("/api/v1/commander/consoles/0123abcd/lock", headers=CSRF_HEADERS, json={"locked": True})
+    assert r.status_code == 503
+    assert _store()["0123abcd"]["state"] == "locking"
+    with pytest.raises(SessionLockedError):
+        TerminalManager().kill_session("0123abcd")
+    # tmux が戻れば見回りが同じセッションへ印を付けて確定する（新しいコンソールは作らない）
+    fake.fail_set_locked = False
+    calls = _spy_create(monkeypatch)
+    assert locks.check(now=1000) == []
+    assert _store()["0123abcd"]["state"] == "locked" and fake.locked == {"0123abcd"} and calls == []
+
+
+def test_lock_mark_reply_lost_but_applied_is_success(admin_client, monkeypatch):
+    """印は付いたが返信が失われたときは、確かめて成功として確定する。"""
+    fake = FakeManager([_row()])
+    _fake(monkeypatch, fake)
+    original = fake.set_locked
+
+    def applied_then_timeout(sid, locked):
+        original(sid, locked)
+        raise manager_module.SessionStateError("返信が失われた")
+
+    monkeypatch.setattr(fake, "set_locked", applied_then_timeout)
+    r = admin_client.put("/api/v1/commander/consoles/0123abcd/lock", headers=CSRF_HEADERS, json={"locked": True})
+    assert r.status_code == 200 and r.json() == {"ok": True, "locked": True}
+    assert _store()["0123abcd"]["state"] == "locked"
+
+
+def test_lock_on_pending_restore_session_confirms_it(admin_client, monkeypatch):
+    """復旧の暫定セッションへ利用者が鍵をかけたら、それを今の ID として確定する。"""
+    fake = FakeManager([_row()])
+    _lock_now(admin_client, fake, monkeypatch)
+    data = locks._read()
+    data["locks"]["0123abcd"].update(pending_sid="aa000002", state="restoring")
+    locks._write(data)
+    fake.rows["aa000002"] = _row("aa000002")
+    locks.lock_console(_row("aa000002"), user=None)
+    entry = _store()["0123abcd"]
+    assert entry["session_id"] == "aa000002" and "pending_sid" not in entry and entry["state"] == "locked"
+
+
+def test_watch_isolates_one_failing_entry_from_the_others(admin_client, monkeypatch):
+    """1 件の tmux・ID の失敗で、ほかのロックしたコンソールの検知を止めない。"""
+    fake = FakeManager([_row(), _row("0123abce")])
+    _lock_now(admin_client, fake, monkeypatch)
+    _lock_now(admin_client, fake, monkeypatch, sid="0123abce")
+    _spy_notify(monkeypatch)
+    calls = _spy_create(monkeypatch)
+    fake.rows.clear()
+    original = fake.session_exists
+
+    def exists(sid):
+        if sid == "0123abcd":
+            raise manager_module.SessionStateError("permission denied")
+        if sid not in ("0123abce",):
+            raise RuntimeError("復旧先 ID の確認に失敗")  # 新しい ID の確認も失敗させる
+        return original(sid)
+
+    monkeypatch.setattr(fake, "session_exists", exists)
+    events = locks.check(now=1000)
+    assert [e["event"] for e in events] == ["vanished"], "2 件目の消失は検知する"
+    assert _store()["0123abcd"]["state"] == "locked", "確認できない 1 件は消失にしない"
+    assert _store()["0123abce"]["state"] == "vanished" and calls == []
+    assert _store()["0123abce"]["attempts"] == [], "作る前に止まった試みは数えない"
+
+
+def test_restore_adopt_retags_console_marks(admin_client, monkeypatch):
+    """作成直後の印の付与で止まった復旧先も、見回りで一覧用の印と鍵を付けて確定する。"""
+    fake = FakeManager([_row()])
+    _lock_now(admin_client, fake, monkeypatch)
+    _spy_notify(monkeypatch)
+    calls: list[dict] = []
+
+    def create_without_marks(**kw):
+        calls.append(kw)
+        fake.rows[kw["session_id"]] = {"id": kw["session_id"]}
+        raise RuntimeError("セッション属性を保存できません")
+
+    monkeypatch.setattr(consoles, "create_consoles", create_without_marks)
+    fake.rows.clear()
+    assert locks.check(now=1000)[-1]["event"] == "failed"
+    pending = _store()["0123abcd"]["pending_sid"]
+    assert [e["event"] for e in locks.check(now=1001)] == []
+    assert fake.tags[pending]["cli"] == "claude" and fake.tags[pending]["label"] == "検証ラベル"
+    assert fake.is_locked(pending) and len(calls) == 1
+    assert _store()["0123abcd"]["session_id"] == pending
+
+
+def test_bulk_close_failure_keeps_unclosed_streams_and_audits_closed(admin_client, monkeypatch):
+    """一括で閉じる途中の失敗: 閉じた分は監査へ残して 503、閉じていない接続は保つ。"""
+    from app.commander import router as cr
+
+    fake = FakeManager([_row("0123abc1"), _row("0123abc2"), _row("0123abc3")])
+    _fake(monkeypatch, fake)
+    closed_streams: list[str] = []
+    monkeypatch.setattr(cr.streams, "close_session", closed_streams.append)
+    original = fake.kill_session
+
+    def kill(sid):
+        if sid == "0123abc2":
+            raise manager_module.SessionStateError("permission denied")
+        original(sid)
+
+    monkeypatch.setattr(fake, "kill_session", kill)
+    r = admin_client.delete("/api/v1/commander/consoles", headers=CSRF_HEADERS)
+    assert r.status_code == 503
+    assert closed_streams == ["0123abc1"] and fake.killed == ["0123abc1"], "失敗後は閉じない"
+    meta = json.loads(_audit_rows("commander.console.close_all")[-1].metadata_json)
+    assert meta == {"closed": 1, "skipped_locked": 0, "failed": True}
+
+
+def test_stream_close_after_owner_loop_closed_does_not_fail():
+    """所有 loop が閉じた後の DELETE（再起動・試験の TestClient の入れ替え）でも 500 にしない。"""
+    from app.terminals.stream import TerminalClientStream, TerminalStreamRegistry
+
+    closed: list[str] = []
+
+    class Connection:
+        async def read_loop(self, callback):
+            await asyncio.Event().wait()
+
+        def close(self):
+            closed.append("x")
+
+    registry = TerminalStreamRegistry(TerminalManager())
+    loop = asyncio.new_event_loop()
+    stream = TerminalClientStream("0123abcd", "browser", Connection())
+
+    async def start():
+        registry._loop = asyncio.get_running_loop()
+        registry._streams[("0123abcd", "browser")] = stream
+        stream.start(lambda: None)
+
+    loop.run_until_complete(start())
+    # 閉じた loop に task が残るのはこの試験の想定（再起動の模擬）。破棄時の警告だけ黙らせる
+    stream.reader_task._log_destroy_pending = False
+    loop.close()
+    registry.close_session("0123abcd")
+    assert registry.stream_count() == 0 and closed == ["x"]
+
+
+def test_real_tmux_permission_denied_is_unknown_not_missing():
+    """実 tmux（試験専用の -L）で、ソケットへ入れないときは消失でも終了成功でもない。
+
+    根拠: has-session の非 0 を全部「無い」にすると、権限エラーで復旧が二重に作られ、
+    kill の失敗を成功と装う。ローカル tmux 3.4 の文言で分類する（_tmux_missing）。
+    """
+    socket_dir = Path(os.environ["TMUX_TMPDIR"]) / f"tmux-{os.getuid()}"
+    mgr = TerminalManager()
+    sid = mgr.create_session(cwd=_root(), command="bash")["id"]
+    sock = socket_dir / os.environ["CONTROL_DECK_TEST_TMUX_SOCKET"]
+    try:
+        assert mgr.session_exists("ffffffff") is False
+        assert mgr.is_locked(sid) is False
+        sock.chmod(0)
+        try:
+            with pytest.raises(manager_module.SessionStateError):
+                mgr.session_exists(sid)
+            with pytest.raises(manager_module.SessionStateError):
+                mgr.kill_session(sid)
+        finally:
+            sock.chmod(0o700)
+        assert mgr.session_exists(sid) is True, "確認できない間に閉じてはいけない"
+        mgr.kill_session(sid)
+        mgr.kill_session(sid)  # 2 度目は既に無い → 閉じたのと同じ
+        assert mgr.session_exists(sid) is False
+    finally:
+        sock.chmod(0o700)
+        if mgr.session_exists(sid):
+            mgr.kill_session(sid)

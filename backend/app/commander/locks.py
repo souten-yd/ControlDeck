@@ -119,9 +119,12 @@ def find_entry(session_id: str) -> dict | None:
 
 
 def lock_console(row: dict, *, user, now: float | None = None) -> None:
-    """保存してから印を付ける。途中で失敗しても保存の中央 guard で保護する。
+    """保存してから印を付ける（保存 → 印 → 状態の確定を 1 つの排他の中で）。
 
     既存のロックや復旧回数は保持する。書込不能なら tmux は変更しない。
+    印の付与に失敗したら、印が無いと確かめられたときだけ新しい記録を消して失敗を返す。
+    確かめられないときは記録（state=locking）を残して失敗を返す（保存の guard が閉じさせず、
+    見回りがセッションの在る限り印を付け直す。保護を弱める方向へは倒さない）。
     """
     from app.terminals.manager import manager
 
@@ -130,6 +133,7 @@ def lock_console(row: dict, *, user, now: float | None = None) -> None:
     with _store_lock:
         found = _find(sid)
         data = _read()
+        created = found is None
         if found is None:
             data["locks"][sid] = {
                 "session_id": sid, "cli": str(row.get("commander_cli") or ""),
@@ -145,9 +149,42 @@ def lock_console(row: dict, *, user, now: float | None = None) -> None:
             origin = sid
         else:
             origin = found[0]
-        manager.set_locked(sid, True)
-        # 冪等な再ロックでも失敗・ID 変更をまたぐ復旧回数をリセットしない。
-        _update(origin, lambda e: e.update({"session_id": sid, "state": "locked"}))
+        try:
+            manager.set_locked(sid, True)
+        except (OSError, RuntimeError, KeyError):
+            marked = _marked(sid)
+            if not marked:
+                if created and marked is False:
+                    _discard(origin)
+                raise
+
+        def locked(e: dict) -> None:
+            # 冪等な再ロックでも失敗・ID 変更をまたぐ復旧回数をリセットしない。
+            if e.get("pending_sid") == sid:
+                e.pop("pending_sid", None)  # 暫定の復旧先を利用者が鍵で確定した
+            e.update({"session_id": sid, "state": "locked"})
+
+        _update(origin, locked)
+
+
+def _marked(sid: str) -> bool | None:
+    """印が付いているか。確かめられなければ None。"""
+    from app.terminals.manager import manager
+
+    try:
+        return manager.is_locked(sid)
+    except (OSError, RuntimeError, KeyError):
+        return None
+
+
+def _discard(origin: str) -> None:
+    """付けられなかったロックの新しい記録を消す。消せなくても記録が保護を続けるだけ。"""
+    try:
+        data = _read()
+        if data["locks"].pop(origin, None) is not None:
+            _write(data)
+    except (OSError, LockStoreError):
+        logger.exception("付けられなかったロックの記録を消せませんでした（保護は継続）")
 
 
 def unlock_console(session_id: str) -> bool:
@@ -198,44 +235,56 @@ def _check(now: float | None = None) -> list[dict]:
     失敗したときは何もしない（消失と誤認しない）。出来事を
     [{"event": "vanished"|"restored"|"failed"|"gave_up", ...}] で返す。
     """
-    from app.terminals.manager import manager
-
     now = time.time() if now is None else now
     events: list[dict] = []
     for origin, snapshot in list(_entries().items()):
-        entry = dict(snapshot)
-        sid = str(entry.get("pending_sid") or entry.get("session_id") or origin)
-        state = str(entry.get("state") or "locked")
         try:
-            exists = manager.session_exists(sid)
-        except (OSError, RuntimeError, KeyError) as exc:
-            # tmux を確認できなかっただけ。消失としてはいけない（誤認は復旧の空振りになる）
-            logger.warning("ロックしたコンソール %s の確認ができませんでした: %s", sid, exc)
-            continue
-        if exists:
-            if state != "locked":
-                try:
-                    manager.set_locked(sid, True)
-                    _adopt(origin, entry, sid)
-                except (OSError, RuntimeError, KeyError):
-                    logger.exception("復旧途中のコンソールを保護・保存できませんでした")
-            continue  # 既存の復旧先を追跡する。新しいコンソールは作らない。
-        if state in ("locked", "locking"):
-            if not _update(origin, lambda e: e.update({"state": "vanished", "vanished_at": now})):
-                continue  # 見ている間に外された
-            _audit("commander.console.vanished", entry, origin, session_id=sid)
-            _notify(entry, f"Nexarch: 「{_display_name(entry)}」が外から閉じられました",
-                    tag=f"console-vanished:{origin}")
-            events.append({"event": "vanished", "origin": origin, "session_id": sid})
-            entry["state"] = "vanished"
-        if state == "restoring":
-            # 予約済 ID が確実に無い。失敗も消費した回数として残したまま次へ。
-            _update(origin, lambda e: (e.pop("pending_sid", None), e.update({"state": "vanished"})))
-            entry.pop("pending_sid", None)
-            entry["state"] = "vanished"
-        if entry.get("state") == "vanished":
-            events.append(_try_restore(origin, entry, now))
+            _check_one(origin, dict(snapshot), now, events)
+        except LockStoreError:
+            raise  # 保存が壊れた。残りも安全側で止める
+        except (OSError, RuntimeError, KeyError, ValueError) as exc:
+            # 1 件の tmux・保存の失敗で他のコンソールの見回りを止めない。
+            # 記録は失敗の手前の状態のまま残るので、次の見回りが同じ ID を確かめて続ける。
+            logger.warning("ロックしたコンソール %s の見回りを完了できませんでした: %s", origin, exc)
     return [e for e in events if e]
+
+
+def _check_one(origin: str, entry: dict, now: float, events: list) -> None:
+    """1 件分。出来事は途中で失敗しても失わないよう、その場で events へ足す。"""
+    from app.terminals.manager import manager
+
+    sid = str(entry.get("pending_sid") or entry.get("session_id") or origin)
+    state = str(entry.get("state") or "locked")
+    try:
+        exists = manager.session_exists(sid)
+    except (OSError, RuntimeError, KeyError) as exc:
+        # tmux を確認できなかっただけ。消失としてはいけない（誤認は復旧の空振り・複製になる）
+        logger.warning("ロックしたコンソール %s の確認ができませんでした: %s", sid, exc)
+        return
+    if exists:
+        if state != "locked":
+            # 復旧途中（印・保存の前に止まった）か、付け損ねたロック。同じ ID を保護して確定する。
+            # 新しいコンソールは作らない（複製しない）。
+            if state == "restoring":
+                manager.tag_session(sid, _marks(entry))
+            manager.set_locked(sid, True)
+            _adopt(origin, entry, sid)
+        return
+    if state in ("locked", "locking"):
+        if not _update(origin, lambda e: e.update({"state": "vanished", "vanished_at": now})):
+            return  # 見ている間に外された
+        _audit("commander.console.vanished", entry, origin, session_id=sid)
+        _notify(entry, f"Nexarch: 「{_display_name(entry)}」が外から閉じられました",
+                tag=f"console-vanished:{origin}")
+        events.append({"event": "vanished", "origin": origin, "session_id": sid})
+        entry["state"] = "vanished"
+    if state == "restoring":
+        # 予約済 ID が確実に無い。失敗も消費した回数として残したまま次へ。
+        _update(origin, lambda e: (e.pop("pending_sid", None), e.update({"state": "vanished"})))
+        entry.pop("pending_sid", None)
+        entry["state"] = "vanished"
+    if entry.get("state") == "vanished":
+        events.append(_try_restore(origin, entry, now))
 
 
 def _try_restore(origin: str, entry: dict, now: float) -> dict | None:
@@ -297,6 +346,13 @@ def _adopt(origin: str, entry: dict, sid: str) -> None:
                attempt=len(entry.get("attempts", [])))
         _notify(entry, f"Nexarch: 「{_display_name(entry)}」を開き直しました（続きから）",
                 tag=f"console-restored:{origin}")
+
+
+def _marks(entry: dict) -> dict[str, str]:
+    """復旧先のセッションへ付け直す一覧用の印（空の値は付けない。tag_session の決まり）。"""
+    marks = {"cli": entry.get("cli"), "account": entry.get("account"), "created_by": entry.get("owner"),
+             "label": entry.get("label"), "model": entry.get("model"), "effort": entry.get("effort")}
+    return {key: str(value) for key, value in marks.items() if value}
 
 
 def _recreate(entry: dict) -> dict:

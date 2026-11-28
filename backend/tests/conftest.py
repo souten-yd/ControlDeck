@@ -45,10 +45,25 @@ if _tmux_real:
     _socket = "nexarch-test-" + str(os.getpid())
     os.environ["CONTROL_DECK_TEST_TMUX_SOCKET"] = _socket
     # 呼出し側から別ソケットへ抜けたり全サーバーを停止する命令は許さない。
+    # 調べるのは tmux(1) の大域の引数（命令の前）と命令の名前だけ。命令の後の
+    # -S・-L（capture-pane -S -60・select-pane -L）は別の意味なので通す。
     _wrapper.write_text(
         "#!/bin/sh\n"
         "unset TMUX TMUX_PANE\n"
-        'for arg do\n case "$arg" in -L*|-S*|kill-server) exit 97;; esac\ndone\n'
+        # \; で続けた命令にも kill-server は通さない
+        'for arg do\n  case "$arg" in kill-server|kill-ser|kill-serv|kill-serve) exit 97;; esac\ndone\n'
+        "skip=0\n"
+        'for arg do\n'
+        '  if [ \"$skip\" = 1 ]; then skip=0; continue; fi\n'
+        '  case "$arg" in\n'
+        # 大域の旗はまとめて書ける（-uL 名前）。L・S を含む旗は値の有無によらず断る（安全側）
+        '    --) break;;\n'
+        '    -*L*|-*S*) exit 97;;\n'
+        '    -*[cfT]) skip=1;;\n'
+        '    -*) ;;\n'
+        '    *) break;;\n'
+        '  esac\n'
+        'done\n'
         + "export TMUX_TMPDIR=" + shlex.quote(str(_tmux_dir)) + "\n"
         + "exec " + shlex.quote(_tmux_real) + " -L " + shlex.quote(_socket) + ' "$@"\n',
         encoding="utf-8",
