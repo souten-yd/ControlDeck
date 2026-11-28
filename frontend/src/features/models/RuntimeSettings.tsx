@@ -256,7 +256,9 @@ export function RuntimeSettings({
       ))}
       {note}
       {/* 設定の形を読む前は項目の名前が無い（内部の id を見せない）ので案内を出さない */}
-      <SheetActions note={missing.length && cap ? `① で${missingLabels.join("と")}を決めてください`
+      <SheetActions note={missing.length && cap ? (runtime === "maya"
+        ? "目録の「取得して登録」を押すか、「ファイルから登録」で手元のフォルダを選んでください"
+        : `① で${missingLabels.join("と")}を決めてください`)
         : runtime === "maya" && !save ? "Maya は専用の登録画面から保存します" : undefined}>
         <button type="button" data-testid="runtime-settings-save" onClick={() => void doSave()}
           disabled={!cap || saving || disabled || missing.length > 0 || (runtime === "maya" && !save)} className={primaryButton}>

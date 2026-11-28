@@ -1,9 +1,8 @@
-/** 目的: Models の「モデル登録」の目録を、本番と同じ目録のデータ（fixtures/model-catalog-20261128.json。
- *        作り直した backend の api_payload を本番の PC の RAM・VRAM で組み立てたもの）で確かめる。
- *        1 モデル 1 枚のカード・Strata の重複が無い・開くと量子化を選べて主のボタンが 1 つ・開発者のメモや
- *        内部の項目名が出ない・320px で崩れない、を見る。
- *  根拠: 2026-11-28 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能の
- *        ところ全てやり直して」。前回は模擬の 1 行だけで画面を確かめていて、本番の目録の崩れを見逃した。
+/** 目的: Models の「モデル登録」の目録（系列 → 検閲あり／無検閲 → 量子化。容量・メモリ・載るか）を、本番と同じ
+ *        目録のデータ（fixtures/model-catalog-20261128.json。backend の api_payload を、本番から読んだ Strata 0.2.23 の
+ *        目録・Maya 1.1.84 の probe と本番の PC の RAM・VRAM で組み立てたもの）で確かめる。
+ *  根拠: 2026-11-28 利用者「目録はまず大きな種類（Qwen・Hy4・Inkling など）を選ばせ、検閲・無検閲、量子化を選べる
+ *        ように。載るかどうかと容量を調査して目録を作って。llama.cpp は目録をやめて従来のファイル選択に戻す」。
  */
 import { readFileSync } from "node:fs";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
@@ -36,7 +35,7 @@ async function mock(page: Page, calls: string[]) {
   await page.route("**/api/v1/models/instances", (r) => r.fulfill({ json: { instances: [] } }));
   await page.route("**/api/v1/models/catalog", (r) => r.fulfill({ json: catalog }));
   await page.route("**/api/v1/jobs*", (r) => r.fulfill({ json: [] }));
-  // カードを開いたときの大きさ（HF の代わり）: 量子化の順に 9・18・27… GiB
+  // カードを開いたときの詳細（HF の代わり）: 目録の値をそのまま返す（作り話の大きさで写真を撮らない）
   await page.route("**/api/v1/models/catalog/*/details*", (r) => {
     const url = new URL(r.request().url());
     const runtime = url.pathname.split("/").at(-2) ?? "";
@@ -44,13 +43,23 @@ async function mock(page: Page, calls: string[]) {
     calls.push(`details:${runtime}:${model?.name}`);
     return r.fulfill({ json: {
       model_id: model?.id, hardware: catalog.hardware, libraries: [],
-      variants: (model?.variants ?? []).map((v, i) => {
-        const size = v.acquire === "hf" ? 9 * (i + 1) : v.size_gib;
-        const fit = size == null ? v.fit : size * 1.15 <= 31.9 ? "fits" : size * 1.15 <= 123.7 ? "tight" : "no";
-        return { id: v.id, size_gib: size, fit, supported: v.supported, reason: v.reason, state: "available", local_path: "" };
-      }),
+      variants: (model?.variants ?? []).map((v) => (
+        { id: v.id, size_gib: v.size_gib, fit: v.fit, supported: v.supported, reason: v.reason, state: "available", local_path: "" })),
     } });
   });
+  await page.route("**/api/v1/features/maya-s/models/download-jobs", (r) => {
+    calls.push(`maya:${JSON.stringify(r.request().postDataJSON())}`);
+    return r.fulfill({ status: 201, json: { job_id: "job-e2e", alias: "maya-x" } });
+  });
+  await page.route("**/api/v1/commander/workdir/roots", (r) => r.fulfill({ json: ["/data1tb", "/data2tb"] }));
+  await page.route("**/api/v1/files/list*", (r) => {
+    const path = new URL(r.request().url()).searchParams.get("path") ?? "/data2tb";
+    return r.fulfill({ json: { path, entries: [{ name: "Qwen3.8-27B-UD-Q4_K_XL.gguf", path: `${path}/Qwen3.8-27B-UD-Q4_K_XL.gguf`, is_dir: false, hidden: false }] } });
+  });
+  await page.route("**/api/v1/models/register/inspect*", (r) => r.fulfill({ json: {
+    path: new URL(r.request().url()).searchParams.get("path"), kind: "file", format: "gguf", alias_suggestion: "qwen3.8-27b",
+    size_bytes: 17_600_000_000, metadata: { quantization: "UD-Q4_K_XL" },
+    runtimes: [{ runtime: "llama", eligible: true, reason: "", register_endpoint: "/api/v1/models/llama/instances" }] } }));
   await page.route("**/api/v1/models/acquire-jobs", (r) => {
     calls.push(`acquire:${r.request().postDataJSON().entry_id}`);
     return r.fulfill({ status: 201, json: { job_id: "job-e2e", repo: "x/y" } });
@@ -81,8 +90,13 @@ async function noForbidden(sheet: ReturnType<Page["getByRole"]>) {
   for (const word of FORBIDDEN) expect(text, `画面に「${word}」が出ている`).not.toContain(word);
 }
 
+const card = (sheet: ReturnType<Page["getByRole"]>, runtime: string, name: string) =>
+  sheet.locator(`[data-runtime-catalog="${runtime}"] [data-catalog-model]`).filter({
+    has: sheet.page().locator("> button .font-semibold", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }),
+  });
+
 for (const [width, scheme] of [[320, "dark"], [1280, "light"], [320, "light"], [1280, "dark"]] as const) {
-  test(`Strata: 重複の無いモデルのカード → 開いて量子化を選ぶ → 登録（${width}px ${scheme}）`, async ({ page, context }) => {
+  test(`Strata: 系列 → 通常／無検閲 → 量子化（${width}px ${scheme}）`, async ({ page, context }) => {
     await page.emulateMedia({ colorScheme: scheme });
     await page.setViewportSize({ width, height: 900 });
     const calls: string[] = [];
@@ -90,65 +104,79 @@ for (const [width, scheme] of [[320, "dark"], [1280, "light"], [320, "light"], [
     await sheet.getByRole("button", { name: "Strata", exact: true }).click();
     const list = sheet.locator('[data-runtime-catalog="strata"]');
     await expect(list.locator("[data-catalog-model]").first()).toBeVisible();
-    // 載らないものは既定で隠す。名前の重複が無い（Strata の二重を消した）
-    const names = await list.locator("[data-catalog-model] > button .font-semibold").allInnerTexts();
-    expect(new Set(names).size).toBe(names.length);
-    expect(names.filter((n) => n === "Qwen3.8-Flash-Next")).toHaveLength(1);
+    for (const name of ["Qwen3.8-Flash-Next", "Tencent Hy4-Flash", "Inkling-2-Mini", "Ornith-1.5-35B-A3B"]) {
+      await expect(card(sheet, "strata", name)).toHaveCount(1);
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await noForbidden(sheet);
     await page.screenshot({ path: `test-results/model-add-strata-list-${width}-${scheme}.png` });
 
-    const card = list.locator("[data-catalog-model]").filter({ hasText: "Qwen3.8-Flash-Next" }).first();
-    await card.locator("> button").click();
-    await expect(card.getByRole("radio")).toHaveCount(4);
-    await card.getByRole("radio").filter({ hasText: "IQ2_XS" }).click();
-    await expect(card.getByTestId("catalog-primary")).toHaveText("登録する（初回の起動で取得）");
-    await noForbidden(sheet);
+    const flash = card(sheet, "strata", "Qwen3.8-Flash-Next");
+    await flash.locator("> button").click();
+    await expect(flash.getByRole("tab", { name: "通常" })).toHaveAttribute("aria-selected", "true");
+    await expect(flash.getByRole("radio")).toHaveCount(4);
+    await expect(flash.getByRole("radio").first()).toContainText("容量 66 GB");
+    await expect(flash.getByRole("radio").first()).toContainText("メモリ 35 GB");
     await page.screenshot({ path: `test-results/model-add-strata-open-${width}-${scheme}.png` });
-    await card.getByTestId("catalog-primary").click();
+    await flash.getByRole("tab", { name: "無検閲" }).click();
+    await expect(flash.getByRole("radio")).toHaveCount(4);
+    await expect(flash.getByRole("radio").first()).toContainText("SC117 の版");
+    await expect(flash.getByTestId("catalog-primary")).toHaveText(/^取得する（約 \d+ GB）$/);
+    await page.screenshot({ path: `test-results/model-add-strata-uncensored-${width}-${scheme}.png` });
+    await flash.getByRole("tab", { name: "通常" }).click();
+    await flash.getByRole("radio").filter({ hasText: "IQ2_XS" }).click();
+    await expect(flash.getByTestId("catalog-primary")).toHaveText("登録する（初回の起動で取得）");
+    await flash.getByTestId("catalog-primary").click();
     await expect(sheet.locator('[data-runtime-settings="strata"]')).toBeVisible();
-    expect(calls.some((c) => c.startsWith("details:strata:Qwen3.8-Flash-Next"))).toBe(false);   // Strata 自身が取る行は HF を読まない
   });
 
-  test(`llama.cpp: 開いたときだけ大きさを読み、取得のボタンに大きさが出る（${width}px ${scheme}）`, async ({ page, context }) => {
+  test(`Maya: GLM・DeepSeek・MiniMax・Hy4 を取得して登録（${width}px ${scheme}）`, async ({ page, context }) => {
     await page.emulateMedia({ colorScheme: scheme });
     await page.setViewportSize({ width, height: 900 });
     const calls: string[] = [];
     const sheet = await openSheet(page, context, calls);
-    const list = sheet.locator('[data-runtime-catalog="llama"]');
-    await expect(list.locator("[data-catalog-model]").first()).toBeVisible();
-    expect(calls.filter((c) => c.startsWith("details:"))).toHaveLength(0);     // 開くまで読まない
-    const card = list.locator("[data-catalog-model]").filter({ hasText: "Qwen3.8-27B" }).first();
-    await card.locator("> button").click();
-    await expect(card.getByRole("radio").first()).toContainText("GiB");
-    await card.getByRole("radio").filter({ hasText: "UD-Q4_K_XL" }).click();
-    await expect(card.getByTestId("catalog-primary")).toHaveText(/^取得する（約 \d+(\.\d)? GiB）$/);
+    await sheet.getByRole("button", { name: "Maya", exact: true }).click();
+    for (const name of ["GLM-5.3-Flash", "DeepSeek-V4.1-Flash", "MiniMax-M3.1-Flash", "Hy4-Flash"]) {
+      await expect(card(sheet, "maya", name)).toHaveCount(1);
+    }
+    const glm = card(sheet, "maya", "GLM-5.3-Flash");
+    await glm.locator("> button").click();
+    await glm.getByRole("radio").filter({ hasText: "Maya-XS" }).click();
+    await expect(glm.getByTestId("catalog-primary")).toHaveText("取得して登録（約 73 GB）");
     await noForbidden(sheet);
-    await page.screenshot({ path: `test-results/model-add-llama-open-${width}-${scheme}.png` });
-    await card.getByTestId("catalog-primary").click();
-    await expect(card.locator("[data-acquire-job]")).toBeVisible();
-    expect(calls).toContain("acquire:unsloth-qwen38-27b-ud-q4_k_xl");
-    await page.screenshot({ path: `test-results/model-add-llama-job-${width}-${scheme}.png` });
+    await page.screenshot({ path: `test-results/model-add-maya-open-${width}-${scheme}.png` });
+    await glm.getByTestId("catalog-primary").click();
+    await expect.poll(() => calls.find((c) => c.startsWith("maya:"))).toContain('"setup_id":"glm-maya-xs"');
+    expect(calls.find((c) => c.startsWith("maya:"))).toContain('"folder":"/data2tb/LLM/GLM-5.3-Flash-Maya-GGUF"');
   });
 }
 
-test("全ランタイム: 開発者のメモ・内部の項目名が通常の画面に出ず、エキスパートの欄も出ない", async ({ page, context }) => {
+test("llama.cpp は目録を出さず、手元のファイルを選んで登録する", async ({ page, context }) => {
   await page.setViewportSize({ width: 390, height: 900 });
-  const calls: string[] = [];
-  const sheet = await openSheet(page, context, calls);
-  for (const name of ["llama.cpp", "Strata", "Maya", "Radiance"]) {
-    await sheet.getByRole("button", { name, exact: true }).click();
-    // Maya の目録は畳んである（Maya 自身の量子化の一覧が主）。開いてから見る
-    if (name === "Maya") await sheet.locator("summary").filter({ hasText: /^目録から取得/ }).click();
-    const cards = sheet.locator("[data-catalog-model]");
-    await expect(cards.first()).toBeVisible();
-    const count = await cards.count();
-    for (let i = 0; i < count; i += 1) {
-      await cards.nth(i).locator("> button").click();
-    }
-    await expect(sheet.locator("[data-catalog-expert]")).toHaveCount(0);
-    await noForbidden(sheet);
-    await cards.first().scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `test-results/model-add-all-open-${name.replace(".", "")}-390.png` });
-  }
+  const sheet = await openSheet(page, context, []);
+  await expect(sheet.locator('[data-runtime-register-file="llama"]')).toBeVisible();
+  await expect(sheet.locator('[data-runtime-catalog="llama"]')).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: "目録から取得" })).toHaveCount(0);
+  // ファイルを選ぶと、容量と「この PC に載るか」が出る（2026-11-28 利用者「容量と乗るかを見やすく」）
+  await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
+  const picker = page.getByRole("dialog", { name: /モデルのファイルを選択/ });
+  await picker.getByRole("button", { name: "/data2tb", exact: true }).click();
+  await picker.getByRole("button", { name: "Qwen3.8-27B-UD-Q4_K_XL.gguf" }).click();
+  await expect(sheet.locator('[data-file-fit="fits"]')).toContainText("この PC に載ります");
+  await expect(sheet.getByText(/gguf · 17\.6 GB/)).toBeVisible();
+  await page.screenshot({ path: "test-results/model-add-llama-file-390.png" });
+});
+
+test("Radiance: 作者の文章の LLM を系列ごとに・無検閲の切り替え・開発者のメモが出ない", async ({ page, context }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const sheet = await openSheet(page, context, []);
+  await sheet.getByRole("button", { name: "Radiance", exact: true }).click();
+  await sheet.getByRole("switch", { name: "Sly-Radiance で登録" }).click();      // 元の Radiance の目録
+  const q27 = card(sheet, "radiance", "Qwen3.8-27B");
+  await q27.locator("> button").click();
+  await expect(q27.getByRole("radio")).toHaveCount(18);
+  await q27.getByRole("tab", { name: "無検閲" }).click();
+  await expect(q27.getByRole("radio")).toHaveCount(2);
+  await noForbidden(sheet);
+  await page.screenshot({ path: "test-results/model-add-radiance-390.png" });
 });

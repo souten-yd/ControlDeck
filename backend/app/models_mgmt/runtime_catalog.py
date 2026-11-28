@@ -1,270 +1,37 @@
-"""全ランタイム共通のモデル目録（推奨モデルのカード）の唯一の情報源。
+"""全ランタイム共通のモデル目録（Models の「モデル登録」の目録）の唯一の情報源。
 
-UI 担当の RuntimeCatalog 部品は `GET /api/v1/models/catalog`（この module の api_payload）を
-読む。ランタイムごとの既存目録は各 module が持つ（Sly は sly_radiance_catalog、Strata は
-strata_catalog）ので、ここでは集約と形の統一だけをする（二重持ちをしない）。
+2026-11-28 利用者「目録はまず大きな種類（Qwen・Hy4・Inkling など）を選ばせ、検閲・無検閲、量子化を選べる
+ように。載るかどうかと容量を調査して、Strata・Maya・Radiance それぞれの目録を作って。llama.cpp は目録を
+やめて従来のファイル選択に戻す」。調べた結果と出どころは docs/research-model-catalog-20261128.md。
 
-目録に載せる行は出どころの確認できた repo id とファイル名だけ:
-- 調査済みの行（_RESEARCHED）: docs/PLAN-model-catalog.md「目録候補」（2026-11-28 に Web で
-  確認した repo id とファイル名）。llama.cpp・Radiance の空目録を解消し、Strata の新行は
-  GSQ-RCO・Unsloth UD-*・Q8_0 だけ、Maya は peasantsmith の Maya 量子化だけを載せる。
-- Sly-Radiance: sly_radiance_catalog.ENTRIES（README 確認済み）。
-- Strata の既存行: strata_catalog（公式 README・docs/MODELS.md 確認済み。系列×量子化を
-  1 行に平らげる。既存の登録 id を壊さない）。
+形: ランタイム → 系列（画面の 1 枚のカード・group）→ 検閲あり／無検閲 → 量子化（variant）。
+- Strata: 本体の目録をその場で読む（strata_live。読めなければ手の表 strata_catalog）。本体の判定
+  （fits / slower / tight / no）をそのまま使う。無検閲版は量子化の作りと大きさを確かめた第三者の HF の行。
+- Maya: 本体の probe（maya_s.catalog）をその場で読む（読めなければ調査の表）。取得は Maya の
+  「ダウンロードして登録」（acquire="maya"）。
+- Radiance・Sly-Radiance: 作者の公開している文章の LLM を、HF のファイル一覧で大きさを確かめて載せる。
+- llama.cpp: 目録なし（手元のファイルを選んで登録する）。
 
-size_gib が None の行は「大きさ未確認」。URL・大きさ・sha を推測で書かない（取得の開始時に
-HF の API から読む: POST /api/v1/models/acquire-jobs と GET .../entries/{id}/files）。
-files は調査で確認したファイル名のみ（取得時に HF の一覧と突き合わせる）。
+大きさ・必要メモリの単位は GB（10^9 バイト。Strata・Maya・HF の表示と同じ）。推測の値は書かない。
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+logger = logging.getLogger("control_deck.models.runtime_catalog")
+
 RUNTIMES: tuple[dict, ...] = (
-    {"id": "llama", "name": "llama.cpp", "formats": ("gguf",), "acquire": "hf",
-     "search_ref": "/api/v1/models/hf/search"},
+    {"id": "llama", "name": "llama.cpp", "formats": ("gguf",), "acquire": "none"},
     {"id": "radiance", "name": "Radiance", "formats": ("rad",), "acquire": "hf"},
     {"id": "sly-radiance", "name": "Sly-Radiance", "formats": ("safetensors",), "acquire": "hf"},
-    {"id": "strata", "name": "Strata", "formats": ("strata-quant",), "acquire": "runtime"},
-    {"id": "maya", "name": "Maya", "formats": ("maya-quant", "gguf"), "acquire": "hf",
-     "catalog_ref": "/api/v1/features/maya-s/catalog"},
+    {"id": "strata", "name": "Strata", "formats": ("strata-quant", "gguf"), "acquire": "runtime"},
+    {"id": "maya", "name": "Maya", "formats": ("maya-quant",), "acquire": "maya"},
 )
 
-# 調査済みの行（repo id とファイル名だけ。大きさ・sha は書かない）。
-# (runtime, id, name, repo, quantization, family, files, uncensored, note)
-# 出どころ: docs/PLAN-model-catalog.md「目録候補（repo id とファイル名のみ・2026-11-28）」。
-# Strata の新行は GSQ-RCO・Unsloth UD-*・Q8_0 だけ（他形式は AGENTS.md の実測で未対応）。
-_RESEARCHED: tuple[tuple, ...] = (
-    # ---- llama.cpp（GGUF。無検閲の版も調査済みの repo だけ） ----
-    ("llama", "unsloth-qwen38-27b-q8_0", "Qwen3.8-27B Q8_0",
-     "unsloth/Qwen3.8-27B-GGUF", "Q8_0", "",
-     ("Qwen3.8-27B-Q8_0.gguf",), False, ""),
-    ("llama", "unsloth-qwen38-27b-ud-q4_k_xl", "Qwen3.8-27B UD-Q4_K_XL",
-     "unsloth/Qwen3.8-27B-GGUF", "UD-Q4_K_XL", "",
-     ("Qwen3.8-27B-UD-Q4_K_XL.gguf",), False, ""),
-    ("llama", "ggml-glm47-flash-q4_k", "GLM-4.7-Flash Q4_K",
-     "ggml-org/GLM-4.7-Flash-GGUF", "Q4_K", "",
-     ("GLM-4.7-Flash-Q4_K.gguf",), False, ""),
-    ("llama", "ggml-glm47-flash-q8_0", "GLM-4.7-Flash Q8_0",
-     "ggml-org/GLM-4.7-Flash-GGUF", "Q8_0", "",
-     ("GLM-4.7-Flash-Q8_0.gguf",), False, ""),
-    ("llama", "ggml-gemma4-e4b-it-q8_0", "gemma-4-E4B-it Q8_0",
-     "ggml-org/gemma-4-E4B-it-GGUF", "Q8_0", "",
-     ("gemma-4-E4B-it-Q8_0.gguf",), False, ""),
-    ("llama", "ggml-gemma4-e4b-it-q4_0", "gemma-4-E4B-it Q4_0",
-     "ggml-org/gemma-4-E4B-it-GGUF", "Q4_0", "",
-     ("gemma-4-E4B-it-Q4_0.gguf",), False, ""),
-    ("llama", "google-gemma4-12b-it-qat-q4_0", "gemma-4-12B-it QAT Q4_0",
-     "google/gemma-4-12B-it-qat-q4_0-gguf", "Q4_0", "",
-     ("gemma-4-12b-it-qat-q4_0.gguf",), False, ""),
-    ("llama", "unsloth-llama4-scout-iq4_nl", "Llama-4-Scout-17B-16E IQ4_NL",
-     "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF", "IQ4_NL", "",
-     ("IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf",
-      "IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00002-of-00002.gguf"), False, ""),
-    ("llama", "huihui-qwen38-27b-abliterated-q8_0", "Qwen3.8-27B abliterated Q8_0（無検閲）",
-     "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF", "Q8_0", "",
-     ("Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf",), True, "abliterated（無検閲）"),
-    ("llama", "observerx-qwen38-27b-heretic-q4_k_m", "Qwen3.8-27B Heretic Q4_K_M（無検閲）",
-     "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF", "Q4_K_M", "",
-     ("Qwen3.8-27B-Heretic-Q4_K_M.gguf",), True, "heretic / abliterated / uncensored"),
-    ("llama", "observerx-qwen38-27b-heretic-rvn_q8_0", "Qwen3.8-27B Heretic RVN-Q8_0（無検閲）",
-     "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF", "RVN-Q8_0", "",
-     ("RVN-Q8_0.gguf",), True, "heretic / abliterated / uncensored"),
-    ("llama", "huihui-glm53-flash-abliterated-ud-iq1_m",
-     "GLM-5.3-Flash abliterated UD-IQ1_M（無検閲）",
-     "huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF", "UD-IQ1_M", "",
-     ("UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf",
-      "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00002-of-00003.gguf",
-      "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00003-of-00003.gguf"), True, "abliterated（無検閲）"),
-    ("llama", "huihui-deepseek-v41-flash-abliterated-ud-iq1_m",
-     "DeepSeek-V4.1-Flash abliterated UD-IQ1_M（無検閲）",
-     "huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF", "UD-IQ1_M", "",
-     ("UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf",
-      "UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00002-of-00005.gguf",
-      "UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00003-of-00005.gguf",
-      "UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00004-of-00005.gguf",
-      "UD-IQ1_M/DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00005-of-00005.gguf"),
-     True, "abliterated（無検閲）"),
-    ("llama", "llmfan46-gemma4-e4b-it-ultra-uncensored-heretic-q4_k_m",
-     "gemma-4-E4B-it ultra uncensored heretic Q4_K_M（無検閲）",
-     "llmfan46/gemma-4-E4B-it-ultra-uncensored-heretic-GGUF", "Q4_K_M", "",
-     ("gemma-4-E4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",), True, "ultra uncensored / heretic"),
-    ("llama", "atomicchat-inkling2-mini-uncensored-ad-iq3_s",
-     "Inkling-2-Mini Uncensored AD-IQ3_S（無検閲）",
-     "AtomicChat/Inkling-2-Mini-Uncensored-GGUF", "AD-IQ3_S", "",
-     ("Inkling-2-Mini-Uncensored-AD-IQ3_S.gguf",), True, "Uncensored"),
-    # ---- Radiance（.rad コンテナ。公式 README の 5 件） ----
-    ("radiance", "radiance-qwen38-next-flash-fp8-iq4r-moe",
-     "Qwen3.8-Flash-Next FP8 IQ4R MoE",
-     "StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe", "", "rad",
-     ("qwen3.8-next-flash-fp8-iq4r-moe.rad",), False, ""),
-    ("radiance", "radiance-qwen38-27b-fp8", "Qwen3.8-27B FP8",
-     "StillDeadcode/qwen3.8-27b-fp8", "", "rad",
-     ("qwen3.8-27b-fp8.rad",), False, ""),
-    ("radiance", "radiance-qwen36-35b-a3b-fp8", "Qwen3.6-35B-A3B FP8",
-     "StillDeadcode/qwen3.6-35b-a3b-fp8", "", "rad",
-     ("qwen3.6-35b-a3b-fp8.rad",), False, ""),
-    ("radiance", "radiance-minicpm5-2b-fp8", "MiniCPM5-2B FP8",
-     "StillDeadcode/minicpm5-2b-fp8", "", "rad",
-     ("minicpm5-2b-fp8.rad",), False, ""),
-    ("radiance", "radiance-minicpm5-2b-bf16", "MiniCPM5-2B BF16",
-     "StillDeadcode/minicpm5-2b-bf16", "", "rad",
-     ("minicpm5-2b-bf16.rad",), False, ""),
-    # ---- Strata の新行（GSQ-RCO / Unsloth UD-* / Q8_0 だけ・分割片は全片を記載） ----
-    ("strata", "gsq-qwen38-q2_0", "Qwen3.8-Flash-Next GSQ-RCO Q2_0",
-     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Q2_0", "qwen",
-     ("Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
-      "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-qwen38-iq2_xs", "Qwen3.8-Flash-Next GSQ-RCO IQ2_XS",
-     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ2_XS", "qwen",
-     ("IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
-      "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-qwen38-iq3_xxs", "Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS",
-     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_XXS", "qwen",
-     ("IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-      "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-qwen38-iq3_s", "Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
-     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_S", "qwen",
-     ("IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-      "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-coder-iq1_m", "Qwen3.8-Flash-Next Coder GSQ-RCO IQ1_M",
-     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "IQ1_M", "coder",
-     ("IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
-      "IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-swift-iq2_xs", "Swift 1.5 GSQ-RCO IQ2_XS",
-     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ2_XS", "swift",
-     ("Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
-      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-swift-q2_0", "Swift 1.5 GSQ-RCO Q2_0",
-     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Q2_0", "swift",
-     ("Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
-      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-swift-iq3_xxs", "Swift 1.5 GSQ-RCO IQ3_XXS",
-     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_XXS", "swift",
-     ("Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"), False, ""),
-    ("strata", "gsq-swift-iq3_s", "Swift 1.5 GSQ-RCO IQ3_S",
-     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_S", "swift",
-     ("Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"), False, ""),
-    ("strata", "unsloth-flash-next-ud-q4_k_xl", "Unsloth Qwen3.8-Flash-Next UD-Q4_K_XL",
-     "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q4_K_XL", "unsloth",
-     tuple(f"UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-{i:05d}-of-00004.gguf"
-           for i in range(1, 5)), False, ""),
-    ("strata", "unsloth-flash-next-q8_0", "Unsloth Qwen3.8-Flash-Next Q8_0",
-     "unsloth/Qwen3.8-Flash-Next-GGUF", "Q8_0", "unsloth",
-     tuple(f"Q8_0/Qwen3.8-Flash-Next-Q8_0-{i:05d}-of-00006.gguf"
-           for i in range(1, 7)), False, ""),
-    ("strata", "unsloth-qwen36-35b-q8_0", "Qwen3.6-35B-A3B Q8_0",
-     "unsloth/Qwen3.6-35B-A3B-GGUF", "Q8_0", "qwen36",
-     ("Qwen3.6-35B-A3B-Q8_0.gguf",), False, ""),
-    ("strata", "gsq-qwen38-abliterated-iq3_xxs",
-     "Qwen3.8-Flash-Next abliterated GSQ-RCO IQ3_XXS（無検閲）",
-     "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF", "IQ3_XXS", "qwen",
-     ("IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf",
-      "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf"),
-     True, "abliterated（無検閲）"),
-    ("strata", "gsq-qwen38-27b-huihui-iq3_xxs",
-     "Qwen3.8-27B Huihui abliterated GSQ-RCO IQ3_XXS（無検閲）",
-     "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF", "IQ3_XXS", "qwen",
-     ("Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS.gguf",),
-     True, "abliterated（無検閲）"),
-    # ---- Maya（Maya 量子化。peasantsmith が正しい owner。Derisked は無検閲寄り） ----
-    ("maya", "glm53-flash-maya-s-v2-iq2_xxs", "GLM-5.3-Flash Maya-S v2 IQ2_XXS",
-     "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "Maya-S-v2-IQ2_XXS", "Maya-S",
-     tuple(f"Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), False, ""),
-    ("maya", "glm53-flash-maya-s24-iq2_xxs_s", "GLM-5.3-Flash Maya-S24 IQ2_XXS_S",
-     "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "Maya-S24", "Maya-S24",
-     tuple(f"Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), False, ""),
-    ("maya", "glm53-flash-maya-xs-iq1_s", "GLM-5.3-Flash Maya-XS IQ1_S",
-     "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "Maya-XS", "Maya-XS",
-     tuple(f"Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-{i:05d}-of-00002.gguf"
-           for i in range(1, 3)), False, ""),
-    ("maya", "glm53-flash-maya-m-iq2_s", "GLM-5.3-Flash Maya-M IQ2_S",
-     "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "Maya-M", "Maya-M",
-     tuple(f"Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), False, ""),
-    ("maya", "glm53-flash-maya-l-iq3_s", "GLM-5.3-Flash Maya-L IQ3_S",
-     "peasantsmith/GLM-5.3-Flash-Maya-GGUF", "Maya-L", "Maya-L",
-     tuple(f"Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-{i:05d}-of-00004.gguf"
-           for i in range(1, 5)), False, ""),
-    ("maya", "glm-m-derisked",
-     "GLM-5.3-Flash Maya-M Derisked IQ2_S（無検閲寄り）",
-     "peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF", "IQ2_S", "Maya-M",
-     tuple(f"GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), True,
-     "拒否を減らす重みの編集（Derisked）・実験的。登録は Maya 本体の目録（probe）から行う"),
-    ("maya", "glm53-maya-xs", "GLM-5.3 Maya-XS（744B）",
-     "peasantsmith/GLM-5.3-Maya-GGUF", "Maya-XS", "Maya-XS",
-     tuple(f"Maya-XS/GLM-5.3-Maya-XS-{i:05d}-of-00004.gguf"
-           for i in range(1, 5)), False, ""),
-    ("maya", "deepseek-v41-flash-maya-s-iq2_xxs", "DeepSeek-V4.1-Flash Maya-S IQ2_XXS",
-     "peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF", "Maya-S", "Maya-S",
-     tuple(f"Maya-S/DeepSeek-V4.1-Flash-1017-Maya-S-IQ2_XXS-{i:05d}-of-00006.gguf"
-           for i in range(1, 7)), False, ""),
-    ("maya", "deepseek-v41-flash-maya-xs-v2-iq1_s", "DeepSeek-V4.1-Flash Maya-XS v2 IQ1_S",
-     "peasantsmith/DeepSeek-V4.1-Flash-1017-Maya-GGUF", "Maya-XS", "Maya-XS",
-     tuple(f"Maya-XS/DeepSeek-V4.1-Flash-1017-Maya-XS-v2-IQ1_S-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), False, ""),
-    ("maya", "minimax-m31-flash-maya-xs-iq1_s", "MiniMax-M3.1-Flash Maya-XS IQ1_S",
-     "peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF", "Maya-XS", "Maya-XS",
-     tuple(f"Maya-XS/MiniMax-M3.1-Flash-Maya-XS-IQ1_S-{i:05d}-of-00002.gguf"
-           for i in range(1, 3)), False, ""),
-    ("maya", "minimax-m31-flash-maya-s-iq2_xxs", "MiniMax-M3.1-Flash Maya-S IQ2_XXS",
-     "peasantsmith/MiniMax-M3.1-Flash-Maya-GGUF", "Maya-S", "Maya-S",
-     tuple(f"Maya-S/MiniMax-M3.1-Flash-Maya-S-IQ2_XXS-{i:05d}-of-00003.gguf"
-           for i in range(1, 4)), False, ""),
-    ("maya", "hy4-flash-maya-xs-iq2_xxs", "Hy4-Flash Maya-XS IQ2_XXS",
-     "peasantsmith/Hy4-Flash-Maya-GGUF", "Maya-XS", "Maya-XS",
-     tuple(f"Maya-XS/Hy4-Flash-Maya-XS-IQ2_XXS-{i:05d}-of-00002.gguf"
-           for i in range(1, 3)), False, ""),
-    ("maya", "hy4-flash-maya-s-iq2_s", "Hy4-Flash Maya-S IQ2_S",
-     "peasantsmith/Hy4-Flash-Maya-GGUF", "Maya-S", "Maya-S",
-     tuple(f"Maya-S/Hy4-Flash-Maya-S-IQ2_S-{i:05d}-of-00002.gguf"
-           for i in range(1, 3)), False, ""),
-    ("maya", "ling32-air-maya-s-iq2_xxs", "Ling-3.2-air Maya-S IQ2_XXS",
-     "peasantsmith/Ling-3.2-air-Maya-GGUF", "Maya-S", "Maya-S",
-     ("Ling-3.2-air-Maya-S-IQ2_XXS.gguf",), False, ""),
-    ("maya", "ling32-air-maya-m-iq2_s", "Ling-3.2-air Maya-M IQ2_S",
-     "peasantsmith/Ling-3.2-air-Maya-GGUF", "Maya-M", "Maya-M",
-     ("Ling-3.2-air-Maya-M-IQ2_S.gguf",), False, ""),
-    ("maya", "inkling2-mini-maya-l-nvfp4", "Inkling-2-Mini Maya-L NVFP4",
-     "peasantsmith/Inkling-2-Mini-Maya-GGUF", "NVFP4", "Maya-L",
-     ("Maya-L/Inkling-2-Mini-Maya-L-NVFP4.gguf",), False, ""),
-    ("maya", "deepseek-v41-flash-abliterated-mix128g",
-     "DeepSeek-V4.1-Flash abliterated Mix-128G（無検閲・gated）",
-     "orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF", "Mix-128G", "Maya-S",
-     tuple(f"Mix-128G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-128G-{i:05d}-of-00005.gguf"
-           for i in range(1, 6)), True,
-     "HF の規約の承諾とトークンが要る（gated）。AMD は未検証"),
-    ("maya", "deepseek-v41-flash-abliterated-mix256g",
-     "DeepSeek-V4.1-Flash abliterated Mix-256G（無検閲・gated）",
-     "orcarouter/DeepSeek-V4.1-Flash-1017-abliterated-GGUF", "Mix-256G", "Maya-S",
-     tuple(f"Mix-256G/DeepSeek-V4.1-Flash-1017-abliterated-Mix-256G-{i:05d}-of-00007.gguf"
-           for i in range(1, 8)), True,
-     "HF の規約の承諾とトークンが要る（gated）。AMD は未検証"),
-)
-
-# Maya-M Derisked の repo（公式 docs/MODELS.md の owner は peasantsmith。旧表記は誤り）。
+# Maya-M Derisked の repo（公式 docs/MODELS.md の owner は peasantsmith）。
 MAYA_DERISKED_REPO = "peasantsmith/GLM-5.3-Flash-Maya-M-Derisked-IQ2_S-GGUF"
 STRATA_GSQ_REPO = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
-# 共通目録の Strata 行は、公式目録のうちこの PC で取得して起動できるものだけ:
-# GSQ-RCO（ISTA-DASLab / Coder / Swift）と Unsloth の UD-* と Q8_0。
-# Gyro・SQ-*・NVFP4・Inkling などは旧 strata_catalog に残す（登録 API の互換は壊さない）。
-_STRATA_GSQ_FAMILIES = frozenset({"qwen", "coder", "swift"})
-_STRATA_UNSLOTH_FAMILIES = frozenset({"unsloth", "qwen36"})
-
-
-def _strata_row_allowed(family_id: str, quant_id: str) -> bool:
-    """旧 strata_catalog の行のうち共通目録に載せるものだけを通す。"""
-    if family_id in _STRATA_GSQ_FAMILIES:
-        return True                      # GSQ-RCO の量子化はすべて対象
-    if family_id in _STRATA_UNSLOTH_FAMILIES:
-        quant = quant_id.casefold()
-        return quant.startswith("ud-") or quant == "q8_0"
-    return False
 
 
 @dataclass(frozen=True)
@@ -276,15 +43,25 @@ class Entry:
     format: str = "gguf"           # gguf | safetensors | rad | strata-quant | maya-quant
     repo: str = ""                 # HF の repo id（空 = HF 以外の経路）
     quantization: str = ""
-    size_gib: float | None = None   # None = 未確認（推測しない）
-    memory_gib: float | None = None
+    size_gib: float | None = None   # ダウンロード量（GB）。None = 未確認（推測しない）
+    memory_gib: float | None = None  # 必要メモリの目安（GB。ランタイム本体の値）
     uncensored: bool = False
     supported: bool = True
-    note: str = ""
-    acquire: str = "none"          # "hf" | "runtime" | "none"
-    source: str = "catalog"        # "catalog"=既存目録 | "hf"=repo id とファイル名だけ
+    note: str = ""                 # 開発者向けのメモ（画面はエキスパートだけ）
+    acquire: str = "none"          # "hf" | "runtime"（初回の起動でランタイムが取る）| "maya" | "none"
+    source: str = "catalog"
     family: str = ""               # 登録先の系列（Strata の family・Maya の tier）
-    files: tuple[str, ...] = ()    # 調査で確認したファイル名（推測の size は持たない）
+    files: tuple[str, ...] = ()
+    # 画面のまとめ（系列のカード）と表示
+    group: str = ""
+    group_name: str = ""
+    label: str = ""                # 量子化の名前（カードの中の行）
+    maker: str = ""                # 第三者の版のとき作った人（例: SC117）
+    fit: str | None = None         # ランタイム本体の判定（Strata・Maya）。None なら大きさから計算
+    recommended: bool = False      # ランタイム本体のおすすめ（Strata）
+    tags: tuple[str, ...] = ()
+    registered: str = ""           # 登録済みの名前（Maya の probe）
+    folder_name: str = ""          # Maya の取得先のフォルダ名
 
     def api_row(self, fit: str) -> dict:
         return {
@@ -297,87 +74,240 @@ class Entry:
         }
 
 
-def _researched_entries(runtime: str) -> list[Entry]:
-    """調査済みの行（PLAN「目録候補」）を Entry へ。大きさは必ず None（推測しない）。"""
+# ---------------------------------------------------------------- Radiance（StillDeadcode の .rad・文章の LLM）
+# 大きさは HF のファイル一覧（2026-11-28）。動く版は README の「Needs radiance」と本番の 2.3.0 で確認。
+_R = "StillDeadcode/"
+_IQR_V4 = (("iq2r", 10.9), ("iq2r-l", 12.0), ("iq3r-s", 13.2), ("iq3r", 14.3), ("iq3r-l", 15.4),
+           ("iq4r-s", 16.5), ("iq4r", 17.6), ("iq4r-l", 18.7), ("iq5r-s", 19.6), ("iq5r", 20.9),
+           ("iq6r-s", 23.0), ("iq6r", 24.2), ("iq6r-l", 25.9), ("iq7r", 27.5), ("iq8r", 29.6))
+# (id, group, 系列名, 量子化の名前, repo, file, GB, 無検閲, tags)
+_RADIANCE: tuple[tuple, ...] = (
+    *[(f"radiance-qwen38-27b-{q}-v4", "qwen38-27b", "Qwen3.8-27B", f"{q.upper()}（IQR-V4）",
+       _R + "qwen3.8-27b-iqr-v4", f"qwen3.8-27b-{q}-v4.rad", gb, False, ()) for q, gb in _IQR_V4],
+    ("radiance-qwen38-27b-mxfp4", "qwen38-27b", "Qwen3.8-27B", "MXFP4", _R + "qwen3.8-27b-mxfp4",
+     "qwen3.8-27b-mxfp4.rad", 19.4, False, ()),
+    ("radiance-qwen38-27b-fp8", "qwen38-27b", "Qwen3.8-27B", "FP8", _R + "qwen3.8-27b-fp8",
+     "qwen3.8-27b-fp8.rad", 30.8, False, ()),
+    ("radiance-qwen38-27b-iq8r-dflash", "qwen38-27b", "Qwen3.8-27B", "IQ8R＋先読み（DFlash）",
+     _R + "qwen3.8-27b-iq8r-dflash", "qwen3.8-27b-iq8r-dflash.rad", 30.9, False, ()),
+    ("radiance-qwen38-27b-uncensored-fp8", "qwen38-27b", "Qwen3.8-27B", "FP8", _R + "qwen3.8-27b-uncensored-fp8",
+     "qwen3.8-27b-uncensored-fp8.rad", 30.8, True, ()),
+    ("radiance-qwen38-27b-uncensored-iq8r", "qwen38-27b", "Qwen3.8-27B", "IQ8R", _R + "qwen3.8-27b-uncensored-iq8r",
+     "qwen3.8-27b-uncensored-iq8r.rad", 30.9, True, ()),
+    ("radiance-swift15-27b-fp8", "swift15-27b", "Swift 1.5（Qwen3.8-27B）", "FP8", _R + "swift1.5-qwen3.8-27b-fp8",
+     "swift1.5-qwen3.8-27b-fp8.rad", 30.8, False, ()),
+    ("radiance-swift15-27b-iq8r", "swift15-27b", "Swift 1.5（Qwen3.8-27B）", "IQ8R", _R + "swift1.5-qwen3.8-27b-iq8r",
+     "swift1.5-qwen3.8-27b-iq8r.rad", 30.9, False, ()),
+    ("radiance-qwen38-next-flash-fp8-iq4r-moe", "qwen38-flash-next", "Qwen3.8-Flash-Next", "FP8＋IQ4R（MoE）",
+     _R + "qwen3.8-next-flash-fp8-iq4r-moe", "qwen3.8-next-flash-fp8-iq4r-moe.rad", 122.0, False, ()),
+    ("radiance-qwen38-next-flash-iqr-v4", "qwen38-flash-next", "Qwen3.8-Flash-Next", "IQR-V4",
+     _R + "qwen3.8-next-flash-iqr-v4", "qwen3.8-next-flash-iqr-v4.rad", 121.7, False, ()),
+    ("radiance-qwen38-next-flash-uncensored-fp8-iq4r-moe", "qwen38-flash-next", "Qwen3.8-Flash-Next",
+     "FP8＋IQ4R（MoE）", _R + "qwen3.8-next-flash-uncensored-fp8-iq4r-moe",
+     "qwen3.8-next-flash-uncensored-fp8-iq4r-moe.rad", 122.0, True, ()),
+    ("radiance-qwen38-next-flash-uncensored-iqr-v4", "qwen38-flash-next", "Qwen3.8-Flash-Next", "IQR-V4",
+     _R + "qwen3.8-next-flash-uncensored-iqr-v4", "qwen3.8-next-flash-uncensored-iqr-v4.rad", 121.7, True, ()),
+    ("radiance-swift15-flash-next-fp8-iq4r-moe", "swift15-flash-next", "Swift 1.5（Qwen3.8-Flash-Next）",
+     "FP8＋IQ4R（MoE）", _R + "swift1.5-qwen3.8-next-flash-fp8-iq4r-moe",
+     "swift1.5-qwen3.8-next-flash-fp8-iq4r-moe.rad", 122.0, False, ()),
+    ("radiance-qwen36-35b-a3b-fp8", "qwen36-35b", "Qwen3.6-35B-A3B", "FP8", _R + "qwen3.6-35b-a3b-fp8",
+     "qwen3.6-35b-a3b-fp8.rad", 37.2, False, ()),
+    ("radiance-qwen36-35b-a3b-iq8r", "qwen36-35b", "Qwen3.6-35B-A3B", "IQ8R", _R + "qwen3.6-35b-a3b-iq8r",
+     "qwen3.6-35b-a3b-iq8r.rad", 37.6, False, ()),
+    ("radiance-inkling2-mini-iq4r-v4", "inkling-2-mini", "Inkling-2-Mini", "IQ4R-V4", _R + "inkling-2-mini-iq4r-v4",
+     "inkling-2-mini-iq4r-v4.rad", 15.5, False, ("画像も読む",)),
+    ("radiance-gemma4-26b-a4b-dflash-fp8", "gemma4-26b", "Gemma4-26B-A4B", "FP8＋先読み（DFlash）",
+     _R + "gemma4-26b-a4b-dflash-fp8", "gemma4-26b-a4b-dflash-fp8.rad", 36.4, False, ()),
+    ("radiance-gemma4-26b-a4b-dflash-i8", "gemma4-26b", "Gemma4-26B-A4B", "I8＋先読み（DFlash）",
+     _R + "gemma4-26b-a4b-dflash-i8", "gemma4-26b-a4b-dflash-i8.rad", 36.7, False, ()),
+    ("radiance-minicpm5-2b-fp8", "minicpm5-2b", "MiniCPM5-2B", "FP8", _R + "minicpm5-2b-fp8",
+     "minicpm5-2b-fp8.rad", 3.3, False, ()),
+    ("radiance-minicpm5-2b-iq8r", "minicpm5-2b", "MiniCPM5-2B", "IQ8R", _R + "minicpm5-2b-iq8r",
+     "minicpm5-2b-iq8r.rad", 3.3, False, ()),
+    ("radiance-minicpm5-2b-bf16", "minicpm5-2b", "MiniCPM5-2B", "BF16", _R + "minicpm5-2b-bf16",
+     "minicpm5-2b-bf16.rad", 5.5, False, ()),
+    ("radiance-translategemma-27b-i8", "translategemma-27b", "TranslateGemma-27B", "I8", _R + "translategemma-27b-i8",
+     "translategemma-27b-i8.rad", 30.3, False, ("翻訳",)),
+    ("radiance-flint-iq8r", "flint", "Flint", "IQ8R", _R + "flint-iq8r", "flint-iq8r.rad", 40.7, False, ("試験的",)),
+    ("radiance-ling30-tiny-iq8r", "ling30-tiny", "Ling-3.0-tiny", "IQ8R", _R + "ling-3.0-tiny-iq8r",
+     "ling-3.0-tiny-iq8r.rad", 8.5, False, ("試験的",)),
+    ("radiance-muse-glimmer-30b-iq8r-dflash", "muse-glimmer-30b", "Muse-Glimmer-30B", "IQ8R＋先読み（DFlash）",
+     _R + "muse-glimmer-30b-iq8r-dflash", "muse-glimmer-30b-iq8r-dflash.rad", 38.3, False, ("試験的",)),
+)
+
+# ---------------------------------------------------------------- Strata の無検閲版（第三者の HF・調査で確かめたもの）
+# (id, 系列, 量子化, repo, files, GB, 作った人)。必要メモリ・判定は Strata 本体の同じ量子化の行から取る。
+_SC_QWEN = "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF"
+_SC_SWIFT = "SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF"
+_STRATA_UNCENSORED: tuple[tuple, ...] = (
+    ("sc117-qwen-abliterated-q2_0", "qwen", "q2_0", _SC_QWEN, (), 66.8, "SC117"),
+    ("sc117-qwen-abliterated-iq2_xs", "qwen", "iq2_xs", _SC_QWEN, (), 68.5, "SC117"),
+    ("gsq-qwen38-abliterated-iq3_xxs", "qwen", "iq3_xxs", _SC_QWEN, (), 76.1, "SC117"),   # id は以前の目録と同じ（取得の記録と合わせる）
+    ("sc117-qwen-abliterated-iq3_s", "qwen", "iq3_s", _SC_QWEN, (), 83.9, "SC117"),
+    ("sc117-swift-abliterated-q2_0", "swift", "q2_0", _SC_SWIFT, (), 66.5, "SC117"),
+    ("sc117-swift-abliterated-iq2_xs", "swift", "iq2_xs", _SC_SWIFT, (), 68.2, "SC117"),
+    ("sc117-swift-abliterated-iq3_xxs", "swift", "iq3_xxs", _SC_SWIFT, (), 75.8, "SC117"),
+    ("sc117-swift-abliterated-iq3_s", "swift", "iq3_s", _SC_SWIFT, (), 83.5, "SC117"),
+    ("joaozaokk-inkling2-mini-heretic-ud-q4_k_xl", "inkling-2-mini", "ud-q4_k_xl", "JoaoZaokk/Inkling-2-Mini-Heretic-GGUF",
+     ("Inkling-2-Mini-Heretic-UD-Q4_K_XL.gguf", "dspark-Inkling-2-Mini-Q8_0.gguf"), 18.0, "JoaoZaokk（heretic）"),
+)
+
+# Strata の系列の画面の名前と説明（Strata の題は英語なので、ここで言い換える）
+_STRATA_MODEL: dict[str, tuple[str, str]] = {
+    "qwen": ("Qwen3.8-Flash-Next", "Strata の標準。GSQ-RCO で小さく速い"),
+    "swift": ("Swift 1.5", "思考を短くした Qwen3.8-Flash-Next の fine-tune"),
+    "coder": ("Qwen3.8-Flash-Next Coder", "コード向け。コード以外と英語以外の言語は弱い"),
+    "unsloth": ("Qwen3.8-Flash-Next（Unsloth 版）", "Unsloth の量子化。大きめで精度寄り"),
+    "gyro": ("Qwen3.8-Flash-Next（Gyro 版）", "小さいが遅め。メモリの少ない PC 向け"),
+    "qwen36": ("Qwen3.6-35B-A3B", "35B（有効 3B）の MoE。Flash-Next より小さい"),
+    "ornith": ("Ornith-1.5-35B-A3B", "Qwen3.6-35B-A3B と同じ形の 35B MoE"),
+    "hy4-flash": ("Tencent Hy4-Flash", "Tencent の MoE。n-gram の表は SSD から読む"),
+    "inkling-2-mini": ("Inkling-2-Mini", "Thinking Machines の 26B MoE（有効 3.4B）。画像も読む・思考なし"),
+}
+_STRATA_FIT = {"fits": "fits", "slower": "slow", "tight": "tight", "no": "no", "disk": "tight"}
+
+# Maya のモデルの説明（Maya 本体の docs/MODELS.md から）
+_MAYA_MODEL: dict[str, str] = {
+    "GLM-5.3-Flash": "Z.ai の 321B MoE（有効 18B）。AMD では画像も読む",
+    "DeepSeek-V4.1-Flash": "DeepSeek の 748B MoE。使うエキスパートだけを GPU と RAM に置き、残りは SSD から読む",
+    "MiniMax-M3.1-Flash": "MiniMax の MoE。Maya の量子化で 128 GB の PC に収まる",
+    "Hy4-Flash": "Tencent の MoE。n-gram の表（63 GB）は SSD から読む",
+}
+
+
+def _radiance_entries() -> list[Entry]:
     return [Entry(
-        runtime=row[0], id=row[1], name=row[2], repo=row[3], quantization=row[4],
-        family=row[5], files=row[6], uncensored=row[7], note=row[8],
-        format="rad" if runtime == "radiance" else "gguf",
-        acquire="hf", source="hf", size_gib=None,
-    ) for row in _RESEARCHED if row[0] == runtime]
+        runtime="radiance", id=row[0], name=f"{row[2]} {row[3]}", format="rad", repo=row[4], quantization="",
+        size_gib=row[6], uncensored=row[7], acquire="hf", source="hf", files=(row[5],),
+        group=f"radiance:{row[1]}", group_name=row[2], label=row[3], tags=row[8],
+    ) for row in _RADIANCE]
 
 
 def _sly_entries() -> list[Entry]:
     from app.models_mgmt import sly_radiance_catalog
 
+    groups = {"swift-heretic": "Swift-1.5 heretic MXFP4（標準）", "quark-awq": "Quark AWQ MXFP4（AMD）",
+              "nvfp4": "NVFP4（Unsloth）", "paroquant": "ParoQuant"}
     out = []
     for item in sly_radiance_catalog.ENTRIES:
+        drafter = item.kind == "drafter"
         out.append(Entry(
             runtime="sly-radiance", id=item.id, name=item.name, kind=item.kind,
             format="safetensors", repo=item.repo, quantization=item.quantization,
             size_gib=item.size_gib, uncensored=item.uncensored,
             supported=item.supported, note=item.note,
-            acquire="hf" if (item.supported and item.repo) else "none",
-            source="catalog",
+            acquire="hf" if (item.supported and item.repo) else "none", source="catalog",
+            group="sly:dflash2" if drafter else ("sly:qwen38-27b" if item.id in groups else f"sly:{item.id}"),
+            group_name="先読み DFlash2" if drafter else ("Qwen3.8-27B" if item.id in groups else item.name),
+            label="W4A16" if drafter else groups.get(item.id, "標準"),
+            tags=("先読み",) if drafter else (),
         ))
     return out
 
 
 def _strata_entries() -> list[Entry]:
-    from app.models_mgmt import strata_catalog
+    """Strata 本体の目録（読めなければ手の表）＋第三者の無検閲版。"""
+    from app.models_mgmt import strata_catalog, strata_live
 
-    out = []
-    nvidia = strata_catalog.has_nvidia_gpu()      # sysfs の走査は 1 回だけ（系列ごとに繰り返さない）
-    for family in strata_catalog.families():
-        if not strata_catalog.visible(family.id, nvidia):
-            continue
-        for quant in family.quantizations:
-            if not _strata_row_allowed(family.id, quant.id):
+    nvidia = strata_catalog.has_nvidia_gpu()
+    out: list[Entry] = []
+    official: dict[tuple[str, str], Entry] = {}
+    live = None
+    try:
+        live = strata_live.rows()
+    except Exception:  # noqa: BLE001 - 目録の表示で止まらない（手の表へ戻る）
+        logger.warning("Strata の目録を読めませんでした。手の表を使います", exc_info=True)
+    if live:
+        for row in live:
+            family = str(row["family"])
+            if row.get("offered") is False or row.get("custom"):
+                continue                                    # 提供の終わった量子化・自分のビルドは出さない
+            if not strata_catalog.visible(family, nvidia):
+                continue                                    # NVIDIA だけの系列
+            quant = str(row["model"]).casefold()
+            name, _desc = _STRATA_MODEL.get(family, (str(row.get("family_title") or family), ""))
+            tags = tuple(t for t, on in (("画像も読む", row.get("images")), ("試験的", row.get("experimental"))) if on)
+            entry = Entry(
+                runtime="strata", id=f"{family}/{quant}", name=f"{name} · {row['model']}", format="strata-quant",
+                repo=STRATA_GSQ_REPO if family == "qwen" else "", quantization=quant,
+                size_gib=float(row.get("download_gb") or 0) or None, memory_gib=float(row.get("memory_gb") or 0) or None,
+                supported=strata_catalog.is_valid(family, quant), note=str(row.get("about") or ""),
+                acquire="runtime", family=family, group=f"strata:{family}", group_name=name, label=str(row["model"]),
+                fit=_STRATA_FIT.get(str(row.get("verdict") or ""), "unknown"), recommended=bool(row.get("recommended")),
+                tags=tags)
+            out.append(entry)
+            official[(family, quant)] = entry
+    else:
+        for family in strata_catalog.families():
+            if not strata_catalog.visible(family.id, nvidia) or family.manual:
                 continue
-            out.append(Entry(
-                runtime="strata", id=f"{family.id}/{quant.id}",
-                name=f"{family.short_name} · {quant.label}",
-                format="strata-quant",
-                repo=STRATA_GSQ_REPO if family.id == "qwen" else "",
-                quantization=quant.id, size_gib=quant.download_gib,
-                memory_gib=quant.memory_gib, uncensored=family.uncensored,
-                supported=not family.manual,
-                note=family.note, acquire="runtime", source="catalog",
-                family=family.id,
-            ))
+            name, _desc = _STRATA_MODEL.get(family.id, (family.short_name, ""))
+            for quant in family.quantizations:
+                entry = Entry(
+                    runtime="strata", id=f"{family.id}/{quant.id}", name=f"{name} · {quant.label}",
+                    format="strata-quant", repo=STRATA_GSQ_REPO if family.id == "qwen" else "",
+                    quantization=quant.id, size_gib=quant.download_gib, memory_gib=quant.memory_gib,
+                    uncensored=family.uncensored, note=family.note, acquire="runtime", family=family.id,
+                    group=f"strata:{family.id}", group_name=name, label=quant.label)
+                out.append(entry)
+                official[(family.id, quant.id)] = entry
+    for entry_id, family, quant, repo, files, gb, maker in _STRATA_UNCENSORED:
+        base = official.get((family, quant))
+        if base is None:
+            continue                                        # 本体に同じ量子化が無い（この PC で出ない系列）
+        out.append(Entry(
+            runtime="strata", id=entry_id, name=f"{base.group_name} 無検閲 · {base.label}", format="gguf", repo=repo,
+            quantization=quant.upper() if family != "inkling-2-mini" else "UD-Q4_K_XL", size_gib=gb,
+            memory_gib=base.memory_gib, uncensored=True, acquire="hf", source="hf", family=family, files=files,
+            group=base.group, group_name=base.group_name, label=base.label, maker=maker, fit=base.fit,
+            tags=base.tags))
     return out
 
 
 def _maya_entries() -> list[Entry]:
-    """既存の Derisked 行（glm-m-derisked）は id を変えず先頭に置く（互換）。
+    """Maya 本体の probe（量子化・大きさ・必要メモリ・登録済み）。読めなければ空（画面は「読めない」と出す）。"""
+    from app.models_mgmt import maya_s
 
-    全一覧は Maya 本体の probe（catalog_ref）から読む。ここは調査済みの repo 行だけ。
-    """
-    rows = _researched_entries("maya")
-    return [entry for entry in rows if entry.id == "glm-m-derisked"] + [
-        entry for entry in rows if entry.id != "glm-m-derisked"
-    ]
+    try:
+        if not maya_s.installed():
+            return []
+        data = maya_s.catalog()
+    except Exception:  # noqa: BLE001 - 目録の表示で止まらない
+        logger.warning("Maya の目録を読めませんでした", exc_info=True)
+        return []
+    memory = data.get("memory") or {}
+    capacity = float(memory.get("ram_gb") or 0) + float(memory.get("vram_gb") or 0)
+    out = []
+    for item in data.get("quants") or []:
+        model = str(item.get("model") or "")
+        tier = str(item.get("tier") or "")
+        need = item.get("memory_gb")
+        fit = "unknown"
+        if isinstance(need, (int, float)) and capacity:
+            # Maya は使うエキスパートを GPU と RAM に置き、残りを SSD から読む: 超えても動くが遅い
+            fit = "fits" if need <= capacity - 8 else "slow"
+        published = item.get("published", True) is not False and float(item.get("size_gb") or 0) > 0
+        out.append(Entry(
+            runtime="maya", id=str(item["setup_id"]), name=f"{model} · {tier}", format="maya-quant",
+            repo=str(item.get("repo") or ""), quantization=str(item.get("quant") or tier),
+            size_gib=float(item.get("size_gb") or 0) or None, memory_gib=float(need) if isinstance(need, (int, float)) else None,
+            uncensored="derisked" in str(item["setup_id"]), supported=published,
+            note="" if published else "まだ公開されていません", acquire="maya", family=str(item.get("family") or ""),
+            group=f"maya:{model.casefold()}", group_name=model, label=tier, fit=fit,
+            registered=str(item.get("registered") or ""), folder_name=str(item.get("folder_name") or "")))
+    return out
 
 
 def entries_for(runtime: str) -> list[Entry]:
-    if runtime == "llama":
-        return _researched_entries("llama")
     if runtime == "radiance":
-        return _researched_entries("radiance")
+        return _radiance_entries()
     if runtime == "sly-radiance":
         return _sly_entries()
     if runtime == "strata":
-        own = _strata_entries()
-        # Strata 自身の目録にある組み合わせ（系列×量子化）は、Strata が初回の起動で取る行だけにする。
-        # HF から取る同じ行も並べていて、目録が二重に見えた（2026-11-28 利用者「目録が変」）。
-        # 第三者の無検閲版など、Strata の目録に無いものだけ HF の行を残す。
-        known = {(entry.family, entry.quantization.casefold()) for entry in own}
-        extra = [entry for entry in _researched_entries("strata")
-                 if entry.uncensored or (entry.family, entry.quantization.casefold()) not in known]
-        return own + extra
+        return _strata_entries()
     if runtime == "maya":
         return _maya_entries()
-    return []
+    return []                                    # llama.cpp は目録なし（手元のファイルを選ぶ）
 
 
 def get_entry(runtime: str, entry_id: str) -> Entry | None:
@@ -385,16 +315,23 @@ def get_entry(runtime: str, entry_id: str) -> Entry | None:
 
 
 def _fit_for(entry: Entry, ram_gib: float | None, vram_gib: float | None) -> str:
-    from app.models_mgmt import sly_radiance_catalog, strata_catalog
-
+    """載るかの目安: ランタイム本体の判定があればそれ。無ければ大きさから（GPU に置くランタイム）。"""
     if entry.kind != "model" or not entry.supported:
-        return sly_radiance_catalog.UNKNOWN
-    if entry.runtime == "sly-radiance":
-        return sly_radiance_catalog.fit(entry.size_gib, vram_gib)
-    if entry.runtime == "strata" and "/" in entry.id:
-        family, quant = entry.id.split("/", 1)
-        return strata_catalog.fit(family, quant, ram_gib or 0.0, vram_gib or 0.0)
-    return sly_radiance_catalog.UNKNOWN
+        return "unknown"
+    if entry.fit:
+        return entry.fit
+    return fit_by_size(entry.size_gib, ram_gib, vram_gib)
+
+
+def fit_by_size(size: float | None, ram: float | None, vram: float | None) -> str:
+    """Radiance・Sly は重みを GPU に置く: 大きさ×1.15 が VRAM に収まれば載る、RAM と合わせて収まれば遅い。"""
+    if not size or not vram:
+        return "unknown"
+    if vram >= size * 1.15:
+        return "fits"
+    if (ram or 0) and vram + float(ram) - 10 >= size:
+        return "slow"
+    return "no"
 
 
 def _installed(runtime: str) -> bool:
@@ -419,192 +356,68 @@ def _installed(runtime: str) -> bool:
             from app.models_mgmt import maya_s
 
             return maya_s.installed()
-    except Exception:  # noqa: BLE001 - 目録の表示で止まらない（sensor と同じ扱い。N/A は AGENTS.md 7）
+    except Exception:  # noqa: BLE001 - 目録の表示で止まらない
         return False
     return False
 
 
-# ---------------------------------------------------------------- モデルごとのまとめ（画面の単位）
-#
-# 2026-11-28 利用者「途中から精度が落ちてるし、なんだか目録が変。追加する機能のところ全てやり直して」。
-# 量子化ごとに 1 枚のカードを並べていたのを、モデルごとの 1 枚にまとめ、量子化はカードの中で選ぶ。
-# 開発者向けのメモ（引数・環境変数・内部の経路）は note_expert に分け、利用者には出さない。
+# ---------------------------------------------------------------- 系列ごとのまとめ（画面の 1 枚のカード）
 
-# Strata の系列の画面の名前と説明（strata_catalog の名前は登録済みの一覧と共用なので、ここで言い換える）
-_STRATA_MODEL: dict[str, tuple[str, str]] = {
-    "qwen": ("Qwen3.8-Flash-Next", "Strata の標準。GSQ-RCO で小さく速い"),
-    "coder": ("Qwen3.8-Flash-Next Coder", "コード向け。コード以外と英語以外の言語は弱い"),
-    "swift": ("Swift 1.5", "思考を短くした fine-tune"),
-    "unsloth": ("Qwen3.8-Flash-Next（Unsloth 版）", "Unsloth の量子化。大きめで精度寄り"),
-    "qwen36": ("Qwen3.6-35B-A3B", "35B（有効 3B）の MoE。Flash-Next より小さい"),
-}
-
-# 複数の repo を 1 つのモデルにまとめる行（同じ重みの量子化違い）: entry id → (group, モデル名, 量子化の名前)
-_GROUP_OVERRIDE: dict[tuple[str, str], tuple[str, str, str]] = {
-    ("sly-radiance", "swift-heretic"): ("sly:qwen38-27b", "Qwen3.8-27B", "Swift-1.5 heretic MXFP4（標準）"),
-    ("sly-radiance", "quark-awq"): ("sly:qwen38-27b", "Qwen3.8-27B", "Quark AWQ MXFP4（AMD）"),
-    ("sly-radiance", "nvfp4"): ("sly:qwen38-27b", "Qwen3.8-27B", "NVFP4（Unsloth）"),
-    ("sly-radiance", "paroquant"): ("sly:qwen38-27b", "Qwen3.8-27B", "ParoQuant"),
-    ("sly-radiance", "dflash2"): ("sly:dflash2", "先読み DFlash2", "W4A16"),
-    ("radiance", "radiance-minicpm5-2b-fp8"): ("radiance:minicpm5-2b", "MiniCPM5-2B", "FP8"),
-    ("radiance", "radiance-minicpm5-2b-bf16"): ("radiance:minicpm5-2b", "MiniCPM5-2B", "BF16"),
-}
-
-# 目録の note のうち、利用者に見せてよい言い換え（無いものは開発者向けとしてエキスパートだけに出す）
-_USER_NOTE: dict[str, str] = {
-    "abliterated（無検閲）": "拒否を減らす編集をした版（無検閲）",
-    "heretic / abliterated / uncensored": "拒否を減らす編集をした版（無検閲）",
-    "ultra uncensored / heretic": "拒否を減らす編集をした版（無検閲）",
-    "Uncensored": "拒否を減らす編集をした版（無検閲）",
-    "拒否を減らす重みの編集（Derisked）・実験的。登録は Maya 本体の目録（probe）から行う":
-        "拒否を減らす重みの編集（Derisked）をした実験的な版",
-    "HF の規約の承諾とトークンが要る（gated）。AMD は未検証":
-        "HF で規約の承諾とトークンが要ります。AMD では未検証",
-    "README の標準モデル。拒否を減らす編集（heretic）済み。5GiB ごとの分割":
-        "標準のモデル。拒否を減らす編集（heretic）済み",
-    "上のどのモデルとも使える先読みモデル（drafter）": "Qwen3.8-27B のどの量子化とも組める先読みのモデル",
-}
-
-_PAREN = __import__("re").compile(r"（[^）]*）")
-
-
-def _plain(name: str) -> str:
-    return " ".join(_PAREN.sub("", name).split())
-
-
-def _common_prefix(names: list[str]) -> str:
-    """語（空白区切り）の共通の先頭。"""
-    words = [n.split() for n in names]
-    out: list[str] = []
-    for column in zip(*words):
-        if all(w == column[0] for w in column):
-            out.append(column[0])
-        else:
-            break
-    return " ".join(out)
-
-
-def _strip_markers(text: str) -> str:
-    """無検閲・gated の印（画面では札で出す）を名前から外す。"""
-    for mark in ("（無検閲・gated）", "（無検閲寄り）", "（無検閲）"):
-        text = text.replace(mark, "")
-    return " ".join(text.split())
-
-
-def _group_key(entry: "Entry") -> str:
-    override = _GROUP_OVERRIDE.get((entry.runtime, entry.id))
-    if override:
-        return override[0]
-    if entry.acquire == "runtime" and entry.family:
-        return f"{entry.runtime}:family:{entry.family}"
-    if entry.repo:
-        return f"{entry.runtime}:repo:{entry.repo.casefold()}"
-    return f"{entry.runtime}:id:{entry.id}"
-
-
-def _names(group: list["Entry"]) -> tuple[str, list[str]]:
-    """モデルの名前と、各行の量子化の名前。"""
-    first = group[0]
-    override = _GROUP_OVERRIDE.get((first.runtime, first.id))
-    if override:
-        return override[1], [_GROUP_OVERRIDE.get((e.runtime, e.id), ("", "", e.quantization or "標準"))[2]
-                             for e in group]
-    if first.acquire == "runtime" and first.family:
-        from app.models_mgmt import strata_catalog
-
-        name = _STRATA_MODEL.get(first.family, (strata_catalog.short_name(first.family), ""))[0]
-        return name, [e.name.split(" · ", 1)[-1] for e in group]
-    plains = [_plain(e.name) for e in group]
-    if len(group) > 1:
-        prefix = _common_prefix(plains)
-    else:
-        words = plains[0].split()
-        quant = first.quantization.casefold()
-        prefix = " ".join(words[:-1]) if len(words) > 1 and quant and words[-1].casefold() == quant else plains[0]
-    prefix = prefix or plains[0]
-    labels = []
-    for entry in group:
-        rest = _strip_markers(entry.name)
-        rest = rest[len(prefix):].strip() if rest.startswith(prefix) else (entry.quantization or "")
-        labels.append(rest or entry.quantization or "標準")
-    return prefix, labels
-
-
-def _description(group: list["Entry"]) -> tuple[str, str]:
-    """利用者向けの説明 1 行と、開発者向けのメモ（エキスパート）。"""
-    first = group[0]
-    if first.acquire == "runtime" and first.family in _STRATA_MODEL:
-        description = _STRATA_MODEL[first.family][1]
-        return description, "" if first.note and first.note in description else first.note
-    users, experts = [], []
-    for entry in group:
-        if not entry.note:
-            continue
-        if entry.note in _USER_NOTE:
-            if _USER_NOTE[entry.note] not in users:
-                users.append(_USER_NOTE[entry.note])
-        elif entry.supported and entry.note not in experts:
-            experts.append(entry.note)
-    # 量子化ごとに違う説明はカードの説明にしない（量子化の行に出す。_variant_note）
-    if len(group) > 1 and len({_USER_NOTE.get(e.note, "") for e in group}) > 1:
-        users = []
-    return "・".join(users), " / ".join(experts)
-
-
-def _variant_note(group: list["Entry"], entry: "Entry") -> str:
-    """量子化の行に出す 1 行（カードの説明と違うときだけ）。"""
-    if len(group) > 1 and len({_USER_NOTE.get(e.note, "") for e in group}) > 1:
-        return _USER_NOTE.get(entry.note, "")
+def _description(runtime: str, first: Entry) -> str:
+    if runtime == "strata":
+        return _STRATA_MODEL.get(first.family, ("", ""))[1]
+    if runtime == "maya":
+        return _MAYA_MODEL.get(first.group_name, "")
+    if runtime == "sly-radiance" and first.kind == "drafter":
+        return "Qwen3.8-27B のどの量子化とも組める先読みのモデル"
     return ""
 
 
-def _recommended(variants: list[dict]) -> str:
-    """最初に選んでおく量子化: この PC に載るうちで一番大きい（精度が高い）もの。分からなければ先頭。"""
-    usable = [v for v in variants if v["supported"]]
-    fitting = [v for v in usable if v["fit"] == "fits"]
-    pool = fitting or usable or variants
-    sized = [v for v in pool if (v["memory_gib"] or v["size_gib"]) is not None]
-    if sized:
-        return max(sized, key=lambda v: v["memory_gib"] or v["size_gib"] or 0)["id"]
-    return pool[0]["id"] if pool else ""
-
-
 def models_for(runtime: str, ram: float | None, vram: float | None) -> list[dict]:
-    """ランタイムの目録をモデルごとにまとめる（画面の 1 枚のカード）。"""
+    """ランタイムの目録を系列ごとにまとめる（画面の 1 枚のカード → 検閲あり／無検閲 → 量子化）。"""
     groups: dict[str, list[Entry]] = {}
     for entry in entries_for(runtime):
-        groups.setdefault(_group_key(entry), []).append(entry)
+        groups.setdefault(entry.group or entry.id, []).append(entry)
     out = []
     for index, (key, group) in enumerate(groups.items()):
-        name, labels = _names(group)
-        description, note_expert = _description(group)
         variants = []
-        for entry, label in zip(group, labels):
-            row = entry.api_row(_fit_for(entry, ram, vram))
+        for entry in group:
             variants.append({
-                "id": entry.id, "label": label, "quantization": entry.quantization,
+                "id": entry.id, "label": entry.label or entry.quantization or "標準", "quantization": entry.quantization,
                 "acquire": entry.acquire if entry.supported else "none",
-                "size_gib": entry.size_gib, "memory_gib": entry.memory_gib, "fit": row["fit"],
+                "size_gib": entry.size_gib, "memory_gib": entry.memory_gib, "fit": _fit_for(entry, ram, vram),
                 "supported": entry.supported,
-                "reason": "" if entry.supported else (_USER_NOTE.get(entry.note) or "このランタイムではまだ使えません"),
+                # 使えない理由は利用者向けの文だけ（開発者のメモはカードの note_expert へ）
+                "reason": "" if entry.supported else (
+                    entry.note if entry.runtime == "maya" and entry.note else "このランタイムではまだ使えません"),
                 "repo": entry.repo, "format": entry.format, "kind": entry.kind, "family": entry.family,
-                "files": list(entry.files), "state": "available",
-                "uncensored": entry.uncensored, "note": _variant_note(group, entry),
+                "files": list(entry.files), "state": "registered" if entry.registered else "available",
+                "registered": entry.registered, "folder_name": entry.folder_name,
+                "uncensored": entry.uncensored, "maker": entry.maker, "recommended": entry.recommended,
+                "note": "",
             })
+        first = group[0]
         sizes = [v["size_gib"] for v in variants if v["size_gib"] is not None]
+        notes = list(dict.fromkeys(e.note for e in group if e.note))
+        tags = list(dict.fromkeys(t for e in group for t in e.tags))
         out.append({
-            "id": key, "name": name, "description": description, "note_expert": note_expert,
-            # 全部が無検閲のときだけカードに札。一部だけなら量子化の行に札（Sly の Qwen3.8-27B は heretic だけ）
-            "uncensored": all(e.uncensored for e in group),
-            "gated": any("gated" in e.name or "gated" in e.note for e in group),
-            "kind": group[0].kind,
-            # おすすめは Strata の標準（自身の目録の qwen 系列）だけ。同じ系列名の第三者の無検閲版には付けない
-            "recommended": runtime == "strata" and group[0].family == "qwen" and group[0].acquire == "runtime",
-            "recommended_variant": _recommended(variants),
+            "id": key, "name": first.group_name or first.name, "description": _description(runtime, first),
+            "note_expert": " / ".join(notes)[:600], "tags": tags,
+            "uncensored": all(v["uncensored"] for v in variants),
+            "has_uncensored": any(v["uncensored"] for v in variants),
+            "has_censored": any(not v["uncensored"] for v in variants),
+            "gated": False, "kind": first.kind,
+            "recommended": any(v["recommended"] for v in variants),
+            "recommended_variant": next((v["id"] for v in variants if v["recommended"]), ""),
             "size_min_gib": min(sizes) if sizes else None, "size_max_gib": max(sizes) if sizes else None,
             "variants": variants, "_order": index,
         })
-    # おすすめ → 載るものがある → 目録の順
+    # 本体がおすすめを出さないとき（この PC の判定が無い・手の表）は、Strata の標準（GSQ-RCO の Qwen3.8-Flash-Next）
+    if runtime == "strata" and not any(m["recommended"] for m in out):
+        for item in out:
+            if item["id"] == "strata:qwen":
+                item["recommended"] = True
+    # おすすめ → 載るものがある → 本体の目録の順
     out.sort(key=lambda m: (not m["recommended"], not any(v["fit"] == "fits" for v in m["variants"]), m["_order"]))
     for item in out:
         item.pop("_order")
@@ -616,17 +429,18 @@ def api_payload() -> dict:
     from app.models_mgmt import strata_catalog
 
     ram, vram = strata_catalog.machine_gib()
+    try:
+        from app.models_mgmt import libraries
+
+        download_root = str(libraries.default_models_dir())
+    except Exception:  # noqa: BLE001 - 置き場が読めなくても目録は出す（Maya の取得だけ押せない）
+        download_root = ""
     blocks = []
     for spec in RUNTIMES:
         rows = [entry.api_row(_fit_for(entry, ram, vram)) for entry in entries_for(spec["id"])]
-        block = {
+        blocks.append({
             "id": spec["id"], "name": spec["name"], "installed": _installed(spec["id"]),
             "formats": list(spec["formats"]), "acquire": spec["acquire"], "entries": rows,
-            "models": models_for(spec["id"], ram, vram),
-        }
-        if spec.get("catalog_ref"):
-            block["catalog_ref"] = spec["catalog_ref"]
-        if spec.get("search_ref"):
-            block["search_ref"] = spec["search_ref"]
-        blocks.append(block)
+            "models": models_for(spec["id"], ram, vram), "download_root": download_root,
+        })
     return {"runtimes": blocks, "hardware": {"ram_total_gib": ram, "vram_total_gib": vram}}

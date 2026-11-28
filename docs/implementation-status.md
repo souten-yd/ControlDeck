@@ -1,5 +1,24 @@
 # 実装状況
 
+## 2026-11-28 目録を「系列 → 検閲あり／無検閲 → 量子化」に作り直した（Claude。調査は docs/research-model-catalog-20261128.md）
+- 利用者の依頼:
+  - 「目録はまず大きな種類（Qwen・Hy4・Inkling など）を選ばせ、検閲・無検閲、量子化を選べるように」
+  - 「載るかどうかと容量を調査して、Strata・Maya・Radiance それぞれの目録を作って」
+  - 「Maya は DeepSeek・GLM・Hy4 など」
+  - 「llama.cpp は目録をやめて従来のファイル選択に戻す」
+- 目録の元（推測しない）:
+  - Strata: 本体 0.2.23 の目録（`Catalog().rows()`）を、Strata 自身の Python でその場で読む（`strata_live.py`・`strata_live_dump.py`。版ごとに 6 時間覚える。読めなければ手の表）。系列は Qwen3.8-Flash-Next・Swift・Coder・Unsloth 版・Gyro・Qwen3.6・Ornith（新）・Hy4-Flash・Inkling-2-Mini。NVIDIA だけの NVFP4・提供終了は出さない。手の表に Ornith と Inkling の GSQ-RCO-IQ3_S・Unsloth の UD-IQ4_XS-v31 を足した（登録の検査が通るように）。
+  - Strata の無検閲版: SC117 の Qwen3.8-Flash-Next と Swift の GSQ-RCO（各 4 量子化・公式と同じ作りと大きさ）、JoaoZaokk の Inkling Heretic UD-Q4_K_XL（本番で実測済み。DSpark も一緒に取る）。
+  - Maya: 本体 1.1.84 の probe（GLM-5.3-Flash 6・DeepSeek-V4.1-Flash 3・MiniMax-M3.1-Flash 2・Hy4-Flash 4。Derisked が GLM の無検閲寄り）。取得は Maya の「ダウンロードして登録」（`/features/maya-s/models/download-jobs`。置き場は既定のライブラリ／<repo のフォルダ>）。
+  - Radiance 2.3.0: StillDeadcode の文章の LLM 39 種（Qwen3.8-27B の IQR-V4 15 段・FP8・MXFP4・無検閲、Qwen3.8-Flash-Next、Qwen3.6、Inkling、Gemma4、MiniCPM5、TranslateGemma、試験的 3 つ）。大きさは HF の一覧。
+  - Sly-Radiance: Qwen3.8-27B の 4 量子化と DFlash2 の大きさを HF の一覧の値にした。
+- 画面:
+  - 系列のカード → 開くと「通常／無検閲」の切り替え（両方あるとき）→ 量子化（容量・メモリ・載る／遅い／ぎりぎり／載らない・この PC 向け）→ ボタン 1 つ。
+  - 単位は GB に統一（本体と HF の表示と同じ）。
+  - Maya の量子化の選択（手元のフォルダから登録）は「ファイルから登録」の中へ移し、目録を主にした。
+  - llama.cpp は目録を出さず、ファイル選択だけにした。選んだファイルに容量と「この PC に載るか」を出す。
+- 試験: `test_model_catalog_models.py`（本番から読んだ Strata・Maya の本体の目録を試験データに）、`model-add.spec.ts`（本番と同じ目録のデータ）。
+- 次（同じ依頼の残り）: 取得先の既定のフォルダ（共通設定・/data1tb と /data2tb）、複数の取得を順番に、登録を外すときにファイルを消すかの選択。
 ## 2026-11-28 Models の「モデル登録」の目録を作り直した（Claude が直接）
 - 利用者（スマホの写真つき）「途中から精度が落ちてるし、なんだか目録が変。追加する機能のところ全てやり直して」「作り直しは、クロードがやって」。
 - 本番の `/models/catalog` を読んで分かった問題:

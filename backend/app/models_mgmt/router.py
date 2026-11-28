@@ -2096,12 +2096,13 @@ async def models_acquire(
     # 量子化行は files=[] のまま、開始時に HF の tree からその量子化の分割全片を列挙する。
     # .rad は最上位に置かれるので、調査済みのファイル名をそのまま渡す（README 等を落とさない）。
     files = list(body.files)
-    if not files and entry.format == "rad":
+    if not files and (entry.format == "rad" or (entry.format == "gguf" and entry.files)):
+        # 目録にファイル名を書いた行はそのファイルを取る（Inkling の無検閲版は本体と DSpark の 2 つ。2026-11-28）
         files = list(entry.files)
     resume = {
         "repo": entry.repo, "files": files, "revision": "main",
         "library_id": body.library_id, "expected_bytes": 0, "fetch_sizes": True,
-        "quantization": entry.quantization if entry.format == "gguf" else "",
+        "quantization": entry.quantization if entry.format == "gguf" and not files else "",
         "register": register,
     }
     # 同じ取得先・同じ repo の取得が実行中・停止中なら弾く。2 つの Job が同じ .part へ追記して壊し、

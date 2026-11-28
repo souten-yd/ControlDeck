@@ -199,6 +199,9 @@ export interface RuntimeCatalogEntry {
   acquire: "hf" | "runtime" | "none";
   source: string;
   fit: "fits" | "tight" | "no" | "unknown" | string;
+  /** 登録先の系列（Strata の family・Maya の tier） */
+  family?: string;
+  files?: string[];
 }
 
 /** 目録のモデルの量子化（カードの中で選ぶ行）。id は取得・登録の API に渡す目録の行の id。 */
@@ -206,7 +209,7 @@ export interface RuntimeCatalogVariant {
   id: string;
   label: string;
   quantization: string;
-  acquire: "hf" | "runtime" | "none";
+  acquire: "hf" | "runtime" | "maya" | "none";
   size_gib: number | null;
   memory_gib: number | null;
   fit: "fits" | "tight" | "no" | "unknown" | string;
@@ -221,6 +224,14 @@ export interface RuntimeCatalogVariant {
   uncensored: boolean;
   /** 量子化ごとに違う説明（カードの説明と違うときだけ） */
   note: string;
+  /** 第三者の版のとき作った人（例: SC117） */
+  maker?: string;
+  /** ランタイム本体のおすすめ（Strata） */
+  recommended?: boolean;
+  /** 登録済みの名前（Maya） */
+  registered?: string;
+  /** Maya の取得先のフォルダ名 */
+  folder_name?: string;
 }
 
 /** 目録のモデル（画面の 1 枚のカード）。2026-11-28 に量子化ごとのカードから作り直した。 */
@@ -231,6 +242,10 @@ export interface RuntimeCatalogModel {
   /** 開発者向けのメモ（エキスパートだけ表示） */
   note_expert: string;
   uncensored: boolean;
+  /** 無検閲の量子化がある・検閲ありの量子化がある（両方あればカードの中で切り替える） */
+  has_uncensored?: boolean;
+  has_censored?: boolean;
+  tags?: string[];
   gated: boolean;
   kind: "model" | "drafter";
   recommended: boolean;
@@ -271,6 +286,8 @@ export interface RuntimeCatalogBlock {
   entries: RuntimeCatalogEntry[];
   /** モデルごとにまとめた目録（画面はこちらを使う） */
   models?: RuntimeCatalogModel[];
+  /** 取得の既定の置き場（Maya の「取得して登録」のフォルダの親） */
+  download_root?: string;
   /** 動的な全一覧（Maya の probe など）への既存 API。 */
   catalog_ref?: string;
   /** HF 検索の既存 API（目録に推奨行が無いランタイム）。 */

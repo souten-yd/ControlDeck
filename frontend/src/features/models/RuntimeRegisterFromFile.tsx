@@ -12,7 +12,7 @@ import { Skeleton } from "../../components/ui";
 import { useToasts } from "../../stores";
 import { useExpert } from "../commander/TeamRoles";
 import { api } from "../../api/client";
-import { inspectRegisterPath, type RegisterInspect } from "../../api/models";
+import { getRuntimeCatalog, inspectRegisterPath, type RegisterInspect } from "../../api/models";
 import { invalidateRuntimeQueries } from "./runtimeSettings";
 
 /** ルート一覧だけは 2 つに統一した API から。一覧・作成は files API（path 検証つき）。 */
@@ -99,6 +99,19 @@ export function RuntimeRegisterFromFile({
     }
   };
 
+  // 載るかの目安: ハードウェアは目録の API と同じ値（RAM・VRAM の合計）。2026-11-28 利用者「容量と乗るかを見やすく」
+  const { data: catalogInfo } = useQuery({ queryKey: ["runtime-catalog"], queryFn: getRuntimeCatalog, staleTime: 60_000 });
+  const fit = (() => {
+    const hw = catalogInfo?.hardware;
+    if (!data?.size_bytes || !hw?.vram_total_gib) return null;
+    const size = data.size_bytes / 1e9;
+    const vram = hw.vram_total_gib;
+    const ram = hw.ram_total_gib ?? 0;
+    if (vram >= size * 1.15) return { key: "fits", label: `この PC に載ります（VRAM ${Math.round(vram)} GB に収まる）`, tone: "text-emerald-700 dark:text-emerald-300" };
+    if (vram + ram - 10 >= size) return { key: "slow", label: "載りますが遅くなります（VRAM に収まらない分を RAM に置く）", tone: "text-amber-700 dark:text-amber-300" };
+    return { key: "no", label: `この PC のメモリ（RAM ${Math.round(ram)} GB＋VRAM ${Math.round(vram)} GB）では足りない見込みです`, tone: "text-red-600 dark:text-red-400" };
+  })();
+
   return (
     <div className="space-y-2" data-runtime-register-file={runtime} data-expert={expert ? "on" : "off"}>
       <div className="flex items-center gap-2">
@@ -120,6 +133,8 @@ export function RuntimeRegisterFromFile({
               onChange={(e) => { setAlias(e.target.value); setAliasEdited(true); }}
               className="mt-1 min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900" />
           </label>
+          {/* この PC で載るかの目安（目録と同じ判定。GPU に置くランタイムは VRAM、RAM と合わせて収まれば遅い） */}
+          {fit && <p className={`text-xs font-medium ${fit.tone}`} data-file-fit={fit.key}>{fit.label}</p>}
           <p className="num text-[11px] text-zinc-500">
             {data.format} · {gb(data.size_bytes)}
             {typeof meta.quantization === "string" && ` · ${meta.quantization}`}

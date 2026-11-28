@@ -196,12 +196,9 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   const buttons = sheet.getByRole("button", { name: /^(llama\.cpp|Strata|Radiance|Maya)$/ });
   await expect(buttons).toHaveText([...RUNTIME_BUTTONS]);
 
-  // llama.cpp / Strata は共通部品を SegmentedTabs で切り替える。目録 → ファイルの順。
-  await expect(sheet.getByRole("button", { name: CATALOG_HEADING })).toHaveAttribute("aria-pressed", "true");
-  await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
-  await expect(sheet.locator('[data-catalog-model="m-e2e-llama"]')).toContainText("E2E e2e-llama");
-  await expect(sheet.locator('[data-runtime-catalog="llama"]')).toHaveAttribute("data-expert", "off");
-  await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
+  // llama.cpp は目録を使わず、手元のファイルを選んで登録する（2026-11-28 利用者）。Strata は目録 → ファイルの順。
+  await expect(sheet.locator('[data-runtime-catalog="llama"]')).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: CATALOG_HEADING })).toHaveCount(0);
   await expect(sheet.locator('[data-runtime-register-file="llama"]')).toBeVisible();
   await expect(sheet.locator('[data-runtime-register-file="llama"]')).toHaveAttribute("data-expert", "off");
   await expect(sheet.locator('[data-runtime-register-file="llama"]').getByRole("button", { name: "モデルのファイルを選ぶ" })).toBeVisible();
@@ -234,8 +231,7 @@ test("モデル登録: 4 ランタイムが同じ順番で目録 → ファイ�
   // Maya も同じ見出し・並び（「Maya の目録」のような二重目録は要求違反として許容しない）。
   await sheet.getByRole("button", { name: "Maya", exact: true }).click();
   await expect(sheet.locator("h3, summary")).toHaveText([...HEADING_PATTERNS]);
-  // Maya の目録だけは畳んである（Maya 自身の量子化の一覧が主・2026-11-28）
-  await sheet.locator("summary").filter({ hasText: headingStart(CATALOG_HEADING) }).click();
+  // Maya の目録は最初から開いている（目録が主。Maya の量子化の選択は「ファイルから登録」の中・2026-11-28）
   await expect(sheet.locator('[data-runtime-catalog="maya"]')).toBeVisible();
   await sheet.locator("summary").filter({ hasText: headingStart(FILE_HEADING) }).click();
   await expect(sheet.locator('[data-runtime-register-file="maya"]')).toBeVisible();
@@ -250,7 +246,9 @@ type Sheet = ReturnType<Page["getByRole"]>;
 async function reachCommonSettings(page: Page, sheet: Sheet, runtime: (typeof RUNTIME_IDS)[number]) {
   if (runtime === "llama" || runtime === "strata") {
     if (runtime === "strata") await sheet.getByRole("button", { name: "Strata", exact: true }).click();
-    await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
+    else await sheet.getByRole("button", { name: "llama.cpp", exact: true }).click();
+    const fileTab = sheet.getByRole("button", { name: FILE_HEADING, exact: true });
+    if (await fileTab.count()) await fileTab.click();          // llama.cpp はタブが無い（ファイルだけ）
     await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
     const picker = page.getByRole("dialog", { name: FILE_PICKER_TITLE });
     // initialPath が残るとルート一覧ではなくフォルダ内が開く。どちらでもモデルを選べるようにする。
@@ -298,7 +296,8 @@ test("取得ジョブ: 停止 → 再開のボタンがモックの API で動�
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await sheet.getByRole("button", { name: "Strata", exact: true }).click();   // llama.cpp の目録は 2026-11-28 に無くした
+  const entry = sheet.locator('[data-catalog-model="m-e2e-strata"]');
   await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
 
   const running = sheet.locator('[data-acquire-job="job-1"]');
@@ -327,7 +326,8 @@ test("取得ジョブ: 取り消しの API モックと实际操作（320px）",
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await sheet.getByRole("button", { name: "Strata", exact: true }).click();   // llama.cpp の目録は 2026-11-28 に無くした
+  const entry = sheet.locator('[data-catalog-model="m-e2e-strata"]');
   await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
 
   const running = sheet.locator('[data-acquire-job="job-1"]');
@@ -355,7 +355,8 @@ test("取得ジョブ: 停止済みのジョブも取り消せる（確認ダイ
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet, jobs } = await openRegisterSheet(page, context);
 
-  const entry = sheet.locator('[data-catalog-model="m-e2e-llama"]');
+  await sheet.getByRole("button", { name: "Strata", exact: true }).click();   // llama.cpp の目録は 2026-11-28 に無くした
+  const entry = sheet.locator('[data-catalog-model="m-e2e-strata"]');
   await openCardAndAct(entry);   // 2026-11-28: 確認の枠は無くし、カードの中の主のボタン 1 つで始める
   const running = sheet.locator('[data-acquire-job="job-1"]');
   await running.getByRole("button", { name: "停止", exact: true }).click();
@@ -383,7 +384,7 @@ test("取得ジョブ: 停止済みのジョブも取り消せる（確認ダイ
 test("ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ", async ({ page, context }) => {
   await page.setViewportSize({ width: 320, height: 700 });
   const { sheet } = await openRegisterSheet(page, context);
-  await sheet.getByRole("button", { name: FILE_HEADING, exact: true }).click();
+  // llama.cpp は最初から「ファイルから登録」（2026-11-28）
   await sheet.getByRole("button", { name: "モデルのファイルを選ぶ" }).click();
 
   const picker = page.getByRole("dialog", { name: FILE_PICKER_TITLE });
@@ -421,7 +422,7 @@ for (const width of [320, 1280]) {
         const { sheet } = await openRegisterSheet(page, context);
         const suffix = `${width}-${scheme}-${expert ? "expert" : "normal"}`;
 
-        await expect(sheet.locator('[data-runtime-catalog="llama"]')).toBeVisible();
+        await expect(sheet.locator('[data-runtime-register-file="llama"]')).toBeVisible();   // llama.cpp は目録なし
         await expect(sheet.locator(".animate-pulse")).toHaveCount(0);   // 読み込みの印が消えてから撮る
         await page.screenshot({ path: `test-results/models-runtime-common-llama-${suffix}.png` });
 

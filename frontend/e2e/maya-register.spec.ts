@@ -98,6 +98,8 @@ for (const width of [320, 1280]) {
     await page.getByRole("button", { name: "モデル登録" }).first().click();
     const sheet = page.getByRole("dialog", { name: "モデル登録" });
     await sheet.getByRole("button", { name: "Maya", exact: true }).click();
+    // 手元のフォルダから登録する Maya の量子化の選択は「ファイルから登録」の中（2026-11-28。目録が主）
+    await sheet.locator("summary").filter({ hasText: /^ファイルから登録/ }).click();
     // Without a folder: the list, nothing selectable for registration yet.
     await expect(sheet.getByText("GLM-5.3-Flash", { exact: true })).toBeVisible();
     await expect(sheet.getByRole("radio", { name: /Maya-S\s*登録済み/ })).toBeDisabled();
@@ -179,6 +181,8 @@ for (const width of [320, 1280]) {
     await page.getByRole("button", { name: "モデル登録" }).first().click();
     const sheet = page.getByRole("dialog", { name: "モデル登録" });
     await sheet.getByRole("button", { name: "Maya", exact: true }).click();
+    // 手元のフォルダから登録する Maya の量子化の選択は「ファイルから登録」の中（2026-11-28。目録が主）
+    await sheet.locator("summary").filter({ hasText: /^ファイルから登録/ }).click();
     await sheet.getByLabel("Mayaモデルのフォルダ").fill("/data1tb/LLM");
     await sheet.getByRole("radio", { name: /MiniMax|Maya-XS.*93 GB/ }).last().click();
     await expect(sheet.getByText("約 93 GB · 空き 206.3 GB")).toBeVisible();

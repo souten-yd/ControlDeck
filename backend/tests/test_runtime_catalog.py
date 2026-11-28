@@ -44,33 +44,17 @@ _ROW_KEYS = {
 
 
 def test_catalog_has_every_runtime_and_no_guessed_sizes():
-    """目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
+    """目的: 目録が 5 ランタイムを並べ、出どころの確かな行だけを載せること。
 
-    根拠: 依頼「目録を作り直して」に対し、repo id とファイル名を実在調査してから載せる約束
-    （.nexarch/brief-runtime-unify.md）。推測した URL・大きさを置くと、取得の開始時に 404 や
-    容量計算の誤りになる。llama.cpp と Radiance は空目録だったが調査済みの行を反映した。
+    根拠: 2026-11-28 利用者「載るかどうかと容量を調査して目録を作って」「llama.cpp は目録をやめて従来のファイル
+    選択に戻す」。大きさは調査（HF の一覧・ランタイム本体の目録）の値だけ（docs/research-model-catalog-20261128.md）。
     """
     payload = runtime_catalog.api_payload()
     blocks = {block["id"]: block for block in payload["runtimes"]}
-
     assert list(blocks) == ["llama", "radiance", "sly-radiance", "strata", "maya"]
-    # 調査済みの repo を反映（空目録を解消）。既存の Sly 目録・Strata 系列行は壊さない。
-    assert len(blocks["llama"]["entries"]) >= 10
-    assert len(blocks["radiance"]["entries"]) == 5
+    assert blocks["llama"]["entries"] == []                       # 手元のファイルを選んで登録する
+    assert len(blocks["radiance"]["entries"]) == 39
     assert len(blocks["sly-radiance"]["entries"]) == 6
-    # 旧 strata_catalog の全 44 行を出さない。共通目録は GSQ-RCO・Unsloth UD-*・Q8_0 だけ。
-    # 旧登録 id / 既存の Strata API はそのまま（互換）。
-    # 2026-11-28: Strata 自身の目録にある系列×量子化と重なる HF の行（12 行）を消した（目録が二重に見えた）。
-    # 残る HF の行は、Strata の目録に無い第三者の無検閲版 2 行だけ。
-    assert len(blocks["strata"]["entries"]) == 25
-    catalog_strata = [row for row in blocks["strata"]["entries"] if row["source"] == "catalog"]
-    assert len(catalog_strata) == 23
-    for row in catalog_strata:
-        family, quant = row["id"].split("/", 1)
-        assert runtime_catalog._strata_row_allowed(family, quant), row["id"]  # noqa: SLF001
-    assert not any(row["id"].startswith(("gyro/", "inkling-2-mini/", "hy4-flash/", "nvfp4/"))
-                   for row in catalog_strata)
-
     for runtime, block in blocks.items():
         ids = [row["id"] for row in block["entries"]]
         assert len(ids) == len(set(ids)), runtime
@@ -79,28 +63,8 @@ def test_catalog_has_every_runtime_and_no_guessed_sizes():
             assert row["id"] and row["name"]
             if row["acquire"] == "hf":
                 assert row["repo"], row["id"]
-            if row["source"] == "hf":
-                # repo id とファイル名だけ確認した行は、大きさを書かない（Job の開始時に読む）。
-                assert row["size_gib"] is None, row["id"]
-                assert row["files"], row["id"]
-            if runtime == "strata" and row["source"] == "catalog":
-                assert row["repo"] in ("", runtime_catalog.STRATA_GSQ_REPO)
-
-    maya = blocks["maya"]["entries"][0]
-    assert maya["id"] == "glm-m-derisked"          # 既存 id は変えない（互換）
-    assert maya["repo"] == runtime_catalog.MAYA_DERISKED_REPO
-    assert maya["uncensored"] is True and maya["size_gib"] is None
-    assert runtime_catalog.get_entry("maya", "glm-m-derisked") is not None
-    assert runtime_catalog.get_entry("llama", "anything") is None
-
-    # 調査済みの repo id だけ。owner の誤記や推測した URL / sha を載せない。
-    repos = {row["repo"] for block in blocks.values() for row in block["entries"]}
-    assert all("peasmith" not in repo for repo in repos)
-    assert "peasantsmith/GLM-5.3-Flash-Maya-GGUF" in repos
-    assert "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF" in repos
-    assert not any("huggingface.co" in repo for repo in repos)  # URL は repo id から作る
-
-
+            if runtime == "radiance":
+                assert row["size_gib"] and row["files"] and row["files"][0].endswith(".rad"), row["id"]
 
 def test_catalog_entries_are_looked_up_by_runtime():
     """目的: 取得の API が目録の行をランタイム＋id で引けること（別ランタイムの id を混ぜない）。
@@ -114,10 +78,9 @@ def test_catalog_entries_are_looked_up_by_runtime():
             assert entry is not None and entry.runtime == block["id"]
     # 別のランタイムを指定したら引けない（同じ id を横取りしない）。
     assert runtime_catalog.get_entry("strata", "swift-heretic") is None
-    assert runtime_catalog.get_entry("llama", "glm-m-derisked") is None
+    assert runtime_catalog.get_entry("radiance", "swift-heretic") is None
     assert runtime_catalog.get_entry("unknown", "swift-heretic") is None
-    assert runtime_catalog.get_entry("maya", "glm-m-derisked") is not None
-
+    assert runtime_catalog.get_entry("sly-radiance", "swift-heretic") is not None
 
 # ---- 設定の形 --------------------------------------------------------------------------------
 
@@ -547,53 +510,30 @@ def test_rad_file_is_offered_to_radiance_only(tmp_path, monkeypatch):
 
 
 def test_researched_rows_keep_only_confirmed_repo_ids_and_file_names():
-    """目的: 調査済みの repo id とファイル名がそのまま API に出ること。
+    """目的: 調査で確かめた repo id・ファイル名・大きさがそのまま API に出ること。
 
-    根拠: docs/PLAN-model-catalog.md「目録候補」に書いた確認済みの行だけを採用する。
-    大きさ・sha は取得の開始時に HF の API から読むため、ここでは null のままにする。
+    根拠: 2026-11-28 の調査（HF の公開 API のファイル一覧）。docs/research-model-catalog-20261128.md。
     """
-    rows = {entry.id: entry for entry in runtime_catalog.entries_for("llama")}
-    assert rows["unsloth-qwen38-27b-q8_0"].repo == "unsloth/Qwen3.8-27B-GGUF"
-    assert rows["unsloth-qwen38-27b-q8_0"].files == ("Qwen3.8-27B-Q8_0.gguf",)
-    assert rows["unsloth-llama4-scout-iq4_nl"].files == (
-        "IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf",
-        "IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00002-of-00002.gguf",
-    )
-    assert rows["huihui-glm53-flash-abliterated-ud-iq1_m"].uncensored is True
-    assert all(entry.size_gib is None for entry in rows.values())
-
     rad = {entry.id: entry for entry in runtime_catalog.entries_for("radiance")}
-    assert len(rad) == 5
     assert rad["radiance-minicpm5-2b-bf16"].repo == "StillDeadcode/minicpm5-2b-bf16"
     assert rad["radiance-minicpm5-2b-bf16"].files == ("minicpm5-2b-bf16.rad",)
-    assert all(entry.format == "rad" and entry.size_gib is None for entry in rad.values())
-
+    assert rad["radiance-minicpm5-2b-bf16"].size_gib == 5.5
+    assert rad["radiance-qwen38-27b-iq5r-v4"].files == ("qwen3.8-27b-iq5r-v4.rad",)
+    assert rad["radiance-qwen38-27b-uncensored-iq8r"].uncensored is True
+    assert all(entry.format == "rad" for entry in rad.values())
 
 def test_strata_new_rows_use_only_supported_quantizations():
-    """目的: Strata の新規行が GSQ-RCO・Unsloth UD-*・Q8_0 だけであること。
+    """目的: Strata の HF の行（第三者の無検閲版）が、Strata の動かせる量子化（GSQ-RCO・Unsloth UD）だけであること。
 
-    根拠: 依頼「Strata は GSQ-RCO・Unsloth UD-*・Q8_0 だけ」。この PC で動かせない
-    Gyro・SQ-*・NVFP4 などを「取得できる」と出すと、落とした後に起動できない。
+    根拠: 依頼「Strata は GSQ-RCO・Unsloth UD-*・Q8_0 だけ」。量子化の作りと大きさが公式と同じものだけを載せた
+    （2026-11-28 調査）。動かせない形式を「取得できる」と出すと、落とした後に起動できない。
     """
-    new_rows = [entry for entry in runtime_catalog.entries_for("strata")
-                if entry.source == "hf"]
-    # 2026-11-28: Strata 自身の目録と重なる行は消した（test_model_catalog_models）。残るのは第三者の無検閲版だけ
-    assert len(new_rows) == 2 and all(entry.uncensored for entry in new_rows)
+    new_rows = [entry for entry in runtime_catalog.entries_for("strata") if entry.source == "hf"]
+    assert new_rows and all(entry.uncensored for entry in new_rows)
     for entry in new_rows:
         quant = entry.quantization.casefold()
-        assert (quant.startswith("ud-") or quant == "q8_0"
-                or entry.repo in {
-                    "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
-                    "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
-                    "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
-                    "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
-                    "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
-                }), entry.id
-        assert entry.family and entry.files, entry.id
-        # 分割片は全片が載っている（1 片だけでは起動できない）。
-        for path in entry.files:
-            assert path.endswith(".gguf"), path
-
+        assert quant in ("q2_0", "iq2_xs", "iq3_xxs", "iq3_s", "ud-q4_k_xl"), entry.id
+        assert entry.family in ("qwen", "swift", "inkling-2-mini"), entry.id
 
 def test_all_five_runtimes_can_start_the_common_hf_job(admin_client, monkeypatch):
     """目的: 全 5 ランタイムが共通の取得 Job を始め、停止・再開・取消の道に載ること。
@@ -614,12 +554,11 @@ def test_all_five_runtimes_can_start_the_common_hf_job(admin_client, monkeypatch
         return _FakeJob(len(captured) - 1)
 
     monkeypatch.setattr(models_router.jobs, "create", fake_create)
+    # 2026-11-28: llama.cpp は目録なし、Maya は本体の「ダウンロードして登録」で取る（共通の HF Job ではない）
     cases = [
-        ("llama", "unsloth-qwen38-27b-q8_0", {"alias": "llama-x"}),
         ("radiance", "radiance-minicpm5-2b-bf16", {"alias": "rad-x"}),
         ("sly-radiance", "swift-heretic", {"alias": "sly-x"}),
         ("strata", "gsq-qwen38-abliterated-iq3_xxs", {"alias": "strata-x"}),
-        ("maya", "glm-m-derisked", None),
     ]
     for index, (runtime, entry_id, register) in enumerate(cases):
         body = {"runtime": runtime, "entry_id": entry_id}
@@ -657,15 +596,15 @@ def test_catalog_files_endpoint_lists_only_the_selected_quantization(admin_clien
 
     monkeypatch.setattr(hf_module, "_repo_tree", fake_tree)
     response = admin_client.get(
-        "/api/v1/models/catalog/llama/entries/unsloth-qwen38-27b-q8_0/files"   # Strata の重複行は 2026-11-28 に消した
+        "/api/v1/models/catalog/strata/entries/sc117-qwen-abliterated-q2_0/files"   # llama.cpp の目録は 2026-11-28 に無くした
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert [item["path"] for item in body["files"]] == [
-        "Q8_0/model-Q8_0-00001-of-00002.gguf",
-        "Q8_0/model-Q8_0-00002-of-00002.gguf",
+        "Q2_0/model-Q2_0-00001-of-00002.gguf",
+        "Q2_0/model-Q2_0-00002-of-00002.gguf",
     ]
-    assert body["total_bytes"] == 700
+    assert body["total_bytes"] == 300
 
 
 def test_new_registration_rejects_outside_paths_even_with_wide_files_config(

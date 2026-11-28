@@ -192,9 +192,10 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
 
   // 目録・ファイル選択・既存の probe はすべて ①モデルの中へ。②以降は共通部品が出す。
   const modelSlot = <div className="space-y-3">
-    {/* Maya は下の「Maya の量子化を選ぶ」（フォルダを確かめて登録）が主。目録まで開くと同じモデルが 2 つの一覧に並ぶので畳んでおく */}
-    <SettingsGroup title="目録から取得" description="HF から取得します。止めても続きから再開できます"
-      collapsible defaultOpen={false}>
+    {/* 目録（系列 → 検閲 → 量子化。Maya 本体の probe の値）が主。取得して登録まで 1 つのボタンで（2026-11-28 利用者）。
+        手元のフォルダから登録する Maya の量子化の選択は「ファイルから登録」の中へ入れた（同じモデルが 2 つの一覧に並ばない） */}
+    <SettingsGroup title="目録から取得" description="Maya の量子化を取得して登録します。止めても続きから再開できます"
+      collapsible defaultOpen>
       <RuntimeCatalog runtime="maya" expert={expert} onRegister={(path, entry) => {
         const dir = path.replace(/\/[^/]*$/, "");
         setTyped(dir); setFolder(dir); apply({ folder: dir });
@@ -205,7 +206,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
         else { setSelected(""); apply({ setup_id: "" }); }
       }} />
     </SettingsGroup>
-    <SettingsGroup title="ファイルから登録" description="/data1tb・/data2tb の中から GGUF を選びます"
+    <SettingsGroup title="ファイルから登録" description="手元のフォルダ（/data1tb・/data2tb）の Maya の量子化を登録します"
       collapsible defaultOpen={false}>
       <RuntimeRegisterFromFile runtime="maya" mode="file" expert={expert}
         onInspect={(info) => setValues((current) => applyInspectValues(current, info.metadata, "maya"))}
@@ -213,7 +214,6 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
           const dir = info.kind === "folder" ? info.path : info.path.replace(/\/[^/]*$/, "");
           setTyped(dir); setFolder(dir); apply({ folder: dir });
         }} />
-    </SettingsGroup>
     {/* 目録の見出しは 1 つだけ（共通ルール）。Maya 本体の量子化選択は見出しを持たない block にする。 */}
     <section className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-700" aria-label="Maya の量子化を選ぶ">
       <p className="text-sm font-semibold">Maya の量子化を選ぶ</p>
@@ -261,6 +261,7 @@ export function MayaRegisterPanel({ onDone }: { onDone: () => void }) {
         </div>)}
       </div>
     </section>
+    </SettingsGroup>
 
     {pick && <SettingsGroup title={mayaModelName(pick.model, pick.tier)} description={`ゲートウェイでの名前: ${pick.alias}`}>
       {pick.family === "hy4" && <p className="text-[11px] text-zinc-500">Tencent Hy License。{pick.ngram_gb
