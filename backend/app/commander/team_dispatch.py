@@ -336,6 +336,15 @@ def _role_pick(team_id: str, task_id: int) -> tuple[str, dict | None]:
         return mode, member
 
 
+# 待ち（todo）のタスクを始められなかった理由（メモリだけ。チームリーダーの wait・read_result と画面へ返す）。
+# 2026-11-28 本番: チームリーダーが「実装が待ったまま、理由が分からない」と要望を残した。
+_wait_reasons: dict[tuple[str, int], str] = {}
+
+
+def wait_reason(team_id: str, task_id: int) -> str:
+    return _wait_reasons.get((team_id, int(task_id)), "")
+
+
 def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
     """待ち（todo）のタスクを、決まりの範囲で空いた担い手へ割り当てて走らせる。始めた数を返す。"""
     started = 0
@@ -357,6 +366,7 @@ def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
             if task.get("role") and not task.get("assignee"):
                 mode, role_member = _role_pick(team_id, task["id"])
                 if mode == "wait":
+                    _wait_reasons[(team_id, task["id"])] = "役割の担い手が上限などで止まっていて、引き継ぎ先も空いていません"
                     continue
                 if mode == "pick":
                     team = _fresh(team_id) or team  # 自動のメンバーが増えた
@@ -368,15 +378,22 @@ def dispatch_team(team_id: str, rows: dict[str, dict] | None = None) -> int:
                     pool = _eligible(team, live_rows)
             else:
                 pool = [teams.find_member(team, str(task["assignee"]))] if task.get("assignee") else _eligible(team, live_rows)
+            reason = "担い手がまだ空いていません"
             for member in pool:
                 if member is None or not _ready(member, live_rows):
                     continue
                 if teams.is_headless(member) and team_runner.is_active(team_id, task["id"]):
                     continue
-                if blocker(team, task, member, check_overlap=True):
+                why = blocker(team, task, member, check_overlap=True)
+                if why:
+                    reason = why
                     continue
                 chosen = (task, member)
                 break
+            if chosen:
+                _wait_reasons.pop((team_id, task["id"]), None)
+            else:
+                _wait_reasons[(team_id, task["id"])] = reason
             if chosen:
                 break
         if chosen is None:

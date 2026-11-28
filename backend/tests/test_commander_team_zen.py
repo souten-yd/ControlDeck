@@ -123,3 +123,29 @@ def test_zen_and_cloud_members_do_not_take_the_local_slot():
             "tasks": [{"id": 1, "status": "doing", "assignee": teams.member_key(local)}, {"id": 2, "status": "todo"}]}
     assert team_dispatch.blocker(team, team["tasks"][1], glm, check_overlap=False) == ""
     assert "ローカル" in team_dispatch.blocker(team, team["tasks"][1], {**local, "id": "m3"}, check_overlap=False)
+
+
+def test_leader_sees_live_progress_and_wait_reason(monkeypatch):
+    """チームリーダーの wait・read_result が、走っている仕事の今の進み具合と、待ちの理由を返す。
+    2026-11-28 本番: 実行中の last_line・progress が空で、待ちの理由も無く、チームリーダーが状態を読めなかった。"""
+    import time as _time
+
+    from app.commander import leader_mcp, team_dispatch, team_runner
+
+    team = {"id": "tX", "tasks": []}
+    running = {"id": 1, "status": "doing", "title": "a", "run": {"started_at": _time.time() - 5, "last_line": "", "progress": []}}
+    waiting = {"id": 2, "status": "todo", "title": "b"}
+    with team_runner._active_lock:
+        team_runner._active[("tX", 1)] = {"live": {"last_line": "shell: pytest", "progress": ["read: a.py"]}}
+    team_dispatch._wait_reasons[("tX", 2)] = "ローカルの担い手の同時の数の上限です（GPU を共有）"
+    try:
+        monkeypatch.setattr(leader_mcp, "_brief", lambda team, task: {"run_id": str(task["id"])})
+        monkeypatch.setattr(leader_mcp, "task_state", lambda task: "running" if task["status"] == "doing" else "queued")
+        a = leader_mcp._result(team, running, {})
+        assert a["last_line"] == "shell: pytest" and a["progress"] == ["read: a.py"] and a["elapsed_s"] >= 4
+        b = leader_mcp._result(team, waiting, {})
+        assert "GPU" in b["wait_reason"]
+    finally:
+        with team_runner._active_lock:
+            team_runner._active.pop(("tX", 1), None)
+        team_dispatch._wait_reasons.pop(("tX", 2), None)
