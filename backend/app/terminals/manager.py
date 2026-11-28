@@ -40,7 +40,9 @@ COMMANDER_MARK_KEYS = ("cli", "account", "label", "role", "created_by",
                        # 値は "1" だけ。manager.kill_session がこの印を見て断る（中央の保護）。
                        "locked",
                        # 開いたときのモデル・考えるレベル（鍵をかけたときの保存・開き直しに使う）
-                       "model", "effort")
+                       "model", "effort",
+                       # AI アシスタントの「▶ 実行」を作った利用者の id（POST /terminals/run。本人だけが出力・入力を扱える）
+                       "run_owner")
 # ロック中のセッションを閉じようとしたときの文言（409 の detail にもそのまま使う）。
 SESSION_LOCKED_MESSAGE = "ロック中です。先にロックを外してください"
 # create_session(env=) で受け付ける環境変数の名前と値の上限。
@@ -591,6 +593,85 @@ class TerminalManager:
         if session is None:
             raise KeyError("セッションが見つかりません")
         session.marks = {**session.marks, **marks}
+
+    def read_mark(self, sid: str, key: str) -> str:
+        """印（@cd-commander-<key>）の値を返す。セッションが無い・印が無いときは KeyError。"""
+        if key not in COMMANDER_MARK_KEYS:
+            raise ValueError("不明なセッション属性です")
+        target = _target(sid)
+        if tmux_available():
+            result = self._run_tmux(["show-options", "-v", "-t", target, f"@cd-commander-{key}"])
+            if result.returncode != 0:
+                raise KeyError("セッションが見つかりません")
+            value = result.stdout.strip()
+        else:
+            session = self._fallback.get(sid)
+            value = session.marks.get(key, "") if session is not None else ""
+        if not value:
+            raise KeyError("セッションが見つかりません")
+        return value
+
+    def _shell_pid(self, sid: str) -> int | None:
+        if tmux_available():
+            try:
+                result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", _target(sid), "#{pane_pid}"],
+                    capture_output=True, text=True, errors="replace", timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired, KeyError):
+                return None
+            text = result.stdout.strip()
+            return int(text) if result.returncode == 0 and text.isdigit() else None
+        session = self._fallback.get(sid)
+        return session.pid if session is not None and session.alive() else None
+
+    def interrupt_foreground(self, sid: str, sig: int = signal.SIGINT) -> bool:
+        """前面のプロセスグループへ SIGINT を送る。
+
+        複数行を貼って走らせたコマンドは、tmux の Ctrl-C の文字だけでは止まらないことがある
+        （実測 2026-11-28: 端末へ ^C は届くが sleep が生き残る）ので、シェルの前面グループへ直接送る。
+        前面がシェル自身のとき・読めないときは何もしない。"""
+        pid = self._shell_pid(sid)
+        if pid is None:
+            return False
+        try:
+            stat = (Path("/proc") / str(pid) / "stat").read_text()
+            fields = stat[stat.rindex(")") + 2:].split()
+            pgrp, tpgid = int(fields[2]), int(fields[5])
+            if tpgid <= 1 or tpgid == pgrp:
+                return False
+            os.killpg(tpgid, sig)
+        except (OSError, ValueError, IndexError):
+            return False
+        return True
+
+    def pane_idle(self, sid: str) -> bool:
+        """シェルが子のプロセスを持たない（コマンドが終わって入力待ち）か。読めなければ False。
+
+        #{pane_current_command} は tmux の更新が遅れて古い名前を返す（実測 2026-11-28）ので、
+        シェルの pid の子を /proc で見る。"""
+        pid = self._shell_pid(sid)
+        if pid is None:
+            return False
+        try:
+            return not (Path("/proc") / str(pid) / "task" / str(pid) / "children").read_text().strip()
+        except OSError:
+            return False
+
+    def send_interrupt(self, sid: str) -> None:
+        """Ctrl-C を送る（引数は固定の鍵名だけ。秘密は通らない）。"""
+        target = _target(sid)
+        if tmux_available():
+            result = self._run_tmux(["send-keys", "-t", target, "C-c"])
+            if result.returncode != 0:
+                if _tmux_missing(result, target):
+                    raise KeyError("セッションが見つかりません")
+                raise SessionStateError("Ctrl-C を送れませんでした")
+            return
+        session = self._fallback.get(sid)
+        if session is None or not session.alive():
+            raise KeyError("セッションが見つかりません")
+        os.write(session.master_fd, b"\x03")
 
     def inject_input(self, sid: str, text: str, *, submit: bool = True) -> int:
         """Bracket-paste an explicit automation payload into one exact session.

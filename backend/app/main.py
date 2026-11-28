@@ -310,6 +310,7 @@ from app.monitoring.fan_router import router as fan_router  # noqa
 from app.monitoring.gpu_tuning_router import router as gpu_tuning_router  # noqa: E402
 from app.power.router import router as power_router  # noqa: E402
 from app.terminals.router import router as terminals_router  # noqa: E402
+from app.terminals.run import router as terminal_run_router  # noqa: E402
 from app.terminals.automation_router import router as terminal_automation_router  # noqa: E402
 from app.commander.router import router as commander_router  # noqa: E402
 from app.workflows.router import router as workflows_router  # noqa: E402
@@ -367,6 +368,7 @@ app.include_router(power_router, prefix=API)
 app.include_router(audit_router, prefix=API)
 app.include_router(files_router, prefix=API)
 app.include_router(terminals_router, prefix=API)
+app.include_router(terminal_run_router, prefix=API)
 app.include_router(terminal_automation_router, prefix=API)
 app.include_router(commander_router, prefix=API)
 from app.commander.leader_mcp import router as commander_leader_mcp_router  # noqa: E402
