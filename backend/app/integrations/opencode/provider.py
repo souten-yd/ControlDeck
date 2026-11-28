@@ -1549,6 +1549,34 @@ def _git_worktree_mounts(project: Path) -> tuple[list[Path], list[Path]]:
     return [gitdir], readonly
 
 
+# worktree の担い手が箱の中でビルド・試験に使う依存（本体のリポジトリにあるもの）。
+WORKTREE_DEPENDENCIES = ("frontend/node_modules", ".venv")
+
+
+def _worktree_dependency_overlays(project: Path) -> list[tuple[Path, Path]]:
+    """git の worktree の担い手に、本体のリポジトリの依存（node_modules・.venv）を overlay で見せる（元は書き換えない）。
+
+    2026-11-28 本番の AI チーム: 担い手の worktree に node_modules が無く、箱の中で `npm run build` ができずに止まった。
+    worktree の `frontend/node_modules` などは本体の同じパスを指すリンク（team_inputs.share_worktree）なので、
+    本体のそのパスへ、ホストが決めた実体（realpath）をつなぐ。worktree の中のリンクは箱から書き換えられるので信じない
+    （元はリンクの先ではなく本体の決まったパスから・先は本体の決まったパス。書き換えても、つないでいない場所を指すだけ）。
+    """
+    _writable, readonly = _git_worktree_mounts(project)
+    if not readonly:
+        return []
+    repo = readonly[0].parent   # 本体の .git の親
+    out: list[tuple[Path, Path]] = []
+    for rel in WORKTREE_DEPENDENCIES:
+        target = repo / rel
+        try:
+            source = target.resolve(strict=True)
+        except OSError:
+            continue
+        if source.is_dir():
+            out.append((source, target))
+    return out
+
+
 def project_tmp_dir(project: Path) -> Path:
     """プロジェクトの箱の /tmp（箱の外に残る。プロジェクトごとに別）。
 
@@ -1625,6 +1653,7 @@ def _launch(runtime: str, command: list[str], project: Path, config: Path, *,
         box_env.update(usb_plan["env"])
         usb.attach_notes(config, usb_plan["notes"])
     argv = sandbox.container_argv(command, workdir=project, writable=writable, readonly=readonly_paths,
+                                  overlays=_worktree_dependency_overlays(project),
                                   env=box_env, interactive=interactive, env_file=env_file,
                                   binds=[(project_tmp_dir(project), Path("/tmp")), *(usb_plan["binds"] if usb_plan else [])],
                                   hide=_sibling_projects(project), devices=usb_plan["devices"] if usb_plan else [])
