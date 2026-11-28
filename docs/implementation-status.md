@@ -1,5 +1,9 @@
 # 実装状況
 
+## 2026-11-28 AI チームの配り手が GLM の担い手をローカル LLM として数えていた
+- 本番の AI チーム（コンソールのロック）で、GLM（opencode-go/glm-5.3）の実装の担い手 2 件が、ローカル LLM の調べものが終わるまで待たされた。`teams.member_is_local` が「OpenCode の既定の接続」をモデルに関係なくローカルと見ていて、「ローカルは同時に 1 つ（GPU を共有）」の枠に入っていた。
+- 直し: 既定の接続でも、モデルが OpenCode（Zen・Go）か外部（`cloud:`）ならローカルに数えない。
+- 試験: `test_commander_team_zen.py::test_zen_and_cloud_members_do_not_take_the_local_slot`。
 ## 2026-11-28 AI チームの実行が CLI の記録ファイルで落ちる（SIGXFSZ）・依頼の上限
 - 本番で AI チームに ControlDeck の開発を頼んだら、チームリーダーの Codex が 1 秒で落ちた（終了コード -25）。子のプロセスに `RLIMIT_FSIZE`（50MB）を掛けていて、Codex が自分の記録（`~/.codex/logs_2.sqlite` 66MB・`thread_history_1.sqlite` 1GB）を書いた瞬間に SIGXFSZ で止まった。Claude の会話記録・試験の DB・ビルドの成果物でも同じことが起きる。
 - **直し**: 子に上限を掛けない。実行（`team_runner._execute`）と確認のコマンド（`team_checks._run_one`）の両方で、出力のファイルだけを見張り、上限を超えたら止めて「出力が 50MB を超えたので止めました」と出す。シグナルで落ちたときは理由にシグナルの名前を添える（`failure_reason`）。

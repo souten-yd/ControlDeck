@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2878 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2879 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、348 テスト
 
 ## backend（backend/tests）
@@ -984,6 +984,7 @@
 - `test_zen_without_key_is_refused_before_launch`
 - `test_zen_models_listed_only_with_a_key`
 - `test_console_refuses_zen_model`
+- `test_zen_and_cloud_members_do_not_take_the_local_slot` — GLM（Zen・Go）や OpenRouter のモデルの担い手は、ローカル LLM の同時の数（GPU を共有）に数えない。
 
 ### backend/tests/test_commander_teams.py
 

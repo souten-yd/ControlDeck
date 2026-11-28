@@ -105,3 +105,21 @@ def test_zen_models_listed_only_with_a_key(monkeypatch):
 def test_console_refuses_zen_model():
     with pytest.raises(ValueError, match="コンソールでは使えません"):
         consoles._command_for(accounts.CLIS["opencode"], "/tmp", 1, model="opencode-go/glm-5.3")
+
+
+def test_zen_and_cloud_members_do_not_take_the_local_slot():
+    """GLM（Zen・Go）や OpenRouter のモデルの担い手は、ローカル LLM の同時の数（GPU を共有）に数えない。
+    2026-11-28 本番: GLM の実装の担い手が、ローカルの調べものが終わるまで待たされた。"""
+    from app.commander import team_dispatch, teams
+
+    base = {"kind": "headless", "cli": "opencode", "account": "default"}
+    assert teams.member_is_local({**base, "model": "auto"})
+    assert teams.member_is_local({**base, "model": "qwen-flash-next"})
+    assert not teams.member_is_local({**base, "model": "opencode-go/glm-5.3"})
+    assert not teams.member_is_local({**base, "model": "cloud:openrouter/deepseek/deepseek-v4.1-flash-1017"})
+    local = {**base, "id": "m1", "model": "auto"}
+    glm = {**base, "id": "m2", "model": "opencode-go/glm-5.3"}
+    team = {"members": [local, glm], "max_parallel": 3, "local_parallel": 1,
+            "tasks": [{"id": 1, "status": "doing", "assignee": teams.member_key(local)}, {"id": 2, "status": "todo"}]}
+    assert team_dispatch.blocker(team, team["tasks"][1], glm, check_overlap=False) == ""
+    assert "ローカル" in team_dispatch.blocker(team, team["tasks"][1], {**local, "id": "m3"}, check_overlap=False)

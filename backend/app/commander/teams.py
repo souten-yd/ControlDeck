@@ -184,8 +184,16 @@ def find_member(team: dict, key: str) -> dict | None:
 
 
 def member_is_local(member: dict) -> bool:
-    """ローカル LLM（GPU を共有する担い手）。OpenCode の既定の接続＝ゲートウェイのローカルのモデル。"""
-    return member.get("kind") == "headless" and member.get("cli") == "opencode" and member.get("account") == "default"
+    """ローカル LLM（GPU を共有する担い手）。OpenCode の既定の接続で、モデルがゲートウェイのローカルのもの。
+
+    既定の接続でも、モデルが OpenCode（Zen・Go。opencode-go/glm-5.3 など）や外部（cloud:openrouter/… ）なら GPU を使わない。
+    2026-11-28 本番: GLM の実装の担い手が「ローカルは同時に 1 つ」の枠に入り、ローカルの調べものが終わるまで待たされた。"""
+    if not (member.get("kind") == "headless" and member.get("cli") == "opencode" and member.get("account") == "default"):
+        return False
+    from app.integrations.opencode import model_choice
+
+    model = str(member.get("model") or "")
+    return not (model_choice.is_zen(model) or model.startswith("cloud:"))
 
 
 # ---------------------------------------------------------------- 担当ファイルの重なり
