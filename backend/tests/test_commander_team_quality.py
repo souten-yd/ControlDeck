@@ -48,3 +48,23 @@ def test_builtin_roles_follow_glm_free_local(monkeypatch):
     monkeypatch.setattr(zen, "configured", lambda: False)   # Zen の鍵が無ければローカルだけ
     roles = {r["name"]: r for r in team_roles.suggested_roles()}
     assert roles["implement"]["primary"]["model"] == "" and roles["implement"]["secondary"] == []
+
+
+def test_no_handoff_tasks_return_to_todo_after_the_limit_recovers(monkeypatch):
+    """上限で「引き継ぎ先なし」になった仕事は、止まった担い手の回復の時刻が過ぎたら待ちへ戻る。
+    上限に当たっていない担い手を理由には戻さない（行き来しない）。2026-11-28 本番: レビュー 2 件が回復後も止まったまま。"""
+    from app.commander import team_dispatch, teams
+
+    codex = {"kind": "headless", "cli": "codex", "account": "default", "model": "", "effort": "high"}
+    role = {"id": "rrev", "name": "review", "count": 1, "primary": codex, "secondary": [], "last_index": 0}
+    team = {"id": "tz", "roles": [role], "limits": {team_roles.endpoint_key(codex): {"until": 1000.0, "at": 0.0}},
+            "tasks": [{"id": 7, "status": "blocked", "blocked_reason": "no_handoff", "role": "rrev", "assignee": "x", "events": []}]}
+    saved = {}
+    monkeypatch.setattr(teams, "_load", lambda: [team])
+    monkeypatch.setattr(teams, "_save", lambda all_teams: saved.setdefault("n", 0) or saved.update(n=1))
+    assert team_dispatch.requeue_recovered("tz", 999.0) == 0 and team["tasks"][0]["status"] == "blocked"   # まだ回復前
+    assert team_dispatch.requeue_recovered("tz", 1001.0) == 1
+    assert team["tasks"][0]["status"] == "todo" and "blocked_reason" not in team["tasks"][0] and "assignee" not in team["tasks"][0]
+    team["tasks"][0].update(status="blocked", blocked_reason="no_handoff")
+    team["limits"] = {}                                                                                   # 上限の記録が無い
+    assert team_dispatch.requeue_recovered("tz", 2000.0) == 0

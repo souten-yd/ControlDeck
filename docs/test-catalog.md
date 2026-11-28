@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 282 ファイル、2916 テスト（目的の未記入 93 ファイル）
+- backend: 282 ファイル、2917 テスト（目的の未記入 93 ファイル）
 - E2E: 152 spec、350 テスト
 
 ## backend（backend/tests）
@@ -820,6 +820,7 @@
 - `test_review_gets_the_security_checklist_and_readonly_reads_narrowly`
 - `test_finish_notes_when_team_checks_did_not_pass`
 - `test_builtin_roles_follow_glm_free_local`
+- `test_no_handoff_tasks_return_to_todo_after_the_limit_recovers` — 上限で「引き継ぎ先なし」になった仕事は、止まった担い手の回復の時刻が過ぎたら待ちへ戻る。
 
 ### backend/tests/test_commander_team_t2b.py
 

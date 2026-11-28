@@ -449,6 +449,40 @@ def kick(team_id: str) -> int:
         _tick_lock.release()
 
 
+def requeue_recovered(team_id: str, now: float) -> int:
+    """「引き継ぎ先なし」（no_handoff）で止まった仕事を、役割の担い手の上限が回復したら待ちへ戻す。戻した数。
+
+    2026-11-28 本番: レビュー 2 件が Codex と GLM の上限で止まり、上限が回復しても止まったままだった
+    （利用者「チームが止まっているように見える」・docs/ISSUES.md）。一度上限で止まった担い手（team.limits にある）の
+    回復の時刻が過ぎたときだけ戻す（上限に当たっていない担い手を理由に戻すと、すぐまた止まって行き来するため）。"""
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        team = next((t for t in all_teams if t.get("id") == team_id), None)
+        if team is None:
+            return 0
+        limits = team.get("limits") if isinstance(team.get("limits"), dict) else {}
+        count = 0
+        for task in team.get("tasks", []):
+            if task.get("status") != "blocked" or task.get("blocked_reason") != "no_handoff":
+                continue
+            role = team_roles.find_role(team, task.get("role"))
+            if role is None:
+                continue
+            recovered = [ep for ep in team_roles.chain(role)
+                         if team_roles.endpoint_key(ep) in limits and team_roles.cooling_until(team, ep, now) is None
+                         and not (team.get("local_only") and teams.endpoint_local_problem(ep))]
+            if not recovered:
+                continue
+            task["status"] = "todo"
+            task.pop("blocked_reason", None)
+            task.pop("assignee", None)
+            teams._event(task, "上限が回復したので、待ちへ戻しました（" + team_roles.endpoint_label(recovered[0]) + "）", "Nexarch")  # noqa: SLF001
+            count += 1
+        if count:
+            teams._save(all_teams)  # noqa: SLF001
+        return count
+
+
 def tick(now: float | None = None) -> list[dict]:  # noqa: ARG001
     """1 回分の配り（同期）。中断の回収 → 上限の方針 → 待ちの割り当て。通知する出来事を返す。"""
     events: list[dict] = []
@@ -459,6 +493,9 @@ def tick(now: float | None = None) -> list[dict]:  # noqa: ARG001
         with teams._lock:  # noqa: SLF001
             all_teams = teams._load()  # noqa: SLF001
         for team in all_teams:
+            if any(t.get("status") == "blocked" and t.get("blocked_reason") == "no_handoff" for t in team.get("tasks", [])):
+                if requeue_recovered(team["id"], now or time.time()):
+                    team = _fresh(team["id"]) or team
             limited = [t["id"] for t in team.get("tasks", []) if t.get("status") == "doing" and t.get("limited_at")]
             todo = any(t.get("status") == "todo" for t in team.get("tasks", []))
             rows: dict[str, dict] | None = None
