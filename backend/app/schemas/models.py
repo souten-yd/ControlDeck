@@ -10,9 +10,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# 共通取得に対応するランタイム（HF から ControlDeck が取って登録まで行うもの）。
-# Strata（ランタイム自身が取得）・Radiance（.rad は手で置く）はここに入れない。
-AcquireRuntime = Literal["llama", "sly-radiance", "maya"]
+# 共通取得に対応する全 5 ランタイム（HF の取得 Job を停止・再開・取り消しできる道）。
+# Strata はランタイム自身が取る既存の経路も残す（互換）。HF から取った分はここから登録する。
+AcquireRuntime = Literal["llama", "radiance", "sly-radiance", "strata", "maya"]
 
 
 class AcquireRegister(BaseModel):
@@ -22,6 +22,9 @@ class AcquireRegister(BaseModel):
     - sly-radiance: alias・port・context・kv_cache・max_num_seqs・quantization・
       gpu_memory_utilization・prefill_chunk・reasoning_effort（sly_radiance.save_instance。
       prefix cache は常にオンで、切る欄は無い）
+    - radiance: alias・port・context（.rad をそのまま既存の radiance.save_instance へ）。
+    - strata: alias・port・context・family・model（取得した分割 GGUF のフォルダを既存の
+      strata_gateway.save_instance へ。ランタイム自身が取る既存の経路は残す）。
     - maya: 登録は Maya 本体の目録（probe）から行うので、ここでは alias だけ予約できない
       （使わない。省略してダウンロードのみ）。
     """
@@ -43,6 +46,9 @@ class AcquireRegister(BaseModel):
     gpu_memory_utilization: float | None = Field(default=None, ge=0.50, le=0.98)
     prefill_chunk: int | None = None
     reasoning_effort: str | None = Field(default=None, max_length=16)
+    # Strata の既存の保存 API と同じ引数名（目録の family と量子化 id を渡す）。
+    family: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9._-]+$")
+    model: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9._-]+$")
 
     @field_validator("kv_cache")
     @classmethod
@@ -85,10 +91,12 @@ class AcquireRegister(BaseModel):
 # ここに無い欄は黙って捨てずに 422 にする（UI が欄を出したのに効かない、を防ぐ）。
 _REGISTER_FIELDS: dict[str, frozenset[str]] = {
     "llama": frozenset({"alias", "role", "endpoint_id", "port", "ctx_size", "n_parallel"}),
+    "radiance": frozenset({"alias", "port", "context"}),
     "sly-radiance": frozenset({
         "alias", "port", "context", "kv_cache", "max_num_seqs", "quantization",
         "gpu_memory_utilization", "prefill_chunk", "reasoning_effort",
     }),
+    "strata": frozenset({"alias", "port", "context", "family", "model"}),
     "maya": frozenset(),  # 登録は Maya 本体の目録から（登録の欄は受け付けない）
 }
 

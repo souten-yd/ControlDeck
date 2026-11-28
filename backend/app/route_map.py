@@ -351,12 +351,13 @@ ROUTES: tuple[Route, ...] = (
           _o("workflows/github_research.py"), "external"),
     Route("ext-hf-search", "models_mgmt", "hf", "egress", "Hugging Face のモデル検索", ("confidential",), _o("models_mgmt/hf_search.py"), "external"),
     Route("ext-hf-download", "backend", "hf", "egress",
-          "モデルの取得（目録・検索からの HuggingFace の metadata 問い合わせと resolve の本体。llama.cpp・Sly-Radiance・Maya の共通取得も同じ道）",
+          "モデルの取得（目録・検索からの HuggingFace の metadata 問い合わせと resolve の本体。llama.cpp・Radiance・Sly-Radiance・Strata・Maya の全 5 ランタイムが共通の取得 Job を使い、停止・再開・取り消しも同じ道）",
           ("auth", "audit", "path_check", "ssrf_guard", "confidential"),
           _o("models_mgmt/hf.py"), "external",
           "出口は guarded transport（web_collector/egress）: 名前解決→全アドレス検査→検査済み IP へ接続。"
           "redirect は自動で追わず各段を https か確認してから追う。metadata の問い合わせ・取得・"
-          "再開の前に ensure_external_allowed（秘密の会話・オフライン調査では止まる）"),
+          "再開の前に ensure_external_allowed（秘密の会話・オフライン調査では止まる）。"
+          "量子化のサブフォルダは tree API で全片を列挙し、選んだ量子化だけを取得する"),
     Route("ext-news-sources", "news", "web", "egress", "ニュースの取得（RSS・ページ・Google ニュース・画像）", ("ssrf_guard",),
           _o("news/sources.py", "news/probe.py", "news/gnews.py", "news/images.py", "news/sourcemgr.py"), "external",
           "公開情報だけ。出口は guarded_client"),

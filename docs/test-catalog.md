@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2901 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2915 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、354 テスト
 
 ## backend（backend/tests）
@@ -1745,7 +1745,7 @@
 
 ### backend/tests/test_hf_download.py
 
-目的: HuggingFace からの GGUF 取得。
+目的: HuggingFace からの GGUF 取得。 目的（Nexarch #19 で追加）: 量子化ごとにサブフォルダが分かれた repo でも、選んだ量子化の 分割全片だけを列挙・取得し、repo 全体の他量子化を落とさないこと。取得後の登録は既存の 5 ランタイムの保存 API へ渡すこと。根拠: docs/PLAN-model-catalog.md「目録候補」の Unsloth / ISTA-DASLab / Maya の GGUF は Q2_0/ や UD-Q4_K_XL/ などのサブフォルダに分割片が 置かれており、旧 list_model_files（最上位だけ）では 1 片も見つからなかった。 充分な取得・停止・再開の回帰は test_jobs_persistence.py が担う（ここでは偽 HF のみ）。
 
 - `test_repo_files_lists_only_gguf_variants`
 - `test_sharded_gguf_is_grouped_with_total_size` — 分割GGUFは1つだけ落としても使えないので、まとめて扱う。
@@ -1761,6 +1761,15 @@
 - `test_part_is_kept_on_stop_and_removed_on_cancel` — 目的: 途中のファイル（.part）を、停止・サーバー停止では残し、取り消しでは消すこと。
 - `test_redirect_keeps_token_only_on_the_first_host` — 目的: 取得の redirect で、gated repo のトークン（Authorization）を CDN など別ホストへ
 - `test_download_rejects_bad_repo_revision_and_escaping_paths` — 目的: 取得の repo・revision・ファイル名の不正値（パスの逃げ出し・URL への細工）を、
+- `test_quantization_files_lists_all_shards_in_subdirectories` — 目的: サブフォルダの分割 GGUF を全片列挙し、他量子化を混ぜないこと。
+- `test_quantization_files_refuses_an_incomplete_shard_set` — 目的: 分割片が 1 片だけの量子化を「取得できる」と出さないこと。
+- `test_download_quantization_takes_only_the_selected_subdirectory` — 目的: files=[] + 量子化指定で、その量子化の分割全片だけを取得すること。
+- `test_download_refuses_files_from_another_quantization` — 目的: 明示指定された files に他量子化が混ざっていたら取得の前に断ること。
+- `test_register_dispatch_covers_all_five_runtimes` — 目的: 取得後の登録が既存の 5 ランタイムの保存 API へ正しく渡ること。
+- `test_register_chooses_a_free_port_for_radiance_and_strata` — 目的: ポート未指定の取得後登録が、既存 API の必須 port を空きポートで埋めること。
+- `test_shard_set_rejects_duplicate_index_and_mixed_folders` — 目的: 分割片は「同じフォルダ・同じ stem・同じ total の 1..total」が揃うこと。
+- `test_quantization_does_not_pick_a_sibling_variant` — 目的: Maya-M を選んだときに Maya-M-Derisked まで拾わないこと。
+- `test_invalid_existing_target_is_not_treated_as_downloaded` — 目的: symlink・大きさ違いの既存ファイルを「取得済み」として飛ばさないこと。
 
 ### backend/tests/test_hf_search.py
 
@@ -3565,7 +3574,7 @@
 
 ### backend/tests/test_runtime_catalog.py
 
-目的: ランタイム共通の目録・設定の形・ファイルからの登録の読み取り（run3 共通バックエンド API）。 目的: Models 画面の共通部品（RuntimeCatalog・RuntimeSettings・RuntimeRegisterFromFile）が 読む 3 つの API を守る。 - 目録は全ランタイムを並べ、載せる repo は確認済みのものだけにする。大きさの分からない行は size_gib を null にし、推測値（URL・大きさ・sha）を書かない（取得の開始時に HF の API から読む）。 - 設定の形は 6 つの並びを全ランタイムで揃え、欄の id・選択肢・上限を実際の保存 API （LlamaInstanceBody・RadianceModelBody・SlyRadianceModelBody・StrataModelBody・ MayaInstanceSettingsBody / MayaRegisterBody）と一致させる。 ランタイムに無い欄（Sly の prefix cache など）は出さず、always_on に理由を書く。 - ファイルからの登録は新規選択を /data1tb と /data2tb の中だけにし、realpath で symlink の 外抜けを断る。GGUF ヘッダ・config.json は読む量と件数を制限して読む。 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。
+目的: ランタイム共通の目録・設定の形・ファイルからの登録の読み取り（run3 共通バックエンド API）。 目的: Models 画面の共通部品（RuntimeCatalog・RuntimeSettings・RuntimeRegisterFromFile）が 読む 3 つの API を守る。 - 目録は全ランタイムを並べ、載せる repo は確認済みのものだけにする。大きさの分からない行は size_gib を null にし、推測値（URL・大きさ・sha）を書かない（取得の開始時に HF の API から読む）。 - 設定の形は 6 つの並びを全ランタイムで揃え、欄の id・選択肢・上限を実際の保存 API （LlamaInstanceBody・RadianceModelBody・SlyRadianceModelBody・StrataModelBody・ MayaInstanceSettingsBody / MayaRegisterBody）と一致させる。 ランタイムに無い欄（Sly の prefix cache など）は出さず、always_on に理由を書く。 - ファイルからの登録は新規選択を /data1tb と /data2tb の中だけにし、realpath で symlink の 外抜けを断る。GGUF ヘッダ・config.json は読む量と件数を制限して読む。 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。 追加（Nexarch #19）: 調査済みの repo id とファイル名を実 API へ反映し、llama.cpp と Radiance の空目録を解消する。Maya の owner の誤記（peasmith）を直し、Strata の新行は GSQ-RCO・Unsloth UD-*・Q8_0 だけに絞る。全 5 ランタイムから共通の HF 取得 Job を 停止・再開・取り消しできる道を接続する。根拠: docs/PLAN-model-catalog.md「目録候補」と .nexarch/brief-runtime-unify.md「大きさ・sha は取得の開始時に HF の API から読む」。
 
 - `test_catalog_has_every_runtime_and_no_guessed_sizes` — 目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
 - `test_catalog_entries_are_looked_up_by_runtime` — 目的: 取得の API が目録の行をランタイム＋id で引けること（別ランタイムの id を混ぜない）。
@@ -3585,6 +3594,11 @@
 - `test_acquire_rejects_rows_without_a_hf_repo_and_maya_register` — 目的: HF から取れない行（Strata など）と Maya の取得後登録を共通 API で断ること。
 - `test_acquire_job_reads_sizes_at_start_and_keeps_the_runtime` — 目的: 目録の行から作る取得 Job が、大きさを推測せず開始時に読み、登録先のランタイムを残すこと。
 - `test_rad_file_is_offered_to_radiance_only` — 目的: Radiance の .rad を Sly-Radiance（safetensors フォルダ）へ、Sly のフォルダを
+- `test_researched_rows_keep_only_confirmed_repo_ids_and_file_names` — 目的: 調査済みの repo id とファイル名がそのまま API に出ること。
+- `test_strata_new_rows_use_only_supported_quantizations` — 目的: Strata の新規行が GSQ-RCO・Unsloth UD-*・Q8_0 だけであること。
+- `test_all_five_runtimes_can_start_the_common_hf_job` — 目的: 全 5 ランタイムが共通の取得 Job を始め、停止・再開・取消の道に載ること。
+- `test_catalog_files_endpoint_lists_only_the_selected_quantization` — 目的: GGUF の量子化行のファイル一覧がサブフォルダの分割全片だけを返すこと。
+- `test_new_registration_rejects_outside_paths_even_with_wide_files_config` — 目的: 新規登録 API が Files の許可ルートを広く設定しても 2 ルート外を断ること。
 
 ### backend/tests/test_runtime_policy.py
 
@@ -4819,7 +4833,7 @@
 
 目的: ホームのテロップを「実機のモバイルに近い条件」（390x844・DPR 3・タッチ・CPU を遅く）で 15 秒測る。API・WebSocket はモック。 目的: 3 秒ごとのメトリクス更新と重なっても、①テロップの DOM が 1 件も作り直されない（mutation 0・animate の付け直し 0） ②長いコマ（> 33ms）の数と最大が小さい ③transform が流れの途中で巻き戻らない。結果は test-results/home-marquee-mobile-*.json。 根拠: 2026-11-25 利用者「まだ 3 秒ごとっていうのが直ってない気がする」（モバイルでだけカクつく）。 */
 
-- ホームのテロップはモバイル条件（CPU ${rate} 倍遅く${multi ? 
+- ホームのテロップはモバイル条件（CPU ${rate} 倍遅く${multi ?
 
 ### frontend/e2e/home-marquee-smooth.spec.ts
 
@@ -4917,14 +4931,14 @@
 
 ### frontend/e2e/models-runtime-common.spec.ts
 
-目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28、同日補強）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番の共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 目録の見出しの動詞（取る／探す／取得）は今の実装で不統一なので、並びだけを検査し 不統一な文言へ期待を固定しない（docs/PLAN-model-catalog.md「共通の並び」）。 - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。 - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。 ※ この環境では frontend/node_modules が無く実行不能（ホストの共有 node_modules は worktree リンク整備待ち。箱内で見えないので自分では導入しない）。spec と実行コマンド のみを残し、結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
+目的: Models の共通ランタイム部品（目録・ファイル登録・設定）の受け入れ E2E。 目的（Nexarch #14 / 2026-11-28、同日補強）: - llama.cpp / Strata / Radiance（Sly 派生を含む）/ Maya が、登録シートで 同じ順番・同じ見出しの共通 3 部品（目録 → ファイル登録 → 設定）を出すこと。 目録の見出しは「目録から取得」へ統一する要求なのでその文言に期待を固定する （docs/PLAN-model-catalog.md「共通の並び」）。実装にはいまだに「目録から取る／探す」と Maya の二重目録（「Maya の目録」）が残る。要求を緩めず、不一致は #21 へ報告する。 - 設定の節が ①モデル ②コンテキストの長さ ③同時に処理する数 ④速さの調整 ⑤起動 の順で、 ⑥エキスパートはエキスパート入のときだけ出ること。5 ランタイムすべてで検査する。 - 取得ジョブの「停止」→「再開」と「取り消し」が API のモックで動くこと （.part を残す/再開・取り消しで消す意味は docs/PLAN-model-catalog.md「決めた意味」を照合）。 確認パネルの「取得する」は目録の行と同名なので、確認パネル固有の「やめる」を待ってから 押す（既知の競合: 行のボタンを誤クリックしてジョブが始まらない）。 - ファイル登録の FilePicker のルートが /data1tb と /data2tb だけであること （RuntimeRegisterFromFile.MODEL_FILE_PICKER_SOURCE と defense in depth）。 - 320/1280px × ライト/ダーク × エキスパート切/入の画面写真を 5 ランタイム分残すこと。 根拠: #11（Radiance・Maya）/#12（Strata・llama.cpp）で共通部品へ寄せた後の確認。 API は page.route で差し替え、本物の設定・外部への取得は一切行わない。目録モックの Radiance も acquire="hf"（supported かつ repo ありという実 API 契約どおり。#19 で実装も hf 化）。 ※ この環境では frontend/node_modules のリンク先（ホストの共有 node_modules）が箱から見えず 実行不能（箱内で見えないので自分では導入しない）。spec と実行コマンドのみを残し、 結果は「未検証」とする。実行コマンド: env -u CONTROL_DECK_CONFIG \ PLAYWRIGHT_BROWSERS_PATH=/data1tb/ControlDeck/data/cache/ms-playwright \ ./deck.sh e2e models-runtime-common.spec.ts
 
 - モデル登録: 4 ランタイムが同じ順番で目録 → ファイル登録 → 設定を出す
-- 共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ? 
+- 共通設定: 5 ランタイムで見出しの並びが同じで、エキスパートは${expert ?
 - 取得ジョブ: 停止 → 再開のボタンがモックの API で動く（320px）
 - 取得ジョブ: 取り消しの API モックと实际操作（320px）
 - ファイル登録の FilePicker: ルートは /data1tb と /data2tb だけ
-- 画面写真: ${width}px ${scheme} エキスパート${expert ? 
+- 画面写真: ${width}px ${scheme} エキスパート${expert ?
 
 ### frontend/e2e/models-swap-queue.spec.ts
 
@@ -4940,7 +4954,7 @@
 - keeps Workflows below the logo with an iPhone standalone safe area
 - migrates the saved Play destination to Workflows
 - pins up to six favorites at the top of the drawer
-- sidebar has no 
+- sidebar has no
 
 ### frontend/e2e/navigation-visibility.spec.ts
 
@@ -5014,7 +5028,7 @@
 - ニュース: ホームのカード・見出しは新しいタブで open を記録・まとめが今日の分でなければ出さない・メニュー・設定の入口
 - ニュース: 記事が無いとき「今すぐ取得する」が出る
 - ニュース: 今朝のまとめ・今週のまとめのカードと本文・出典（${width}px）
-- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ? 
+- ニュース設定: 更新のタイミング・LLM（無料の印・許可が無い案内）・RAG（${width}px・許可${egress ?
 - ニュース: 検索を「意味で探す（RAG）」に切り替えられる（消えた古い記事は操作なしで出る）
 - ニュース: まとめは話題ごとの傾向・主な技術・注目点と「3 行」、英語の概要は「訳」の印、設定に重点の欄（${width}px）
 

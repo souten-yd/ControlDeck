@@ -791,7 +791,30 @@ def llama_vision_detection(
     }
 
 
-def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
+def _enforce_new_selection(values: dict, *, existing: dict | None = None,
+                           keys: tuple[str, ...] = ("model_path",)) -> None:
+    """新規登録・パス変更のモデルパスを 2 ルート制限（model_paths）で検証する。
+
+    Files の allowed_roots が広く設定されていても、新しく選ぶパスは常に
+    model_paths.SELECTION_ROOTS（/data1tb と /data2tb）の中でなければならない。
+    既存の登録をそのまま再保存するとき（PUT でパスが変わらないとき）は検証しない
+    （旧登録の表示・再保存・起動を壊さない。2026-11-27 利用者の決まり）。
+    """
+    from app.models_mgmt import model_paths
+
+    for key in keys:
+        raw = values.get(key)
+        if not raw:
+            continue
+        if existing is not None and str(existing.get(key) or "") == str(raw):
+            continue
+        try:
+            values[key] = str(model_paths.resolve_selection(str(raw)))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _llama_instance_patch(body: LlamaInstanceBody, *, existing: dict | None = None) -> dict:
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     from app.files import service as files
 
@@ -808,6 +831,10 @@ def _llama_instance_patch(body: LlamaInstanceBody) -> dict:
         if not resolved.is_file() or resolved.suffix.lower() != ".gguf":
             raise HTTPException(status_code=422, detail="許可ルート内のGGUFファイルを指定してください")
         patch[key] = str(resolved)
+    _enforce_new_selection(
+        patch, existing=existing,
+        keys=("model_path", "mmproj_path", "spec_draft_model_path"),
+    )
     return patch
 
 
@@ -881,8 +908,8 @@ def llama_update_instance(
     from app.models_mgmt import llama
 
     try:
-        llama.get_instance(alias)
-        result = llama.save_instance(alias, _llama_instance_patch(body))
+        existing = llama.get_instance(alias)
+        result = llama.save_instance(alias, _llama_instance_patch(body, existing=existing))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1563,6 +1590,7 @@ def strata_create_instance(
 ):
     from app.models_mgmt import strata_gateway
 
+    _enforce_new_selection({"model_path": body.model_path})
     try:
         result = strata_gateway.save_instance(
             body.alias, family=body.family, model=body.model,
@@ -1588,7 +1616,9 @@ def strata_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     try:
+        existing = strata_gateway.get_instance(alias)
         payload = body.model_dump()
+        _enforce_new_selection(payload, existing=existing)
         for key in {"kv_resident", "ram_keep_gib"} - body.model_fields_set:
             payload.pop(key)
         result = strata_gateway.save_instance(**payload, replace=True)
@@ -1694,6 +1724,7 @@ def radiance_create_instance(
 ):
     from app.models_mgmt import radiance
     values = body.model_dump()
+    _enforce_new_selection(values)
     try:
         result = radiance.save_instance(values.pop("alias"), **values)
     except radiance.RadianceError as exc:
@@ -1712,6 +1743,10 @@ def radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=radiance.get_instance(alias))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = radiance.save_instance(alias, **values, replace=True)
@@ -1840,6 +1875,7 @@ def sly_radiance_create_instance(
 ):
     from app.models_mgmt import sly_radiance
     values = body.model_dump()
+    _enforce_new_selection(values, keys=("model_path", "drafter_path"))
     try:
         result = sly_radiance.save_instance(values.pop("alias"), **values)
     except sly_radiance.SlyRadianceError as exc:
@@ -1858,6 +1894,11 @@ def sly_radiance_update_instance(
     if alias != body.alias:
         raise HTTPException(status_code=422, detail="モデル別名は変更できません")
     values = body.model_dump()
+    try:
+        _enforce_new_selection(values, existing=sly_radiance.get_instance(alias),
+                               keys=("model_path", "drafter_path"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     values.pop("alias")
     try:
         result = sly_radiance.save_instance(alias, **values, replace=True)
@@ -1949,7 +1990,11 @@ async def models_catalog_entry_files(
     runtime: str, entry_id: str,
     user: User = Depends(require_permission("workflows.run")),
 ):
-    """目録の 1 行の repo のファイル一覧（取得の直前に見せる。外部許可と出口の検査を通る）。"""
+    """目録の 1 行の repo のファイル一覧（取得の直前に見せる。外部許可と出口の検査を通る）。
+
+    GGUF の量子化行はサブフォルダの分割全片を列挙し、選んだ量子化だけを返す（repo 全体の
+    他量子化を混ぜない）。`.rad` は最上位の .rad だけ。フォルダ形式（Sly）は従来どおり。
+    """
     from app.models_mgmt import hf, libraries, runtime_catalog
 
     entry = runtime_catalog.get_entry(runtime, entry_id)
@@ -1958,7 +2003,13 @@ async def models_catalog_entry_files(
     if not entry.supported or entry.acquire != "hf" or not entry.repo:
         raise HTTPException(status_code=422, detail="この行は HF からの取得に対応していません")
     try:
-        files = await hf.list_model_files(entry.repo)
+        if entry.quantization and entry.format == "gguf":
+            files = await hf.list_quantization_files(entry.repo, quantization=entry.quantization)
+        elif entry.format == "rad":
+            files = [item for item in await hf.list_model_files(entry.repo)
+                     if item["path"].lower().endswith(".rad")]
+        else:
+            files = await hf.list_model_files(entry.repo)
     except hf.HfError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"repo": entry.repo, "files": files, "total_bytes": sum(f["size"] for f in files),
@@ -1995,15 +2046,34 @@ async def models_acquire(
             port = register.get("port")
             if port is not None and not (sly_radiance._MIN_PORT <= port <= sly_radiance._MAX_PORT):  # noqa: SLF001
                 raise HTTPException(status_code=422, detail="Sly-Radiance のポートは 8081〜65535 です")
+        elif body.runtime in ("radiance", "strata"):
+            from app.models_mgmt import radiance, strata_gateway
+
+            checker = radiance if body.runtime == "radiance" else strata_gateway
+            if checker._ALIAS.fullmatch(register["alias"]) is None:  # noqa: SLF001 - 検証の正規表現を共用
+                raise HTTPException(status_code=422, detail="別名は小文字英数字・ハイフン（先頭英字）にしてください")
+            port = register.get("port")
+            if port is not None and not (checker._MIN_PORT <= port <= checker._MAX_PORT):  # noqa: SLF001
+                raise HTTPException(status_code=422, detail="ポートは 8081〜65535 です")
+            if body.runtime == "strata":
+                # 既存の Strata 登録 API と同じ family/model を目録の行から渡す。
+                register["family"] = entry.family or ""
+                register["model"] = entry.quantization.casefold()
         else:
             from app.models_mgmt import llama
 
             if llama.ALIAS_RE.fullmatch(register["alias"]) is None:
                 raise HTTPException(status_code=422, detail="別名は英数字・._:- だけにしてください")
     # 大きさはここで書かない（expected_bytes=0 + fetch_sizes=True: Job の開始時に HF から読む）。
+    # 量子化行は files=[] のまま、開始時に HF の tree からその量子化の分割全片を列挙する。
+    # .rad は最上位に置かれるので、調査済みのファイル名をそのまま渡す（README 等を落とさない）。
+    files = list(body.files)
+    if not files and entry.format == "rad":
+        files = list(entry.files)
     resume = {
-        "repo": entry.repo, "files": list(body.files), "revision": "main",
+        "repo": entry.repo, "files": files, "revision": "main",
         "library_id": body.library_id, "expected_bytes": 0, "fetch_sizes": True,
+        "quantization": entry.quantization if entry.format == "gguf" else "",
         "register": register,
     }
     job = jobs.create(

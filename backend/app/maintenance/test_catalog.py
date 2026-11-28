@@ -50,7 +50,7 @@ def _e2e() -> list[dict]:
                 continue
             else:
                 break
-        titles = [m.group("title") for m in _TITLE.finditer(text)]
+        titles = [m.group("title").strip() for m in _TITLE.finditer(text)]
         rows.append({"path": path.relative_to(REPO).as_posix(), "doc": " ".join(h for h in head if h), "tests": titles})
     return rows
 

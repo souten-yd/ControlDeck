@@ -15,6 +15,12 @@
 根拠: 2026-11-28 利用者の追加の要望「Radiance・Strata・Maya にも同じ取得機能を入れ、目録を
 作り直して。各詳細設定を極力統一して」と docs/PLAN-model-catalog.md「run3 共通バックエンド API」。
 以前は目録と設定の形が画面ごとに別々で、ランタイムごとの検証と食い違っていた。
+
+追加（Nexarch #19）: 調査済みの repo id とファイル名を実 API へ反映し、llama.cpp と
+Radiance の空目録を解消する。Maya の owner の誤記（peasmith）を直し、Strata の新行は
+GSQ-RCO・Unsloth UD-*・Q8_0 だけに絞る。全 5 ランタイムから共通の HF 取得 Job を
+停止・再開・取り消しできる道を接続する。根拠: docs/PLAN-model-catalog.md「目録候補」と
+.nexarch/brief-runtime-unify.md「大きさ・sha は取得の開始時に HF の API から読む」。
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ from app.models_mgmt import router as models_router
 
 _ROW_KEYS = {
     "id", "name", "kind", "format", "repo", "quantization", "size_gib", "memory_gib",
-    "uncensored", "supported", "note", "acquire", "source", "fit",
+    "uncensored", "supported", "note", "acquire", "source", "fit", "family", "files",
 }
 
 
@@ -40,19 +46,28 @@ _ROW_KEYS = {
 def test_catalog_has_every_runtime_and_no_guessed_sizes():
     """目的: 目録が 5 ランタイムを並べ、repo の確認できた行だけを載せ、大きさを推測しないこと。
 
-    根拠: 依頼「目録を作り直して」に対し、Sly の ENTRIES 5 件・Maya Derisked・Strata GSQ-RCO
-    以外は実在 filename を調べてから載せる約束（.nexarch/brief-runtime-unify.md）。推測した
-    URL・大きさを置くと、取得の開始時に 404 や容量計算の誤りになる。
+    根拠: 依頼「目録を作り直して」に対し、repo id とファイル名を実在調査してから載せる約束
+    （.nexarch/brief-runtime-unify.md）。推測した URL・大きさを置くと、取得の開始時に 404 や
+    容量計算の誤りになる。llama.cpp と Radiance は空目録だったが調査済みの行を反映した。
     """
     payload = runtime_catalog.api_payload()
     blocks = {block["id"]: block for block in payload["runtimes"]}
 
     assert list(blocks) == ["llama", "radiance", "sly-radiance", "strata", "maya"]
-    # llama.cpp は HF 検索の既存フロー、Radiance は .rad を選ぶ登録。確定 repo が無いので推奨行なし。
-    assert blocks["llama"]["entries"] == []
-    assert blocks["radiance"]["entries"] == []
+    # 調査済みの repo を反映（空目録を解消）。既存の Sly 目録・Strata 系列行は壊さない。
+    assert len(blocks["llama"]["entries"]) >= 10
+    assert len(blocks["radiance"]["entries"]) == 5
     assert len(blocks["sly-radiance"]["entries"]) == 6
-    assert len(blocks["strata"]["entries"]) == 44
+    # 旧 strata_catalog の全 44 行を出さない。共通目録は GSQ-RCO・Unsloth UD-*・Q8_0 だけ。
+    # 旧登録 id / 既存の Strata API はそのまま（互換）。
+    assert len(blocks["strata"]["entries"]) == 37
+    catalog_strata = [row for row in blocks["strata"]["entries"] if row["source"] == "catalog"]
+    assert len(catalog_strata) == 23
+    for row in catalog_strata:
+        family, quant = row["id"].split("/", 1)
+        assert runtime_catalog._strata_row_allowed(family, quant), row["id"]  # noqa: SLF001
+    assert not any(row["id"].startswith(("gyro/", "inkling-2-mini/", "hy4-flash/", "nvfp4/"))
+                   for row in catalog_strata)
 
     for runtime, block in blocks.items():
         ids = [row["id"] for row in block["entries"]]
@@ -63,16 +78,26 @@ def test_catalog_has_every_runtime_and_no_guessed_sizes():
             if row["acquire"] == "hf":
                 assert row["repo"], row["id"]
             if row["source"] == "hf":
-                # repo id しか確認できていない行は、大きさを書かない（Job の開始時に読む）。
+                # repo id とファイル名だけ確認した行は、大きさを書かない（Job の開始時に読む）。
                 assert row["size_gib"] is None, row["id"]
-            if runtime == "strata":
+                assert row["files"], row["id"]
+            if runtime == "strata" and row["source"] == "catalog":
                 assert row["repo"] in ("", runtime_catalog.STRATA_GSQ_REPO)
 
     maya = blocks["maya"]["entries"][0]
+    assert maya["id"] == "glm-m-derisked"          # 既存 id は変えない（互換）
     assert maya["repo"] == runtime_catalog.MAYA_DERISKED_REPO
     assert maya["uncensored"] is True and maya["size_gib"] is None
     assert runtime_catalog.get_entry("maya", "glm-m-derisked") is not None
     assert runtime_catalog.get_entry("llama", "anything") is None
+
+    # 調査済みの repo id だけ。owner の誤記や推測した URL / sha を載せない。
+    repos = {row["repo"] for block in blocks.values() for row in block["entries"]}
+    assert all("peasmith" not in repo for repo in repos)
+    assert "peasantsmith/GLM-5.3-Flash-Maya-GGUF" in repos
+    assert "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF" in repos
+    assert not any("huggingface.co" in repo for repo in repos)  # URL は repo id から作る
+
 
 
 def test_catalog_entries_are_looked_up_by_runtime():
@@ -514,3 +539,182 @@ def test_rad_file_is_offered_to_radiance_only(tmp_path, monkeypatch):
     assert "config.json" in views["sly-radiance"]["reason"]
     # 拡張子が .rad でも中身は読まない（形式の判定は拡張子。safetensors と混ぜない）。
     assert info["metadata"] == {}
+
+
+# ---- 調査済み目録の反映と全ランタイムの共通取得（Nexarch #19） ------------------------------
+
+
+def test_researched_rows_keep_only_confirmed_repo_ids_and_file_names():
+    """目的: 調査済みの repo id とファイル名がそのまま API に出ること。
+
+    根拠: docs/PLAN-model-catalog.md「目録候補」に書いた確認済みの行だけを採用する。
+    大きさ・sha は取得の開始時に HF の API から読むため、ここでは null のままにする。
+    """
+    rows = {entry.id: entry for entry in runtime_catalog.entries_for("llama")}
+    assert rows["unsloth-qwen38-27b-q8_0"].repo == "unsloth/Qwen3.8-27B-GGUF"
+    assert rows["unsloth-qwen38-27b-q8_0"].files == ("Qwen3.8-27B-Q8_0.gguf",)
+    assert rows["unsloth-llama4-scout-iq4_nl"].files == (
+        "IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00001-of-00002.gguf",
+        "IQ4_NL/Llama-4-Scout-17B-16E-Instruct-IQ4_NL-00002-of-00002.gguf",
+    )
+    assert rows["huihui-glm53-flash-abliterated-ud-iq1_m"].uncensored is True
+    assert all(entry.size_gib is None for entry in rows.values())
+
+    rad = {entry.id: entry for entry in runtime_catalog.entries_for("radiance")}
+    assert len(rad) == 5
+    assert rad["radiance-minicpm5-2b-bf16"].repo == "StillDeadcode/minicpm5-2b-bf16"
+    assert rad["radiance-minicpm5-2b-bf16"].files == ("minicpm5-2b-bf16.rad",)
+    assert all(entry.format == "rad" and entry.size_gib is None for entry in rad.values())
+
+
+def test_strata_new_rows_use_only_supported_quantizations():
+    """目的: Strata の新規行が GSQ-RCO・Unsloth UD-*・Q8_0 だけであること。
+
+    根拠: 依頼「Strata は GSQ-RCO・Unsloth UD-*・Q8_0 だけ」。この PC で動かせない
+    Gyro・SQ-*・NVFP4 などを「取得できる」と出すと、落とした後に起動できない。
+    """
+    new_rows = [entry for entry in runtime_catalog.entries_for("strata")
+                if entry.source == "hf"]
+    assert len(new_rows) >= 10
+    for entry in new_rows:
+        quant = entry.quantization.casefold()
+        assert (quant.startswith("ud-") or quant == "q8_0"
+                or entry.repo in {
+                    "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+                    "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
+                    "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+                    "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+                    "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+                }), entry.id
+        assert entry.family and entry.files, entry.id
+        # 分割片は全片が載っている（1 片だけでは起動できない）。
+        for path in entry.files:
+            assert path.endswith(".gguf"), path
+
+
+def test_all_five_runtimes_can_start_the_common_hf_job(admin_client, monkeypatch):
+    """目的: 全 5 ランタイムが共通の取得 Job を始め、停止・再開・取消の道に載ること。
+
+    根拠: 依頼「停止・再開もつけて」「全 5 ランタイムで HF 共通 Job から…できる道を接続」。
+    これまで AcquireRuntime が 3 つだけだったので Radiance・Strata は共通 Job を始められなかった。
+    """
+    from tests.conftest import CSRF_HEADERS
+
+    captured: list[dict] = []
+
+    class _FakeJob:
+        def __init__(self, index: int):
+            self.id = f"job-{index}"
+
+    def fake_create(*args, **kwargs):
+        captured.append(kwargs)
+        return _FakeJob(len(captured) - 1)
+
+    monkeypatch.setattr(models_router.jobs, "create", fake_create)
+    cases = [
+        ("llama", "unsloth-qwen38-27b-q8_0", {"alias": "llama-x"}),
+        ("radiance", "radiance-minicpm5-2b-bf16", {"alias": "rad-x"}),
+        ("sly-radiance", "swift-heretic", {"alias": "sly-x"}),
+        ("strata", "gsq-qwen38-q2_0", {"alias": "strata-x"}),
+        ("maya", "glm-m-derisked", None),
+    ]
+    for index, (runtime, entry_id, register) in enumerate(cases):
+        body = {"runtime": runtime, "entry_id": entry_id}
+        if register is not None:
+            body["register"] = register
+        response = admin_client.post("/api/v1/models/acquire-jobs", json=body,
+                                     headers=CSRF_HEADERS)
+        assert response.status_code == 201, (runtime, response.text)
+        assert response.json()["job_id"] == f"job-{index}"
+        resume = captured[-1]["resume"]
+        assert resume["fetch_sizes"] is True and resume["expected_bytes"] == 0
+        if runtime in ("strata",):
+            assert resume["quantization"] == "Q2_0"
+            assert resume["register"]["family"] == "qwen"
+            assert resume["register"]["model"] == "q2_0"
+
+
+def test_catalog_files_endpoint_lists_only_the_selected_quantization(admin_client, monkeypatch):
+    """目的: GGUF の量子化行のファイル一覧がサブフォルダの分割全片だけを返すこと。
+
+    根拠: 依頼「サブディレクトリの GGUF 分割全片を正しく列挙し、選択した量子化だけ取得、
+    repo 全体の他量子化を落とさない」。旧 list_model_files は最上位だけを見ていたので、
+    量子化フォルダのrepoでは取得できるファイルが 0 件になっていた。
+    """
+    from app.models_mgmt import hf as hf_module
+
+    async def fake_tree(repo, revision="main"):
+        return [
+            {"type": "file", "path": "README.md", "size": 10},
+            {"type": "file", "path": "Q2_0/model-Q2_0-00001-of-00002.gguf", "size": 100},
+            {"type": "file", "path": "Q2_0/model-Q2_0-00002-of-00002.gguf", "size": 200},
+            {"type": "file", "path": "Q8_0/model-Q8_0-00001-of-00002.gguf", "size": 300},
+            {"type": "file", "path": "Q8_0/model-Q8_0-00002-of-00002.gguf", "size": 400},
+        ]
+
+    monkeypatch.setattr(hf_module, "_repo_tree", fake_tree)
+    response = admin_client.get(
+        "/api/v1/models/catalog/strata/entries/gsq-qwen38-q2_0/files"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["path"] for item in body["files"]] == [
+        "Q2_0/model-Q2_0-00001-of-00002.gguf",
+        "Q2_0/model-Q2_0-00002-of-00002.gguf",
+    ]
+    assert body["total_bytes"] == 300
+
+
+def test_new_registration_rejects_outside_paths_even_with_wide_files_config(
+        admin_client, monkeypatch, tmp_path):
+    """目的: 新規登録 API が Files の許可ルートを広く設定しても 2 ルート外を断ること。
+
+    根拠: レビュー #18「POST 新規登録で 2 ルート制限を迂回」。Files の allowed_roots は
+    画面ごとの設定で広げられる（試験の conftest も sandbox を指定している）。新規選択は
+    model_paths.SELECTION_ROOTS（/data1tb と /data2tb）を別に見て、API でも守る。
+    既存登録の再保存はパスを変えなければ通す（2026-11-27 利用者の決まり）。
+    """
+    from pathlib import Path
+
+    from app.files import service as files
+    from app.models_mgmt import llama
+    from tests.conftest import CSRF_HEADERS, _sandbox
+
+    gguf = _sandbox / "wide-files.gguf"
+    gguf.write_bytes(b"GGUF")
+    # 偽の permissive な Files 設定: どのパスも通す。それでも 2 ルート制限は効く。
+    monkeypatch.setattr(files, "resolve", lambda raw, **kw: Path(raw))
+
+    cases = [
+        ("llama", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("radiance", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("sly-radiance", {"alias": "x", "model_path": str(gguf), "port": 8201}),
+        ("strata", {"alias": "x", "family": "qwen", "model": "q2_0",
+                    "model_path": str(gguf), "port": 8201}),
+    ]
+    for runtime, body in cases:
+        response = admin_client.post(f"/api/v1/models/{runtime}/instances", json=body,
+                                     headers=CSRF_HEADERS)
+        assert response.status_code == 422, (runtime, response.text)
+        assert "新しく選べる" in response.json()["detail"]
+
+    # 旧登録はそのまま再保存できる（パスが変わらないので新規制限はかからない）。
+    monkeypatch.setattr(llama, "_config_path", lambda: tmp_path / "old.json")
+    monkeypatch.setattr(llama, "is_installed", lambda: False)
+    llama.save_instance("old", {"alias": "old", "model_path": str(gguf), "port": 8201})
+    saved: list[dict] = []
+    monkeypatch.setattr(llama, "save_instance",
+                        lambda alias, patch: saved.append(patch) or patch)
+    response = admin_client.put("/api/v1/models/llama/instances/old",
+                                json={"alias": "old", "model_path": str(gguf)},
+                                headers=CSRF_HEADERS)
+    assert response.status_code == 200, response.text
+    assert saved[0]["model_path"] == str(gguf)
+
+    # パスを変えるときは新規制限がかかる。
+    changed = str(_sandbox / "changed.gguf")
+    Path(changed).write_bytes(b"GGUF")
+    response = admin_client.put("/api/v1/models/llama/instances/old",
+                                json={"alias": "old", "model_path": changed},
+                                headers=CSRF_HEADERS)
+    assert response.status_code == 422, response.text
