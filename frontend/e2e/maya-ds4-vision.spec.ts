@@ -3,7 +3,9 @@
  *  根拠: 2026-11-18 利用者「vision の設定 ON/OFF は ControlDeck の設定として入るようになっているか」
  *        「（モデル画面で）Vision 表示になっていない」。API は page.route で模擬する（実機のモデルを動かさない）。
  *  更新: Nexarch #24。個別設定には「表示名の保存」（無効）と下端の「保存」が並ぶため、
- *        目的の設定保存は .last() で指定する（曖昧な「保存」単体では strict mode 違反）。 */
+ *        目的の設定保存は .last() で指定する（曖昧な「保存」単体では strict mode 違反）。
+ *  レビュー #25 / 2026-11-28: 目的と根拠を明示し、Maya の個別設定が共通 UI になっても
+ *        画像の読み取りだけが保存される回帰を実際に実行して通す。 */
 import { expect, test, type Page } from "@playwright/test";
 import { establishSession, hasSession } from "./support/session";
 
