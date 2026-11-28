@@ -3,7 +3,7 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 279 ファイル、2910 テスト（目的の未記入 93 ファイル）
+- backend: 279 ファイル、2911 テスト（目的の未記入 93 ファイル）
 - E2E: 153 spec、353 テスト
 
 ## backend（backend/tests）
@@ -1766,6 +1766,7 @@
 - `test_download_quantization_takes_only_the_selected_subdirectory` — 目的: files=[] + 量子化指定で、その量子化の分割全片だけを取得すること。
 - `test_download_refuses_files_from_another_quantization` — 目的: 明示指定された files に他量子化が混ざっていたら取得の前に断ること。
 - `test_register_dispatch_covers_all_five_runtimes` — 目的: 取得後の登録が既存の 5 ランタイムの保存 API へ正しく渡ること。
+- `test_register_chooses_a_free_port_for_radiance_and_strata` — 目的: ポート未指定の取得後登録が、既存 API の必須 port を空きポートで埋めること。
 
 ### backend/tests/test_hf_search.py
 

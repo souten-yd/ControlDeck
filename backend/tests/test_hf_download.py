@@ -546,16 +546,45 @@ def test_register_dispatch_covers_all_five_runtimes(tmp_path, monkeypatch):
                         lambda alias, **kw: called.append(("strata", alias, kw)))
     monkeypatch.setattr(strata_catalog, "is_valid", lambda family, model: True)
 
+    first = saved.with_name("model-00001-of-00002.gguf")
+    second = saved.with_name("model-00002-of-00002.gguf")
+    first.write_bytes(b"GGUF")
+    second.write_bytes(b"GGUF")
+
     assert hf._register_dispatch({"runtime": "llama", "alias": "a"}, [str(saved)]) == "a"
     assert hf._register_dispatch({"runtime": "radiance", "alias": "b"}, [str(saved)]) == "b"
     assert hf._register_dispatch({"runtime": "sly-radiance", "alias": "c"}, [str(saved)]) == "c"
     assert hf._register_dispatch(
         {"runtime": "strata", "alias": "d", "family": "qwen", "model": "q2_0"},
-        [str(saved)],
+        [str(second), str(first)],   # 渡る順番が入れ替わっても 00001 を選ぶ
     ) == "d"
     assert [item[0] for item in called] == ["llama", "radiance", "sly", "strata"]
+    assert all("port" in item[2] for item in called[1:])      # 3 つとも port は必須
     assert called[1][2]["model_path"] == str(saved)          # .rad はファイルのまま
-    assert called[3][2]["model_path"] == str(saved.parent)   # Strata はフォルダ
+    assert called[3][2]["model_path"] == str(first)          # Strata は最初の分割片
     assert called[3][2]["family"] == "qwen"
     with pytest.raises(hf.HfError, match="対応していない"):
         hf._register_dispatch({"runtime": "maya", "alias": "m"}, [str(saved)])
+
+
+def test_register_chooses_a_free_port_for_radiance_and_strata(tmp_path, monkeypatch):
+    """目的: ポート未指定の取得後登録が、既存 API の必須 port を空きポートで埋めること。
+
+    根拠: Radiance / Strata の save_instance は port が必須（既定なし）。旧 adapter は
+    未指定のとき port を渡さず、数 GB の取得の直後に TypeError で失敗していた。
+    """
+    from app.models_mgmt import local_llm, radiance, strata_catalog, strata_gateway
+
+    saved = tmp_path / "m" / "model-00001-of-00002.gguf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"GGUF")
+    monkeypatch.setattr(local_llm, "endpoint_ports", lambda: {8100})
+    ports: list[int] = []
+    monkeypatch.setattr(radiance, "save_instance", lambda alias, **kw: ports.append(kw["port"]))
+    monkeypatch.setattr(strata_gateway, "save_instance", lambda alias, **kw: ports.append(kw["port"]))
+    monkeypatch.setattr(strata_catalog, "is_valid", lambda family, model: True)
+
+    hf._register_dispatch({"runtime": "radiance", "alias": "r"}, [str(saved)])
+    hf._register_dispatch(
+        {"runtime": "strata", "alias": "s", "family": "qwen", "model": "q2_0"}, [str(saved)])
+    assert ports == [8101, 8101]
