@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 282 ファイル、2915 テスト（目的の未記入 93 ファイル）
-- E2E: 152 spec、349 テスト
+- backend: 282 ファイル、2916 テスト（目的の未記入 93 ファイル）
+- E2E: 152 spec、350 テスト
 
 ## backend（backend/tests）
 
@@ -2843,6 +2843,7 @@
 - `test_worktree_inside_repo_gets_its_git_and_brief`
 - `test_plain_repo_and_outside_pointers_get_nothing`
 - `test_launch_mounts_git_readonly_and_worktree_writable`
+- `test_worktree_gets_repo_dependencies_as_overlays_only_from_repo` — worktree の担い手に、本体の node_modules・.venv を overlay で見せる。元はホストが決めた本体の実体だけで、
 
 ### backend/tests/test_opencode_chat_server.py
 
@@ -4714,6 +4715,7 @@
 - AI チーム ${label}px: チームの既定（チームリーダー）と保存先を一度だけ選ぶ
 - AI チーム ${label}px: エキスパート切で一文の依頼 → 時系列（計画・進み具合・質問に答える・結果・取り込む）
 - AI チーム ${label}px: エキスパート入で板・MCP の呼び出しの履歴・使用量が出る（止まったら再開）
+- AI チーム ${label}px: エキスパート切でも担い手の状態（作業中・待ち・止まった・済み）が色・形・文字で分かる
 - AI チーム ${label}px: 資料を添えてこのチームへ頼む・メンバーの状態を開く・チームの前提を切り替える
 
 ### frontend/e2e/commander.spec.ts
