@@ -74,21 +74,22 @@ def test_publish_copies_readonly_and_records_rows(area):
     assert rows2 == rows
 
 
-def test_publish_folder_dereferences_inner_links_and_keeps_structure(area):
-    """目的: フォルダの中身も（相対構造を保って）写すこと。中のシンボリックリンクは実体を写す
-    （symlink での資料の公開はしない・箱から見える実体のファイルだけ）。"""
+def test_publish_folder_keeps_structure_and_skips_inner_links(area):
+    """目的: フォルダの中身も（相対構造を保って）写すこと。中のシンボリックリンクはたどらず写さない
+    （リンクの先が許可の外の秘密でも inputs へ出ない・2026-11-28 Claude のレビューで方針を改めた）。"""
     root, outside = area
     folder = root / "資料"
     (folder / "sub").mkdir(parents=True)
     (folder / "sub" / "b.txt").write_text("b", encoding="utf-8")
     (folder / "a.txt").write_text("a", encoding="utf-8")
-    (folder / "link.txt").symlink_to(folder / "a.txt")  # 中のリンクは実体として写す
+    (folder / "link.txt").symlink_to(folder / "a.txt")
+    (outside / "secret.txt").write_text("s", encoding="utf-8")
+    (folder / "leak.txt").symlink_to(outside / "secret.txt")
     rows = team_inputs.publish(str(root / "team"), "依頼", [str(folder)])
     base = _published(root) / "資料"
     assert (base / "a.txt").read_text(encoding="utf-8") == "a"
     assert (base / "sub" / "b.txt").read_text(encoding="utf-8") == "b"
-    assert (base / "link.txt").is_file() and not (base / "link.txt").is_symlink()
-    assert (base / "link.txt").read_text(encoding="utf-8") == "a"
+    assert not (base / "link.txt").exists() and not (base / "leak.txt").exists()
     assert rows[0]["label"] == "資料" and rows[0]["source"] == str(folder.resolve())
 
 
@@ -252,3 +253,22 @@ def test_input_paths_validation(admin_client, area, no_spawn, monkeypatch):
     r = admin_client.post(f"{API}/auto", headers=CSRF_HEADERS,
                           json={"goal": "g", "input_paths": [str(outside / "x.txt")]})
     assert r.status_code == 400 and "資料" in r.text
+
+
+def test_links_inside_a_folder_are_not_followed(tmp_path, monkeypatch):
+    """資料のフォルダの中のシンボリックリンクはたどらない・写さない（許可の外の秘密が inputs へ写らない）。
+    根拠: 2026-11-28 Claude のレビュー。copytree(symlinks=False) がリンクの先の実体を写していた。"""
+    from app.commander import team_inputs
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("秘密")
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "a.md").write_text("資料")
+    (folder / "leak.txt").symlink_to(secret)
+    (folder / "leakdir").symlink_to(tmp_path)
+    dest = tmp_path / "out"
+    team_inputs._copy_ro(folder, dest)
+    assert (dest / "a.md").read_text() == "資料"
+    assert not (dest / "leak.txt").exists() and not (dest / "leakdir").exists()
+    assert team_inputs._measure(folder) == (len("資料".encode()), 1)

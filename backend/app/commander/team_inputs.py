@@ -73,7 +73,7 @@ def clean_cwd(value: object) -> str:
 
 
 def _measure(path: Path) -> tuple[int, int]:
-    """(合計バイト, ファイル数)。中のシンボリックリンクは実体を数える（写すときと同じものだけ数える）。"""
+    """(合計バイト, ファイル数)。中のシンボリックリンクは数えない（写さないので）。"""
     if path.is_file():
         try:
             return path.stat().st_size, 1
@@ -84,9 +84,7 @@ def _measure(path: Path) -> tuple[int, int]:
         for name in files:
             item = Path(current) / name
             try:
-                if item.is_symlink():
-                    item = item.resolve(strict=True)
-                if not item.is_file():
+                if item.is_symlink() or not item.is_file():
                     continue
                 total += item.stat().st_size
                 count += 1
@@ -95,13 +93,21 @@ def _measure(path: Path) -> tuple[int, int]:
     return total, count
 
 
+def _skip_links(folder: str, names: list[str]) -> list[str]:
+    return [n for n in names if (Path(folder) / n).is_symlink()]
+
+
 def _copy_ro(src: Path, dest: Path) -> None:
-    """src（ファイルかフォルダ）を dest へ読み取り専用で写す。中のリンクは実体を写す（リンクでは渡さない）。"""
+    """src（ファイルかフォルダ）を dest へ読み取り専用で写す。中のシンボリックリンクは写さない（たどらない）。
+
+    たどると、許可されたフォルダの中のリンクから許可の外（~/.ssh・data_dir など）の実体が写り、箱と LLM から
+    読めてしまう（2026-11-28 Claude のレビューで見つけた）。src そのものは workdir.resolve_path で realpath と
+    許可の範囲を確かめ済み。"""
     if src.is_file():
         shutil.copy2(src, dest)
         os.chmod(dest, 0o444)
         return
-    shutil.copytree(src, dest, symlinks=False, copy_function=shutil.copy2)
+    shutil.copytree(src, dest, symlinks=True, ignore=_skip_links, copy_function=shutil.copy2)
     for current, dirs, files in os.walk(dest):
         dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink()]
         for name in files:
