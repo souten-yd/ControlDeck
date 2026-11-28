@@ -5,9 +5,11 @@
 - POST   /commander/accounts/{cli}          アカウントの作成
 - DELETE /commander/accounts/{cli}/{name}    アカウントの削除（ログインの情報も消える）
 - PUT    /commander/accounts/{cli}/{name}/label  画面の名前（既定のアカウントにも付けられる）
-- GET    /commander/consoles                コンソールの一覧
+- GET    /commander/consoles                コンソールの一覧（commander_locked は boolean）
 - POST   /commander/consoles                コンソールを個数ぶん開く
-- DELETE /commander/consoles/{session_id}   コンソールを閉じる
+- PUT    /commander/consoles/{session_id}/lock  コンソールの鍵（ロック）の付け外し
+- DELETE /commander/consoles/{session_id}   コンソールを閉じる（ロック中は 409）
+- DELETE /commander/consoles                コンソールを一括で閉じる（ロックは飛ばして数を返す）
 - /commander/teams ...                      AI チーム（タスク板・送り込み。commander/teams.py）
 
 アカウントの作成・削除とコンソールの作成・削除は監査ログへ残す
@@ -32,8 +34,8 @@ from app.commander import accounts, consoles, teams, workdir
 from app.database import get_db
 from app.models import User
 from app.schemas.commander import (
-    AccountCreate, AccountLabel, CommanderSettingsBody, ConsoleAutoResume, ConsoleCreate, ResumeMessage,
-    UsageStatusline, WorkdirPath,
+    AccountCreate, AccountLabel, CommanderSettingsBody, ConsoleAutoResume, ConsoleCreate, ConsoleLock,
+    ResumeMessage, UsageStatusline, WorkdirPath,
 )
 from app.security.deps import require_permission
 from app.terminals.router import streams
@@ -322,15 +324,22 @@ def put_settings(
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
+    """全体の設定。送った欄だけ変える（resume_message を省略してもリセットしない）。"""
     from app.commander import settings as commander_settings
 
-    try:
-        result = commander_settings.set_resume_message(body.resume_message)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    changed: dict = {}
+    if body.resume_message is not None:
+        try:
+            commander_settings.set_resume_message(body.resume_message)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        changed["resume_message"] = bool(body.resume_message)
+    if body.auto_restore is not None:
+        commander_settings.set_auto_restore(body.auto_restore)
+        changed["auto_restore"] = body.auto_restore
     audit.record(db, "commander.settings", user=user, resource_type="commander", resource_id="settings",
-                 request=request)
-    return result
+                 request=request, metadata=changed or None)
+    return commander_settings.get()
 
 
 @router.put("/consoles/{session_id}/resume-message")
@@ -360,6 +369,105 @@ def set_console_resume_message(
     return {"ok": True, "message": message}
 
 
+@router.put("/consoles/{session_id}/lock")
+def set_console_lock(
+    session_id: str,
+    body: ConsoleLock,
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """コンソールの鍵（ロック）の付け外し。body={locked:boolean} → {ok:true,locked:boolean}。
+
+    鍵のかかったコンソールは誰にも勝手に閉じられない（manager.kill_session の中央ガード）。
+    外すのはこの操作（terminal.use の利用者。画面）だけで、AI・MCP へは公開しない。
+    情報（cli・account・cwd・label・model・effort・owner）は data へ保存する
+    （commander/locks.py。tmux が消えた後も分かるように）。
+    """
+    from app.commander import locks
+
+    console = next((s for s in consoles.list_consoles() if s.get("id") == session_id), None)
+    if body.locked:
+        if console is None:
+            raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+        from app.terminals.manager import SessionStateError
+
+        try:
+            locks.lock_console(console, user=user)
+        except (OSError, SessionStateError, locks.LockStoreError) as exc:
+            # 保存・tmux を確かめられない。成功を装わない（付いたかどうか不明なら保存が保護を続ける）
+            raise HTTPException(status_code=503, detail="ロックをかけられませんでした") from exc
+        except (RuntimeError, KeyError) as exc:
+            # セッションが今まさに消えた等。一覧へ戻してもらう
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit.record(
+            db, "commander.console.lock", user=user, resource_type="commander_console",
+            resource_id=session_id, request=request,
+            metadata={
+                "cli": console.get("commander_cli", ""),
+                "account": console.get("commander_account", ""),
+                "label": console.get("commander_label", ""),
+            },
+        )
+        return {"ok": True, "locked": True}
+    # 解除。tmux にセッションがもう無い（外から消えた）コンソールでも、保存の記録は消せる。
+    try:
+        if console is None and locks.find_entry(session_id) is None:
+            raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+        locks.unlock_console(session_id)
+    except (OSError, RuntimeError, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="ロックを解除できませんでした。保護を継続します") from exc
+    audit.record(
+        db, "commander.console.unlock", user=user, resource_type="commander_console",
+        resource_id=session_id, request=request,
+        metadata={"cli": (console or {}).get("commander_cli", "")},
+    )
+    return {"ok": True, "locked": False}
+
+
+@router.delete("/consoles")
+def close_all_consoles(
+    request: Request,
+    user: User = Depends(require_permission("terminal.use")),
+    db: Session = Depends(get_db),
+):
+    """コンソールを一括で閉じる。ロックのかかったコンソールは飛ばして数を返す。
+
+    応答は {closed:number, skipped_locked:number}。ロックは画面で外してもらう前提で、
+    ここでは 1 つも閉じない（409 にしない。一括の途中で 1 つ引っかかると全部止まるので）。
+    """
+    from app.terminals.manager import SessionLockedError
+
+    closed = 0
+    skipped_locked = 0
+    failed = False
+    for row in consoles.list_consoles():
+        sid = str(row["id"])
+        if row.get("commander_locked"):
+            skipped_locked += 1
+            continue
+        try:
+            consoles.close_console(sid)
+        except SessionLockedError:
+            # 一覧を見てから鍵をかけられた競合。中央ガードが守ったので飛ばしとして数える
+            skipped_locked += 1
+            continue
+        except (OSError, RuntimeError):
+            # 確認・終了できない。閉じた分は監査へ残してから 503（残りは閉じない）
+            failed = True
+            break
+        streams.close_session(sid)  # 終了が確かなものだけ接続を閉じる
+        closed += 1
+    audit.record(
+        db, "commander.console.close_all", user=user, resource_type="commander_console",
+        resource_id="all", request=request,
+        metadata={"closed": closed, "skipped_locked": skipped_locked, **({"failed": True} if failed else {})},
+    )
+    if failed:
+        raise HTTPException(status_code=503, detail="状態を確認できないため閉じませんでした")
+    return {"closed": closed, "skipped_locked": skipped_locked}
+
+
 @router.delete("/consoles/{session_id}")
 def delete_console(
     session_id: str,
@@ -367,14 +475,25 @@ def delete_console(
     user: User = Depends(require_permission("terminal.use")),
     db: Session = Depends(get_db),
 ):
-    # Terminal のセッションを閉じるのと同じ（WS の接続も先に閉じる）。
+    from app.terminals.manager import SESSION_LOCKED_MESSAGE, SessionLockedError
+
+    # 終了に成功してから WS を閉じる。中央 guard が断ったときは接続も保つ。
     console = next(
         (s for s in consoles.list_consoles() if s.get("id") == session_id), None,
     )
     if console is None:
         raise HTTPException(status_code=404, detail="コンソールが見つかりません")
+    if console.get("commander_locked"):
+        # streams.close_session より前に断る（接続を閉じる前に拒否）
+        raise HTTPException(status_code=409, detail=SESSION_LOCKED_MESSAGE)
+    try:
+        consoles.close_console(session_id)
+    except SessionLockedError as exc:
+        # 一覧を見てから鍵をかけられた競合も中央ガードが守る
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="セッションを閉じられませんでした") from exc
     streams.close_session(session_id)
-    consoles.close_console(session_id)
     audit.record(
         db, "commander.console.kill", user=user, resource_type="commander_console",
         resource_id=session_id, request=request,

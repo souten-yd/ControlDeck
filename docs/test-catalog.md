@@ -3,8 +3,8 @@
 `./deck.sh test-catalog` が作る。作り直しても既存の手書きの説明は残る（コードに説明が無いものだけ引き継ぐ）。テストを足す前にここを検索し、同じ観点のテストがあれば
 足さずにそれを直す・広げる。決まりは `AGENTS.md` の「不具合・診断・テストの決まり」。
 
-- backend: 282 ファイル、2917 テスト（目的の未記入 93 ファイル）
-- E2E: 152 spec、350 テスト
+- backend: 283 ファイル、2962 テスト（目的の未記入 93 ファイル）
+- E2E: 152 spec、353 テスト
 
 ## backend（backend/tests）
 
@@ -739,6 +739,56 @@
 - `test_delete_account_refuses_symlinked_folder` — アカウントのフォルダがリンクなら削除しない（リンク先＝accounts の外を消さない）。
 - `test_account_labels_including_the_default_account` — アカウントに画面の名前を付けられる。既定のアカウントにも付けられ、消すと外れる。
 - `test_login_name_from_claude_metadata_and_codex_status` — 既定のアカウントの見せ方を、ログインしている名前にする（Claude はメール、Codex はログインの方法）。
+
+### backend/tests/test_commander_console_lock.py
+
+目的: Nexarch のコンソールのロック（中央の保護・保存・検知・自動復旧）の試験。 目的: ロックをかけたコンソールが誰にも勝手に閉じられないことを守る。 - 中央の保護: manager.kill_session はロックの印（@cd-commander-locked=1）のあるセッションを 断る（Terminal の DELETE・Nexarch の DELETE・一括で閉じる・コードの他の呼び出し元のどれでも）。 強制解除の抜け道は無い。外すのは画面（terminal.use）の操作だけ。 - 保存: ロックしたコンソールの情報（cli・account・cwd・label・model・effort・owner）を data/ai-commander の小さな JSON（0600・置き換え）へ残す。tmux が消えた後も分かる。 - 検知: ロックしたセッションが ControlDeck を通さずに消えたら監査（commander.console.vanished） と通知（タイトルだけ）。tmux の確認に失敗しただけでは消失と扱わない。dead pane は消失ではない。 - 自動復旧: 同じ cli・account・作業フォルダ・label で開き直し、続きから再開する （Claude --continue・Codex resume --last・OpenCode は既存の再開）。1 つのコンソールで 10 分 3 回まで（失敗も数える・ID が変わっても記録は引き継ぐ）。設定で切れる（既定は入）。 根拠: 2026-11-28 利用者「開いているコンソールごとに、ロックをかけるようにしてほしい。 勝手に tmux とかを停止させられないようにしてほしい。ロックをかけたものは落とさないように」 （.nexarch/brief-console-lock.md）。ControlDeck の中からの kill は元々監査に残っていたが、 外のプロセスが tmux kill-session / kill-server を直接打つと記録に残らず消えるので、 印による保護・保存による検知・復旧の歯止めを仕組みで守る。API の契約（PUT …/lock の body={locked:boolean}・応答={ok:true,locked:boolean}・settings の auto_restore）は frontend の別担当と固定しているので、ここで契約どおりであることを機械的に確かめる。 2026-11-28 Nexarch #5 の根拠: show-options の timeout / OSError / 非0終了で kill に進む、has-session の permission denied を消失と誤認、解除後の JSON 書込失敗を 成功にする不具合を実測。失敗注入・Event で順序を固定した競合・復旧途中の再起動を 同じファイルで守る。実 tmux は全 backend 共通の PATH wrapper により明示 -L へ隔離する。 既存の試験に同じ観点は無い（./deck.sh test-catalog で確認。test_terminals は engine・PTY の 既存の振る舞い、test_commander_consoles は印と env、test_commander_resume は上限からの再開）。
+
+- `test_manager_refuses_to_kill_locked_session_without_bypass` — ロックしたセッションは manager.kill_session でも殺せない（中央の保護・抜け道無し）。
+- `test_manager_lock_survives_on_fallback_pty_and_kill_refuses` — tmux の無い環境（フォールバック PTY）でも同じ保護が効くこと。
+- `test_locked_mark_roundtrip_and_kill_refusal_with_real_tmux` — 実 tmux（試験専用のソケット）で: 印が一覧で読み返せ、ロック中は殺せず、外せば殺せる。
+- `test_lock_api_roundtrip_persists_console_info` — PUT /consoles/{id}/lock: {locked:boolean} → {ok:true,locked:boolean}。情報の保存は 0600。
+- `test_lock_api_missing_console_and_idempotent_toggle` — 無いコンソールは 404。既にロック済み・解除済みのままの要求はそのまま通す。
+- `test_unlock_accepts_vanished_console` — 消えた（tmux に無い）ロックのコンソールでも、解除で保存の記録を消せる。
+- `test_lock_adopts_stale_vanished_record_for_same_session` — 同じセッションを指す「消えたまま」の記録へ改めて鍵をかけたら、その記録を採用して戻す。
+- `test_lock_does_not_mark_when_store_write_fails` — 保存に書けなかったら印を変更せず失敗を返す。
+- `test_delete_console_locked_returns_409_before_closing_streams` — Nexarch の DELETE は、ロック中なら streams.close_session より前に 409 で断る。
+- `test_terminal_delete_locked_returns_409` — Terminal の DELETE も、ロック中なら 409 で断る（コンソールは Terminal のセッション）。
+- `test_bulk_close_skips_locked_and_returns_counts` — DELETE /consoles（一括で閉じる）: ロックは飛ばして数を返す。
+- `test_settings_auto_restore_default_on_and_keeps_resume_message` — settings の auto_restore: 既定は true。resume_message を省略してもリセットしない。
+- `test_create_consoles_resume_wiring_reaches_the_command` — create_consoles(resume=True) から _command_for まで resume が届き、コマンドへ --continue が付く。
+- `test_restore_command_for_each_cli` — 開き直しは続きから: Claude --continue・Codex resume --last・OpenCode は既存の再開（--continue）。
+- `test_vanished_detection_audits_and_notifies_then_restores` — 外から消えたら検知（監査・通知はタイトルだけ）し、同じ情報で開き直してまた鍵を付ける。
+- `test_detection_does_not_mistake_failure_or_dead_pane_for_vanished` — tmux の確認に失敗しても消失と扱わない。dead pane（セッションは在る）も消失ではない。
+- `test_restore_attempts_are_capped_at_three_per_ten_minutes` — 復旧は 1 つの論理コンソールで 10 分 3 回まで（失敗も数える・上限で諦めたことを残す）。
+- `test_auto_restore_off_means_detection_only` — 設定で自動で戻すを切ったら、検知（監査・通知）だけにする。
+- `test_restore_failure_is_audited_and_counted` — 復旧の失敗（開けない・作業フォルダが消えた等）も監査に残し、回数に数える。
+- `test_resume_tick_runs_the_lock_watch` — 既存の resume の見回り（60 秒ごとの thread）から検知が動く（監視を増やしすぎない）。
+- `test_diagnostics_report_shows_lock_state_and_events` — 診断レポートで外部消失・復旧失敗・上限が分かる（locks の今の状態＋監査の履歴）。
+- `test_unknown_lock_state_never_reaches_kill` — 印を確認できない（timeout・OSError・権限・不明な非 0）ときは kill-session を打たない（fail-open にしない）。
+- `test_has_session_distinguishes_missing_from_unknown` — has-session の非 0 のうち、実測した欠落の文言だけを「無い」とし、権限・通信・不明は確認不能にする。
+- `test_tmux_mutation_failure_is_not_success` — kill-session・印の解除の失敗を成功として扱わない。
+- `test_unlock_store_failure_relocks_and_returns_failure` — 解除の保存に失敗したら印を戻して 503。保存の記録が残る限り中央 guard も閉じさせない。
+- `test_unlock_clear_failure_keeps_record_and_returns_failure` — 印の解除が不確か（返信が失われた）なら記録を消さず 503。
+- `test_unlock_origin_resolves_current_and_pending_marks` — 由来の古い ID で解除しても、今の ID と復旧先の印を両方外す。
+- `test_lock_unlock_and_kill_share_one_guard` — 付ける・外す・閉じるが同じ排他を通り、保存と印の途中へ割り込まない（Event で順序を固定）。
+- `test_late_delete_refusal_preserves_streams` — 一覧を見た後に中央 guard が断った・確認できないときは、接続（stream）を閉じない。
+- `test_stream_close_from_worker_runs_on_owner_loop` — threadpool の DELETE から閉じても、Task.cancel などは所有 loop の上で行う。
+- `test_restore_partial_failure_is_tracked_across_restart` — 復旧の途中（印・保存・作成の返信）で失敗しても、同じ ID を追跡して再起動後も複製を作らない。
+- `test_restore_budget_survives_failures_id_changes_and_restart` — 10 分 3 回の上限は、失敗・ID の変更・再起動をまたいで保たれる。
+- `test_two_watchers_and_unlock_do_not_duplicate` — 見回りが 2 つ重なり、解除も重なっても、作るのは 1 つだけで解除は確実に効く。
+- `test_corrupt_store_stops_watch_and_kill_and_is_diagnostic` — 保存が壊れたら空として扱わず、見回りと閉じるを止め、診断（JSON・md）に異常を出す。
+- `test_unreadable_store_is_not_empty` — 保存を読めない（権限）ときも空として扱わない。
+- `test_all_raw_tmux_calls_use_explicit_private_socket` — 全 backend の試験の tmux は PATH の wrapper で専用 -L へ通り、既定ソケット・kill-server へ抜けない。
+- `test_kill_missing_session_is_idempotent_but_permission_error_is_not` — 既に無いセッションの終了は成功（従来どおり）。権限エラーは成功にしない。
+- `test_lock_mark_failure_rolls_back_only_when_mark_is_known_absent` — 印の付与の失敗: 無いと確かめられたら記録を消して 503、不明なら記録を残して保護を続ける。
+- `test_lock_mark_reply_lost_but_applied_is_success` — 印は付いたが返信が失われたときは、確かめて成功として確定する。
+- `test_lock_on_pending_restore_session_confirms_it` — 復旧の暫定セッションへ利用者が鍵をかけたら、それを今の ID として確定する。
+- `test_watch_isolates_one_failing_entry_from_the_others` — 1 件の tmux・ID の失敗で、ほかのロックしたコンソールの検知を止めない。
+- `test_restore_adopt_retags_console_marks` — 作成直後の印の付与で止まった復旧先も、見回りで一覧用の印と鍵を付けて確定する。
+- `test_bulk_close_failure_keeps_unclosed_streams_and_audits_closed` — 一括で閉じる途中の失敗: 閉じた分は監査へ残して 503、閉じていない接続は保つ。
+- `test_stream_close_after_owner_loop_closed_does_not_fail` — 所有 loop が閉じた後の DELETE（再起動・試験の TestClient の入れ替え）でも 500 にしない。
+- `test_real_tmux_permission_denied_is_unknown_not_missing` — 実 tmux（試験専用の -L）で、ソケットへ入れないときは消失でも終了成功でもない。
 
 ### backend/tests/test_commander_consoles.py
 
@@ -4721,13 +4771,16 @@
 
 ### frontend/e2e/commander.spec.ts
 
-目的: AI Commander（/commander）の E2E。API と端末の WebSocket はモック（実 CLI を動かさない）。 目的（c1-spec.md「E2E」の項目）: - ＋ コンソールのシートの流れ（未導入の CLI は選べない・アカウント・作業フォルダ・個数・表示名） - タイル（1280px）とモバイル 320px の 1 つずつ（リスト → 全画面） - アカウントを作る・消す（確認ダイアログ） - 320 と 1280 のライト・ダークの撮影
+目的: AI Commander（/commander）の E2E。API と端末の WebSocket はモック（実 CLI を動かさない）。 目的（c1-spec.md「E2E」の項目）: - ＋ コンソールのシートの流れ（未導入の CLI は選べない・アカウント・作業フォルダ・個数・表示名） - タイル（1280px）とモバイル 320px の 1 つずつ（リスト → 全画面） - アカウントを作る・消す（確認ダイアログ） - ロック（鍵の切り替え・ロック中は閉じるが無効・一括はロック中を飛ばす・409 の知らせ） - 自動で戻す（全体）の設定（エキスパートのときだけ出す・切った設定を覚える） - 320 と 1280 のライト・ダークの撮影 根拠: 2026-11-28 利用者「Nexarch のコンソールモードでは、開いているコンソールごとに、ロックをかけるようにしてほしい」 （勝手に落とされるのを防ぐ）。ロックの API と状態はモックで確かめ、本物の tmux には触らない。
 
 - モバイル 320px: 一覧から 1 個ずつ開き、閉じる・削除も確認できる
 - ＋ コンソール: 未導入は選べない・アカウント・フォルダ・個数・表示名を選んで開ける（320px）
 - ＋ コンソール: 「新しい作業場所（自動の名前）」が既定で、名前を入れて開ける（${width}px）
 - アカウントの管理: 一覧・作る・消す（確認ダイアログ）（320px）
 - PC 1280px: タイル 2 列で並べ、押すと大きく開く（ライト・ダークの撮影も）
+- ロック: 鍵は押すたび切り替わり、ロック中は閉じられない。一括はロック中を飛ばす（320px）
+- ロック: 画面が古くロック中だったとき（409）は日本語で知らせる（320px）
+- 自動で戻す（全体）: エキスパートのときだけ出て、切った設定を覚える（1280px・ライト/ダーク）
 - 設定: AI の CLI（Nexarch）の分類に 3 つの CLI が出る（320px）
 
 ### frontend/e2e/dashboard-fans.spec.ts

@@ -68,3 +68,33 @@
   E2E `commander.spec.ts` 4 件（API・WS モック、320/1280 ライト・ダークの撮影）・Terminal E2E 12 passed /
   2 skipped・`./deck.sh dev-check --base origin/main` 合格。実機の確認が要るもの:
   2 アカウントでの実際のログインと同時起動（利用者の操作）、実 CLI でのタイルの見た目。
+- 2026-11-28 (Nexarch #3/#5 + 統合 #6): コンソールのロック（3 段）を実装・隔離で検証。ブランチ
+  `nexarch/tab13eba8-6` に 5 コミット（#3・#5 とその統合）。push / PR / マージはしていない（統括の Claude が行う）。
+  状態・効果・処理時間・未検証は `docs/implementation-status.md` の先頭の節を正とする。
+
+## 2026-11-28 の追加（コンソールのロック）
+
+- いまの状態: ロックの切り替え・閉じる 409（4 経路）・外から消えた検知・10 分 3 回の自動復旧まで実装済み。
+  地図に 5 ルート追加（`./deck.sh route-map` で `docs/ROUTE-MAP.md` 再生成済み）。目録再生成済み。
+  隔離の検証は `test_commander_console_lock.py` 67 件 + 回帰 65 件 pass、`dev-check --base origin/main --skip-visual` の最終行は `合格`（frontend build・画面・Alembic は未実施）。
+- 追加ファイル: `backend/app/commander/locks.py`（中核 451 行・保存・検知・復旧・診断 summary）、
+  `frontend/src/features/commander/AutoRestoreSheet.tsx`（設定シート）。変更: `terminals/manager.py`
+  （中央ガード・`set_locked` / `is_locked`）、`commander/router.py`・`schemas/commander.py`・`settings.py`・
+  `resume.py`、`diagnostics/report.py`・`selftest.py`、`route_map.py`、`terminals/router.py`・`stream.py`・
+  `attachments.py`、`alerts/events.py`、画面は `Commander.tsx`・`ConsoleTile.tsx`・`api/commander.ts`。
+  試験: `backend/tests/test_commander_console_lock.py`(1379 行)・`conftest.py` の tmux 隔離 wrapper・
+  `frontend/e2e/commander.spec.ts`（ロック 3 件）。
+- 検証の手順（この掘り出しで使ったもの。本番へ向けない）: worktree 直下へ `.venv` のシンボリックリンクだけ作り、
+  `cd backend && env -u CONTROL_DECK_CONFIG /data1tb/ControlDeck/app-strata/.venv/bin/python -m pytest -q
+  -p no:cacheprovider tests/test_commander_console_lock.py`。tmux は conftest の `-L nexarch-test-<pid>`
+  wrapper が全呼出しを隔離し、`kill-server` と大域 `-L` / `-S` は終了コード 97 で拒否される
+  （`test_all_raw_tmux_calls_use_explicit_private_socket` が保証）。frontend の node_modules はどこにも無く、
+  npm install は禁止なので build / E2E は未実施。`env -u CONTROL_DECK_CONFIG ./deck.sh dev-check --base
+  origin/main --skip-visual` で合否を確認する。
+- 作業一覧: C0 済み / C1 済み / C2 済み / C3 実装済み（実上限は未） / C4 一部 / C5 未 / C6 設計済み。
+  コンソールのロックは C1・C3 の追加として完了（隔離検証まで）。本番での受け入れは未。
+- 未決事項（開発機能への要望。実コードの修正はしていない）: (1) `.nexarch/` の brief が git 管理外で
+  worktree へ届かない、(2) worktree の `.git`（共通ディレクトリ参照）が箱から見えない、
+  (3) MCP の進捗が終了まで空、(4) 内部 review 待ちが見えない、(5) queued の理由と停止／引継ぎ MCP が足りない、
+  (6) Zen も local 扱い＋起動準備、(7) 子レポートが `Unknown tool`。詳細は `docs/PLAN-ai-commander.md` の節。
+  本番 tmux を外から消す試験・実 CLI の「続きから」再開・frontend の build/E2E と 320/1280 の実画面は未検証。

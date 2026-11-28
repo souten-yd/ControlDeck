@@ -1,5 +1,11 @@
 /** AI Commander（/commander）の API 呼び出し。Terminal のセッション（tmux）を印つきで使う。 */
-import { api } from "./client";
+import { api, ApiError } from "./client";
+
+/** 閉じる・ロックの失敗を画面の日本語にする（409 はロック中の決まりの文言）。 */
+export function commanderErrorText(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.status === 409) return "ロック中です。先にロックを外してください";
+  return error instanceof Error ? error.message : fallback;
+}
 
 export interface CommanderCli {
   id: string;
@@ -75,6 +81,8 @@ export interface CommanderConsole {
   /** 5 時間・週の上限の使用率（Claude・Codex）。 */
   commander_usage?: CommanderUsage;
   commander_created_by?: string;
+  /** ロック中は ControlDeck の画面から閉じられない（外から消されたら検知して開き直す）。 */
+  commander_locked?: boolean;
 }
 
 export interface UsageWindow { used_percent: number; resets_at: number | null }
@@ -215,6 +223,8 @@ export async function fetchModels(cli: string, account: string): Promise<ModelsI
 export interface CommanderSettings {
   resume_message: string;
   default_resume_message: string;
+  /** 外から閉じられたロック中のコンソールを自動で開き直す（既定 true）。 */
+  auto_restore?: boolean;
   default_leader?: Endpoint | null;
   default_roles?: TeamRoleDef[];
   /** チームの保存先（親フォルダ）。空なら未設定（CodeDEV に自動の作業場所）。 */
@@ -230,7 +240,7 @@ export async function fetchCommanderSettings(): Promise<CommanderSettings> {
   return api<CommanderSettings>("/commander/settings");
 }
 
-export async function putCommanderSettings(body: { resume_message: string }): Promise<CommanderSettings> {
+export async function putCommanderSettings(body: { resume_message?: string; auto_restore?: boolean }): Promise<CommanderSettings> {
   return api<CommanderSettings>("/commander/settings", { method: "PUT", json: body });
 }
 
@@ -252,6 +262,19 @@ export async function openConsoles(body: OpenConsolesBody): Promise<ConsolesOpen
 
 export async function closeConsole(id: string): Promise<{ ok: boolean }> {
   return api<{ ok: boolean }>(`/commander/consoles/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** ロックの切り替え。ロック中は閉じる（単体・一括）が 409 になる。 */
+export async function setConsoleLock(id: string, locked: boolean): Promise<{ ok: boolean; locked: boolean }> {
+  return api<{ ok: boolean; locked: boolean }>(`/commander/consoles/${encodeURIComponent(id)}/lock`, {
+    method: "PUT",
+    json: { locked },
+  });
+}
+
+/** ロックしていないコンソールをまとめて閉じる。ロック中は飛ばし、その数を返す。 */
+export async function closeAllConsoles(): Promise<{ closed: number; skipped_locked: number }> {
+  return api<{ closed: number; skipped_locked: number }>("/commander/consoles", { method: "DELETE" });
 }
 
 // ---- AI チーム（T1）: タスク板と、担当のコンソールへの送り込み ----

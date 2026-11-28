@@ -52,6 +52,7 @@ KINDS: tuple[Kind, ...] = (
     Kind("code_failed", "assistant", "コード開発の失敗", "OpenCode の回が失敗して止まったとき"),
     Kind("code_interrupted", "assistant", "中断", "停電・再起動で実行が中断されたとき"),
     Kind("team_task", "assistant", "AI チームのタスク", "Nexarch の AI チームのタスクで、報告が来た・報告なしで止まった・上限で止まったとき（チームごとに入り切り）"),
+    Kind("console_vanish", "assistant", "Nexarch のコンソールの消失・復旧", "ロックしたコンソールが外から閉じられた・開き直した・復旧の上限で諦めたとき（タイトルだけ）"),
     Kind("research_done", "assistant", "調査の完了", "Web・学術・Deep・複合の調査の回答ができたとき（失敗も）"),
     Kind("chat_done", "assistant", "ふつうの会話の答え", "60 秒以上かかった長い生成が終わったとき（数が多いので既定は無効）", False),
     Kind("workspace_gate", "workspace", "関門の結果", "作業場の関門（dev-check）が合格・不合格で終わったとき"),

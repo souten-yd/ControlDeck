@@ -3,12 +3,16 @@
  * 頭に CLI の名前・アカウント・表示名・生きているか・最終活動を出し、
  * 中身は既存の XtermView を埋め込み表示（embedded）で収める。
  * 頭を押すと全画面で大きく開く。 */
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useState, type MouseEvent } from "react";
 import { ConsoleResumeMessageSheet } from "./ResumeMessageSheet";
 import { UsageLine } from "./UsageLine";
 import { useQueryClient } from "@tanstack/react-query";
-import { accountTitle, setConsoleAutoResume, STATE_LABEL, type CommanderConsole, type CommanderState } from "../../api/commander";
+import {
+  accountTitle, commanderErrorText, setConsoleAutoResume, setConsoleLock, STATE_LABEL,
+  type CommanderConsole, type CommanderState,
+} from "../../api/commander";
 import { useToasts } from "../../stores";
+import { IconLock, IconLockOpen } from "../../components/icons";
 
 const XtermView = lazy(() => import("../terminal/XtermView"));
 
@@ -90,6 +94,84 @@ function AutoResume({ item, cliName }: { item: CommanderConsole; cliName: string
   );
 }
 
+/** ロックの切り替え。既定はロックなし。押すたびに切り替え、ロック中は閉じるを止める。
+ * 状態は aria-pressed と鍵の絵（閉・開）で示す。 */
+function LockButton({ item, cliName }: { item: CommanderConsole; cliName: string }) {
+  const qc = useQueryClient();
+  const show = useToasts((s) => s.show);
+  const [busy, setBusy] = useState(false);
+  const locked = item.commander_locked === true;
+  const toggle = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await setConsoleLock(item.id, !locked);
+      qc.invalidateQueries({ queryKey: ["commander-consoles"] });
+      show(result.locked
+        ? "ロックしました。ロック中のコンソールは閉じられません"
+        : "ロックを外しました");
+    } catch (error) {
+      show(commanderErrorText(error, "ロックを切り替えられませんでした"), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      data-commander-lock={locked ? "on" : "off"}
+      aria-pressed={locked}
+      aria-label={locked ? `${cliName}のロック中（押すとロックを外す）` : `${cliName}のロックなし（押すとロックする）`}
+      title={locked ? "ロック中。閉じるには先にロックを外してください" : "ロックすると、勝手に閉じられないようにします"}
+      disabled={busy}
+      onClick={(event) => void toggle(event)}
+      className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-base disabled:opacity-40 ${
+        locked
+          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+          : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+      }`}
+    >
+      {locked ? <IconLock className="h-4 w-4" /> : <IconLockOpen className="h-4 w-4" />}
+    </button>
+  );
+}
+
+/** 閉じるのボタン。ロック中は出さない（押せないボタンを並べない。鍵と「ロック中」の札で分かる）。
+ *  2026-11-28 Claude のデザインの見直し: 320px で頭の行が詰まり、名前が「Cla…」まで縮んでいた。 */
+function CloseButton({ item, cliName, onClose }: { item: CommanderConsole; cliName: string; onClose: () => void }) {
+  if (item.commander_locked === true) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label={`${cliName}のコンソールを閉じる`}
+      title="コンソールを閉じる"
+      className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+    >
+      🗑️
+    </button>
+  );
+}
+
+/** ロック中の札（色だけに頼らず文字でも分かるように）。 */
+function LockedBadge({ item }: { item: CommanderConsole }) {
+  if (item.commander_locked !== true) return null;
+  return (
+    <span data-commander-locked-badge
+      className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-200">
+      🔒 ロック中
+    </span>
+  );
+}
+
+/** ロック中の札の枠（琥珀色）。 */
+function lockedFrame(item: CommanderConsole): string {
+  return item.commander_locked === true
+    ? "border-amber-300 ring-1 ring-amber-200 dark:border-amber-700 dark:ring-amber-900/60"
+    : "border-zinc-200 dark:border-zinc-800";
+}
+
 /** 状態の文字と最後の行（上限・エラーならその行）。 */
 function StateLine({ item }: { item: CommanderConsole }) {
   const state = stateOf(item);
@@ -140,14 +222,15 @@ export function ConsoleTile({
   return (
     <li
       data-commander-tile
-      className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className={`flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-white shadow-sm dark:bg-zinc-900 ${lockedFrame(item)}`}
     >
       <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         <AliveDot item={item} />
         <button type="button" onClick={onExpand} className="min-w-0 flex-1 text-left" aria-label={`${cliName}のコンソールを大きく開く`}>
           <span className="flex min-w-0 items-center gap-1.5">
-            <strong className="min-w-0 truncate text-sm">{cliName}</strong>
-            <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+            <strong className="min-w-[4.5rem] shrink truncate text-sm">{cliName}</strong>
+            <LockedBadge item={item} />
+            <span className="min-w-0 shrink-[2] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
             </span>
             {item.commander_label && (
@@ -167,19 +250,12 @@ export function ConsoleTile({
           onClick={onExpand}
           aria-label="大きく開く"
           title="大きく開く"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          className="hidden h-9 w-9 shrink-0 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:grid"
         >
           ⤢
         </button>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={`${cliName}のコンソールを閉じる`}
-          title="コンソールを閉じる"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-        >
-          🗑️
-        </button>
+        <LockButton item={item} cliName={cliName} />
+        <CloseButton item={item} cliName={cliName} onClose={onClose} />
       </div>
       <div className="shrink-0 border-b border-zinc-200 px-3 pb-1 dark:border-zinc-800">
         <AutoResume item={item} cliName={cliName} />
@@ -219,14 +295,15 @@ export function ConsoleRow({
   return (
     <li
       data-commander-row
-      className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className={`min-w-0 rounded-2xl border bg-white p-2.5 shadow-sm dark:bg-zinc-900 ${lockedFrame(item)}`}
     >
       <div className="flex min-w-0 items-center gap-2">
       <AliveDot item={item} />
       <button type="button" onClick={onOpen} className="min-h-11 min-w-0 flex-1 text-left">
         <span className="flex min-w-0 items-center gap-1.5">
-          <strong className="min-w-0 truncate text-sm">{cliName}</strong>
-          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          <strong className="min-w-[4.5rem] shrink truncate text-sm">{cliName}</strong>
+          <LockedBadge item={item} />
+          <span className="min-w-0 shrink-[2] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
             {accountTitle(item.commander_account, item.commander_account_label, false, undefined, item.commander_login_name)}
           </span>
           {item.commander_label && <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{item.commander_label}</span>}
@@ -245,15 +322,8 @@ export function ConsoleRow({
       >
         開く
       </button>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label={`${cliName}のコンソールを閉じる`}
-        title="コンソールを閉じる"
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-base text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-      >
-        🗑️
-      </button>
+      <LockButton item={item} cliName={cliName} />
+      <CloseButton item={item} cliName={cliName} onClose={onClose} />
       </div>
       <div className="pl-4">
         <AutoResume item={item} cliName={cliName} />

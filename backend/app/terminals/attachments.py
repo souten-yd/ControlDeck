@@ -132,10 +132,22 @@ class AttachmentStore:
 
 
 def _default_root() -> Path:
-    """RAM 上の置き場。tmpfs が使えない環境では通常の一時領域へ落とす。"""
+    """RAM 上の置き場。tmpfs が使えない環境では通常の一時領域へ落とす。
+
+    CONTROL_DECK_ATTACHMENTS_DIR での明示指定を最優先する（本番と同じ利用者・同じ機械で
+    テストを流すとき、テストのプロセスが本番の置き場を消さないための指定）。
+    既定の場所が読み取り専用でマウントされているとき（本番の置き場を検証環境から守る隔離）も、
+    本番の置き場には触らず通常の一時領域へ落とす。
+    """
+    override = os.environ.get("CONTROL_DECK_ATTACHMENTS_DIR", "").strip()
+    if override:
+        return Path(override)
     shm = Path("/dev/shm")
     base = shm if shm.is_dir() and os.access(shm, os.W_OK) else Path(tempfile.gettempdir())
-    return base / f"control-deck-terminal-{os.getuid()}"
+    root = base / f"control-deck-terminal-{os.getuid()}"
+    if base == shm and root.exists() and not os.access(root, os.W_OK):
+        return Path(tempfile.gettempdir()) / root.name
+    return root
 
 
 store = AttachmentStore()
