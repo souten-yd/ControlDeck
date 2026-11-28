@@ -719,9 +719,61 @@ def test_leader_start_validation_and_double_run(env, monkeypatch):
             team_leader.create_and_start(bad)
     with pytest.raises(teams.TeamError):
         team_leader.create_and_start("目標", "", "/etc")
-    assert team_leader.recover_interrupted() == 1 and get_team(team["id"])["leader_run"]["status"] == "failed"
+    # 自動で再開しない設定のチームは interrupted のまま（画面の「再開」で続けられる）
+    teams.update_team(team["id"], {"auto_resume": False})
+    out = team_leader.recover_interrupted()
+    assert out["leaders"] == 1 and out["resumed"] == 0
+    assert get_team(team["id"])["leader_run"]["status"] == "interrupted"
     follow = team_leader.resume(team["id"])
     assert follow["leader_run"]["status"] == "running" and len(follow["requests"]) == 2
+
+
+def test_startup_auto_resume_of_interrupted_leader(env, sent, monkeypatch):
+    """目的: ControlDeck の再起動で中断されたチームリーダーを、自動で続きから再開すること（brief D）。
+
+    - チームの設定 auto_resume（既定入）。
+    - 30 分に 2 回まで（永続・teams.json に覚える）。超えたら failed にして通知（連続失敗で止める）。
+    - 利用者が止めたもの（stop_requested）は再開しない。
+    根拠: 2026-11-28 の依頼（brief D・利用者「PC の再起動や更新のときに、事前の状況を記録しておき、
+    途中から再開できるように」）。再開は team_status から続きを読ませる（resume と同じ道）。"""
+    monkeypatch.setattr(team_runner, "_spawn", lambda func, *args: None)
+    team = team_leader.create_and_start("目標を果たす")
+    assert get_team(team["id"])["auto_resume"] is True  # 既定は入
+    out = team_leader.recover_interrupted()
+    assert out == {"leaders": 1, "resumed": 1, "capped": 0, "stopped": 0}
+    run = get_team(team["id"])["leader_run"]
+    assert run["status"] == "running" and any("自動で再開" in r["text"] for r in get_team(team["id"])["timeline"])
+    # 2 回目までは再開する（30 分に 2 回）
+    team_leader.recover_interrupted()
+    assert get_team(team["id"])["leader_run"]["status"] == "running"
+    # 3 回目は上限を超える → failed ＋通知
+    out = team_leader.recover_interrupted()
+    assert out["resumed"] == 0 and out["capped"] == 1
+    run = get_team(team["id"])["leader_run"]
+    assert run["status"] == "failed" and "上限" in str(run.get("reason") or "")
+    assert any("再開" in m for _t, m in sent)
+    # 30 分が経てばまた再開できる（永続の上限は「30 分に 2 回」）
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        target = teams._find_team(all_teams, team["id"])  # noqa: SLF001
+        log = target.setdefault("auto_resume_log", [])
+        for row in log:
+            row["at"] -= 1801
+        target["leader_run"]["status"] = "running"  # また中断されたとして
+        teams._save(all_teams)  # noqa: SLF001
+    out = team_leader.recover_interrupted()
+    assert out["resumed"] == 1 and get_team(team["id"])["leader_run"]["status"] == "running"
+    # 以降の回収でこのチームがもう拾われないようにしておく
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        teams._find_team(all_teams, team["id"])["leader_run"]["status"] = "done"  # noqa: SLF001
+        teams._save(all_teams)  # noqa: SLF001
+    # 利用者が止めたものは再開しない
+    stopped = team_leader.create_and_start("止める案件")
+    team_leader.stop(stopped["id"])
+    out = team_leader.recover_interrupted()
+    assert out["stopped"] == 1 and out["resumed"] == 0
+    assert get_team(stopped["id"])["leader_run"]["status"] == "stopped"
 
 
 def test_leader_launch_error_fails_with_reason(env, server):
@@ -731,6 +783,70 @@ def test_leader_launch_error_fails_with_reason(env, server):
     team_leader.start(team["id"], "目標")
     run = get_team(team["id"])["leader_run"]
     assert run["status"] == "failed" and "見つかりません" in run["reason"]
+
+
+def test_tool_descriptions_match_actual_behavior():
+    """目的: チームリーダーの道具の説明が、実際の動きと合うことを守る。
+
+    根拠: 2026-11-28 チームリーダーからの要望（.nexarch/prompt-audit.diff）。説明が実際と食い違うと
+    ・wait の timeout_s の既定が 120 秒であることも、時間切れでも止めず timed_out=true で全部の状態を返すことも
+      説明に無く、待ち方を誤る。
+    ・delegate は item_id と他の欄を一緒に渡せず、depends_on が終わっていなければ 409 で断るのに「どちらか」としか
+      書かれていなかった。
+    ・finish は走っている仕事を止めず still_running に id を返す・ask_user は聞かずに進める設定のとき
+      asked=false を返す・run_checks は捨てたコマンドを dropped に返す。どれも実際の返り値の欄なのに
+      説明に無かった。
+    実際の動きは tool_wait・tool_delegate・tool_finish・tool_ask_user・clean_checks が持つので、
+    ここでは説明の文字列だけを機械的に確かめる（動き自体は他の試験が確かめている）。"""
+    defs = {t["name"]: t for t in leader_mcp.tool_defs()}
+    assert "上位 8 件" in defs["research"]["description"], defs["research"]["description"]
+    assert "403" in defs["research"]["description"]
+    assert "item_id と一緒に他の欄は渡せない" in defs["delegate"]["description"]
+    assert "depends_on が終わっていない項目は 409" in defs["delegate"]["description"]
+    assert "wait=true なら終わるまで（最大 600 秒）待って" in defs["delegate"]["description"]
+    assert "既定は 120 秒" in defs["wait"]["description"]
+    assert "timed_out=true" in defs["wait"]["description"] and "止めはしない" in defs["wait"]["description"]
+    assert "捨てたものは dropped に返す" in defs["run_checks"]["description"]
+    assert "asked=false" in defs["ask_user"]["description"]
+    assert "既定は 120 秒" in defs["wait_answer"]["description"]
+    assert "still_running" in defs["finish"]["description"] and "止めはしない" in defs["finish"]["description"]
+    assert "作業場所のファイルは読める（書かない）" in team_leader.PROMPT
+    assert "Web・資料・コードの検索は research" in team_leader.PROMPT
+
+
+def test_local_only_blocks_web_research_and_leader_endpoints(env, sent):
+    """目的: 閉じたチーム（local_only・既定切）で、チームリーダーの Web の調査を断ることと、
+    チームリーダーの担い手（endpoint）がローカル LLM だけになること。
+
+    - research(web) は 403（web_research=false のときも同じ・既存の動き）。
+    - ローカルのチームリーダーがいなければ failed（外部の endpoint は使わない）。
+    根拠: 2026-11-28 の依頼（brief C）「local_only=true は全起動/引継ぎ/モデル解決/Web出口で強制、既定 false」。"""
+    from app.integrations.opencode import model_choice
+
+    team = teams.create_team("閉じた班")
+    teams.update_team(team["id"], {"local_only": True})
+    with pytest.raises(ToolError) as exc:
+        leader_mcp.tool_research(team["id"], {"query": "x", "scope": "web"})
+    assert exc.value.status == 403 and "ローカル" in str(exc.value)
+    teams.update_team(team["id"], {"local_only": False, "web_research": False})
+    with pytest.raises(ToolError) as exc2:
+        leader_mcp.tool_research(team["id"], {"query": "x", "scope": "web"})
+    assert exc2.value.status == 403 and "web_research" in str(exc2.value)
+    # endpoint の判定: OpenCode の既定の接続（ゲートウェイ・ローカル）だけが使える
+    local_ep = EP("opencode")
+    assert teams.endpoint_local_problem(local_ep) == ""
+    assert "ローカル LLM のみ" in teams.endpoint_local_problem(EP("claude"))
+    for bad in (EP("codex"), EP("opencode", model="opencode-go/glm-5.3"), EP("opencode", model="cloud:openrouter/x")):
+        assert teams.endpoint_local_problem(bad), bad
+    assert model_choice.is_zen("opencode-go/glm-5.3")  # 判定の前提（Zen は外部へ直結）
+    # チームリーダーが全部外部なら failed（ローカルの担い手が要る）
+    leader_team = teams.create_team("外部だけの指揮")
+    teams.update_team(leader_team["id"], {"local_only": True})
+    teams.set_leader(leader_team["id"], EP("claude"))
+    team_leader.start(leader_team["id"], "目標")
+    run = get_team(leader_team["id"])["leader_run"]
+    assert run["status"] == "failed" and "ローカル" in run["reason"]
+    assert any("ローカル" in m for _t, m in sent)
 
 
 # ---------------------------------------------------------------- 通しの試験

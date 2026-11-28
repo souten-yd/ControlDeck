@@ -3,13 +3,14 @@
  * 普段（エキスパート切）はこれだけ: 依頼文 → 計画（題の一覧。開くと本文）→ 進み具合（仕事ごとに 1 行）→ 質問（その場で答える）→
  * 結果（何をしたか・確認の結果・変更ファイル数・残り・「取り込む」）。要対応（質問・止まった・上限で動けない）は一番上。
  * エキスパートでは、段の割り当て・チームリーダーの実行の記録・MCP の呼び出しの履歴・使用量を足す。 */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   answerLeaderQuestion, askLeader, createAutoTeam, landTeam, resumeLeader, stopLeader,
   type PlanItem, type Team, type TeamTask,
 } from "../../api/commander";
 import { primaryButtonClass, secondaryButtonClass } from "../../components/ui";
 import { useToasts } from "../../stores";
+import { MaterialAttach } from "./TeamMaterials";
 
 const inputClass = "min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 const TIER_LABEL = { explore: "調べる", implement: "実装", review: "評価", hard: "難所" } as const;
@@ -35,6 +36,7 @@ function fmtCost(usd: number | undefined): string {
 export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string) => void }) {
   const show = useToasts((s) => s.show);
   const [text, setText] = useState("");
+  const [paths, setPaths] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [addToThis, setAddToThis] = useState(false);
   const running = team?.leader_run?.status === "running";
@@ -42,8 +44,9 @@ export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string
   const submit = async () => {
     setBusy(true);
     try {
-      const made = team && addToThis ? await askLeader(team.id, text.trim()) : await createAutoTeam(text.trim());
+      const made = team && addToThis ? await askLeader(team.id, text.trim(), paths) : await createAutoTeam(text.trim(), "", "", paths);
       setText("");
+      setPaths([]);
       onAsked(made.id);
       show("チームリーダーに頼みました");
     } catch (e) {
@@ -60,6 +63,7 @@ export function LeaderAsk({ team, onAsked }: { team?: Team; onAsked: (id: string
         />
         <button type="submit" data-team-ask-submit disabled={!text.trim() || busy || (addToThis && running)} className={`${primaryButtonClass} shrink-0`}>頼む</button>
       </div>
+      <MaterialAttach paths={paths} onChange={setPaths} />
       {canAdd && (
         <label className="mt-1.5 flex min-h-8 items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
           <input type="checkbox" checked={addToThis} onChange={(e) => setAddToThis(e.target.checked)} />
@@ -176,6 +180,20 @@ function ResultSection({ team, expert, onChanged }: { team: Team; expert: boolea
   );
 }
 
+/** 切のときは「詳しく」で畳み、入のときはそのまま並べる（依頼の全文・計画・進み具合・時系列）。 */
+function Fold({ expert, children }: { expert: boolean; children: ReactNode }) {
+  if (expert) return <>{children}</>;
+  return (
+    <details data-team-more className="group mb-3">
+      <summary data-team-more-toggle className="flex min-h-11 cursor-pointer list-none items-center gap-1 rounded-xl px-1 text-sm font-semibold text-accent-700 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
+        詳しく
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-4 w-4 transition-transform group-open:rotate-180"><path d="m6 9 6 6 6-6" /></svg>
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
+  );
+}
+
 export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: Team; expert: boolean; onChanged: () => void; onHandoff: (taskId: number) => void }) {
   const show = useToasts((s) => s.show);
   const run = team.leader_run;
@@ -217,43 +235,45 @@ export function LeaderTimeline({ team, expert, onChanged, onHandoff }: { team: T
           ))}
         </section>
       )}
-      {(request || run?.status === "running") && (
-        <section data-team-request className={SECTION}>
-          <h3 className={SECTION_TITLE}>依頼</h3>
-          {request && <p className="whitespace-pre-wrap break-words text-sm">{request}</p>}
-          {run?.status === "running" && (
-            <p data-team-leader-run="running" role="status" className="mt-2 flex items-center justify-between gap-2 text-xs font-semibold text-blue-700 dark:text-blue-300">
-              <span>チームリーダーが進めています…{expert && run.endpoint ? `（${run.endpoint}）` : ""}</span>
-              <button type="button" onClick={() => void act(() => stopLeader(team.id), "止めました")} className="shrink-0 text-xs font-semibold text-red-600 underline dark:text-red-400">止める</button>
-            </p>
-          )}
-        </section>
+      {run?.status === "running" && (
+        <p data-team-leader-run="running" role="status" className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-accent-50 px-3 py-2 text-xs font-semibold text-accent-800 dark:bg-accent-950/40 dark:text-accent-200">
+          <span>チームリーダーが進めています…{expert && run.endpoint ? `（${run.endpoint}）` : ""}</span>
+          <button type="button" onClick={() => void act(() => stopLeader(team.id), "止めました")} className="shrink-0 text-xs font-semibold text-red-600 underline dark:text-red-400">止める</button>
+        </p>
       )}
-      <PlanSection team={team} expert={expert} />
-      {(managed.length > 0 || rows.length > 0) && (
-        <section data-team-progress className={SECTION}>
-          <h3 className={SECTION_TITLE}>進み具合</h3>
-          {managed.length > 0 && (
-            <ul className="mb-2 grid gap-1">
-              {managed.map((t) => (
-                <li key={t.id} data-team-progress-task={t.id} className="flex min-w-0 items-baseline gap-2 text-sm">
-                  <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{TIER_LABEL[t.tier ?? "implement"]}</span>
-                  <span className="min-w-0 flex-1 break-words">{t.title}</span>
-                  <span className="shrink-0 text-xs font-semibold text-zinc-600 dark:text-zinc-300">{taskPhrase(t)}</span>
+      <Fold expert={expert}>
+        {request && (
+          <section data-team-request className={SECTION}>
+            <h3 className={SECTION_TITLE}>依頼</h3>
+            <p className="whitespace-pre-wrap break-words text-sm">{request}</p>
+          </section>
+        )}
+        <PlanSection team={team} expert={expert} />
+        {(managed.length > 0 || rows.length > 0) && (
+          <section data-team-progress className={SECTION}>
+            <h3 className={SECTION_TITLE}>進み具合</h3>
+            {managed.length > 0 && (
+              <ul className="mb-2 grid gap-1">
+                {managed.map((t) => (
+                  <li key={t.id} data-team-progress-task={t.id} className="flex min-w-0 items-baseline gap-2 text-sm">
+                    <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{TIER_LABEL[t.tier ?? "implement"]}</span>
+                    <span className="min-w-0 flex-1 break-words">{t.title}</span>
+                    <span className="shrink-0 text-xs font-semibold text-zinc-600 dark:text-zinc-300">{taskPhrase(t)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <ol className="grid gap-0.5 text-xs text-zinc-600 dark:text-zinc-300">
+              {rows.slice(-12).map((r, i) => (
+                <li key={`${r.at}-${i}`} className="flex min-w-0 gap-2">
+                  <time className="shrink-0 text-zinc-400">{new Date(r.at * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</time>
+                  <span className="min-w-0 break-words">{r.text}</span>
                 </li>
               ))}
-            </ul>
-          )}
-          <ol className="grid gap-0.5 text-xs text-zinc-600 dark:text-zinc-300">
-            {rows.slice(-12).map((r, i) => (
-              <li key={`${r.at}-${i}`} className="flex min-w-0 gap-2">
-                <time className="shrink-0 text-zinc-400">{new Date(r.at * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</time>
-                <span className="min-w-0 break-words">{r.text}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
+            </ol>
+          </section>
+        )}
+      </Fold>
       <ResultSection team={team} expert={expert} onChanged={onChanged} />
       {expert && <ExpertDetails team={team} />}
     </div>

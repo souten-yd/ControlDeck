@@ -123,10 +123,13 @@ def _base_env(exe: str = "") -> dict[str, str]:
     return env
 
 
-def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False, extra_mcp: dict | None = None):
+def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False, extra_mcp: dict | None = None,
+                     owner_user_id: int = 0, job_id: str = ""):
     """OpenCode（v2）の argv・環境・後片付け。OpenCode 画面と同じ設定（provider）で作る。
 
-    readonly は読み取りの agent（plan）で動かす。extra_mcp は設定の mcp へ足すサーバー（チームリーダーの nexarch_team）。"""
+    readonly は読み取りの agent（plan）で動かす。extra_mcp は設定の mcp へ足すサーバー（チームリーダーの nexarch_team）。
+    owner_user_id があるときは ControlDeck の MCP（作成した利用者の権限・短命 token）を設定へ足す
+    （job_id は token の subject に入る識別子。Nexarch の担い手は team-<team>-<task>[-ro]）。"""
     from app.integrations.opencode import model_choice, provider
 
     # OpenCode（Zen・Go）のモデル（opencode-go/glm-5.3 など）はゲートウェイを通らず、OpenCode が opencode.ai へ
@@ -146,8 +149,9 @@ def _opencode_launch(model: str, cwd: Path, text: str, *, readonly: bool = False
         endpoint = str(settings["base_url"]).rstrip("/")
         config_model = str(settings.get("model") or "auto") if zen else model
         config = provider._runtime_config(  # noqa: SLF001 - 設定フォルダの作り方を OpenCode 画面と同じにする
-            f"team-{secrets.token_hex(4)}", endpoint, config_model,
-            project_id=provider._managed_project_id(cwd), runtime=runtime, extra_mcp=extra_mcp)  # noqa: SLF001
+            job_id or f"team-{secrets.token_hex(4)}", endpoint, config_model,
+            owner_user_id=owner_user_id or None, project_id=provider._managed_project_id(cwd), runtime=runtime,
+            extra_mcp=extra_mcp)  # noqa: SLF001
     except provider.CodeAgentError as exc:
         raise LaunchError(str(exc)) from exc
     try:  # ローカルのモデルは呼ばれたらロードする（run_chat と同じ）
@@ -200,6 +204,44 @@ LEADER_TIMEOUT = 6 * 60 * 60
 LEADER_TOOLS = f"mcp__{LEADER_MCP_NAME}__*,Read,Glob,Grep"
 # 読み取りの担い手（explore・review）の許す道具: 読むのと git の読み取りだけ
 READONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"
+# 担い手の ControlDeck の MCP（brief C・2026-11-28）: OpenCode 画面の会話と同じ橋渡し（controldeck_addons）。
+# 読み取りの担い手の書く道具はサーバー側（agent_mcp）で断る。
+WORKER_MCP_NAME = "controldeck_addons"
+WORKER_MCP_TOOLS = f"mcp__{WORKER_MCP_NAME}__*"
+
+
+def _agent_mcp_mounted() -> bool:
+    """ControlDeck の MCP の口（/api/v1/addons/agent-mcp）がこの backend にあるか。無ければ橋を渡さない。"""
+    try:
+        from app.features.registry import opencode_enabled
+
+        return opencode_enabled()
+    except Exception:  # noqa: BLE001 - 判定に失敗したときは橋を渡さない
+        return False
+
+
+def tools_mcp_for(team: dict, task: dict) -> dict | None:
+    """担い手へ渡す ControlDeck の MCP（brief C・2026-11-28）。
+
+    チームを作った利用者（owner_user_id）の権限で・チームと仕事に結びつく短命 token で渡す。
+    作成者の分からないチーム（旧チーム・直作り）と、MCP の口が無いときは付けない。
+    OpenCode の担い手は owner_user_id を設定へ渡すだけで（provider が橋と token を作る・OpenCode 画面と同じ）、
+    claude・codex は橋渡し（stdio）を argv・設定ファイル・環境変数で渡す。
+    """
+    owner = int(team.get("owner_user_id") or 0)
+    if owner <= 0 or not _agent_mcp_mounted():
+        return None
+    return {"owner": owner, "team": str(team["id"]), "task": int(task["id"]),
+            "readonly": bool(task.get("readonly"))}
+
+
+def _worker_mcp_spec(tools_mcp: dict) -> dict:
+    """担い手の ControlDeck の MCP の橋の指定（token を発行して URL と一緒に返す）。token は argv に出さない。"""
+    from app.addons.agent_mcp import agent_mcp_url, issue_worker_token
+
+    return {"url": agent_mcp_url(),
+            "token": issue_worker_token(int(tools_mcp["owner"]), str(tools_mcp["team"]), int(tools_mcp["task"]),
+                                         readonly=bool(tools_mcp["readonly"]))}
 
 
 def _model_args(member: dict) -> tuple[str, str]:
@@ -228,11 +270,13 @@ def leader_mcp_server(mcp: dict, *, claude: bool = False) -> dict:
 
 def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
                  allow_no_sandbox: bool = True, mcp: dict | None = None,
-                 readonly: bool = False) -> tuple[list[str], dict[str, str], object]:
+                 readonly: bool = False, tools_mcp: dict | None = None) -> tuple[list[str], dict[str, str], object]:
     """(argv, env, cleanup)。CLI ごとの引数の組み立て。実行ファイルは accounts.executable_path。
 
     model・effort があれば渡す（claude `--model` `--effort`・codex `-m` `-c model_reasoning_effort=`・opencode `--model …#variant`）。
     mcp があればチームリーダーの実行（`{"url", "token"}`。MCP の橋渡し（stdio）で nexarch_team を渡す。書かせない）。
+    tools_mcp があれば担い手の ControlDeck の MCP（`{"owner", "team", "task", "readonly"}`。作成した利用者の権限で
+    短命 token を発行。OpenCode は provider の設定へ、claude・codex は橋渡しへ）。
     readonly は explore・review の担い手（書かない: claude は plan＋読む道具だけ・codex は read-only・opencode は plan の agent）。
     token は argv に出さない（claude は 0600 の設定ファイル・codex と opencode は環境変数／0600 の設定）。
     """
@@ -249,7 +293,10 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             raise LaunchError(str(exc)) from exc
         extra_mcp = {LEADER_MCP_NAME: leader_mcp_server(mcp)} if mcp else None
         argv, extra_env, cleanup = _opencode_launch(model or str(connection["model"]), cwd, text, readonly=readonly or bool(mcp),
-                                                    extra_mcp=extra_mcp)
+                                                    extra_mcp=extra_mcp,
+                                                    owner_user_id=int(tools_mcp["owner"]) if tools_mcp else 0,
+                                                    job_id=(f"team-{tools_mcp['team']}-{tools_mcp['task']}"
+                                                            + ("-ro" if tools_mcp["readonly"] else "")) if tools_mcp else "")
         if effort and "--model" in argv:  # variant（モデルが持つときだけ効く）
             at = argv.index("--model") + 1
             argv[at] = f"{argv[at]}#{effort}"
@@ -262,6 +309,7 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
     except (FileNotFoundError, ValueError) as exc:
         raise LaunchError(str(exc)) from exc
     mcp_env: dict[str, str] = {}
+    worker_mcp = _worker_mcp_spec(tools_mcp) if tools_mcp else None
     if cli_id == "claude":
         argv = [exe, "-p", text, "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
                 # 定額のログインだけ（API キーは使わない。accounts.CLAUDE_SUBSCRIPTION_SETTINGS）
@@ -272,10 +320,19 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump({"mcpServers": {LEADER_MCP_NAME: {"type": "stdio", **leader_mcp_server(mcp, claude=True)}}}, handle)
             argv += ["--permission-mode", "dontAsk", "--allowedTools", LEADER_TOOLS, "--mcp-config", str(config), "--strict-mcp-config"]
-        elif readonly:
-            argv += ["--permission-mode", "plan", "--allowedTools", READONLY_TOOLS]
         else:
-            argv += ["--permission-mode", "acceptEdits", "--allowedTools", CLAUDE_TOOLS]
+            if worker_mcp:  # 担い手の ControlDeck の MCP: 0600 の設定ファイル（token は中だけ）
+                config = last_file.with_name("mcp.json")
+                fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump({"mcpServers": {WORKER_MCP_NAME: {"type": "stdio", **leader_mcp_server(worker_mcp, claude=True)}}}, handle)
+                argv += ["--mcp-config", str(config), "--strict-mcp-config"]
+            if readonly:
+                argv += ["--permission-mode", "plan",
+                         "--allowedTools", READONLY_TOOLS + (f",{WORKER_MCP_TOOLS}" if worker_mcp else "")]
+            else:
+                argv += ["--permission-mode", "acceptEdits",
+                         "--allowedTools", CLAUDE_TOOLS + (f",{WORKER_MCP_TOOLS}" if worker_mcp else "")]
         if model:
             argv += ["--model", model]
         if effort:
@@ -302,6 +359,15 @@ def build_launch(member: dict, text: str, cwd: Path, last_file: Path, *,
                      # "MCP tool call requires approval, but approval policy is never"）。nexarch_team だけを承認済みにする
                      "-c", f'mcp_servers.{name}.default_tools_approval_mode="approve"']
             mcp_env = dict(spec["environment"])  # token は argv ではなく codex の環境変数で渡し、env_vars で橋渡しへ転送する
+        elif worker_mcp:
+            spec = leader_mcp_server(worker_mcp)
+            name = WORKER_MCP_NAME
+            argv += ["-c", f"mcp_servers.{name}.command={json.dumps(spec['command'][0])}",
+                     "-c", f"mcp_servers.{name}.args={json.dumps(spec['command'][1:])}",
+                     "-c", f"mcp_servers.{name}.env_vars={json.dumps(sorted(spec['environment']))}",
+                     "-c", f"mcp_servers.{name}.tool_timeout_sec=3600",
+                     "-c", f'mcp_servers.{name}.default_tools_approval_mode="approve"']
+            mcp_env = dict(spec["environment"])
         argv += [*accounts.CODEX_SUBSCRIPTION_ARGS, text]   # ChatGPT のログインだけ（API キーは使わない）
     return argv, accounts.without_api_keys({**_base_env(exe), **account_env, **mcp_env}), (lambda: None)
 
@@ -556,7 +622,8 @@ def _kill(proc: subprocess.Popen) -> None:
 
 
 def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_sandbox: bool = True,
-             *, mcp: dict | None = None, readonly: bool = False, timeout: float = RUN_TIMEOUT) -> dict:
+             *, mcp: dict | None = None, readonly: bool = False, timeout: float = RUN_TIMEOUT,
+             tools_mcp: dict | None = None) -> dict:
     """CLI を 1 回走らせて結果の dict を返す（同期）。本文・出力は返さずログにも出さない。"""
     cli_id = str(member.get("cli") or "")
     tmp = Path(tempfile.mkdtemp(prefix="nexarch-run-"))
@@ -564,7 +631,8 @@ def _execute(key: tuple[str, int], member: dict, text: str, cwd: Path, allow_no_
     try:
         os.chmod(tmp, 0o700)
         out_path, err_path, last_path = tmp / "stdout", tmp / "stderr", tmp / "last"
-        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox, mcp=mcp, readonly=readonly)
+        argv, env, cleanup = build_launch(member, text, cwd, last_path, allow_no_sandbox=allow_no_sandbox, mcp=mcp,
+                                         readonly=readonly, tools_mcp=tools_mcp)
         out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         err_fd = os.open(err_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -665,11 +733,11 @@ def _notify(events: list[dict]) -> None:
 
 
 def _worker(team_id: str, task_id: int, run_id: str, member: dict, text: str, cwd: Path,
-            allow_no_sandbox: bool = True, readonly: bool = False) -> None:
+            allow_no_sandbox: bool = True, readonly: bool = False, tools_mcp: dict | None = None) -> None:
     key = (team_id, task_id)
     try:
         try:
-            result = _execute(key, member, text, cwd, allow_no_sandbox, readonly=readonly)
+            result = _execute(key, member, text, cwd, allow_no_sandbox, readonly=readonly, tools_mcp=tools_mcp)
         except LaunchError as exc:
             result = {"launch_error": str(exc)[:300]}
         except Exception:  # noqa: BLE001 - スレッドの失敗で落とさない
@@ -832,6 +900,34 @@ def _policy_after(team_id: str, task_id: int) -> None:
 
 # ---------------------------------------------------------------- 開始・停止・状態
 
+# 守りの点検表（2026-11-28 品質の評価 A1: AI チームのコードで、パス・リンクの守りの見落としが 2 回あり、
+# チームの中のレビューは見つけなかった）。review の担い手の本文に必ず付ける。
+SECURITY_CHECKLIST = (
+    "【守りの点検表】差分を次の観点で必ず確かめ、見つけたものは報告の「残り」に書くこと:\n"
+    "- パス: 利用者や AI から来るパスを realpath で正規化し、許可の範囲の中か確かめているか（.. ・絶対パス・空）。\n"
+    "- シンボリックリンク: リンクをたどって許可の外（~/.ssh・data_dir・秘密の置き場）を読み書き・コピーしないか。\n"
+    "- 秘密: 鍵・トークン・パスワードをログ・argv・画面・応答・ファイルの写しに出していないか。\n"
+    "- 権限: API・MCP の道具ごとに認証と権限を確かめているか。読み取りの役割に書く道具を渡していないか。\n"
+    "- 外部: 外への通信・取得（npm・pip・モデル・ブラウザ）を勝手にしていないか。\n"
+    "- 実行: shell=True・os.system・文字列の連結でコマンドを作っていないか。root で動かしていないか。"
+)
+
+
+def task_notes(readonly: bool, tier: str) -> str:
+    """担い手の本文の後ろに付ける決まり（読み取り・調べ方・点検表・コミット）。"""
+    notes = []
+    if readonly:
+        notes.append("【読み取りだけ】ファイルを作らない・変えない・消さない。調べた結果と評価を報告に書くこと。")
+        # 2026-11-28 品質の評価 S2: 調べもの 1 本が入力 8〜12 万トークン・17〜33 分かかっていた
+        notes.append("【調べ方】ファイル全体を何本も読み込まない。grep・ファイルの一覧・行の範囲で、必要な所だけ読むこと。")
+    if tier == "review":
+        notes.append(SECURITY_CHECKLIST)
+    if not readonly:
+        notes.append("【コミット】コミットはしなくてよい（箱の中では本体の .git は読み取り専用）。変更をファイルに残せば、"
+                     "結果を集めるときに Nexarch がコミットする。")
+    return "".join("\n\n" + n for n in notes)
+
+
 def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bool = False) -> dict:
     """headless の担当でタスクを実行する（スレッドを始めて、板の表示を返す）。"""
     from app.commander import team_dispatch
@@ -844,6 +940,10 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         member = teams.find_member(team, str(task.get("assignee") or ""))
         if member is None or not teams.is_headless(member):
             raise teams.TeamError("担当がヘッドレスのメンバーではありません")
+        if team.get("local_only"):  # 閉じたチーム: ローカル LLM の担い手だけ（brief C・2026-11-28）
+            problem = teams.member_local_problem(member)
+            if problem:
+                raise teams.TeamError(problem)
         with _active_lock:
             if (team_id, task_id) in _active:
                 raise teams.TeamError("実行中です", 409)
@@ -873,8 +973,10 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         task.pop("resume_note", None)
         text = teams.dispatch_text(task, str(team.get("brief") or ""))
         readonly = bool(task.get("readonly"))
-        if readonly:
-            text += "\n\n【読み取りだけ】ファイルを作らない・変えない・消さない。調べた結果と評価を報告に書くこと。"
+        from app.commander import team_roles
+
+        role = team_roles.find_role(team, task.get("role")) if task.get("role") else None
+        text += task_notes(readonly, str((role or {}).get("name") or ""))
         if note:
             text += "\n\n" + note
         task["status"] = "doing"
@@ -893,11 +995,12 @@ def start_run(team_id: str, task_id: int, by: str, extra: str = "", *, retry: bo
         if sandbox_free:
             entry["sandbox"] = "none"
             task["run"]["sandbox"] = "none"
+        worker_tools = tools_mcp_for(team, task)
         teams._event(task, ("再挑戦" if retry else "実行を開始") + f"（{member.get('cli')}・ヘッドレス）"
                      + ("・引き継ぎつき" if note and not retry else ""), by)
         teams._save(all_teams)
         view = teams._task_view(team, task)
-    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd, allow_no_sandbox, readonly)
+    _spawn(_worker, team_id, task_id, run_id, dict(member), text, cwd, allow_no_sandbox, readonly, worker_tools)
     return view
 
 

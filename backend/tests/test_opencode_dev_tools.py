@@ -229,6 +229,82 @@ def test_research_tool_can_be_turned_off(monkeypatch):
     assert "外部へ問い合わせない" in agent_mcp._research_tool()["description"]
 
 
+def test_team_worker_research_respects_team_settings(monkeypatch, report_root):
+    """目的: Nexarch のチームの担い手の精密調査（control_deck.research）が、チームの設定に従うこと。
+
+    グローバルの外部送信の許可（research_external）が出ていても、
+    - Web の調査を断ったチーム（web_research=false）
+    - 閉じたチーム（local_only・ローカルだけ）
+    の担い手が Web の情報源を使えないように、MCP の口（サーバー側）で止める。
+    根拠: 2026-11-28 の依頼（brief C）「web_research=false は担い手の Web 道具にも、local_only=true は
+    全起動/引継ぎ/モデル解決/Web出口で強制」。チームリーダーの research(web)（leader_mcp）は既に
+    チームの設定を見るが、担い手の道はここで初めて止める。"""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.addons import agent_mcp
+    from app.commander import teams as commander_teams
+    from app.workflows import chat_router
+
+    monkeypatch.setattr(provider, "get_settings",
+                        lambda: {**provider.DEFAULT_SETTINGS, "research_tool": True, "research_external": True})
+    monkeypatch.setattr(commander_teams, "_make_workdir",
+                        lambda name: {"workdir": "", "workdir_folder": "", "workdir_name": ""})
+    store = commander_teams._path()
+    for target in (store, store.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
+
+    async def fail_if_called(body, progress=None):  # noqa: ARG001
+        raise AssertionError("拒否されるはずの調査が Web へ出ました")
+
+    monkeypatch.setattr(chat_router, "_deep_search", fail_if_called)
+
+    class _User:
+        id = 3
+
+    made: list[str] = []
+    try:
+        team = commander_teams.create_team("断る班")
+        made.append(team["id"])
+        commander_teams.update_team(team["id"], {"web_research": False})
+        claims = {"sub": f"opencode:team-{team['id']}-5", "actor_user_id": 3}
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(agent_mcp._run_research({"question": "x", "sources": ["web"]}, _User(), claims, None, None))
+        assert caught.value.status_code == 403 and "Web の調査" in caught.value.detail
+        # 閉じたチーム（local_only）でも同じく断る
+        commander_teams.update_team(team["id"], {"web_research": True, "local_only": True})
+        with pytest.raises(HTTPException) as caught2:
+            asyncio.run(agent_mcp._run_research({"question": "x", "sources": ["web"]}, _User(), claims, None, None))
+        assert caught2.value.status_code == 403 and "ローカル" in caught2.value.detail
+        # チームの設定が許すときは今までどおり流れる（Web の情報源も使える）
+        commander_teams.update_team(team["id"], {"local_only": False})
+        monkeypatch.setattr(agent_mcp.audit, "record", lambda *a, **k: None)
+
+        async def fake_deep(body, progress=None):  # noqa: ARG001
+            return {"report": "結論 [1]", "sources": [
+                {"title": "x", "url": "https://example.com/a", "source": "web", "kind": "document", "snippet": "s", "meta": {}}],
+                "research": {"citation_metrics": {"citation_coverage": 1.0}, "coverage_limits": []}}
+
+        monkeypatch.setattr(chat_router, "_deep_search", fake_deep)
+        result = asyncio.run(agent_mcp._run_research({"question": "x", "sources": ["web"]}, _User(), claims, None, None))
+        assert result["used_sources"] == ["web"]
+        # チームに結びつかない token（ふつうの OpenCode の会話）は今までどおり
+        plain = asyncio.run(agent_mcp._run_research({"question": "x", "sources": ["web"]}, _User(),
+                                                    {"sub": "opencode:tui-3", "actor_user_id": 3}, None, None))
+        assert plain["used_sources"] == ["web"]
+    finally:
+        for tid in made:
+            try:
+                commander_teams.delete_team(tid)
+            except Exception:  # noqa: BLE001 - 掃除の失敗は試験を落とさない
+                pass
+        for target in (store, store.with_name("teams.json.bak")):
+            if target.exists():
+                target.unlink()
+
+
 # ---- Context7・レビュー（第 2・3 段階） ----
 
 

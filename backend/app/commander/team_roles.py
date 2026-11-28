@@ -38,10 +38,18 @@ BUILTIN_ROLES = (
     {"name": "explore", "count": 2, "note": "探す・読む・調べる（安い担い手。読むだけ）"},
     {"name": "implement", "count": 3, "note": "ふつうの実装・試験を書く（worktree で書く）"},
     {"name": "review", "count": 1, "note": "評価・レビュー（強い・別の系列が望ましい。読むだけ）"},
-    {"name": "hard", "count": 1, "note": "難しい設計・判断の要る不具合（チームリーダー自身が既定）"},
+    {"name": "hard", "count": 1, "note": "難しい設計・判断の要る不具合。チームリーダーの引き継ぎ先も兼ねる"},
 )
 # 既定の割り当ての例（導入済みの CLI だけ・hard は未設定＝チームリーダー自身）
-SUGGESTED = {"explore": {"cli": "opencode"}, "implement": {"cli": "claude", "model": "sonnet"}, "review": {"cli": "codex"}}
+# 既定の割り当て（利用者 2026-11-28「担い手は GLM、無料モデル（OpenCode、OpenRouter）、ローカル LLM の順」）。
+# explore・implement・hard は GLM → 無料の HY4 → ローカル（OpenCode の既定の接続）。hard はチームリーダーの
+# 引き継ぎ先も兼ねる（2026-11-28 品質の評価 A3: 引き継ぎ先が空で、Codex の上限で全チームが止まった）。
+# review は別の系列の Codex。OpenCode（Zen・Go）の鍵が無ければ GLM・HY4 を飛ばしてローカルだけ。
+_GLM = {"cli": "opencode", "model": "opencode-go/glm-5.3", "zen": True}
+_HY4 = {"cli": "opencode", "model": "opencode/hy4-flash-free", "zen": True}
+_LOCAL = {"cli": "opencode", "model": ""}
+_WORKER_CHAIN = (_GLM, _HY4, _LOCAL)
+SUGGESTED = {"explore": _WORKER_CHAIN, "implement": _WORKER_CHAIN, "hard": _WORKER_CHAIN, "review": ({"cli": "codex"},)}
 MEMBER_ROLE_OF_NAME = {"review": "reviewer", "explore": "researcher"}
 
 
@@ -136,17 +144,24 @@ def builtin_roles() -> list[dict]:
 
 def suggested_roles() -> list[dict]:
     """組み込みの 4 段に、導入済みの CLI の既定の割り当て（例）を入れたもの。入れられない段は未設定のまま。"""
+    try:
+        from app.integrations.opencode import zen
+
+        zen_ok = zen.configured()
+    except Exception:  # noqa: BLE001
+        zen_ok = False
     out = []
     for r in BUILTIN_ROLES:
-        primary = None
-        want = SUGGESTED.get(r["name"])
-        if want:
+        eps: list[dict] = []
+        for want in SUGGESTED.get(r["name"], ()):
+            if want.get("zen") and not zen_ok:
+                continue
             try:
                 if accounts.is_installed(accounts.CLIS[want["cli"]]):
-                    primary = clean_endpoint({"kind": "headless", "cli": want["cli"], "model": want.get("model", "")})
-            except Exception:  # noqa: BLE001 - 接続の一覧を取れない等。未設定のまま
-                primary = None
-        out.append({**r, "primary": primary, "secondary": []})
+                    eps.append(clean_endpoint({"kind": "headless", "cli": want["cli"], "model": want.get("model", "")}))
+            except Exception:  # noqa: BLE001 - 接続の一覧を取れない等。入れない
+                continue
+        out.append({**r, "primary": eps[0] if eps else None, "secondary": eps[1:1 + SECONDARY_MAX]})
     return clean_roles(out)
 
 
@@ -296,6 +311,8 @@ def pick_for_task(team: dict, task: dict, now: float | None = None) -> tuple[str
     now = now or time.time()
     role = find_role(team, task.get("role"))
     eps = chain(role) if role else []
+    if team.get("local_only"):  # 閉じたチーム: ローカル LLM の endpoint だけ（brief C・2026-11-28）
+        eps = [e for e in eps if not teams.endpoint_local_problem(e)]
     if role is None or not eps:
         return "legacy", None
     if doing_in_role(team, role) >= int(role.get("count") or 1):
@@ -316,6 +333,8 @@ def pick_for_task(team: dict, task: dict, now: float | None = None) -> tuple[str
 def next_after_limit(team: dict, task: dict, role: dict, limited_keys: set[str], now: float) -> dict | None:
     """上限で止まった担い手の次の担い手（chain の使える次の endpoint）。無ければ None。"""
     for index, ep in enumerate(chain(role)):
+        if team.get("local_only") and teams.endpoint_local_problem(ep):
+            continue  # 閉じたチーム: ローカル LLM の endpoint だけ（brief C・2026-11-28）
         if cooling_until(team, ep, now) is not None or endpoint_key(ep) in limited_keys:
             continue
         member = ensure_member(team, role, ep)

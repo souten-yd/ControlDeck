@@ -194,11 +194,13 @@ def sent(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_store():
     path = teams._path()
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
     yield
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
 
 
 def prompt_of(call: dict) -> str:
@@ -518,6 +520,181 @@ def test_recover_interrupted_marks_and_waits_for_dispatcher(env, monkeypatch):
     teams.update_team(team["id"], {"auto_run": True})
     team_dispatch.tick()
     assert get_task(team["id"], tid)["run"]["status"] == "running"  # 方針に従って再実行
+
+
+def test_interrupted_worktree_task_note_tells_to_continue_from_changes(env, monkeypatch):
+    """目的: 再起動で中断された担い手の仕事を配り直すとき、worktree の変更がそのまま残っていることを
+    本文で伝えること（brief D「中断された担い手の仕事も配り手が自動で配り直し、本文に
+    『前回は途中で中断。worktree の変更はそのまま残っている。git status と diff を見て続きから』を足す」）。
+
+    git の変更は worktree（タスクの cwd）から読む。前はチームの作業場所を読んでいたので、
+    worktree で働く担い手に自分の変更が見えなかった。
+    根拠: 2026-11-28 の依頼（brief D・利用者「途中から再開できるように」）。"""
+    monkeypatch.setattr(team_runner, "_spawn", lambda *a: None)
+    team = mk_team([H("claude")], auto_run=False)
+    tid = mk_task(team, keys(team)[0])
+    with teams._lock:  # worktree の仕事（cwd がある）として板へ残す  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        teams._find_task(teams._find_team(all_teams, team["id"]), tid)["cwd"] = str(env.work)  # noqa: SLF001
+        teams._save(all_teams)  # noqa: SLF001
+    teams.dispatch_task(team["id"], tid, "t")
+    with team_runner._active_lock:
+        team_runner._active.clear()
+    assert team_runner.recover_interrupted() == 1
+    note = str(get_task(team["id"], tid).get("resume_note") or "")
+    assert "前回は途中で中断。worktree の変更はそのまま残っている。git status と diff を見て続きから" in note
+    # worktree が無い仕事は従来どおり（中断のことばだけ）
+    plain = mk_team([H("claude")], auto_run=False)
+    pid = mk_task(plain, keys(plain)[0])
+    teams.dispatch_task(plain["id"], pid, "t")
+    with team_runner._active_lock:
+        team_runner._active.clear()
+    assert team_runner.recover_interrupted() == 1
+    note = str(get_task(plain["id"], pid).get("resume_note") or "")
+    assert "中断" in note and "worktree の変更はそのまま残っている" not in note
+
+
+# ---------------------------------------------------------------- 担い手の道具（MCP）と閉じたチーム（C）
+
+def test_worker_tools_mcp_launch_args(env):
+    """目的: 担い手（claude・codex・opencode）に ControlDeck の MCP を渡す引数が正しいこと（brief C・2026-11-28）。
+
+    - claude: 0600 の mcp.json（token は中だけ・argv に出さない）＋ --strict-mcp-config ＋
+      許す道具に mcp__controldeck_addons__* を足す。読み取りの担い手は plan モードのまま。
+    - codex: mcp_servers.controldeck_addons を -c で渡し、token は環境変数（argv に出さない）。
+    - MCP を渡さないときは従来どおり（何も付かない）。
+    根拠: 利用者「OpenCode・Codex・Claude に合わせて開発ができる仕組みに」「調査などの道具は適切に持たせ」。
+    2026-11-28 の依頼（brief C）で、チームリーダー（nexarch_team）と同じ橋渡しを担い手へも渡すことにした。"""
+    from pathlib import Path as _Path
+
+    from app.addons import tokens as addon_tokens
+    from app.addons.agent_mcp import MCP_TOKEN_TTL_SECONDS
+
+    last = env.tmp / "l"
+    spec = {"owner": 7, "team": "t0123abcd", "task": 5, "readonly": False}
+    argv, envv, _c = team_runner.build_launch({"cli": "claude"}, "本文", env.work, last, tools_mcp=spec)
+    cfg = json.loads(_Path(argv[argv.index("--mcp-config") + 1]).read_text(encoding="utf-8"))
+    server = cfg["mcpServers"]["controldeck_addons"]
+    assert server["env"]["CONTROL_DECK_ADDON_MCP_URL"].endswith("/api/v1/addons/agent-mcp")
+    claims = addon_tokens.verify(server["env"]["CONTROL_DECK_ADDON_MCP_TOKEN"],
+                                 addon_id="control-deck", kind="agent-mcp", max_ttl_seconds=MCP_TOKEN_TTL_SECONDS)
+    assert claims["actor_user_id"] == 7 and claims["sub"] == "opencode:team-t0123abcd-5"
+    assert server["env"]["CONTROL_DECK_ADDON_MCP_TOKEN"] not in " ".join(argv)
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "mcp__controldeck_addons__*" in allowed and "Bash,Edit" in allowed.replace(" ", "")
+    assert "--strict-mcp-config" in argv
+    ro_argv, _e, _c = team_runner.build_launch({"cli": "claude"}, "本文", env.work, last,
+                                               tools_mcp={**spec, "readonly": True}, readonly=True)
+    assert ro_argv[ro_argv.index("--permission-mode") + 1] == "plan"
+    assert "mcp__controldeck_addons__*" in ro_argv[ro_argv.index("--allowedTools") + 1]
+    codex_argv, codex_env, _c = team_runner.build_launch({"cli": "codex"}, "本文", env.work, last, tools_mcp=spec)
+    assert any(a.startswith("mcp_servers.controldeck_addons.command=") for a in codex_argv)
+    assert any(a.startswith("mcp_servers.controldeck_addons.default_tools_approval_mode=") for a in codex_argv)
+    assert codex_env.get("CONTROL_DECK_ADDON_MCP_TOKEN") and "CONTROL_DECK_ADDON_MCP_TOKEN=" not in " ".join(codex_argv)
+    plain, _e, _c = team_runner.build_launch({"cli": "claude"}, "本文", env.work, last)
+    assert "--mcp-config" not in plain and not any(a.startswith("mcp_servers.") for a in plain)
+
+
+def test_start_run_passes_tools_mcp_bound_to_owner_and_run(env, monkeypatch):
+    """目的: 担い手の MCP が「チームを作った利用者」の権限で・チームと仕事に結びつく短命 token で渡ること。
+
+    - 作成者の分からないチーム（旧チーム・直作り）には MCP を付けない。
+    - token の subject は opencode:team-<team>-<task>（読み取りの仕事は -ro）。argv には出ない。
+    - opencode の担い手は _runtime_config(owner_user_id=…) へ（OpenCode 画面と同じ仕組み）。
+    根拠: 2026-11-28 の依頼（brief C）「team の owner_user_id を作成人から確実に保存、旧チームで不明なら MCP 無し」。"""
+    from app.addons import tokens as addon_tokens
+    from app.addons.agent_mcp import MCP_TOKEN_TTL_SECONDS
+
+    monkeypatch.setattr(team_runner, "_agent_mcp_mounted", lambda: True)
+    captured: dict = {}
+    real_build = team_runner.build_launch
+
+    def spy(member, text, cwd, last_file, **kw):
+        argv, envv, cleanup = real_build(member, text, cwd, last_file, **kw)
+        if "--mcp-config" in argv:
+            captured["mcp"] = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(encoding="utf-8"))
+        captured.setdefault("tools_mcp", kw.get("tools_mcp"))
+        return argv, envv, cleanup
+
+    monkeypatch.setattr(team_runner, "build_launch", spy)
+    team = teams.create_team("道具班", owner_user_id=7)
+    teams.set_members(team["id"], [H("claude")])
+    member = keys(get_team(team["id"]))[0]
+    tid = mk_task(get_team(team["id"]), member)
+    teams.dispatch_task(team["id"], tid, "t")
+    server = captured["mcp"]["mcpServers"]["controldeck_addons"]
+    claims = addon_tokens.verify(server["env"]["CONTROL_DECK_ADDON_MCP_TOKEN"],
+                                 addon_id="control-deck", kind="agent-mcp", max_ttl_seconds=MCP_TOKEN_TTL_SECONDS)
+    assert claims["actor_user_id"] == 7 and claims["sub"] == f"opencode:team-{team['id']}-{tid}"
+    # 読み取りの仕事（explore・review）は -ro の token（サーバー側で書く道具を断る）
+    tid2 = mk_task(get_team(team["id"]), member)
+    with teams._lock:  # noqa: SLF001
+        all_teams = teams._load()  # noqa: SLF001
+        teams._find_task(teams._find_team(all_teams, team["id"]), tid2)["readonly"] = True  # noqa: SLF001
+        teams._save(all_teams)  # noqa: SLF001
+    teams.dispatch_task(team["id"], tid2, "t")
+    claims = addon_tokens.verify(captured["mcp"]["mcpServers"]["controldeck_addons"]["env"]["CONTROL_DECK_ADDON_MCP_TOKEN"],
+                                 addon_id="control-deck", kind="agent-mcp", max_ttl_seconds=MCP_TOKEN_TTL_SECONDS)
+    assert claims["sub"] == f"opencode:team-{team['id']}-{tid2}-ro"
+    # 作成者の分からないチームには MCP を付けない
+    captured.clear()
+    plain = teams.create_team("旧チーム")
+    teams.set_members(plain["id"], [H("claude")])
+    plain_member = keys(get_team(plain["id"]))[0]
+    tid3 = mk_task(get_team(plain["id"]), plain_member)
+    teams.dispatch_task(plain["id"], tid3, "t")
+    assert captured.get("tools_mcp") is None and "mcp" not in captured
+    assert "--mcp-config" not in env.calls("claude")[-1]["argv"]
+    # opencode の担い手: owner_user_id と実行の job を _opencode_launch へ渡す
+    seen: dict = {}
+    monkeypatch.setattr(team_runner, "_opencode_launch",
+                        lambda model, cwd, text, **kw: (seen.update(kw) or ([env.scripts["opencode"], "run", text], {}, lambda: None)))
+    monkeypatch.setattr(accounts, "opencode_connection", lambda account: {"name": account, "model": "qwen-local"})
+    octeam = teams.create_team("道具班2", owner_user_id=7)
+    teams.set_members(octeam["id"], [H("opencode")])
+    tid4 = mk_task(get_team(octeam["id"]), keys(get_team(octeam["id"]))[0])
+    teams.dispatch_task(octeam["id"], tid4, "t")
+    assert seen["owner_user_id"] == 7 and seen["job_id"] == f"team-{octeam['id']}-{tid4}"
+
+
+def test_local_only_blocks_non_local_workers(env, monkeypatch):
+    """目的: 閉じたチーム（local_only・既定切）では、ローカル LLM 以外の担い手・外部のモデルを断ること。
+
+    - claude・codex（定額とはいえ外部のモデル）・OpenCode（Zen・Go）・外部（cloud:）は起動できない。
+    - OpenCode の既定の接続（ゲートウェイのローカル）は従来どおり走る。
+    - 引き継ぎの候補からも外れる。既定（切）なら従来どおり。
+    根拠: 2026-11-28 の依頼（brief C）「チームに『閉じたチーム（ローカルだけ）』の切り替えを足す。
+    入にすると、ローカル LLM 以外の担い手・外部のモデル・Web の調査を断る。既定は切」。"""
+    monkeypatch.setattr(team_runner, "_agent_mcp_mounted", lambda: True)
+    monkeypatch.setattr(accounts, "opencode_connection", lambda account: {"name": account, "model": "qwen-local"})
+    team = mk_team([H("claude"), H("opencode")], local_only=True)
+    claude_key, opencode_key = keys(team)
+    tid = mk_task(team, claude_key)
+    with pytest.raises(teams.TeamError) as exc:
+        teams.dispatch_task(team["id"], tid, "t")
+    assert "ローカル" in str(exc.value)
+    tid2 = mk_task(get_team(team["id"]), opencode_key)
+    teams.dispatch_task(team["id"], tid2, "t")
+    assert env.calls("opencode")
+    zen_member = {"kind": "headless", "cli": "opencode", "account": "default", "role": "developer",
+                  "model": "opencode-go/glm-5.3"}
+    assert "使えません" in teams.member_local_problem(zen_member)
+    cloud_member = {"kind": "headless", "cli": "opencode", "account": "default", "role": "developer",
+                    "model": "cloud:openrouter/x"}
+    assert "使えません" in teams.member_local_problem(cloud_member)
+    assert teams.member_local_problem({"kind": "headless", "cli": "opencode", "account": "default",
+                                       "role": "developer", "model": ""}) == ""
+    assert "ローカル" in teams.member_local_problem({"kind": "headless", "cli": "codex", "account": "default",
+                                                     "role": "developer", "model": ""})
+    # 引き継ぎの候補からも外れる
+    team = get_team(team["id"])
+    cands = team_dispatch.candidates(team, claude_key, set(), {})
+    assert cands and all(not teams.member_local_problem(m) for m in cands)
+    # 既定（切）なら claude も従来どおり
+    plain = mk_team([H("claude")])
+    tid3 = mk_task(plain, keys(plain)[0])
+    teams.dispatch_task(plain["id"], tid3, "t")
+    assert env.calls("claude") and not get_team(plain["id"]).get("local_only")
 
 
 # ---------------------------------------------------------------- 上限の方針

@@ -61,3 +61,24 @@ def test_launch_mounts_git_readonly_and_worktree_writable(tmp_path, monkeypatch)
     assert (repo / ".git").resolve() in seen["readonly"]
     assert (repo / ".git" / "worktrees" / "1").resolve() in seen["writable"]
     assert (repo / ".git").resolve() not in seen["writable"]
+
+
+def test_worktree_gets_repo_dependencies_as_overlays_only_from_repo(tmp_path):
+    """worktree の担い手に、本体の node_modules・.venv を overlay で見せる。元はホストが決めた本体の実体だけで、
+    worktree の中のリンク（箱から書き換えられる）は信じない。2026-11-28 本番: 箱の中で npm run build ができずに止まった。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "a")
+    real_nm = tmp_path / "shared" / "node_modules"
+    real_nm.mkdir(parents=True)
+    (repo / "frontend").mkdir()
+    (repo / "frontend" / "node_modules").symlink_to(real_nm)          # 本体の依存（さらに別の場所へのリンク）
+    _git(repo, "worktree", "add", "-q", "-b", "w1", str(repo / ".nexarch-wt" / "1"))
+    wt = repo / ".nexarch-wt" / "1"
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (wt / "frontend").mkdir(exist_ok=True)
+    (wt / "frontend" / "node_modules").symlink_to(secret)            # 箱が書き換えたリンク（信じない）
+    assert provider._worktree_dependency_overlays(wt) == [(real_nm.resolve(), repo / "frontend" / "node_modules")]
+    assert provider._worktree_dependency_overlays(repo) == []         # worktree でなければ何もしない

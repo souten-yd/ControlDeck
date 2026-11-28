@@ -71,11 +71,13 @@ def sent(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_store():
     path = teams._path()
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
     yield
-    if path.exists():
-        path.unlink()
+    for target in (path, path.with_name("teams.json.bak")):
+        if target.exists():
+            target.unlink()
 
 
 def _setup(client) -> tuple[str, int]:
